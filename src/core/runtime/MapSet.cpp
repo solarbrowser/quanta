@@ -1334,7 +1334,7 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
     
     auto weakmap_prototype = ObjectFactory::create_object();
     
-    auto set_fn = ObjectFactory::create_native_function("set", weakmap_set);
+    auto set_fn = ObjectFactory::create_native_function("set", weakmap_set, 2);
     auto get_fn = ObjectFactory::create_native_function("get", weakmap_get, 1);
     auto has_fn = ObjectFactory::create_native_function("has", weakmap_has, 1);
     auto delete_fn = ObjectFactory::create_native_function("delete", weakmap_delete, 1);
@@ -1348,42 +1348,72 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
     weakmap_prototype->set_property("delete", Value(delete_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
+    // CanBeHeldWeakly: objects, functions, and unregistered symbols.
+    auto can_hold_weakly = [](const Value& v) -> bool {
+        if (v.is_object() || v.is_function()) return true;
+        if (v.is_symbol()) return Symbol::key_for(v.as_symbol()).empty();
+        return false;
+    };
+
     auto wm_getOrInsert_fn = ObjectFactory::create_native_function("getOrInsert",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [can_hold_weakly](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::WeakMap) { ctx.throw_type_error("WeakMap.prototype.getOrInsert"); return Value(); }
             WeakMap* wm = static_cast<WeakMap*>(obj);
-            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("WeakMap key must be an object"); return Value(); }
-            Object* key = args[0].as_object();
+            Value key = args.empty() ? Value() : args[0];
+            if (!can_hold_weakly(key)) { ctx.throw_type_error("WeakMap key must be held weakly"); return Value(); }
             Value val = args.size() > 1 ? args[1] : Value();
-            if (wm->has(key)) return wm->get(key);
-            wm->set(key, val);
+            if (key.is_symbol()) {
+                Symbol* sym = key.as_symbol();
+                if (wm->has_symbol(sym)) return wm->get_symbol(sym);
+                wm->set_symbol(sym, val);
+                return val;
+            }
+            Object* key_obj = key.is_function() ? static_cast<Object*>(key.as_function()) : key.as_object();
+            if (wm->has(key_obj)) return wm->get(key_obj);
+            wm->set(key_obj, val);
             return val;
         }, 2);
     weakmap_prototype->set_property("getOrInsert", Value(wm_getOrInsert_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto wm_getOrInsertComputed_fn = ObjectFactory::create_native_function("getOrInsertComputed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [can_hold_weakly](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::WeakMap) { ctx.throw_type_error("WeakMap.prototype.getOrInsertComputed"); return Value(); }
-            if (args.size() < 2 || !args[1].is_function()) { ctx.throw_type_error("callbackFn is not a function"); return Value(); }
             WeakMap* wm = static_cast<WeakMap*>(obj);
-            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("WeakMap key must be an object"); return Value(); }
-            Object* key = args[0].as_object();
-            if (wm->has(key)) return wm->get(key);
-            Value val = args[1].as_function()->call(ctx, {Value(key)}, Value());
+            Value key = args.empty() ? Value() : args[0];
+            if (!can_hold_weakly(key)) { ctx.throw_type_error("WeakMap key must be held weakly"); return Value(); }
+            if (args.size() < 2 || !args[1].is_function()) { ctx.throw_type_error("callbackFn is not a function"); return Value(); }
+            Symbol* sym = key.is_symbol() ? key.as_symbol() : nullptr;
+            Object* key_obj = sym ? nullptr
+                            : (key.is_function() ? static_cast<Object*>(key.as_function()) : key.as_object());
+            if (sym ? wm->has_symbol(sym) : wm->has(key_obj)) {
+                return sym ? wm->get_symbol(sym) : wm->get(key_obj);
+            }
+            Value val = args[1].as_function()->call(ctx, {key}, Value());
             if (ctx.has_exception()) return Value();
-            wm->set(key, val);
+            if (sym) wm->set_symbol(sym, val); else wm->set(key_obj, val);
             return val;
         }, 2);
     weakmap_prototype->set_property("getOrInsertComputed", Value(wm_getOrInsertComputed_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
+    weakmap_prototype->set_property_descriptor("constructor",
+        PropertyDescriptor(Value(weakmap_constructor_fn.get()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+    {
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            weakmap_prototype->set_property_descriptor(tag_sym->to_property_key(),
+                PropertyDescriptor(Value(std::string("WeakMap")), PropertyAttributes::Configurable));
+        }
+    }
+
     WeakMap::prototype_object = weakmap_prototype.get();
 
     weakmap_constructor_fn->set_property("prototype", Value(weakmap_prototype.release()), PropertyAttributes::None);
-    ctx.create_binding("WeakMap", Value(weakmap_constructor_fn.release()));
+    ctx.register_built_in_object("WeakMap", weakmap_constructor_fn.release());
 }
 
 
@@ -1430,11 +1460,22 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     weakset_prototype->set_property("delete", Value(delete_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    
+
+    weakset_prototype->set_property_descriptor("constructor",
+        PropertyDescriptor(Value(weakset_constructor_fn.get()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+    {
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            weakset_prototype->set_property_descriptor(tag_sym->to_property_key(),
+                PropertyDescriptor(Value(std::string("WeakSet")), PropertyAttributes::Configurable));
+        }
+    }
+
     WeakSet::prototype_object = weakset_prototype.get();
-    
+
     weakset_constructor_fn->set_property("prototype", Value(weakset_prototype.release()), PropertyAttributes::None);
-    ctx.create_binding("WeakSet", Value(weakset_constructor_fn.release()));
+    ctx.register_built_in_object("WeakSet", weakset_constructor_fn.release());
 }
 
 Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args) {
@@ -1448,49 +1489,41 @@ Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args)
         weakmap->set_prototype(WeakMap::prototype_object);
     }
 
-    WeakMap* wm_ptr = weakmap.get();
     Object* wm_obj = weakmap.release();
 
-    if (!args.empty() && args[0].is_object()) {
-        Object* iterable = args[0].as_object();
+    if (!args.empty() && !args[0].is_undefined() && !args[0].is_null()) {
         Value set_method = wm_obj->get_property("set");
-        Function* set_fn = set_method.is_function() ? set_method.as_function() : nullptr;
-
-        if (iterable->is_array()) {
-            uint32_t length = iterable->get_length();
-            for (uint32_t i = 0; i < length; i++) {
-                Value entry = iterable->get_element(i);
-                if (entry.is_object() && entry.as_object()->is_array()) {
-                    Object* pair = entry.as_object();
-                    if (pair->get_length() >= 2) {
-                        Value key = pair->get_element(0);
-                        Value value = pair->get_element(1);
-                        if (set_fn) {
-                            set_fn->call(ctx, {key, value}, Value(wm_obj));
-                        }
-                    }
-                }
-            }
-        } else {
-            iterate_with_closing(ctx, args[0], iterable,
-                [&](const Value& entry, Object* iter) -> bool {
-                    if (!entry.is_object() || !entry.as_object()->is_array()) {
-                        close_iterator(iter, ctx);
-                        ctx.throw_type_error("Iterator value is not a [key, value] pair");
-                        return false;
-                    }
-                    Object* pair = entry.as_object();
-                    if (pair->get_length() >= 2) {
-                        Value key = pair->get_element(0);
-                        Value value = pair->get_element(1);
-                        if (set_fn) {
-                            set_fn->call(ctx, {key, value}, Value(wm_obj));
-                            if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
-                        }
-                    }
-                    return true;
-                });
+        if (ctx.has_exception()) return Value();
+        if (!set_method.is_function()) {
+            ctx.throw_type_error("WeakMap adder is not callable");
+            return Value();
         }
+        Function* set_fn = set_method.as_function();
+        Object* iterable = args[0].is_object() ? args[0].as_object()
+                         : args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : nullptr;
+        if (!iterable) {
+            ctx.throw_type_error("WeakMap constructor argument is not iterable");
+            return Value();
+        }
+        // AddEntriesFromIterable: any entry object works (not just arrays); the
+        // "0"/"1" gets and the adder call all close the iterator on abrupt completion.
+        iterate_with_closing(ctx, args[0], iterable,
+            [&](const Value& entry, Object* iter) -> bool {
+                if (!entry.is_object() && !entry.is_function()) {
+                    close_iterator(iter, ctx);
+                    ctx.throw_type_error("Iterator value is not an entry object");
+                    return false;
+                }
+                Object* pair = entry.is_function() ? static_cast<Object*>(entry.as_function()) : entry.as_object();
+                Value key = pair->get_property("0");
+                if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
+                Value value = pair->get_property("1");
+                if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
+                set_fn->call(ctx, {key, value}, Value(wm_obj));
+                if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
+                return true;
+            });
+        if (ctx.has_exception()) return Value();
     }
 
     return Value(wm_obj);
@@ -1617,32 +1650,29 @@ Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args)
         weakset->set_prototype(WeakSet::prototype_object);
     }
 
-    WeakSet* ws_ptr = weakset.get();
     Object* ws_obj = weakset.release();
 
-    if (!args.empty() && args[0].is_object()) {
-        Object* iterable = args[0].as_object();
+    if (!args.empty() && !args[0].is_undefined() && !args[0].is_null()) {
         Value add_method = ws_obj->get_property("add");
-        Function* add_fn = add_method.is_function() ? add_method.as_function() : nullptr;
-
-        if (iterable->is_array()) {
-            uint32_t length = iterable->get_length();
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = iterable->get_element(i);
-                if (add_fn) {
-                    add_fn->call(ctx, {element}, Value(ws_obj));
-                }
-            }
-        } else {
-            iterate_with_closing(ctx, args[0], iterable,
-                [&](const Value& val, Object* iter) -> bool {
-                    if (add_fn) {
-                        add_fn->call(ctx, {val}, Value(ws_obj));
-                        if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
-                    }
-                    return true;
-                });
+        if (ctx.has_exception()) return Value();
+        if (!add_method.is_function()) {
+            ctx.throw_type_error("WeakSet adder is not callable");
+            return Value();
         }
+        Function* add_fn = add_method.as_function();
+        Object* iterable = args[0].is_object() ? args[0].as_object()
+                         : args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : nullptr;
+        if (!iterable) {
+            ctx.throw_type_error("WeakSet constructor argument is not iterable");
+            return Value();
+        }
+        iterate_with_closing(ctx, args[0], iterable,
+            [&](const Value& val, Object* iter) -> bool {
+                add_fn->call(ctx, {val}, Value(ws_obj));
+                if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
+                return true;
+            });
+        if (ctx.has_exception()) return Value();
     }
 
     return Value(ws_obj);

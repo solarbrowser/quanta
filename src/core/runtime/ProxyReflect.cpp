@@ -1444,11 +1444,18 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
     // Reflect.construct(target, args, newTarget): call target with new.target = newTarget
     // Create new object using newTarget's prototype
     auto new_object = ObjectFactory::create_object();
-    Value nt_proto = new_target_obj->get_property("prototype");
-    // Spec fallback: if newTarget.prototype isn't an object, use target's own
-    // intrinsic default prototype rather than leaving the bare Object.prototype.
-    if (!nt_proto.is_object()) nt_proto = target->get_property("prototype");
-    if (nt_proto.is_object()) new_object->set_prototype(nt_proto.as_object());
+    Value nt_proto;
+    // Native constructors resolve their own prototype from new.target *after*
+    // argument validation (GetPrototypeFromConstructor ordering), so reading it
+    // here would fire a newTarget.prototype getter too early.
+    if (!target->is_native()) {
+        nt_proto = new_target_obj->get_property("prototype");
+        if (ctx.has_exception()) return Value();
+        // Spec fallback: if newTarget.prototype isn't an object, use target's own
+        // intrinsic default prototype rather than leaving the bare Object.prototype.
+        if (!nt_proto.is_object()) nt_proto = target->get_property("prototype");
+        if (nt_proto.is_object()) new_object->set_prototype(nt_proto.as_object());
+    }
 
     bool was_in_constructor = ctx.is_in_constructor_call();
     Value old_new_target = ctx.get_new_target();
@@ -1462,11 +1469,16 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
 
     if (!ctx.has_exception() && (result.is_object() || result.is_function())) {
         // Native constructors that allocate their own backing object (e.g. ArrayBuffer,
-        // TypedArray) return a fresh object instead of mutating `this` -- it never went
-        // through the prototype fallback above, so apply it here too.
+        // TypedArray) return a fresh object instead of mutating `this` -- apply the
+        // newTarget prototype here (fetched only now, after the constructor ran).
         Object* result_obj = result.is_function() ? static_cast<Object*>(result.as_function()) : result.as_object();
-        if (result_obj != new_object.get() && !result_obj->get_prototype_raw() && nt_proto.is_object()) {
-            result_obj->set_prototype(nt_proto.as_object());
+        if (result_obj != new_object.get() && !result_obj->get_prototype_raw()) {
+            if (target->is_native()) {
+                nt_proto = new_target_obj->get_property("prototype");
+                if (ctx.has_exception()) return Value();
+                if (!nt_proto.is_object()) nt_proto = target->get_property("prototype");
+            }
+            if (nt_proto.is_object()) result_obj->set_prototype(nt_proto.as_object());
         }
         return result;
     }

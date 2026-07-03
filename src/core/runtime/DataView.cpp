@@ -523,6 +523,72 @@ Value DataView::js_get_uint32(Context& ctx, const std::vector<Value>& args) {
     return dv->get_uint32(static_cast<size_t>(offset), little_endian);
 }
 
+namespace {
+
+double half_bits_to_double(uint16_t h) {
+    int sign = (h >> 15) & 1;
+    int exp = (h >> 10) & 0x1F;
+    int mant = h & 0x3FF;
+    double result;
+    if (exp == 31) {
+        result = mant ? std::numeric_limits<double>::quiet_NaN()
+                      : std::numeric_limits<double>::infinity();
+    } else if (exp == 0) {
+        result = std::ldexp(static_cast<double>(mant), -24);
+    } else {
+        result = std::ldexp(1.0 + mant / 1024.0, exp - 15);
+    }
+    return sign ? -result : result;
+}
+
+uint16_t double_to_half_bits(double x) {
+    if (std::isnan(x)) return 0x7E00;
+    uint16_t sign = std::signbit(x) ? 0x8000 : 0;
+    double a = std::fabs(x);
+    // Past the max-half/infinity midpoint (65504 + 16) everything rounds to Infinity.
+    if (a >= 65520.0) return sign | 0x7C00;
+    if (a < std::ldexp(1.0, -14)) {
+        // Subnormal quantum 2^-24; a result of 1024 lands on the smallest
+        // normal encoding naturally. Power-of-two scaling keeps one rounding.
+        return sign | static_cast<uint16_t>(std::nearbyint(std::ldexp(a, 24)));
+    }
+    int e;
+    std::frexp(a, &e);
+    --e;
+    int mant = static_cast<int>(std::nearbyint(std::ldexp(a, 10 - e)));
+    if (mant == 2048) { mant = 1024; ++e; }
+    if (e > 15) return sign | 0x7C00;
+    return sign | static_cast<uint16_t>(((e + 15) << 10) | (mant - 1024));
+}
+
+}
+
+Value DataView::js_get_float16(Context& ctx, const std::vector<Value>& args) {
+    DataView* dv = dataview_require_this(ctx, "getFloat16");
+    if (!dv) return Value();
+    double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
+    if (ctx.has_exception()) return Value();
+    bool little_endian = (args.size() > 1) ? args[1].to_boolean() : false;
+    if (!dataview_check_in_bounds(ctx, dv, offset, 2)) return Value();
+    uint16_t bits = static_cast<uint16_t>(dv->get_uint16(static_cast<size_t>(offset), little_endian).to_number());
+    return Value(half_bits_to_double(bits));
+}
+
+Value DataView::js_set_float16(Context& ctx, const std::vector<Value>& args) {
+    DataView* dv = dataview_require_this(ctx, "setFloat16");
+    if (!dv) return Value();
+    double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
+    if (ctx.has_exception()) return Value();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
+    if (ctx.has_exception()) return Value();
+    bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
+    if (!dataview_check_in_bounds(ctx, dv, offset, 2)) return Value();
+    dv->set_uint16(static_cast<size_t>(offset), double_to_half_bits(num), little_endian);
+    return Value();
+}
+
 Value DataView::js_get_float32(Context& ctx, const std::vector<Value>& args) {
     DataView* dv = dataview_require_this(ctx, "getFloat32");
     if (!dv) return Value();

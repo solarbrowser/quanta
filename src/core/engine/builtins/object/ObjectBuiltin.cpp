@@ -238,23 +238,15 @@ static Value box_primitive(Context& ctx, const Value& value) {
         symbol_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
         return Value(symbol_obj.release());
     } else if (value.is_bigint()) {
+        // No own valueOf/toString: they must resolve through BigInt.prototype so
+        // user overrides there stay observable (OrdinaryToPrimitive).
         auto bigint_obj = std::make_unique<Object>(Object::ObjectType::BigInt);
         Value bigint_ctor = ctx.get_binding("BigInt");
         if (bigint_ctor.is_function()) {
             Value bigint_proto = static_cast<Object*>(bigint_ctor.as_function())->get_property("prototype");
             if (bigint_proto.is_object()) bigint_obj->set_prototype(bigint_proto.as_object());
         }
-        Value captured_bigint = value;
-        auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
-            [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
-                return captured_bigint;
-            }, 0);
-        bigint_obj->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
-        auto toString_fn = ObjectFactory::create_native_function("toString",
-            [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
-                return Value(captured_bigint.as_bigint()->to_string());
-            }, 0);
-        bigint_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+        bigint_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
         return Value(bigint_obj.release());
     }
     return Value(ObjectFactory::create_object().release());

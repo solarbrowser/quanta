@@ -1780,79 +1780,30 @@ void register_typed_array_builtins(Context& ctx) {
         }
     }
 
+    auto dataview_prototype = ObjectFactory::create_object();
+    Object* dataview_proto_ptr = dataview_prototype.get();
+
     auto dataview_constructor = ObjectFactory::create_native_constructor("DataView",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [dataview_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             Value result = DataView::constructor(ctx, args);
-            
-            if (result.is_object()) {
-                Object* dataview_obj = result.as_object();
-                
-                auto get_uint8_method = ObjectFactory::create_native_function("getUint8", DataView::js_get_uint8, 1);
-                dataview_obj->set_property("getUint8", Value(get_uint8_method.release()));
-                
-                auto set_uint8_method = ObjectFactory::create_native_function("setUint8", DataView::js_set_uint8, 2);
-                dataview_obj->set_property("setUint8", Value(set_uint8_method.release()));
+            if (!result.is_object()) return result;
 
-                auto get_int8_method = ObjectFactory::create_native_function("getInt8", DataView::js_get_int8, 1);
-                dataview_obj->set_property("getInt8", Value(get_int8_method.release()));
-
-                auto set_int8_method = ObjectFactory::create_native_function("setInt8", DataView::js_set_int8, 2);
-                dataview_obj->set_property("setInt8", Value(set_int8_method.release()));
-
-                auto get_int16_method = ObjectFactory::create_native_function("getInt16", DataView::js_get_int16, 1);
-                dataview_obj->set_property("getInt16", Value(get_int16_method.release()));
-                
-                auto set_int16_method = ObjectFactory::create_native_function("setInt16", DataView::js_set_int16, 2);
-                dataview_obj->set_property("setInt16", Value(set_int16_method.release()));
-
-                auto get_uint16_method = ObjectFactory::create_native_function("getUint16", DataView::js_get_uint16, 1);
-                dataview_obj->set_property("getUint16", Value(get_uint16_method.release()));
-
-                auto set_uint16_method = ObjectFactory::create_native_function("setUint16", DataView::js_set_uint16, 2);
-                dataview_obj->set_property("setUint16", Value(set_uint16_method.release()));
-
-                auto get_int32_method = ObjectFactory::create_native_function("getInt32", DataView::js_get_int32, 1);
-                dataview_obj->set_property("getInt32", Value(get_int32_method.release()));
-
-                auto set_int32_method = ObjectFactory::create_native_function("setInt32", DataView::js_set_int32, 2);
-                dataview_obj->set_property("setInt32", Value(set_int32_method.release()));
-
-                auto get_uint32_method = ObjectFactory::create_native_function("getUint32", DataView::js_get_uint32, 1);
-                dataview_obj->set_property("getUint32", Value(get_uint32_method.release()));
-                
-                auto set_uint32_method = ObjectFactory::create_native_function("setUint32", DataView::js_set_uint32, 2);
-                dataview_obj->set_property("setUint32", Value(set_uint32_method.release()));
-                
-                auto get_float32_method = ObjectFactory::create_native_function("getFloat32", DataView::js_get_float32, 1);
-                dataview_obj->set_property("getFloat32", Value(get_float32_method.release()));
-                
-                auto set_float32_method = ObjectFactory::create_native_function("setFloat32", DataView::js_set_float32, 2);
-                dataview_obj->set_property("setFloat32", Value(set_float32_method.release()));
-                
-                auto get_float64_method = ObjectFactory::create_native_function("getFloat64", DataView::js_get_float64, 1);
-                dataview_obj->set_property("getFloat64", Value(get_float64_method.release()));
-
-                auto set_float64_method = ObjectFactory::create_native_function("setFloat64", DataView::js_set_float64, 2);
-                dataview_obj->set_property("setFloat64", Value(set_float64_method.release()));
-
-                auto get_bigint64_method = ObjectFactory::create_native_function("getBigInt64", DataView::js_get_bigint64, 1);
-                dataview_obj->set_property("getBigInt64", Value(get_bigint64_method.release()));
-
-                auto set_bigint64_method = ObjectFactory::create_native_function("setBigInt64", DataView::js_set_bigint64, 2);
-                dataview_obj->set_property("setBigInt64", Value(set_bigint64_method.release()));
-
-                auto get_biguint64_method = ObjectFactory::create_native_function("getBigUint64", DataView::js_get_biguint64, 1);
-                dataview_obj->set_property("getBigUint64", Value(get_biguint64_method.release()));
-
-                auto set_biguint64_method = ObjectFactory::create_native_function("setBigUint64", DataView::js_set_biguint64, 2);
-                dataview_obj->set_property("setBigUint64", Value(set_biguint64_method.release()));
+            // GetPrototypeFromConstructor runs after offset/length validation,
+            // so a throwing prototype getter is never reached on invalid input.
+            Object* proto = dataview_proto_ptr;
+            Value nt = ctx.get_new_target();
+            if (nt.is_object() || nt.is_function()) {
+                Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function())
+                                                  : nt.as_object();
+                Value p = nt_obj->get_property("prototype");
+                if (ctx.has_exception()) return Value();
+                if (p.is_object()) proto = p.as_object();
+                else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
             }
-
+            result.as_object()->set_prototype(proto);
             return result;
         });
-
-    auto dataview_prototype = ObjectFactory::create_object();
 
     auto get_uint8_proto = ObjectFactory::create_native_function("getUint8", DataView::js_get_uint8, 1);
     dataview_prototype->set_property("getUint8", Value(get_uint8_proto.release()));
@@ -1913,6 +1864,18 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto set_biguint64_proto = ObjectFactory::create_native_function("setBigUint64", DataView::js_set_biguint64, 2);
     dataview_prototype->set_property("setBigUint64", Value(set_biguint64_proto.release()));
+
+    auto get_float16_proto = ObjectFactory::create_native_function("getFloat16", DataView::js_get_float16, 1);
+    dataview_prototype->set_property_descriptor("getFloat16",
+        PropertyDescriptor(Value(get_float16_proto.release()), PropertyAttributes::BuiltinFunction));
+
+    auto set_float16_proto = ObjectFactory::create_native_function("setFloat16", DataView::js_set_float16, 2);
+    dataview_prototype->set_property_descriptor("setFloat16",
+        PropertyDescriptor(Value(set_float16_proto.release()), PropertyAttributes::BuiltinFunction));
+
+    dataview_prototype->set_property_descriptor("constructor",
+        PropertyDescriptor(Value(dataview_constructor.get()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
 
     PropertyDescriptor dataview_tag_desc(Value(std::string("DataView")), PropertyAttributes::Configurable);
     dataview_prototype->set_property_descriptor("Symbol.toStringTag", dataview_tag_desc);

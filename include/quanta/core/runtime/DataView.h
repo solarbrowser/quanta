@@ -94,6 +94,7 @@ public:
     static Value js_get_uint16(Context& ctx, const std::vector<Value>& args);
     static Value js_get_int32(Context& ctx, const std::vector<Value>& args);
     static Value js_get_uint32(Context& ctx, const std::vector<Value>& args);
+    static Value js_get_float16(Context& ctx, const std::vector<Value>& args);
     static Value js_get_float32(Context& ctx, const std::vector<Value>& args);
     static Value js_get_float64(Context& ctx, const std::vector<Value>& args);
     
@@ -103,6 +104,7 @@ public:
     static Value js_set_uint16(Context& ctx, const std::vector<Value>& args);
     static Value js_set_int32(Context& ctx, const std::vector<Value>& args);
     static Value js_set_uint32(Context& ctx, const std::vector<Value>& args);
+    static Value js_set_float16(Context& ctx, const std::vector<Value>& args);
     static Value js_set_float32(Context& ctx, const std::vector<Value>& args);
     static Value js_set_float64(Context& ctx, const std::vector<Value>& args);
 

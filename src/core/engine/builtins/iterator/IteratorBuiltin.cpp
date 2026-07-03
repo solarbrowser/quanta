@@ -8,6 +8,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
 
@@ -26,24 +27,50 @@ static std::pair<Value, bool> iterator_helper_step(Context& ctx, const Value& it
         ctx.throw_type_error("Iterator result is not an object");
         return {Value(), true};
     }
-    bool done = result.as_object()->get_property("done").to_boolean();
-    Value val = done ? Value() : result.as_object()->get_property("value");
-    return {val, done};
+    Value done_val = result.as_object()->get_property("done");
+    if (ctx.has_exception()) return {Value(), true};
+    if (done_val.to_boolean()) return {Value(), true};
+    Value val = result.as_object()->get_property("value");
+    if (ctx.has_exception()) return {Value(), true};
+    return {val, false};
 }
 
-// IteratorClose: calls iter.return() if present, preserving any already-pending exception.
+// IteratorClose: a pending throw completion survives both a throwing "return"
+// getter (GetMethod) and a throwing return() call; with a normal completion,
+// those inner errors propagate instead.
 static void iterator_helper_close(Context& ctx, const Value& iter_val) {
     if (!iter_val.is_object() && !iter_val.is_function()) return;
     Object* obj = iter_val.is_function() ? static_cast<Object*>(iter_val.as_function()) : iter_val.as_object();
-    Value ret_fn = obj->get_property("return");
-    if (!ret_fn.is_function()) return;
     bool had_exception = ctx.has_exception();
     Value pending = had_exception ? ctx.get_exception() : Value();
     if (had_exception) ctx.clear_exception();
-    ret_fn.as_function()->call(ctx, {}, iter_val);
+
+    Value ret_fn = obj->get_property("return");
+    if (ctx.has_exception()) {
+        if (had_exception) {
+            ctx.clear_exception();
+            ctx.throw_exception(pending, true);
+        }
+        return;
+    }
+    if (ret_fn.is_undefined() || ret_fn.is_null()) {
+        if (had_exception) ctx.throw_exception(pending, true);
+        return;
+    }
+    if (!ret_fn.is_function()) {
+        if (had_exception) ctx.throw_exception(pending, true);
+        else ctx.throw_type_error("iterator return is not callable");
+        return;
+    }
+    Value inner = ret_fn.as_function()->call(ctx, {}, iter_val);
     if (had_exception) {
         ctx.clear_exception();
         ctx.throw_exception(pending, true);
+        return;
+    }
+    if (ctx.has_exception()) return;
+    if (!inner.is_object() && !inner.is_function()) {
+        ctx.throw_type_error("iterator return did not return an object");
     }
 }
 
@@ -113,11 +140,10 @@ static void set_guarded_next(Object* helper, std::unique_ptr<Object> actual_next
     helper->set_property("next", Value(guarded.release()));
 }
 
-// Closes alive columns; skip_before=true means don't close j<skip (iterator at skip threw, j<skip already stepped).
-static void iterator_zip_close_others(Context& ctx, Object* iters_arr, Object* alive_arr, uint32_t count, uint32_t skip, bool skip_before = false) {
+// IteratorCloseAll over the still-open (alive) columns, in reverse order.
+// Callers mark exhausted/failed columns dead in alive_arr before closing.
+static void iterator_zip_close_all(Context& ctx, Object* iters_arr, Object* alive_arr, uint32_t count) {
     for (uint32_t j = count; j-- > 0;) {
-        if (j == skip) continue;
-        if (skip_before && j < skip) continue;
         if (alive_arr->get_property(std::to_string(j)).to_boolean())
             iterator_helper_close(ctx, iters_arr->get_property(std::to_string(j)));
     }
@@ -128,13 +154,12 @@ static void iterator_zip_close_others(Context& ctx, Object* iters_arr, Object* a
 static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
     Object* self = ctx.get_this_binding();
     if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+    if (self->get_property("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true));
     if (self->get_property("__iz_running__").to_boolean()) {
         ctx.throw_type_error("Iterator.zip helper is already running");
         return Value();
     }
-    if (self->get_property("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true));
     self->set_property("__iz_running__", Value(true));
-    self->set_property("__iz_started__", Value(true));
 
     uint32_t count = (uint32_t)self->get_property("__iz_count__").to_number();
     std::string mode = self->get_property("__iz_mode__").to_string();
@@ -145,7 +170,21 @@ static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
     Object* alive_arr = self->get_property("__iz_alive__").as_object();
     Object* keys_arr = keyed ? self->get_property("__iz_keys__").as_object() : nullptr;
 
-    if (count == 0) { self->set_property("__iz_done__", Value(true)); self->set_property("__iz_running__", Value(false)); return Value(make_iter_result(Value(), true)); }
+    auto mark_dead = [&](uint32_t idx) { alive_arr->set_property(std::to_string(idx), Value(false)); };
+    // The pending exception set before closing survives; return() errors are swallowed.
+    auto finish_throwing = [&]() -> Value {
+        self->set_property("__iz_done__", Value(true));
+        iterator_zip_close_all(ctx, iters_arr, alive_arr, count);
+        self->set_property("__iz_running__", Value(false));
+        return Value();
+    };
+    auto finish_done = [&]() -> Value {
+        self->set_property("__iz_done__", Value(true));
+        self->set_property("__iz_running__", Value(false));
+        return Value(make_iter_result(Value(), true));
+    };
+
+    if (count == 0) return finish_done();
 
     auto results = keyed ? ObjectFactory::create_object() : ObjectFactory::create_array();
     if (keyed) results->set_prototype(nullptr);
@@ -161,37 +200,40 @@ static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
         Value next_method = nexts_arr->get_property(std::to_string(i));
         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
         if (ctx.has_exception()) {
-            self->set_property("__iz_done__", Value(true));
-            iterator_zip_close_others(ctx, iters_arr, alive_arr, count, i, true); // skip j<i: already stepped
-            return Value();
+            mark_dead(i);
+            return finish_throwing();
         }
         if (done) {
+            mark_dead(i);
             if (mode == "shortest") {
                 self->set_property("__iz_done__", Value(true));
-                iterator_zip_close_others(ctx, iters_arr, alive_arr, count, i);
+                iterator_zip_close_all(ctx, iters_arr, alive_arr, count);
+                self->set_property("__iz_running__", Value(false));
                 return Value(make_iter_result(Value(), true));
             } else if (mode == "strict") {
-                self->set_property("__iz_done__", Value(true));
                 if (i != 0) {
-                    iterator_zip_close_others(ctx, iters_arr, alive_arr, count, i);
                     ctx.throw_type_error("Iterator.zip: iterables are not the same length (strict mode)");
-                    return Value();
+                    return finish_throwing();
                 }
-                bool mismatch = false;
+                // i == 0: every remaining column must also be exhausted; stop at
+                // the first live one and close the still-open columns in reverse.
                 for (uint32_t j = 1; j < count; j++) {
                     if (!alive_arr->get_property(std::to_string(j)).to_boolean()) continue;
                     auto [jval, jdone] = iterator_helper_step(ctx, iters_arr->get_property(std::to_string(j)), nexts_arr->get_property(std::to_string(j)));
                     (void)jval;
                     if (ctx.has_exception()) {
-                        iterator_zip_close_others(ctx, iters_arr, alive_arr, count, j);
-                        return Value();
+                        mark_dead(j);
+                        return finish_throwing();
                     }
-                    if (!jdone) mismatch = true;
+                    if (jdone) {
+                        mark_dead(j);
+                        continue;
+                    }
+                    ctx.throw_type_error("Iterator.zip: iterables are not the same length (strict mode)");
+                    return finish_throwing();
                 }
-                if (mismatch) { ctx.throw_type_error("Iterator.zip: iterables are not the same length (strict mode)"); return Value(); }
-                return Value(make_iter_result(Value(), true));
+                return finish_done();
             } else { // longest
-                alive_arr->set_property(std::to_string(i), Value(false));
                 results->set_property(out_key, padding_arr->get_property(std::to_string(i)));
                 continue;
             }
@@ -202,7 +244,7 @@ static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
     if (mode == "longest") {
         bool all_dead = true;
         for (uint32_t i = 0; i < count; i++) if (alive_arr->get_property(std::to_string(i)).to_boolean()) { all_dead = false; break; }
-        if (all_dead) { self->set_property("__iz_done__", Value(true)); self->set_property("__iz_running__", Value(false)); return Value(make_iter_result(Value(), true)); }
+        if (all_dead) return finish_done();
     }
 
     if (!keyed) results->set_length(count);
@@ -212,14 +254,22 @@ static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
 
 static Value iterator_zip_return(Context& ctx, const std::vector<Value>&) {
     Object* self = ctx.get_this_binding();
-    if (self && !self->get_property("__iz_done__").to_boolean()) {
+    if (!self) return Value(make_iter_result(Value(), true));
+    // A reentrant return() while the helper is mid-call (e.g. from an inner
+    // iterator's own return) sees the generator in the executing state.
+    if (self->get_property("__iz_running__").to_boolean()) {
+        ctx.throw_type_error("Iterator.zip helper is already running");
+        return Value();
+    }
+    if (!self->get_property("__iz_done__").to_boolean()) {
         self->set_property("__iz_done__", Value(true));
-        if (self->get_property("__iz_started__").to_boolean()) self->set_property("__iz_running__", Value(true));
+        self->set_property("__iz_running__", Value(true));
         uint32_t count = (uint32_t)self->get_property("__iz_count__").to_number();
         Object* iters_arr = self->get_property("__iz_iters__").as_object();
         Object* alive_arr = self->get_property("__iz_alive__").as_object();
-        iterator_zip_close_others(ctx, iters_arr, alive_arr, count, count);
+        iterator_zip_close_all(ctx, iters_arr, alive_arr, count);
         self->set_property("__iz_running__", Value(false));
+        if (ctx.has_exception()) return Value();
     }
     return Value(make_iter_result(Value(), true));
 }
@@ -1313,14 +1363,23 @@ void register_iterator_constructor(Context& ctx) {
                 [](Context& ctx, const std::vector<Value>&) -> Value {
                     Object* self = ctx.get_this_binding();
                     if (self) {
+                        // A reentrant return() (e.g. from the inner iterator's own
+                        // return) sees the generator in the executing state.
+                        if (self->get_property("__ic_running__").to_boolean()) {
+                            ctx.throw_type_error("Iterator.concat helper is already running");
+                            return Value();
+                        }
                         Value inner_val = self->get_property("__ic_inner__");
                         if (inner_val.is_object() || inner_val.is_function()) {
+                            self->set_property("__ic_running__", Value(true));
                             iterator_helper_close(ctx, inner_val);
+                            self->set_property("__ic_running__", Value(false));
                             self->set_property("__ic_inner__", Value());
                         }
                         Object* items_obj = self->get_property("__ic_items__").as_object();
                         double total = items_obj ? items_obj->get_property("length").to_number() : 0;
                         self->set_property("__ic_index__", Value(total));
+                        if (ctx.has_exception()) return Value();
                     }
                     return Value(make_iter_result(Value(), true));
                 }, 0);
@@ -1392,6 +1451,7 @@ void register_iterator_constructor(Context& ctx) {
                 if (!item.is_object() && !item.is_function()) {
                     ctx.throw_type_error("Iterator.zip: each iterable item must be an object");
                     for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                    iterator_helper_close(ctx, outer_iter);
                     return Value();
                 }
                 Object* item_obj = item.is_function() ? static_cast<Object*>(item.as_function()) : item.as_object();
@@ -1477,7 +1537,6 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_property("__iz_done__", Value(false));
             helper->set_property("__iz_keyed__", Value(false));
             helper->set_property("__iz_running__", Value(false));
-            helper->set_property("__iz_started__", Value(false));
 
             auto next_fn = ObjectFactory::create_native_function("next", iterator_zip_step, 0);
             helper->set_property("next", Value(next_fn.release()));
@@ -1530,8 +1589,21 @@ void register_iterator_constructor(Context& ctx) {
             std::vector<std::string> keys;
             std::vector<Value> iters;
             std::vector<Value> iter_nexts;
-            for (const auto& key : iterables_obj->get_own_property_keys()) {
-                PropertyDescriptor desc = iterables_obj->get_property_descriptor(key);
+            // A Proxy must be observed through its [[OwnPropertyKeys]] and
+            // [[GetOwnProperty]] traps, not the plain object tables.
+            bool iterables_is_proxy = iterables_obj->get_type() == Object::ObjectType::Proxy;
+            std::vector<std::string> own_keys;
+            if (iterables_is_proxy) {
+                own_keys = static_cast<Proxy*>(iterables_obj)->own_keys_trap();
+                if (ctx.has_exception()) return Value();
+            } else {
+                own_keys = iterables_obj->get_own_property_keys();
+            }
+            for (const auto& key : own_keys) {
+                PropertyDescriptor desc = iterables_is_proxy
+                    ? static_cast<Proxy*>(iterables_obj)->get_own_property_descriptor_trap(Value(key))
+                    : iterables_obj->get_property_descriptor(key);
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
                 if (!desc.is_enumerable()) continue;
                 Value value = iterables_obj->get_property(key);
                 if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
@@ -1608,7 +1680,6 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_property("__iz_done__", Value(false));
             helper->set_property("__iz_keyed__", Value(true));
             helper->set_property("__iz_running__", Value(false));
-            helper->set_property("__iz_started__", Value(false));
 
             auto next_fn = ObjectFactory::create_native_function("next", iterator_zip_step, 0);
             helper->set_property("next", Value(next_fn.release()));

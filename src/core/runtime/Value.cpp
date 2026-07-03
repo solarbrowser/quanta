@@ -354,10 +354,11 @@ double Value::to_number() const {
                 }
             }
         }
-        // Skip the [[PrimitiveValue]] fast path for Symbol wrappers so overridden valueOf/toString are honored below.
+        // Skip the [[PrimitiveValue]] fast path for Symbol/BigInt wrappers so
+        // overridden valueOf/toString stay observable below.
         if (obj && obj->has_property("[[PrimitiveValue]]")) {
             Value pv = obj->get_property("[[PrimitiveValue]]");
-            if (!pv.is_object() && !pv.is_symbol()) {
+            if (!pv.is_object() && !pv.is_symbol() && !pv.is_bigint()) {
                 return pv.to_number();
             }
         }
