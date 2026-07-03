@@ -5,6 +5,7 @@
  */
 #include "quanta/core/engine/builtins/ArrayBufferBuiltin.h"
 #include "quanta/core/engine/builtins/TypedArrayBuiltin.h"
+#include "quanta/core/engine/builtins/AtomicsBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
@@ -425,22 +426,7 @@ void register_arraybuffer_builtins(Context& ctx) {
     
     register_typed_array_builtins(ctx);
 
-    // ES2017: Atomics object with stub operations
-    {
-        auto atomics_obj = ObjectFactory::create_object();
-        const char* atomics_ops[] = {
-            "add","and","compareExchange","exchange","isLockFree",
-            "load","notify","or","store","sub","wait","xor", nullptr
-        };
-        for (int i = 0; atomics_ops[i]; ++i) {
-            std::string op_name = atomics_ops[i];
-            int op_len = (op_name == "isLockFree") ? 1 : 3;
-            auto op_fn = ObjectFactory::create_native_function(op_name,
-                [](Context&, const std::vector<Value>&) -> Value { return Value(0.0); }, op_len);
-            atomics_obj->set_property(op_name, Value(op_fn.release()), PropertyAttributes::BuiltinFunction);
-        }
-        ctx.register_built_in_object("Atomics", atomics_obj.release());
-    }
+    register_atomics_builtins(ctx);
 
     // ES2017/ES2024: SharedArrayBuffer, with growable-buffer support (grow/growable/maxByteLength).
     {

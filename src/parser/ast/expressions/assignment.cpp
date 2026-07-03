@@ -161,6 +161,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     if (!r.is_object()) return r;
                     return v;
                 }
+                // GetMethod: a present but non-callable @@toPrimitive is a TypeError.
+                if (!tp.is_undefined() && !tp.is_null()) {
+                    ctx.throw_type_error("Symbol.toPrimitive is not a function");
+                    return Value();
+                }
             }
             Value vof = obj->get_property("valueOf");
             if (vof.is_function()) {
