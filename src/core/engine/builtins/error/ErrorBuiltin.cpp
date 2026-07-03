@@ -8,6 +8,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
+#include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
 
 namespace Quanta {
@@ -25,6 +26,74 @@ static Object* resolve_error_prototype(Context& ctx, Object* default_proto) {
         if (this_proto && this_proto != default_proto) return this_proto;
     }
     return default_proto;
+}
+
+// ToString(argument): unlike to_property_key(), throws when the ToPrimitive result is a Symbol.
+static bool error_arg_to_string(Context& ctx, const Value& v, std::string& out) {
+    if (v.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return false; }
+    if (!v.is_object() && !v.is_function()) { out = v.to_string(); return true; }
+    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+    Value prim;
+    Value toPrim_fn = obj->get_property("Symbol.toPrimitive");
+    if (ctx.has_exception()) return false;
+    if (toPrim_fn.is_function()) {
+        prim = toPrim_fn.as_function()->call(ctx, {Value(std::string("string"))}, v);
+        if (ctx.has_exception()) return false;
+        if (prim.is_object() || prim.is_function()) { ctx.throw_type_error("Cannot convert object to primitive value"); return false; }
+    } else {
+        Value toString_fn = obj->get_property("toString");
+        if (ctx.has_exception()) return false;
+        bool got = false;
+        if (toString_fn.is_function()) {
+            prim = toString_fn.as_function()->call(ctx, {}, v);
+            if (ctx.has_exception()) return false;
+            got = !prim.is_object() && !prim.is_function();
+        }
+        if (!got) {
+            Value valueOf_fn = obj->get_property("valueOf");
+            if (ctx.has_exception()) return false;
+            if (valueOf_fn.is_function()) {
+                prim = valueOf_fn.as_function()->call(ctx, {}, v);
+                if (ctx.has_exception()) return false;
+                got = !prim.is_object() && !prim.is_function();
+            }
+        }
+        if (!got) { ctx.throw_type_error("Cannot convert object to primitive value"); return false; }
+    }
+    if (prim.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return false; }
+    out = prim.to_string();
+    return true;
+}
+
+// IterableToList(errors): GetIterator then IteratorStep/IteratorValue, propagating any abrupt step.
+static bool error_iterable_to_list(Context& ctx, const Value& iterable, std::vector<Value>& out) {
+    Object* obj = iterable.is_function() ? static_cast<Object*>(iterable.as_function())
+                                          : iterable.is_object() ? iterable.as_object() : nullptr;
+    if (!obj) { ctx.throw_type_error("errors is not iterable"); return false; }
+    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+    if (!iter_sym) { ctx.throw_type_error("Symbol.iterator unavailable"); return false; }
+    Value iter_method = obj->get_property(iter_sym->to_property_key());
+    if (ctx.has_exception()) return false;
+    if (!iter_method.is_function()) { ctx.throw_type_error("errors is not iterable"); return false; }
+    Value iter_val = iter_method.as_function()->call(ctx, {}, iterable);
+    if (ctx.has_exception()) return false;
+    if (!iter_val.is_object() && !iter_val.is_function()) { ctx.throw_type_error("Result of the Symbol.iterator method is not an object"); return false; }
+    Object* iterator = iter_val.is_function() ? static_cast<Object*>(iter_val.as_function()) : iter_val.as_object();
+    Value next_fn = iterator->get_property("next");
+    if (ctx.has_exception()) return false;
+    if (!next_fn.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return false; }
+    while (true) {
+        Value res = next_fn.as_function()->call(ctx, {}, Value(iterator));
+        if (ctx.has_exception()) return false;
+        if (!res.is_object() && !res.is_function()) { ctx.throw_type_error("Iterator result is not an object"); return false; }
+        Object* res_obj = res.is_function() ? static_cast<Object*>(res.as_function()) : res.as_object();
+        Value done_v = res_obj->get_property("done");
+        if (ctx.has_exception()) return false;
+        if (done_v.to_boolean()) return true;
+        Value val = res_obj->get_property("value");
+        if (ctx.has_exception()) return false;
+        out.push_back(val);
+    }
 }
 
 void register_error_builtins(Context& ctx) {
@@ -98,35 +167,8 @@ void register_error_builtins(Context& ctx) {
     auto error_constructor = ObjectFactory::create_native_constructor("Error",
         [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
-            if (!args.empty()) {
-                if (args[0].is_undefined()) {
-                    message = "";
-                } else if (args[0].is_symbol()) {
-                    ctx.throw_type_error("Error message cannot be a Symbol");
-                    return Value();
-                } else if (args[0].is_object()) {
-                    Object* obj = args[0].as_object();
-                    Value ts = obj->get_property("toString");
-                    if (ctx.has_exception()) return Value();
-                    if (ts.is_function()) {
-                        Value r = ts.as_function()->call(ctx, {}, args[0]);
-                        if (ctx.has_exception()) return Value();
-                        message = r.to_string();
-                    } else {
-                        Value vs = obj->get_property("valueOf");
-                        if (ctx.has_exception()) return Value();
-                        if (vs.is_function()) {
-                            Value r = vs.as_function()->call(ctx, {}, args[0]);
-                            if (ctx.has_exception()) return Value();
-                            message = r.to_string();
-                        } else {
-                            ctx.throw_type_error("Cannot convert object to primitive value");
-                            return Value();
-                        }
-                    }
-                } else {
-                    message = args[0].to_string();
-                }
+            if (!args.empty() && !args[0].is_undefined()) {
+                if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
@@ -243,7 +285,7 @@ void register_error_builtins(Context& ctx) {
         [type_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
-                message = args[0].to_string();
+                if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::TypeError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
@@ -292,7 +334,7 @@ void register_error_builtins(Context& ctx) {
         [reference_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
-                message = args[0].to_string();
+                if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::ReferenceError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
@@ -340,7 +382,7 @@ void register_error_builtins(Context& ctx) {
         [syntax_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
-                message = args[0].to_string();
+                if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::SyntaxError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
@@ -388,7 +430,7 @@ void register_error_builtins(Context& ctx) {
         [range_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
-                message = args[0].to_string();
+                if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::RangeError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
@@ -437,7 +479,7 @@ void register_error_builtins(Context& ctx) {
         [uri_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
-                message = args[0].to_string();
+                if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::URIError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
@@ -478,7 +520,7 @@ void register_error_builtins(Context& ctx) {
         [eval_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
-                message = args[0].to_string();
+                if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::EvalError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
@@ -518,54 +560,38 @@ void register_error_builtins(Context& ctx) {
 
     auto aggregate_error_constructor = ObjectFactory::create_native_constructor("AggregateError",
         [agg_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string message = "";
-            if (args.size() > 1 && !args[1].is_undefined()) {
-                Value msg_value = args[1];
-                if (msg_value.is_object()) {
-                    Object* obj = msg_value.as_object();
-                    Value toString_method = obj->get_property("toString");
-                    if (toString_method.is_function()) {
-                        try {
-                            Function* func = toString_method.as_function();
-                            Value result = func->call(ctx, {}, msg_value);
-                            if (!ctx.has_exception()) {
-                                message = result.to_string();
-                            } else {
-                                ctx.clear_exception();
-                                message = msg_value.to_string();
-                            }
-                        } catch (...) {
-                            message = msg_value.to_string();
-                        }
-                    } else {
-                        message = msg_value.to_string();
-                    }
-                } else {
-                    message = msg_value.to_string();
-                }
-            }
+            // Spec order: message ToString before errors iteration (order-of-args-evaluation).
+            Value message_arg = args.size() > 1 ? args[1] : Value();
+            bool has_message = !message_arg.is_undefined();
+            std::string message;
+            if (has_message && !error_arg_to_string(ctx, message_arg, message)) return Value();
+
+            std::vector<Value> errors_list;
+            if (!error_iterable_to_list(ctx, args.empty() ? Value() : args[0], errors_list)) return Value();
+
             auto error_obj = std::make_unique<Error>(Error::Type::AggregateError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-
             error_obj->set_prototype(resolve_error_prototype(ctx, agg_error_proto_ptr));
 
-            if (args.size() > 0 && args[0].is_object()) {
-                error_obj->set_property("errors", args[0]);
-            } else {
-                auto empty_array = ObjectFactory::create_array();
-                error_obj->set_property("errors", Value(empty_array.release()));
+            if (has_message) {
+                error_obj->set_property_descriptor("message",
+                    PropertyDescriptor(Value(message), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
             }
+
+            auto errors_array = ObjectFactory::create_array(static_cast<uint32_t>(errors_list.size()));
+            for (size_t i = 0; i < errors_list.size(); i++) errors_array->set_element(static_cast<uint32_t>(i), errors_list[i]);
+            error_obj->set_property_descriptor("errors",
+                PropertyDescriptor(Value(errors_array.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
 
             if (args.size() > 2 && args[2].is_object()) {
                 Object* options = args[2].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
-                    error_obj->set_property_descriptor("cause", cause_desc);
+                    if (ctx.has_exception()) return Value();
+                    error_obj->set_property_descriptor("cause",
+                        PropertyDescriptor(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
                 }
             }
-
-
 
             return Value(error_obj.release());
         }, 2);
@@ -613,14 +639,21 @@ void register_error_builtins(Context& ctx) {
 
     auto suppressed_error_constructor = ObjectFactory::create_native_constructor("SuppressedError",
         [suppressed_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string message = (args.size() >= 3 && !args[2].is_undefined()) ? args[2].to_string() : "";
+            Value message_arg = args.size() > 2 ? args[2] : Value();
+            bool has_message = !message_arg.is_undefined();
+            std::string message;
+            if (has_message && !error_arg_to_string(ctx, message_arg, message)) return Value();
+
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_property("name", Value(std::string("SuppressedError")));
             error_obj->set_prototype(resolve_error_prototype(ctx, suppressed_proto_ptr));
-            if (args.size() >= 1) error_obj->set_property("error", args[0], static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-            if (args.size() >= 2) error_obj->set_property("suppressed", args[1], static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-            if (!message.empty()) error_obj->set_property("message", Value(message));
+            // Insertion order matters (order-of-args-evaluation): message, then error, then suppressed.
+            if (has_message) {
+                error_obj->set_property("message", Value(message), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            }
+            error_obj->set_property("error", args.size() > 0 ? args[0] : Value(), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            error_obj->set_property("suppressed", args.size() > 1 ? args[1] : Value(), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
             return Value(error_obj.release());
         }, 3);
 
