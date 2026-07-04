@@ -61,6 +61,13 @@ void HeapBlock::free_cell(void* p) {
     h_.free_count++;
 }
 
+void HeapBlock::retire_cell(void* p) {
+    size_t idx = slot_index(p);
+    assert(idx != SIZE_MAX);
+    h_.alloc_bitmap[idx / 64] &= ~(1ULL << (idx % 64));
+    h_.free_count++;
+}
+
 size_t HeapBlock::slot_index(const void* p) const {
     const char* base = payload_start();
     const char* cp = static_cast<const char*>(p);

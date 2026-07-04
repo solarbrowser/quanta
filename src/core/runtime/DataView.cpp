@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/DataView.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/engine/Context.h"
@@ -23,6 +24,12 @@ static void quanta_memcpy(void* dest, const void* src, size_t count) {
 }
 
 namespace Quanta {
+
+void DataView::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_object(buffer_.get());
+}
+
 
 
 DataView::DataView(std::shared_ptr<ArrayBuffer> buffer)

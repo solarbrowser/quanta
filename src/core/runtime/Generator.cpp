@@ -5,6 +5,9 @@
  */
 
 #include "quanta/core/runtime/Generator.h"
+#include "quanta/core/gc/Collector.h"
+#include "quanta/core/gc/FiberRegistry.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
@@ -13,6 +16,21 @@
 #include <iostream>
 
 namespace Quanta {
+
+void Generator::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_object(generator_function_);
+    v.visit_context(generator_context_);
+    v.visit_context(outer_context_);
+    v.visit(yielded_value_);
+    v.visit(yielded_result_);
+    v.visit(sent_value_);
+    v.visit(throw_value_);
+    v.visit(return_argument_);
+    v.visit(last_value_);
+    for (const auto& val : sent_values_) v.visit(val);
+}
+
 
 
 thread_local Generator* Generator::current_generator_ = nullptr;
@@ -62,6 +80,11 @@ Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> 
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFF), (uint32_t)(ptr >> 32));
+    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get());
+}
+
+Generator::~Generator() {
+    FiberRegistry::unregister_fiber(this);
 }
 
 Generator::GeneratorResult Generator::next(const Value& value) {
@@ -75,7 +98,10 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
-    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+    {
+        FiberEnterScope enter_scope;
+        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+    }
     current_generator_ = prev;
 
     if (state_ == State::Completed) {
@@ -115,7 +141,10 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
-    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+    {
+        FiberEnterScope enter_scope;
+        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+    }
     current_generator_ = prev;
 
     // Check if the fiber propagated an exception (e.g. IteratorClose threw TypeError).
@@ -150,7 +179,10 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
-    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+    {
+        FiberEnterScope enter_scope;
+        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+    }
     current_generator_ = prev;
 
     if (state_ == State::Completed) {
@@ -628,6 +660,12 @@ Value GeneratorFunction::call(Context& ctx, const std::vector<Value>& args, Valu
 std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, const std::vector<Value>& args, Value this_value) {
     // Use proper function context with lexical environment (same as Function::call)
     auto gen_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
+    ExecContextScope gc_frame(gen_context_ptr.get());
+    // See ContextSurvivorGuard's doc comment: an abrupt exit (e.g. a default
+    // parameter's closure throwing) must not free a context a live closure
+    // still references. No-op on the success path (context is .release()'d
+    // into the Generator below, before this guard's destructor runs).
+    ContextSurvivorGuard survivor_guard(gen_context_ptr, ctx.get_engine());
     Context& gen_context = *gen_context_ptr;
 
     if (is_strict()) gen_context.set_strict_mode(true);

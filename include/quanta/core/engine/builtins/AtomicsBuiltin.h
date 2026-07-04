@@ -8,6 +8,10 @@
 
 namespace Quanta {
 
+class Visitor;
+// GC roots: pending waitAsync promises/buffers live only in this registry.
+void trace_atomics_gc_roots(Visitor& v);
+
 void register_atomics_builtins(Context& ctx);
 
 } // namespace Quanta

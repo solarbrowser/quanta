@@ -5,6 +5,7 @@
  */
 
 #include "quanta/parser/AST.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/CallStack.h"
@@ -42,6 +43,9 @@ namespace Quanta {
 
 std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_ptr<ASTNode>>& arguments, Context& ctx) {
     std::vector<Value> arg_values;
+    // Already-evaluated args sit in this vector's malloc'd storage while later
+    // args (which may trigger GC) evaluate; keep it reachable meanwhile.
+    ValueVectorRoot arg_root(&arg_values);
 
     for (const auto& arg : arguments) {
         if (arg->get_type() == ASTNode::Type::SPREAD_ELEMENT) {

@@ -9,7 +9,6 @@
 
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
-#include "quanta/core/gc/GC.h"
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,9 +21,9 @@ namespace Quanta {
 class Engine;
 class Function;
 class StackFrame;
+class Visitor;
 class Environment;
 class Error;
-class GarbageCollector;
 
 class Context {
 public:
@@ -91,13 +90,17 @@ private:
     
     std::string current_filename_;
 
-    // Garbage collector for memory management
-    GarbageCollector* gc_;  // Points to engine's GC (not owned)
-
     static uint32_t next_context_id_;
 
-    // Microtask queue for Promise/async (only used on global context)
-    std::vector<std::function<void()>> microtask_queue_;
+    // Microtask queue for Promise/async (only used on global context).
+    // keep_alive lists every cell a task's lambda captures: closure storage
+    // is invisible to the collector, the queue entry is its GC anchor.
+    struct MicrotaskEntry {
+        std::function<void()> task;
+        std::vector<Value> keep_alive;
+    };
+    std::vector<MicrotaskEntry> microtask_queue_;
+    std::vector<MicrotaskEntry> draining_queue_;  // batch in flight (traced too)
     bool in_param_eval_ = false;
     bool is_direct_eval_call_ = false;
     bool eval_arguments_conflict_ = false;
@@ -115,6 +118,8 @@ private:
     std::vector<std::vector<DisposableResource>> dispose_scope_stack_;
 
 public:
+    void gc_trace(Visitor& v) const;
+
     explicit Context(Engine* engine, Type type = Type::Global);
     explicit Context(Engine* engine, Context* parent, Type type);
     ~Context();
@@ -125,7 +130,7 @@ public:
     Engine* get_engine() const { return engine_; }
 
     // Microtask queue (Promise async support)
-    void queue_microtask(std::function<void()> task);
+    void queue_microtask(std::function<void()> task, std::vector<Value> keep_alive);
     void drain_microtasks();
     bool has_pending_microtasks() const { return !microtask_queue_.empty(); }
     bool is_in_param_eval() const { return in_param_eval_; }
@@ -265,21 +270,14 @@ public:
     void mark_references() const;
 
     // Garbage collector access
-    GarbageCollector* get_gc() const { return gc_; }
-    void register_object(Object* obj, size_t size = 0);
-    void trigger_gc();
 
     // Bootstrap loading
     void load_bootstrap();
 
-    // Helper to release and auto-register objects with GC
+    // Releases ownership; the cell lives until the collector proves it dead.
     template<typename T>
     T* track(std::unique_ptr<T> obj) {
-        T* raw_ptr = obj.release();
-        if (raw_ptr) {
-            register_object(static_cast<Object*>(raw_ptr), sizeof(T));
-        }
-        return raw_ptr;
+        return obj.release();
     }
 
 private:
@@ -318,6 +316,8 @@ private:
     uint32_t column_number_;
 
 public:
+    void gc_trace(Visitor& v) const;
+
     StackFrame(Type type, Function* function, Object* this_binding);
     ~StackFrame() = default;
 
@@ -373,6 +373,8 @@ private:
     bool is_closure_boundary_ = false; // marks script-level env: stop snapshot loops here
 
 public:
+    void gc_trace(Visitor& v) const;
+
     Environment(Type type, Environment* outer = nullptr);
     Environment(Object* binding_object, Environment* outer = nullptr);
     ~Environment() = default;
@@ -428,6 +430,28 @@ namespace ContextFactory {
     std::unique_ptr<Context> create_eval_context(Engine* engine, Context* parent);
     std::unique_ptr<Context> create_module_context(Engine* engine);
 }
+
+// RAII guard: on scope exit, transfers a still-owned function context to the
+// Engine's survivor pool instead of letting its unique_ptr free it.
+//
+// A closure created anywhere inside the call (e.g. a default-parameter
+// expression, even one that never finishes because it throws) captures this
+// context as its Function::closure_context_. That closure is a GC cell whose
+// lifetime is decided by reachability, not by this call's C++ stack frame --
+// if the call takes an early-return/abrupt-completion path, deleting the
+// context out from under a closure that already escaped is a dangling
+// reference the next collection cycle will read.
+//
+// A no-op when the ptr has already been moved elsewhere (the ordinary
+// success path transfers ownership into the created Function/Generator
+// object itself, which is a proper GC cell -- no separate pinning needed).
+struct ContextSurvivorGuard {
+    std::unique_ptr<Context>& ptr;
+    Engine* eng;
+    ContextSurvivorGuard(std::unique_ptr<Context>& p, Engine* e) : ptr(p), eng(e) {}
+    // Defined in Context.cpp: Engine is only forward-declared here.
+    ~ContextSurvivorGuard();
+};
 
 }
 

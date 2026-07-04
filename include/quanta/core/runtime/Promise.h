@@ -43,6 +43,8 @@ private:
 
 public:
     explicit Promise(Context* ctx = nullptr);
+
+    void trace(Visitor& v) override;
     virtual ~Promise();
 
     void fulfill(const Value& value);

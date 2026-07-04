@@ -76,6 +76,7 @@ private:
     
 public:
     ArrayIterator(Object* array, Kind kind);
+    void trace(Visitor& v) override;
     
     static std::unique_ptr<ArrayIterator> create_keys_iterator(Object* array);
     static std::unique_ptr<ArrayIterator> create_values_iterator(Object* array);
@@ -125,6 +126,7 @@ private:
 
 public:
     MapIterator(class Map* map, Kind kind);
+    void trace(Visitor& v) override;
 
     IteratorResult next() override;
 
@@ -151,6 +153,7 @@ private:
 
 public:
     SetIterator(class Set* set, Kind kind);
+    void trace(Visitor& v) override;
 
     IteratorResult next() override;
 

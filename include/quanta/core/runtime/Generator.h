@@ -99,7 +99,8 @@ public:
     bool throwing_ = false;
     bool returning_ = false;
     Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
-    virtual ~Generator() = default;
+    void trace(Visitor& v) override;
+    virtual ~Generator();
 
     GeneratorResult next(const Value& value = Value());
     GeneratorResult return_value(const Value& value);

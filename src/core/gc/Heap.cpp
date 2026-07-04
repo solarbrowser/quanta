@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/gc/Heap.h"
+#include "quanta/core/runtime/Value.h"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +14,7 @@
 namespace Quanta {
 
 thread_local Heap* Heap::active_ = nullptr;
+bool Heap::gc_requested_ = false;
 
 Heap& Heap::active() {
     assert(active_ && "no active Heap -- Engine init must install a HeapScope "
@@ -97,6 +99,14 @@ HeapBlock* Heap::fresh_block(CellKind kind, HeapSegment segment, size_t cls) {
 
 void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
     if (size == 0) size = 1;
+    // ~8MB of new cells between collections; the interpreter safepoint
+    // consumes the request (never collect mid-allocation).
+    static size_t bytes_since_gc = 0;
+    bytes_since_gc += size;
+    if (bytes_since_gc >= 8 * 1024 * 1024) {
+        bytes_since_gc = 0;
+        gc_requested_ = true;
+    }
     size_t cls = size_class_index(size);
     if (cls == kNumSizeClasses) return allocate_large(size, kind);
 
@@ -125,6 +135,7 @@ void* Heap::allocate_large(size_t size, CellKind kind) {
     lc->next = large_cells_;
     lc->size = size;
     lc->kind = kind;
+    lc->marked = false;
     if (large_cells_) large_cells_->prev = lc;
     large_cells_ = lc;
     return reinterpret_cast<char*>(lc) + kLargeHeaderSize;
@@ -168,6 +179,95 @@ void* Heap::find_cell(const void* p) const {
         if (reinterpret_cast<char*>(lc) + kLargeHeaderSize == p) return const_cast<void*>(p);
     }
     return nullptr;
+}
+
+namespace {
+
+// Exact or interior pointer -> live cell of any heap.
+Heap::ProbeResult probe_pointer(void* p) {
+    Heap::ProbeResult r;
+    if (!p) return r;
+    if (BlockAllocator::owns_address(p)) {
+        HeapBlock* block = HeapBlock::from_cell(p);
+        if (void* base = block->cell_containing(p)) {
+            r.cell = base;
+            r.kind = block->cell_kind();
+        }
+        return r;
+    }
+    for (Heap* heap : all_heaps()) {
+        for (auto* lc = heap->large_cells_head(); lc; lc = lc->next) {
+            char* payload = reinterpret_cast<char*>(lc) + Heap::kLargeHeaderSize;
+            if (p >= payload && p < payload + lc->size) {
+                r.cell = payload;
+                r.kind = lc->kind;
+                r.is_large = true;
+                return r;
+            }
+        }
+    }
+    return r;
+}
+
+}
+
+Heap::ProbeResult Heap::probe_word(uint64_t word) {
+    ProbeResult r = probe_pointer(reinterpret_cast<void*>(word));
+    if (r.cell) return r;
+    if (void* boxed = Value::gc_payload_of_bits(word)) return probe_pointer(boxed);
+    return r;
+}
+
+Heap::ProbeResult Heap::exact_cell(const void* p) {
+    return probe_pointer(const_cast<void*>(p));
+}
+
+bool Heap::test_mark(const ProbeResult& p) {
+    if (!p.cell) return true;  // non-cell: nothing to mark
+    if (p.is_large) {
+        auto* lc = reinterpret_cast<LargeCell*>(static_cast<char*>(p.cell) - kLargeHeaderSize);
+        return lc->marked;
+    }
+    return HeapBlock::from_cell(p.cell)->test_mark(p.cell);
+}
+
+void Heap::set_mark(const ProbeResult& p) {
+    if (!p.cell) return;
+    if (p.is_large) {
+        auto* lc = reinterpret_cast<LargeCell*>(static_cast<char*>(p.cell) - kLargeHeaderSize);
+        lc->marked = true;
+        return;
+    }
+    HeapBlock::from_cell(p.cell)->set_mark(p.cell);
+}
+
+void Heap::clear_all_marks() {
+    for (Heap* heap : all_heaps()) {
+        for (size_t k = 0; k < kNumCellKinds; k++) {
+            for (size_t c = 0; c < kNumSizeClasses; c++) {
+                for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
+                    b->clear_marks();
+                }
+            }
+        }
+        for (LargeCell* lc = heap->large_cells_; lc; lc = lc->next) lc->marked = false;
+    }
+}
+
+void Heap::for_each_cell(const std::function<void(void*, CellKind, bool)>& fn) {
+    for (Heap* heap : all_heaps()) {
+        for (size_t k = 0; k < kNumCellKinds; k++) {
+            for (size_t c = 0; c < kNumSizeClasses; c++) {
+                for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
+                    CellKind kind = b->cell_kind();
+                    b->for_each_cell([&](void* cell, bool marked) { fn(cell, kind, marked); });
+                }
+            }
+        }
+        for (LargeCell* lc = heap->large_cells_; lc; lc = lc->next) {
+            fn(reinterpret_cast<char*>(lc) + kLargeHeaderSize, lc->kind, lc->marked);
+        }
+    }
 }
 
 Heap::Stats Heap::stats() const {

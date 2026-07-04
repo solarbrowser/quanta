@@ -368,6 +368,15 @@ void register_function_builtins(Context& ctx) {
 
             bound_function->set_prototype(target_func->get_prototype());
             bound_function->set_property("__bound_target__", Value(static_cast<Object*>(target_func)));
+            // The closure also captures bound_this/bound_args invisibly;
+            // mirror them as traced hidden properties.
+            bound_function->set_property("[[BoundThis]]", bound_this);
+            {
+                auto keep = ObjectFactory::create_array(static_cast<uint32_t>(bound_args.size()));
+                for (size_t i = 0; i < bound_args.size(); i++)
+                    keep->set_element(static_cast<uint32_t>(i), bound_args[i]);
+                bound_function->set_property("[[BoundArgs]]", Value(keep.release()));
+            }
 
             if (target_func->is_constructor()) {
                 bound_function->set_is_constructor(true);

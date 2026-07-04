@@ -5,6 +5,11 @@
  */
 
 #include "quanta/core/runtime/Async.h"
+#include <cstdio>
+#include <cstdlib>
+#include "quanta/core/gc/Collector.h"
+#include "quanta/core/gc/FiberRegistry.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -18,6 +23,24 @@
 #include <cmath>
 
 namespace Quanta {
+
+void AsyncGenerator::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_context(generator_context_);
+    v.visit_context(outer_context_);
+    v.visit(yield_value_);
+    v.visit(return_value_);
+    v.visit(exception_value_);
+    v.visit(sent_value_);
+    v.visit(return_arg_);
+    v.visit(await_result_);
+    v.visit_object(pending_promise_);
+    for (const auto& req : request_queue_) {
+        v.visit(req.value);
+        v.visit_object(req.promise);
+    }
+}
+
 
 thread_local AsyncExecutor* AsyncExecutor::current_ = nullptr;
 
@@ -38,18 +61,17 @@ AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
-    // Keep outer_promise alive as a GC root for the lifetime of this executor.
-    // Without this, GC may collect the promise (and the awaited inner Promises
-    // stored on it as pins) while the fiber is suspended.
-    if (engine_ && engine_->get_garbage_collector()) {
-        engine_->get_garbage_collector()->add_root_object(outer_promise_);
-    }
+    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get(),
+        [this](Visitor& v) {
+            v.visit_object(outer_promise_);
+            v.visit_context(exec_context_);
+            v.visit(await_result_);
+        });
+
 }
 
 AsyncExecutor::~AsyncExecutor() {
-    if (engine_ && engine_->get_garbage_collector()) {
-        engine_->get_garbage_collector()->remove_root_object(outer_promise_);
-    }
+    FiberRegistry::unregister_fiber(this);
 }
 
 void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
@@ -105,18 +127,17 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
 void AsyncExecutor::run() {
     auto* prev = current_;
     current_ = this;
-    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);  // enter or re-enter fiber
+    {
+        FiberEnterScope enter_scope;
+        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);  // enter or re-enter fiber
+    }
     current_ = prev;
 }
 
 void AsyncExecutor::resume(Value result, bool is_throw) {
     await_result_   = result;
     await_is_throw_ = is_throw;
-    // Pin the result on outer_promise_ so GC doesn't collect it while the
-    // fiber reads it (fiber stack is not a GC root).
-    if (outer_promise_) outer_promise_->set_property("__rv_", result);
     run();
-    if (outer_promise_) outer_promise_->delete_property("__rv_");
 }
 
 // AsyncFunction
@@ -148,6 +169,10 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
 
     // Create a persistent function-level context for this execution
     auto exec_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
+    ExecContextScope gc_frame(exec_ctx.get());
+    // See ContextSurvivorGuard's doc comment: no-op once exec_ctx is moved
+    // into the AsyncExecutor below; catches an abrupt exit before that point.
+    ContextSurvivorGuard survivor_guard(exec_ctx, ctx.get_engine());
 
     // Propagate strict mode from the function definition
     if (is_strict()) exec_ctx->set_strict_mode(true);
@@ -345,14 +370,6 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
 
         Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
 
-        // Pin expr_val on outer_promise_ IMMEDIATELY (before any allocations that
-        // could trigger GC and collect the awaited Promise while it's only on the
-        // fiber's stack -- which GC does not scan). Fixed key, not a counter: only one
-        // await is ever in flight on a given outer_promise_ at a time (set here, always
-        // deleted below before the next await's pin), so reusing the same key keeps
-        // property_insertion_order_ bounded instead of growing once per await.
-        const std::string pin_key = "__ap_";
-        exec->outer_promise_->set_property(pin_key, expr_val);
 
         // Now resolve awaited value / register pending callbacks
         Value settled_val;
@@ -383,34 +400,23 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
                         return Value();
                     });
 
-                std::string key = std::to_string(reinterpret_cast<uintptr_t>(exec));
-                Function* ff_tmp = on_fulfill.get(); Function* fr_tmp = on_reject.get();
-                p->set_property("__af_" + key, Value(on_fulfill.release()));
-                p->set_property("__ar_" + key, Value(on_reject.release()));
-                p->then(ff_tmp, fr_tmp);
+                p->then(on_fulfill.release(), on_reject.release());
             }
         } else {
             settled_val = expr_val;
         }
 
         if (!is_pending) {
-            // Also pin the settled value (e.g. module namespace) on outer_promise
-            // so GC can't collect it while it's only in the microtask lambda capture.
-            std::string sv_key = pin_key + "_v";
-            exec->outer_promise_->set_property(sv_key, settled_val);
             auto self = exec->shared_from_this();
             Value val = settled_val;
             bool thr = settled_throw;
-            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); }, {val});
         }
 
         // Suspend fiber -- return control to the microtask runner
         swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
 
         // Resumed by resume() -- await_result_ holds the settled value
-        exec->outer_promise_->delete_property(pin_key);
-        exec->outer_promise_->delete_property(pin_key + "_v");
-
         if (exec->await_is_throw_) {
             ctx.throw_exception(exec->await_result_, true);
             exec->await_is_throw_ = false;
@@ -466,9 +472,18 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<AST
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
+    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get());
     if (s_async_generator_prototype_) {
         set_prototype(s_async_generator_prototype_);
     }
+}
+
+AsyncGenerator::~AsyncGenerator() {
+    FiberRegistry::unregister_fiber(this);
+    // Closures born inside the generator body share this context via their
+    // closure_context_; a swept generator must not tear it down under them.
+    // Contexts stay engine-lifetime until they become traced cells themselves.
+    context_owned_.release();
 }
 
 void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
@@ -516,7 +531,10 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
 void AsyncGenerator::enter_fiber() {
     auto* prev = current_;
     current_ = this;
-    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+    {
+        FiberEnterScope enter_scope;
+        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+    }
     current_ = prev;
     handle_suspension();
 }
@@ -563,12 +581,9 @@ void AsyncGenerator::handle_suspension() {
 
 void AsyncGenerator::advance_queue() {
     if (!request_queue_.empty()) {
-        Request front = std::move(request_queue_.front());
         request_queue_.pop_front();
-        if (!front.pin_key.empty()) delete_property(front.pin_key);
     }
     pending_promise_ = nullptr;
-    delete_property("__pending_promise__");
     process_next_request();
 }
 
@@ -605,7 +620,6 @@ void AsyncGenerator::process_next_request() {
                         break;
                     }
                     pending_promise_ = p;
-                    set_property("__pending_promise__", Value(p));
                     Value gen_val(static_cast<Object*>(this));
                     auto on_ok = ObjectFactory::create_native_function("",
                         [gen_val](Context&, const std::vector<Value>& a) -> Value {
@@ -649,14 +663,12 @@ void AsyncGenerator::process_next_request() {
                 break;
             }
         }
-        if (!front.pin_key.empty()) delete_property(front.pin_key);
         request_queue_.pop_front();
         process_next_request();
         return;
     }
 
     pending_promise_ = front.promise;
-    set_property("__pending_promise__", Value(pending_promise_));
     sent_value_  = front.value;
     return_arg_  = front.value;
     throwing_    = (front.type == Request::Type::Throw);
@@ -672,10 +684,7 @@ void AsyncGenerator::process_next_request() {
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::enqueue_request(Request::Type type, const Value& value, std::unique_ptr<Promise> promise) {
     Promise* raw = promise.get();
-    std::string pin_key = "__agq_" + std::to_string(request_pin_counter_++) + "__";
-    // Pin the promise on 'this' (GC-traced) so it survives until the request settles.
-    set_property(pin_key, Value(raw));
-    request_queue_.push_back({type, value, raw, pin_key});
+    request_queue_.push_back({type, value, raw});
     if (!pending_promise_) {
         process_next_request();
     }
@@ -685,10 +694,7 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::enqueue_request(Request::Ty
 void AsyncGenerator::resume_from_await(Value result, bool is_throw) {
     await_result_   = result;
     await_is_throw_ = is_throw;
-    // Pin result on 'this' (a GC-managed Object) to prevent collection.
-    set_property("__rv_", result);
     enter_fiber();
-    delete_property("__rv_");
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
@@ -1109,7 +1115,7 @@ void call_thenable_job(Context* job_ctx, Function* then_fn, const Value& thenabl
             job_ctx->clear_exception();
             if (wrapper) wrapper->reject(exc);
         }
-    });
+    }, {Value(then_fn), thenable, resolve_arg, reject_arg, Value(wrapper)});
 }
 
 std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
@@ -1454,6 +1460,11 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
 
 Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     auto gen_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
+    ExecContextScope gc_frame(gen_ctx.get());
+    // See ContextSurvivorGuard's doc comment: no-op once gen_ctx is moved
+    // into the AsyncGenerator below; catches an abrupt exit before that point
+    // (e.g. a default-parameter closure that captured gen_ctx and throws).
+    ContextSurvivorGuard survivor_guard(gen_ctx, ctx.get_engine());
 
     if (is_strict()) gen_ctx->set_strict_mode(true);
 

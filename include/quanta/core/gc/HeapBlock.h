@@ -36,6 +36,9 @@ public:
 
     void* try_allocate();          // nullptr when full
     void  free_cell(void* p);      // explicit delete path (unique_ptr interop)
+    // Poison mode: drop the cell from the alloc bitmap WITHOUT recycling the
+    // slot, so a use-after-free hits poisoned bytes instead of a fresh cell.
+    void  retire_cell(void* p);
 
     bool  is_allocated(const void* p) const;
     // First payload byte of the cell containing p, or nullptr when p does not
@@ -60,6 +63,16 @@ public:
     bool test_mark(const void* p) const;
     void set_mark(const void* p);
     void clear_marks();
+
+    // fn(cell_base, marked) for every allocated cell in this block.
+    template <typename Fn>
+    void for_each_cell(Fn&& fn) {
+        for (uint32_t i = 0; i < h_.bump_cursor; i++) {
+            if (!((h_.alloc_bitmap[i / 64] >> (i % 64)) & 1)) continue;
+            void* cell = payload_start() + static_cast<size_t>(i) * h_.cell_size;
+            fn(cell, ((h_.mark_bitmap[i / 64] >> (i % 64)) & 1) != 0);
+        }
+    }
 
 private:
     struct FreeCell { FreeCell* next; };

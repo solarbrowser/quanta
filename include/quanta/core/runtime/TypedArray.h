@@ -48,6 +48,7 @@ protected:
     void validate_offset_and_length(size_t buffer_byte_length, size_t byte_offset, size_t length) const;
 
 public:
+    void trace(Visitor& v) override;
     TypedArrayBase(ArrayType type, size_t bytes_per_element);
     TypedArrayBase(ArrayType type, size_t bytes_per_element, size_t length);
     TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer);

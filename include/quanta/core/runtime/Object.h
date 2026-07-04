@@ -23,6 +23,7 @@ class Context;
 class Environment;
 class ASTNode;
 class Parameter;
+class Visitor;
 
 class Object {
 public:
@@ -87,6 +88,14 @@ public:
     Object(ObjectType type = ObjectType::Ordinary);
     explicit Object(Object* prototype, ObjectType type = ObjectType::Ordinary);
     virtual ~Object() = default;
+
+    // Reports every cell reference this object holds to the collector.
+    // The base walks prototype + property/element storage; subclasses with
+    // C++ fields that reference cells MUST override and chain to the base.
+    // Values captured only inside std::function lambdas are invisible here --
+    // such state must also live in a property or traced field (the existing
+    // pin-property discipline).
+    virtual void trace(Visitor& v);
 
     friend class Function;
     Object(const Object& other) = delete;
@@ -352,6 +361,8 @@ public:
              bool create_prototype = false);
     
     virtual ~Function() = default;
+
+    void trace(Visitor& v) override;
 
     const std::string& get_name() const { return name_; }
     void set_name(const std::string& name);

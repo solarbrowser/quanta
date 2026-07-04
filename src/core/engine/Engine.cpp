@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/JSON.h"
@@ -31,13 +32,25 @@
 
 namespace Quanta {
 
+namespace {
+std::vector<Engine*>& engine_registry() {
+    static std::vector<Engine*> engines;
+    return engines;
+}
+}
+
+const std::vector<Engine*>& Engine::all_engines() {
+    return engine_registry();
+}
+
+
 
 Engine::Engine() : initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
 
     heap_ = new Heap();
     Heap::set_active(heap_);
-    garbage_collector_ = std::make_unique<GarbageCollector>();
+    engine_registry().push_back(this);
 
     config_.strict_mode = false;
     config_.enable_optimizations = true;
@@ -55,12 +68,16 @@ Engine::Engine(const Config& config)
 
     heap_ = new Heap();
     Heap::set_active(heap_);
-    garbage_collector_ = std::make_unique<GarbageCollector>();
+    engine_registry().push_back(this);
 
     start_time_ = std::chrono::high_resolution_clock::now();
 }
 
 Engine::~Engine() {
+    auto& reg = engine_registry();
+    for (size_t i = 0; i < reg.size(); i++) {
+        if (reg[i] == this) { reg[i] = reg.back(); reg.pop_back(); break; }
+    }
     shutdown();
     if (Heap::active_or_null() == heap_) {
         Heap::set_active(nullptr);
@@ -331,6 +348,7 @@ void Engine::clear_survivor_contexts() {
 }
 
 void Engine::run_event_loop_to_completion(Context& ctx) {
+    Collector::safepoint();
     if (ctx.has_pending_microtasks()) {
         ctx.drain_microtasks();
     }
@@ -346,25 +364,16 @@ void Engine::run_event_loop_to_completion(Context& ctx) {
     }
 }
 
-void Engine::collect_garbage() {
-    if (garbage_collector_) {
-        garbage_collector_->collect_garbage();
-        total_gc_runs_++;
-    }
-}
-
 size_t Engine::get_heap_usage() const {
-    if (garbage_collector_) {
-        return garbage_collector_->get_heap_size();
-    }
-    return 0;
+    if (!heap_) return 0;
+    Heap::Stats s = heap_->stats();
+    return s.live_bytes + s.large_bytes;
 }
 
 size_t Engine::get_heap_size() const {
-    if (garbage_collector_) {
-        return garbage_collector_->get_heap_size();
-    }
-    return 0;
+    if (!heap_) return 0;
+    Heap::Stats s = heap_->stats();
+    return s.chunk_count * BlockAllocator::kChunkSize + s.large_bytes;
 }
 
 bool Engine::has_pending_exception() const {
@@ -450,9 +459,6 @@ void Engine::setup_built_in_functions() {
 }
 
 void Engine::setup_error_types() {
-}
-
-void Engine::initialize_gc() {
 }
 
 Engine::Result Engine::execute_internal(const std::string& source, const std::string& filename) {
@@ -623,16 +629,8 @@ bool Engine::has_default_export(const std::string& filename) {
 }
 
 void Engine::force_gc() {
-    if (garbage_collector_) {
-        garbage_collector_->collect_garbage();
-    }
-}
-
-std::string Engine::get_gc_stats() const {
-    if (garbage_collector_) {
-        return "GC Stats: Memory managed by garbage collector";
-    }
-    return "GC Stats: Not available";
+    Collector::collect();
+    total_gc_runs_++;
 }
 
 }

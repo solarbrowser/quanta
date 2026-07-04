@@ -135,7 +135,6 @@ class StringLiteral : public ASTNode {
 private:
     std::string value_;
     bool has_escapes_ = false;
-    mutable class String* cached_ = nullptr;
 
 public:
     StringLiteral(const std::string& value, const Position& start, const Position& end,

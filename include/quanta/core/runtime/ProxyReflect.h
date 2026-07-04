@@ -23,6 +23,7 @@ private:
 
 public:
     Proxy(Object* target, Object* handler);
+    void trace(Visitor& v) override;
     virtual ~Proxy() = default;
 
     bool target_was_callable() const { return target_was_callable_; }

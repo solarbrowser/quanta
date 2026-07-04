@@ -12,6 +12,7 @@
 #include "quanta/core/gc/HeapBlock.h"
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 namespace Quanta {
 
@@ -53,6 +54,30 @@ public:
 
     void* allocate(size_t size, CellKind kind,
                    HeapSegment segment = HeapSegment::Core);
+
+    struct ProbeResult {
+        void* cell = nullptr;
+        CellKind kind = CellKind::Object;
+        bool is_large = false;
+    };
+    // Conservative word probe across ALL heaps: raw pointer or NaN-boxed
+    // Value bits -> live cell base, or nullptr. Interior pointers resolve
+    // for block cells; large cells match on their payload range.
+    static ProbeResult probe_word(uint64_t word);
+
+    static bool test_mark(const ProbeResult& p);
+    static void set_mark(const ProbeResult& p);
+    // Exact, known-live cell (from a trace edge, not a guess).
+    static ProbeResult exact_cell(const void* p);
+
+    static void clear_all_marks();   // every heap, every block, every large
+    // Walks every live cell of every heap: fn(cell, kind, marked).
+    static void for_each_cell(const std::function<void(void*, CellKind, bool)>& fn);
+
+    // Allocation-triggered GC request; the interpreter's safepoint consumes it.
+    static bool gc_requested() { return gc_requested_; }
+    static void request_gc()   { gc_requested_ = true; }
+    static void clear_gc_request() { gc_requested_ = false; }
     // Explicit-free path for `delete` (unique_ptr interop). Static: the
     // owning heap is recovered from the memory itself, so a cell created in
     // one realm and deleted while another realm's heap is active stays safe.
@@ -66,7 +91,6 @@ public:
 
     Stats stats() const;
 
-private:
     struct LargeCell {
         uint64_t   magic;
         Heap*      heap;
@@ -74,11 +98,15 @@ private:
         LargeCell* next;
         size_t     size;
         CellKind   kind;
+        bool       marked;
         // payload follows, 16B aligned
     };
-    static constexpr uint64_t kLargeMagic = 0x514C41524745ULL;  // "QLARGE"
     static constexpr size_t kLargeHeaderSize =
         (sizeof(LargeCell) + HeapBlock::kCellAlign - 1) & ~(HeapBlock::kCellAlign - 1);
+    LargeCell* large_cells_head() const { return large_cells_; }
+
+private:
+    static constexpr uint64_t kLargeMagic = 0x514C41524745ULL;  // "QLARGE"
 
     static size_t size_class_index(size_t size);
     HeapBlock* fresh_block(CellKind kind, HeapSegment segment, size_t cls);
@@ -86,6 +114,7 @@ private:
     static void free_large(void* p);
 
     static thread_local Heap* active_;
+    static bool gc_requested_;
 
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into

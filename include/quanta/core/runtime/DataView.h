@@ -39,6 +39,7 @@ private:
     uint64_t swap_bytes_64(uint64_t value) const;
     
 public:
+    void trace(Visitor& v) override;
     explicit DataView(std::shared_ptr<ArrayBuffer> buffer);
     DataView(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset);
     DataView(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t byte_length);

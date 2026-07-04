@@ -168,14 +168,13 @@ public:
         enum class Type { Next, Return, Throw } type;
         Value value;
         Promise* promise;
-        std::string pin_key;  // GC-keepalive property name on `this`
     };
     std::deque<Request> request_queue_;
-    uint32_t request_pin_counter_ = 0;
 
 public:
     AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
-    virtual ~AsyncGenerator() = default;
+    void trace(Visitor& v) override;
+    virtual ~AsyncGenerator();
 
     AsyncGeneratorResult next(const Value& value = Value());
     AsyncGeneratorResult return_value(const Value& value);
