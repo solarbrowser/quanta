@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/BigInt.h"
+#include "quanta/core/gc/Heap.h"
 #include <algorithm>
 #include <cstring>
 #include <sstream>
@@ -12,6 +13,15 @@
 #include <climits>
 
 namespace Quanta {
+
+void* BigInt::operator new(size_t size) {
+    return Heap::active().allocate(size, CellKind::BigInt);
+}
+
+void BigInt::operator delete(void* p) noexcept {
+    Heap::cell_free(p);
+}
+
 
 
 BigInt::BigInt() : is_negative_(false) {

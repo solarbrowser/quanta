@@ -75,6 +75,15 @@ private:
     std::vector<std::string> property_insertion_order_;
 
 public:
+    // GC cell protocol: every Object (and subclass) lives in the active
+    // Heap's block space. `delete` is an explicit free back to the block
+    // free-list, which keeps existing unique_ptr ownership correct while
+    // release()'d cells wait for the collector.
+    static void* operator new(size_t size);
+    static void  operator delete(void* p) noexcept;
+    static void* operator new[](size_t) = delete;
+    static void  operator delete[](void*) = delete;
+
     Object(ObjectType type = ObjectType::Ordinary);
     explicit Object(Object* prototype, ObjectType type = ObjectType::Ordinary);
     virtual ~Object() = default;

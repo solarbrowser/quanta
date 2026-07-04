@@ -26,6 +26,13 @@ private:
     int compare_absolute(const BigInt& other) const;
 
 public:
+    // GC cell protocol (see Object.h): only heap BigInts (the ones Values
+    // point at) become cells; by-value temporaries stay on the stack.
+    static void* operator new(size_t size);
+    static void  operator delete(void* p) noexcept;
+    static void* operator new[](size_t) = delete;
+    static void  operator delete[](void*) = delete;
+
     BigInt();
     BigInt(int64_t value);
     BigInt(const std::string& str);

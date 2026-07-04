@@ -5,10 +5,20 @@
  */
 
 #include "quanta/core/runtime/String.h"
+#include "quanta/core/gc/Heap.h"
 #include <unordered_map>
 #include <mutex>
 
 namespace Quanta {
+
+void* String::operator new(size_t size) {
+    return Heap::active().allocate(size, CellKind::String);
+}
+
+void String::operator delete(void* p) noexcept {
+    Heap::cell_free(p);
+}
+
 
 // Intern cache: string content → weak ownership signal (just a set of interned contents)
 static std::unordered_map<std::string, size_t> intern_cache_;

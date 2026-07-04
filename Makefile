@@ -120,6 +120,9 @@ PARSER_OBJECTS = $(PARSER_SOURCES:$(PARSER_SRC)/%.cpp=$(OBJ_DIR)/parser/%.o)
 
 ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS) $(PCRE2_OBJS) $(UTF8PROC_OBJS)
 
+# Header dependency tracking (-MMD): a header edit rebuilds every dependent TU.
+-include $(CORE_OBJECTS:.o=.d) $(LEXER_OBJECTS:.o=.d) $(PARSER_OBJECTS:.o=.d)
+
 # Static library
 LIBQUANTA = $(BUILD_DIR)/libquanta.a
 
@@ -127,7 +130,7 @@ LIBQUANTA = $(BUILD_DIR)/libquanta.a
 CONSOLE_MAIN = console.cpp
 
 # Main targets
-.PHONY: all clean debug release setup-pcre2
+.PHONY: all clean debug release setup-pcre2 heap-test
 
 setup-pcre2:
 	@if [ ! -f "$(PCRE2_DIR)/pcre2.h.generic" ]; then \
@@ -190,19 +193,19 @@ $(OBJ_DIR)/core/%.o: $(CORE_SRC)/%.cpp
 	@$(MKDIR_P) $(dir $@)
 	@echo "[BUILD] Compiling core: $<"
 	@echo "[BUILD] $<" >> $(LOG_FILE)
-	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 $(OBJ_DIR)/lexer/%.o: $(LEXER_SRC)/%.cpp
 	@$(MKDIR_P) $(dir $@)
 	@echo "[BUILD] Compiling lexer: $<"
 	@echo "[BUILD] $<" >> $(LOG_FILE)
-	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 $(OBJ_DIR)/parser/%.o: $(PARSER_SRC)/%.cpp
 	@$(MKDIR_P) $(dir $@)
 	@echo "[BUILD] Compiling parser: $<"
 	@echo "[BUILD] $<" >> $(LOG_FILE)
-	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 $(OBJ_DIR)/pcre2/%.o: $(PCRE2_DIR)/%.c
 	@$(MKDIR_P) $(dir $@)
@@ -219,6 +222,19 @@ debug: all
 # Release build (same optimization set as the default build -- just strips asserts)
 release: CXXFLAGS += -DNDEBUG
 release: all
+
+# GC heap unit tests (standalone; compiles only the gc/ sources)
+HEAP_TEST_SRCS = tests/gc/heap_test.cpp \
+                 src/core/gc/Heap.cpp \
+                 src/core/gc/HeapBlock.cpp \
+                 src/core/gc/BlockAllocator.cpp
+
+heap-test: $(HEAP_TEST_SRCS)
+	@mkdir -p $(BIN_DIR)
+	@echo "[TEST] Building heap-test..."
+	@$(CXX) -std=c++20 -Wall -g -O1 -fsanitize=address,undefined -Iinclude \
+		-o $(BIN_DIR)/heap-test $(HEAP_TEST_SRCS)
+	@ASAN_OPTIONS=detect_leaks=0 $(BIN_DIR)/heap-test  # the heap leaks chunks/snapshots at exit by design
 
 # Clean
 clean:

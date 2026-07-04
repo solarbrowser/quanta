@@ -13,6 +13,7 @@
 #include <functional>
 #include <unordered_map>
 #include <ucontext.h>
+#include "quanta/core/runtime/FiberState.h"
 
 namespace Quanta {
 
@@ -77,8 +78,7 @@ private:
     // Fiber-based (stackful coroutine) implementation
     static constexpr size_t STACK_SIZE = 512 * 1024;
 public:
-    ucontext_t fiber_ctx_;
-    ucontext_t caller_ctx_;
+    std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
 private:
     std::vector<char> fiber_stack_;
 

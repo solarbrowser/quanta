@@ -35,6 +35,8 @@ namespace Quanta {
 Engine::Engine() : initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
 
+    heap_ = new Heap();
+    Heap::set_active(heap_);
     garbage_collector_ = std::make_unique<GarbageCollector>();
 
     config_.strict_mode = false;
@@ -51,6 +53,8 @@ Engine::Engine(const Config& config)
     : config_(config), initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
 
+    heap_ = new Heap();
+    Heap::set_active(heap_);
     garbage_collector_ = std::make_unique<GarbageCollector>();
 
     start_time_ = std::chrono::high_resolution_clock::now();
@@ -58,13 +62,17 @@ Engine::Engine(const Config& config)
 
 Engine::~Engine() {
     shutdown();
+    if (Heap::active_or_null() == heap_) {
+        Heap::set_active(nullptr);
+    }
 }
 
 bool Engine::initialize() {
     if (initialized_) {
         return true;
     }
-    
+    HeapScope heap_scope(heap_);
+
     try {
         // Temporarily null out current_context_ so that non-configurable property
         // checks in set_property_descriptor don't fire during built-in setup.
@@ -135,6 +143,9 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
     if (!initialized_) {
         return Result("Engine not initialized");
     }
+    // Realm-safe: $262.createRealm engines share the thread; every entry
+    // point re-installs its own heap for the duration of the call.
+    HeapScope heap_scope(heap_);
 
     try {
         Lexer::LexerOptions lex_opts;
@@ -445,6 +456,7 @@ void Engine::initialize_gc() {
 }
 
 Engine::Result Engine::execute_internal(const std::string& source, const std::string& filename) {
+    HeapScope heap_scope(heap_);
     try {
         execution_count_++;
         

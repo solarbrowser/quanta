@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(Quanta VERSION 0.0.2 LANGUAGES CXX)
+project(Quanta VERSION 0.0.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -255,6 +255,19 @@ if(WIN32)
         ole32
         shell32
     )
+endif()
+
+# GC heap unit tests (standalone; not part of the default build)
+add_executable(heap-test EXCLUDE_FROM_ALL
+    ${CMAKE_SOURCE_DIR}/tests/gc/heap_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/gc/Heap.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/gc/HeapBlock.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/gc/BlockAllocator.cpp
+)
+target_include_directories(heap-test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(NOT WIN32)
+    target_compile_options(heap-test PRIVATE -fsanitize=address,undefined -g -O1)
+    target_link_options(heap-test PRIVATE -fsanitize=address,undefined)
 endif()
 
 # Optional: Install targets

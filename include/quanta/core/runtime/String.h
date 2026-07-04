@@ -27,6 +27,13 @@ class String {
     static void collect_bytes(const String* node, std::string& out);
 
 public:
+    // GC cell protocol (see Object.h): heap strings are String-kind cells;
+    // stack/value instances never touch these. Rope cons nodes are cells too.
+    static void* operator new(size_t size);
+    static void  operator delete(void* p) noexcept;
+    static void* operator new[](size_t) = delete;
+    static void  operator delete[](void*) = delete;
+
     String() = default;
     explicit String(const std::string& str);
     explicit String(std::string&& str) noexcept;

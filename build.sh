@@ -97,6 +97,21 @@ mkdir -p "$BUILD_DIR" "$OBJ_DIR" "$BIN_DIR"
 : > "$ERROR_LOG"
 printf '[%(%Y-%m-%d %H:%M:%S)T] Build started\n' -1 > "$LOG_FILE"
 
+# ./build.sh heap-test -> build and run the GC heap unit tests, nothing else
+if [[ "${1:-}" == "heap-test" ]]; then
+    print_header "GC heap unit tests"
+    if ! clang++ -std=c++20 -Wall -g -O1 -fsanitize=address,undefined -Iinclude \
+        -o "$BIN_DIR/heap-test" \
+        tests/gc/heap_test.cpp \
+        src/core/gc/Heap.cpp src/core/gc/HeapBlock.cpp src/core/gc/BlockAllocator.cpp \
+        2>>"$ERROR_LOG"; then
+        fail "heap-test compilation failed"
+    fi
+    ASAN_OPTIONS=detect_leaks=0 "$BIN_DIR/heap-test" || fail "heap-test reported failures"
+    print_success "heap-test passed"
+    exit 0
+fi
+
 print_header "Building Quanta with Clang"
 
 if ! command -v clang++ >/dev/null 2>&1; then

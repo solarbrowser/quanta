@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/gc/Heap.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Error.h"
@@ -23,6 +24,14 @@ namespace Quanta {
 thread_local Context* Object::current_context_ = nullptr;
 
 std::unordered_map<std::string, std::string> Object::interned_keys_;
+
+void* Object::operator new(size_t size) {
+    return Heap::active().allocate(size, CellKind::Object);
+}
+
+void Object::operator delete(void* p) noexcept {
+    Heap::cell_free(p);
+}
 
 static Value make_prop_key_value(const std::string& key) {
     if (key.find("Symbol.") == 0) {

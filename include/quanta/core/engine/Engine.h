@@ -12,6 +12,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/gc/GC.h"
+#include "quanta/core/gc/Heap.h"
 #include "quanta/parser/AST.h"
 #include <string>
 #include <memory>
@@ -54,6 +55,11 @@ public:
 
 private:
     Config config_;
+    // Intentionally immortal for now (like realm engines): static
+    // destructors delete cells after the engine dies, so the heap and its
+    // metadata must stay valid until process exit. The collector's shutdown
+    // protocol will make heaps destructible.
+    Heap* heap_;
     std::unique_ptr<Context> global_context_;
     std::unique_ptr<ModuleLoader> module_loader_;
 
@@ -118,6 +124,7 @@ public:
     std::string get_gc_stats() const;
     
     class GarbageCollector* get_garbage_collector() const { return garbage_collector_.get(); }
+    Heap* get_heap() const { return heap_; }
     
     void enable_profiler(bool enable);
     void enable_debugger(bool enable);
