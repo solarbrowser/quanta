@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/MapSet.h"
@@ -13,6 +14,22 @@
 #include <iostream>
 
 namespace Quanta {
+
+void ArrayIterator::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_object(array_);
+}
+
+void MapIterator::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_object(map_);
+}
+
+void SetIterator::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_object(set_);
+}
+
 
 
 Iterator::Iterator(NextFunction next_fn)

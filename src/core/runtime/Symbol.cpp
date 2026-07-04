@@ -5,12 +5,20 @@
  */
 
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/engine/Context.h"
 #include <sstream>
 #include <atomic>
 
 namespace Quanta {
+
+void Symbol::gc_trace_roots(Visitor& v) {
+    for (const auto& e : well_known_symbols_) v.visit_symbol(e.second.get());
+    for (const auto& e : global_registry_) v.visit_symbol(e.second.get());
+    for (const auto& e : user_symbol_registry_) v.visit_symbol(e.second);
+}
+
 
 void* Symbol::operator new(size_t size) {
     return Heap::active().allocate(size, CellKind::Symbol);

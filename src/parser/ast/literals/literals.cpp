@@ -70,9 +70,6 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         return Value();
     }
 
-    if (ctx.get_engine() && ctx.get_engine()->get_garbage_collector()) {
-        ctx.get_engine()->get_garbage_collector()->register_object(object.get());
-    }
 
     for (const auto& prop : properties_) {
         if (prop->key == nullptr && prop->value && prop->value->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
@@ -314,9 +311,6 @@ Value ArrayLiteral::evaluate(Context& ctx) {
         return Value(std::string("[]"));
     }
 
-    if (ctx.get_engine() && ctx.get_engine()->get_garbage_collector()) {
-        ctx.get_engine()->get_garbage_collector()->register_object(array.get());
-    }
 
     uint32_t array_index = 0;
     for (const auto& element : elements_) {

@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/builtins/ArrayBuiltin.h"
 #include "quanta/core/engine/builtins/StringBuiltin.h"
@@ -48,6 +49,45 @@ namespace Quanta {
 
 uint32_t Context::next_context_id_ = 1;
 
+ContextSurvivorGuard::~ContextSurvivorGuard() {
+    if (eng && ptr) eng->add_survivor_context(ptr.release());
+}
+
+void Environment::gc_trace(Visitor& v) const {
+    for (const auto& b : bindings_) v.visit(b.second);
+    v.visit_object(binding_object_);
+    v.visit_environment(outer_environment_);
+}
+
+void StackFrame::gc_trace(Visitor& v) const {
+    v.visit_object(function_);
+    v.visit_object(this_binding_);
+    for (const auto& a : arguments_) v.visit(a);
+    for (const auto& lv : local_variables_) v.visit(lv.second);
+    v.visit_environment(environment_);
+}
+
+void Context::gc_trace(Visitor& v) const {
+    v.visit_environment(lexical_environment_);
+    v.visit_environment(variable_environment_);
+    v.visit_object(this_binding_);
+    v.visit_object(global_object_);
+    for (const auto& e : built_in_objects_) v.visit_object(e.second);
+    for (const auto& e : built_in_functions_) v.visit_object(e.second);
+    v.visit(current_exception_);
+    v.visit(return_value_);
+    v.visit(new_target_);
+    for (const auto& frame : call_stack_) {
+        if (frame) frame->gc_trace(v);
+    }
+    for (const auto& entry : microtask_queue_) {
+        for (const auto& kept : entry.keep_alive) v.visit(kept);
+    }
+    for (const auto& entry : draining_queue_) {
+        for (const auto& kept : entry.keep_alive) v.visit(kept);
+    }
+}
+
 
 Context::Context(Engine* engine, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
@@ -55,8 +95,7 @@ Context::Context(Engine* engine, Type type)
       execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false),
       return_value_(), has_return_value_(false), has_break_(false), has_continue_(false),
       current_loop_label_(), next_statement_label_(), is_in_constructor_call_(false), super_called_(false), this_needs_super_(false),
-      strict_mode_(false), engine_(engine), current_filename_("<unknown>"),
-      gc_(engine ? engine->get_garbage_collector() : nullptr) {
+      strict_mode_(false), engine_(engine), current_filename_("<unknown>") {
 
     if (type == Type::Global) {
         initialize_global_context();
@@ -70,10 +109,9 @@ Context::Context(Engine* engine, Context* parent, Type type)
       current_exception_(), has_exception_(false), return_value_(), has_return_value_(false),
       has_break_(false), has_continue_(false), current_loop_label_(), next_statement_label_(),
       is_in_constructor_call_(false), super_called_(false), this_needs_super_(false), original_this_was_nullish_(false), original_this_was_primitive_(false), strict_mode_(parent && type != Type::Function ? parent->strict_mode_ : false),
-      engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>"),
-      gc_(engine ? engine->get_garbage_collector() : nullptr) {
+      engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>") {
 
-    // Use engine's GC (shared across all contexts)
+
 
     if (parent) {
         built_in_objects_ = parent->built_in_objects_;
@@ -480,24 +518,24 @@ Value Context::get_import_meta() {
         auto meta_obj = ObjectFactory::create_object();
         meta_obj->set_property("url", Value(std::string("file://") + current_filename_));
         import_meta_ = Value(meta_obj.release());
-        register_object(import_meta_.as_object());
     }
     return import_meta_;
 }
 
-void Context::queue_microtask(std::function<void()> task) {
-    microtask_queue_.push_back(std::move(task));
+void Context::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive) {
+    microtask_queue_.push_back({std::move(task), std::move(keep_alive)});
 }
 
 void Context::drain_microtasks() {
     // Loops until empty (a job can enqueue more). The 10s cap guards against a runaway microtask chain -- unrelated to setTimeout/setInterval, which run through EventLoop's timer heap instead.
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!microtask_queue_.empty()) {
-        auto tasks = std::move(microtask_queue_);
+        draining_queue_ = std::move(microtask_queue_);
         microtask_queue_.clear();
-        for (auto& task : tasks) {
-            if (task) task();
+        for (auto& entry : draining_queue_) {
+            if (entry.task) entry.task();
         }
+        draining_queue_.clear();
         if (std::chrono::steady_clock::now() > deadline) break;
     }
 }
@@ -1213,15 +1251,11 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
                     self->resume_from_await(reason, true);
                     return Value();
                 });
-            std::string key = std::to_string(reinterpret_cast<uintptr_t>(async_gen));
-            Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-            awaited_promise->set_property("__af_" + key, Value(on_f.release()));
-            awaited_promise->set_property("__ar_" + key, Value(on_r.release()));
-            awaited_promise->then(ff_tmp_, fr_tmp_);
+            awaited_promise->then(on_f.release(), on_r.release());
         } else {
             auto self = async_gen;
             Value val = settled_val; bool thr = settled_throw;
-            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); });
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); }, {Value(self), val});
         }
         async_gen->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
@@ -1252,15 +1286,11 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
                     self->resume(reason, true);
                     return Value();
                 });
-            std::string key = std::to_string(reinterpret_cast<uintptr_t>(exec));
-            Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-            awaited_promise->set_property("__af_" + key, Value(on_f.release()));
-            awaited_promise->set_property("__ar_" + key, Value(on_r.release()));
-            awaited_promise->then(ff_tmp_, fr_tmp_);
+            awaited_promise->then(on_f.release(), on_r.release());
         } else {
             auto self = exec->shared_from_this();
             Value val = settled_val; bool thr = settled_throw;
-            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); }, {val});
         }
         exec->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
         swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
@@ -1386,19 +1416,6 @@ void Context::pop_with_scope() {
 
 void Context::register_typed_array_constructors() {
     register_typed_array_builtins(*this);
-}
-
-// Garbage collector integration
-void Context::register_object(Object* obj, size_t size) {
-    if (gc_ && obj) {
-        gc_->register_object(obj, size);
-    }
-}
-
-void Context::trigger_gc() {
-    if (gc_) {
-        gc_->collect_garbage();
-    }
 }
 
 void Context::load_bootstrap() {

@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/AtomicsBuiltin.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
@@ -404,6 +405,13 @@ Value atomics_pause(Context& ctx, const std::vector<Value>& args) {
 }
 
 } // namespace
+
+void trace_atomics_gc_roots(Visitor& v) {
+    for (const auto& w : pending_waiters()) {
+        v.visit_object(w.buffer);
+        v.visit_object(w.promise);
+    }
+}
 
 void register_atomics_builtins(Context& ctx) {
     auto atomics_obj = ObjectFactory::create_object();

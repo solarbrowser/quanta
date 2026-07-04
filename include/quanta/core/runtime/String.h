@@ -36,6 +36,7 @@ public:
 
     String() = default;
     explicit String(const std::string& str);
+    void gc_trace(class Visitor& v) const;
     explicit String(std::string&& str) noexcept;
     explicit String(std::string_view sv);
     explicit String(const char* str);

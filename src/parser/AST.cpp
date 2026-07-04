@@ -83,8 +83,9 @@ std::unique_ptr<ASTNode> NumberLiteral::clone() const {
 
 Value StringLiteral::evaluate(Context& ctx) {
     (void)ctx;
-    if (!cached_) cached_ = new String(value_);
-    return Value(cached_);
+    // No caching: an AST-held String* is invisible to the collector and dies
+    // at the first sweep; allocation is a bump-pointer hit anyway.
+    return Value(new String(value_));
 }
 
 std::string StringLiteral::to_string() const {

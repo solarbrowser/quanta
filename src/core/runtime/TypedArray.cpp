@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/TypedArray.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/engine/Context.h"
@@ -34,6 +35,12 @@ static void quanta_memset(void* dest, int value, size_t count) {
 
 namespace Quanta {
 
+void TypedArrayBase::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_object(buffer_.get());
+}
+
+
 
 TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element)
     : Object(ObjectType::TypedArray), array_type_(type), bytes_per_element_(bytes_per_element),
@@ -44,7 +51,12 @@ TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, size_t 
     : Object(ObjectType::TypedArray), array_type_(type), bytes_per_element_(bytes_per_element),
       byte_offset_(0), length_(length), is_length_tracking_(false) {
     size_t byte_length = length * bytes_per_element;
-    buffer_ = std::make_shared<ArrayBuffer>(byte_length);
+    // The backing buffer is a GC cell (like every other ArrayBuffer), held via
+    // a non-owning aliasing shared_ptr. A make_shared here would own the buffer
+    // by refcount instead -- and once the collector swept the last TypedArray,
+    // that owning ref would drop and free a buffer JS still reaches via .buffer.
+    ArrayBuffer* ab = new ArrayBuffer(byte_length);
+    buffer_ = std::shared_ptr<ArrayBuffer>(ab, [](ArrayBuffer*) {});
 }
 
 TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer)

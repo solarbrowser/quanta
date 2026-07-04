@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/CallStack.h"
@@ -201,6 +202,9 @@ void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>&
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
+    // Roots args across the whole call (native path included): these Values
+    // live in the caller's malloc'd vector storage, invisible to the stack scan.
+    ValueVectorRoot args_root(&args);
     // Consumed immediately so a nested call triggered from inside this invocation
     // (e.g. a native function calling another function) doesn't inherit it.
     bool is_construct_invocation = ctx.consume_pending_construct_call();
@@ -339,19 +343,13 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     Context* parent_context = &ctx;
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     Context& function_context = *function_context_ptr;
+    ExecContextScope gc_frame(&function_context);
 
-    // RAII guard: transfer function context to Engine's survivor pool on return
-    // instead of destroying it. Keeps the context alive for Promise async callbacks
-    // that need context_ to point to the defining scope for closure variable lookups.
+    // Transfer to Engine's survivor pool on return instead of destroying it --
+    // see ContextSurvivorGuard's doc comment for why an abrupt exit path still
+    // needs this.
     Engine* fn_engine = ctx.get_engine();
-    struct ContextSurvivorGuard {
-        std::unique_ptr<Context>& ptr;
-        Engine* eng;
-        ContextSurvivorGuard(std::unique_ptr<Context>& p, Engine* e) : ptr(p), eng(e) {}
-        ~ContextSurvivorGuard() {
-            if (eng && ptr) eng->add_survivor_context(ptr.release());
-        }
-    } survivor_guard(function_context_ptr, fn_engine);
+    ContextSurvivorGuard survivor_guard(function_context_ptr, fn_engine);
 
     // Propagate new.target into function scope
     if (ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined()) {
@@ -901,6 +899,7 @@ bool Function::set_property(const std::string& key, const Value& value, Property
 }
 
 Value Function::construct(Context& ctx, const std::vector<Value>& args) {
+    ValueVectorRoot args_root(&args);
     // Check if this function is a constructor
     if (!is_constructor_) {
         ctx.throw_exception(Value("TypeError: " + name_ + " is not a constructor"));

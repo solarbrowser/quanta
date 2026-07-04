@@ -30,6 +30,8 @@
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/gc/Collector.h"
+#include "quanta/core/gc/Heap.h"
 #include "quanta/core/runtime/Async.h"
 
 namespace Quanta {
@@ -1292,7 +1294,7 @@ void register_global_builtins(Context& ctx) {
                 }
 
                 promise_ptr->reject(Value(std::string("Error: Cannot find module '" + specifier + "'")));
-            });
+            }, {Value(global), Value(promise_ptr)});
 
             return Value(promise_obj.release());
         }, 1);
@@ -1384,36 +1386,37 @@ void register_global_builtins(Context& ctx) {
 
     auto gc_obj_stats_fn = ObjectFactory::create_native_function("stats",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (!ctx.get_gc()) return Value();
-
-            const auto& stats = ctx.get_gc()->get_statistics();
+            (void)args;
+            Heap* heap = ctx.get_engine() ? ctx.get_engine()->get_heap() : nullptr;
             auto stats_obj = ObjectFactory::create_object();
-
-            stats_obj->set_property("totalAllocations", Value(static_cast<double>(stats.total_allocations)));
-            stats_obj->set_property("totalDeallocations", Value(static_cast<double>(stats.total_deallocations)));
-            stats_obj->set_property("totalCollections", Value(static_cast<double>(stats.total_collections)));
-            stats_obj->set_property("bytesAllocated", Value(static_cast<double>(stats.bytes_allocated)));
-            stats_obj->set_property("bytesFreed", Value(static_cast<double>(stats.bytes_freed)));
-            stats_obj->set_property("currentMemory", Value(static_cast<double>(stats.bytes_allocated - stats.bytes_freed)));
-            stats_obj->set_property("peakMemoryUsage", Value(static_cast<double>(stats.peak_memory_usage)));
-
+            if (heap) {
+                Heap::Stats s = heap->stats();
+                stats_obj->set_property("liveCells", Value(static_cast<double>(s.live_cells)));
+                stats_obj->set_property("liveBytes", Value(static_cast<double>(s.live_bytes)));
+                stats_obj->set_property("blocks", Value(static_cast<double>(s.block_count)));
+                stats_obj->set_property("chunks", Value(static_cast<double>(s.chunk_count)));
+                stats_obj->set_property("largeCells", Value(static_cast<double>(s.large_count)));
+                stats_obj->set_property("largeBytes", Value(static_cast<double>(s.large_bytes)));
+                stats_obj->set_property("lastMarked", Value(static_cast<double>(Collector::last_cycle().marked_cells)));
+                stats_obj->set_property("lastSwept", Value(static_cast<double>(Collector::last_cycle().swept_cells)));
+            }
             return Value(stats_obj.release());
         }, 0);
 
     auto gc_obj_collect_fn = ObjectFactory::create_native_function("collect",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (ctx.get_gc()) {
-                ctx.get_gc()->collect_garbage();
-            }
+            (void)ctx; (void)args;
+            Collector::collect();
             return Value();
         }, 0);
 
     auto gc_obj_heap_size_fn = ObjectFactory::create_native_function("heapSize",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (ctx.get_gc()) {
-                return Value(static_cast<double>(ctx.get_gc()->get_heap_size()));
-            }
-            return Value();
+            (void)args;
+            Heap* heap = ctx.get_engine() ? ctx.get_engine()->get_heap() : nullptr;
+            if (!heap) return Value();
+            Heap::Stats s = heap->stats();
+            return Value(static_cast<double>(s.live_bytes + s.large_bytes));
         }, 0);
 
     gc_obj->set_property("stats", Value(gc_obj_stats_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -1422,18 +1425,7 @@ void register_global_builtins(Context& ctx) {
 
     ctx.get_lexical_environment()->create_binding("gc", Value(gc_obj.release()), false);
 
-    auto gc_stats_fn = ObjectFactory::create_native_function("gcStats",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (ctx.get_engine()) {
-                std::string stats = ctx.get_engine()->get_gc_stats();
-                std::cout << stats << std::endl;
-            } else {
-                std::cout << "Engine not available" << std::endl;
-            }
-            return Value();
-        });
-    ctx.get_lexical_environment()->create_binding("gcStats", Value(gc_stats_fn.release()), false);
-    
+
     auto force_gc_fn = ObjectFactory::create_native_function("forceGC",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.get_engine()) {
@@ -1528,7 +1520,7 @@ void register_global_builtins(Context& ctx) {
                     call_ctx->clear_exception();
                     std::cerr << "Uncaught (in queueMicrotask) " << exc.to_string() << std::endl;
                 }
-            });
+            }, {Value(cb), Value(global)});
             return Value();
         }, 1);
     ctx.get_lexical_environment()->create_binding("queueMicrotask", Value(queueMicrotask_fn.release()), false);

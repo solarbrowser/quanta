@@ -17,7 +17,7 @@ namespace Quanta {
 // kind from the block header instead of a per-cell header -- cells carry
 // zero GC metadata of their own.
 enum class CellKind : uint8_t {
-    Object,   // Object and every subclass (Function, Promise, DOM Node...)
+    Object,   // Object and every subclass (Function, Promise, ...)
     String,
     Symbol,
     BigInt,
@@ -26,7 +26,7 @@ enum class CellKind : uint8_t {
 
 constexpr size_t kNumCellKinds = static_cast<size_t>(CellKind::kCount);
 
-// Heap segment tags (everything is CORE until the DOM lands).
+// Heap segment tag, reserved for future use; every cell is Core today.
 enum class HeapSegment : uint8_t {
     Core,
     Dom,

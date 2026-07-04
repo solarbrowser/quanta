@@ -44,6 +44,7 @@ private:
     
 public:
     Map();
+    void trace(Visitor& v) override;
     virtual ~Map() = default;
     
     bool has(const Value& key) const;
@@ -99,6 +100,7 @@ private:
 
 public:
     Set();
+    void trace(Visitor& v) override;
     virtual ~Set() = default;
     
     bool has(const Value& value) const;
@@ -146,6 +148,8 @@ private:
 
 public:
     WeakMap();
+    // Strong until the collector grows ephemeron support.
+    void trace(Visitor& v) override;
     virtual ~WeakMap() = default;
 
     bool has(Object* key) const;
@@ -179,6 +183,8 @@ private:
 
 public:
     WeakSet();
+    // Strong until the collector grows ephemeron support.
+    void trace(Visitor& v) override;
     virtual ~WeakSet() = default;
 
     bool has(Object* value) const;

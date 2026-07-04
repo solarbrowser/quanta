@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/engine/Context.h"
@@ -15,6 +16,13 @@
 #include <cstdlib>
 
 namespace Quanta {
+
+void Proxy::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_object(target_);
+    v.visit_object(handler_);
+}
+
 
 // Helper: convert a Value key (possibly Symbol) to a property key string
 static std::string to_prop_key(const Value& key) {

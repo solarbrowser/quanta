@@ -50,6 +50,9 @@ public:
     static Symbol* get_well_known(const std::string& name);
     
     static void initialize_well_known_symbols();
+    // GC roots: registries own symbols that property-key strings resolve
+    // back into, so they stay strongly rooted.
+    static void gc_trace_roots(class Visitor& v);
     
     std::string get_description() const { return description_; }
     bool get_has_description() const { return has_description_; }

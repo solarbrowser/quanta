@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/MapSet.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
@@ -13,6 +14,37 @@
 #include <iostream>
 
 namespace Quanta {
+
+void Map::trace(Visitor& v) {
+    Object::trace(v);
+    for (const auto& e : entries_) {
+        if (e.deleted) continue;
+        v.visit(e.key);
+        v.visit(e.value);
+    }
+}
+
+void Set::trace(Visitor& v) {
+    Object::trace(v);
+    for (const auto& e : values_) {
+        if (!e.deleted) v.visit(e.value);
+    }
+}
+
+void WeakMap::trace(Visitor& v) {
+    Object::trace(v);
+    for (const auto& e : entries_) {
+        v.visit_object(e.first);
+        v.visit(e.second);
+    }
+    for (const auto& e : symbol_entries_) v.visit(e.second);
+}
+
+void WeakSet::trace(Visitor& v) {
+    Object::trace(v);
+    for (Object* o : values_) v.visit_object(o);
+}
+
 
 static void close_iterator(Object* iter_obj, Context& ctx) {
     Value ret_fn = iter_obj->get_property("return");

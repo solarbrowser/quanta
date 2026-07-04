@@ -5,11 +5,19 @@
  */
 
 #include "quanta/core/runtime/String.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/gc/Heap.h"
 #include <unordered_map>
 #include <mutex>
 
 namespace Quanta {
+
+void String::gc_trace(Visitor& v) const {
+    if (!is_cons_) return;
+    v.visit_string(left_);
+    v.visit_string(right_);
+}
+
 
 void* String::operator new(size_t size) {
     return Heap::active().allocate(size, CellKind::String);

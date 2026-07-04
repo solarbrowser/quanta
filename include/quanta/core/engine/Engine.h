@@ -11,7 +11,6 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/modules/ModuleLoader.h"
-#include "quanta/core/gc/GC.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/parser/AST.h"
 #include <string>
@@ -63,8 +62,6 @@ private:
     std::unique_ptr<Context> global_context_;
     std::unique_ptr<ModuleLoader> module_loader_;
 
-    std::unique_ptr<GarbageCollector> garbage_collector_;
-
     bool initialized_;
     uint64_t execution_count_;
 
@@ -104,6 +101,9 @@ public:
     void register_object(const std::string& name, Object* object);
     
     Context* get_global_context() const { return global_context_.get(); }
+    const std::vector<Context*>& get_survivor_contexts() const { return survivor_contexts_; }
+    // Every live engine, for GC root enumeration (collection is process-wide).
+    static const std::vector<Engine*>& all_engines();
     Context* get_current_context() const;
 
     // Survivor pool for function contexts (Promise async support)
@@ -113,17 +113,9 @@ public:
     // Drains microtasks, then drives any pending timers to exhaustion (real wall-clock wait), repeating until both queues are empty.
     void run_event_loop_to_completion(Context& ctx);
     
-    void collect_garbage();
     size_t get_heap_usage() const;
     size_t get_heap_size() const;
-    void set_heap_limit(size_t limit);
-    
-    void enable_gc(bool enable);
-    void set_gc_mode(GarbageCollector::CollectionMode mode);
     void force_gc();
-    std::string get_gc_stats() const;
-    
-    class GarbageCollector* get_garbage_collector() const { return garbage_collector_.get(); }
     Heap* get_heap() const { return heap_; }
     
     void enable_profiler(bool enable);
@@ -160,8 +152,6 @@ private:
     bool is_simple_mathematical_loop(ASTNode* ast);
     Result execute_optimized_mathematical_loop(ASTNode* ast);
     
-    void initialize_gc();
-    void schedule_gc_if_needed();
 };
 
 /**

@@ -5,6 +5,8 @@
  */
 
 #include "quanta/core/runtime/ArrayBuffer.h"
+#include <cstdio>
+#include <cstdlib>
 #include "quanta/core/engine/Context.h"
 #include <algorithm>
 #include <new>

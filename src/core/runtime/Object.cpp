@@ -6,6 +6,7 @@
 
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/gc/Heap.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Error.h"
@@ -31,6 +32,29 @@ void* Object::operator new(size_t size) {
 
 void Object::operator delete(void* p) noexcept {
     Heap::cell_free(p);
+}
+
+void Object::trace(Visitor& v) {
+    v.visit_object(header_.prototype);
+    for (const auto& val : elements_) v.visit(val);
+    if (overflow_properties_) {
+        for (const auto& entry : *overflow_properties_) v.visit(entry.second);
+    }
+    if (descriptors_) {
+        for (const auto& entry : *descriptors_) {
+            const PropertyDescriptor& d = entry.second;
+            if (d.has_value()) v.visit(d.get_value());
+            v.visit_object(d.get_getter());
+            v.visit_object(d.get_setter());
+        }
+    }
+}
+
+void Function::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_context(closure_context_);
+    v.visit_environment(closure_environment_);
+    v.visit_object(prototype_);
 }
 
 static Value make_prop_key_value(const std::string& key) {
@@ -2303,45 +2327,9 @@ std::vector<std::string> Object::internal_own_keys() const {
 
 namespace ObjectFactory {
 
-static std::vector<std::unique_ptr<Object>> object_pool_;
-static std::vector<std::unique_ptr<Object>> array_pool_;
-static size_t pool_size_ = 5000;
-static bool pools_initialized_ = false;
-
-void initialize_memory_pools() {
-    if (pools_initialized_) return;
-    
-    object_pool_.reserve(pool_size_);
-    array_pool_.reserve(pool_size_);
-    
-    for (size_t i = 0; i < pool_size_; ++i) {
-        object_pool_.push_back(std::make_unique<Object>(Object::ObjectType::Ordinary));
-    }
-    
-    for (size_t i = 0; i < pool_size_; ++i) {
-        array_pool_.push_back(std::make_unique<Object>(Object::ObjectType::Array));
-    }
-    
-    pools_initialized_ = true;
-}
+void initialize_memory_pools() {}
 
 std::unique_ptr<Object> get_pooled_object() {
-    if (!pools_initialized_) initialize_memory_pools();
-    
-    if (!object_pool_.empty()) {
-        auto obj = std::move(object_pool_.back());
-        object_pool_.pop_back();
-        
-        obj->clear_properties();
-        
-        Object* obj_proto = get_object_prototype();
-        if (obj_proto) {
-            obj->set_prototype(obj_proto);
-        }
-        
-        return obj;
-    }
-    
     auto obj = std::make_unique<Object>(Object::ObjectType::Ordinary);
     Object* obj_proto = get_object_prototype();
     if (obj_proto) {
@@ -2351,20 +2339,6 @@ std::unique_ptr<Object> get_pooled_object() {
 }
 
 std::unique_ptr<Object> get_pooled_array() {
-    if (!pools_initialized_) initialize_memory_pools();
-    
-    if (!array_pool_.empty()) {
-        auto array = std::move(array_pool_.back());
-        array_pool_.pop_back();
-
-        Object* array_proto = get_array_prototype();
-        if (array_proto) {
-            array->set_prototype(array_proto);
-        }
-
-        return array;
-    }
-    
     auto array = std::make_unique<Object>(Object::ObjectType::Array);
     Object* array_proto = get_array_prototype();
     if (array_proto) {
@@ -2374,13 +2348,7 @@ std::unique_ptr<Object> get_pooled_array() {
 }
 
 void return_to_pool(std::unique_ptr<Object> obj) {
-    if (!obj || !pools_initialized_) return;
-    
-    if (obj->get_type() == Object::ObjectType::Ordinary && object_pool_.size() < pool_size_) {
-        object_pool_.push_back(std::move(obj));
-    } else if (obj->get_type() == Object::ObjectType::Array && array_pool_.size() < pool_size_) {
-        array_pool_.push_back(std::move(obj));
-    }
+    (void)obj;
 }
 
 static Object* object_prototype_object = nullptr;

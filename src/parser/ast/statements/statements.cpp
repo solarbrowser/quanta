@@ -5,6 +5,7 @@
  */
 
 #include "quanta/parser/AST.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
@@ -136,6 +137,7 @@ Value Program::evaluate(Context& ctx) {
 
     for (const auto& statement : statements_) {
         if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
+            Collector::safepoint();
             g_empty_completion = false;
             Value result = statement->evaluate(ctx);
             if (!g_empty_completion) last_value = result;
@@ -773,6 +775,7 @@ Value ForStatement::evaluate(Context& ctx) {
                         if (init_) init_->evaluate(ctx);
 
                         while (true) {
+                            Collector::safepoint();
                             Value test_val = test_->evaluate(ctx);
                             if (!test_val.to_boolean()) break;
 
@@ -876,6 +879,7 @@ Value ForStatement::evaluate(Context& ctx) {
     if (has_per_iteration_scope) create_per_iter_env();
 
     while (true) {
+        Collector::safepoint();
         if (UNLIKELY((safety_counter & 0xFFFFF) == 0)) {
             if (safety_counter > max_iterations) {
                 ctx.throw_exception(Value(std::string("For loop exceeded iterations")));
@@ -1223,6 +1227,7 @@ Value ForInStatement::evaluate(Context& ctx) {
         Value V; // completion value (spec ForIn/OfBodyEvaluation V)
 
         for (const auto& key : keys) {
+            Collector::safepoint();
             if (iteration_count >= MAX_ITERATIONS) break;
             iteration_count++;
 
@@ -1492,6 +1497,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
         const uint32_t MAX_ITER = 1000000;
         for (uint32_t i = 0; i < MAX_ITER; i++) {
+            Collector::safepoint();
             Value awaited;
             if (in_async_gen_fiber) {
                 // Fiber-based (async generator's own fiber): call next(), await the result
@@ -1552,7 +1558,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     auto self = async_gen;
                     Value val = settled_val;
                     bool thr = settled_throw;
-                    if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); });
+                    if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); }, {Value(self), val});
                 }
 
                 async_gen->await_result_ = next_result;  // pin promise as GC root during suspension
@@ -1751,7 +1757,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     auto self = exec->shared_from_this();
                     Value val = settled_val;
                     bool thr = settled_throw;
-                    if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
+                    if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); }, {val});
                 }
 
                 exec->await_result_ = next_result;  // pin promise as GC root during suspension
@@ -1842,7 +1848,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         auto self = async_gen;
                         Value vv = v_settled_val;
                         bool vthr = v_settled_throw;
-                        if (gctx) gctx->queue_microtask([self, vv, vthr]() mutable { self->resume_from_await(vv, vthr); });
+                        if (gctx) gctx->queue_microtask([self, vv, vthr]() mutable { self->resume_from_await(vv, vthr); }, {Value(self), vv});
                     }
                     async_gen->await_result_ = value;  // pin as GC root during suspension
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
@@ -2497,6 +2503,7 @@ Value WhileStatement::evaluate(Context& ctx) {
 
     try {
         while (true) {
+            Collector::safepoint();
             if (++safety_counter > max_iterations) {
                 static bool warned = false;
                 if (!warned) {
@@ -2604,6 +2611,7 @@ Value DoWhileStatement::evaluate(Context& ctx) {
 
     try {
         do {
+            Collector::safepoint();
             if (++safety_counter > max_iterations) {
                 static bool warned = false;
                 if (!warned) {

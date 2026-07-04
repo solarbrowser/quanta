@@ -122,7 +122,23 @@ private:
 
 public:
     Value() : bits_(QUIET_NAN | TAG_UNDEFINED) {}
-    
+
+    // GC conservative scanner: decode raw 64-bit stack words. Returns the
+    // payload pointer when the bits carry a heap-cell tag, else nullptr.
+    static void* gc_payload_of_bits(uint64_t bits) {
+        if ((bits & EXPONENT_MASK) != QUIET_NAN) return nullptr;
+        uint64_t tag = bits & TAG_MASK;
+        if (tag == TAG_STRING || tag == TAG_SYMBOL || tag == TAG_BIGINT ||
+            tag == TAG_OBJECT || tag == TAG_FUNCTION) {
+            #if PLATFORM_POINTER_COMPRESSION
+            return decompress_pointer(bits & PAYLOAD_MASK);
+            #else
+            return reinterpret_cast<void*>(bits & PAYLOAD_MASK);
+            #endif
+        }
+        return nullptr;
+    }
+
     static Value null() {
         Value v;
         v.bits_ = QUIET_NAN | TAG_NULL;

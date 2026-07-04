@@ -1041,6 +1041,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (sfi->get_type() == Type::CLASS_STATIC_BLOCK) {
                 ClassStaticBlock* blk = static_cast<ClassStaticBlock*>(sfi.get());
                 auto static_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, constructor_fn.get());
+                // See ContextSurvivorGuard's doc comment: a closure defined inside
+                // the static block (e.g. this test's IIFE generator) captures
+                // static_ctx as its closure_context_ and can outlive this scope.
+                ContextSurvivorGuard survivor_guard(static_ctx, ctx.get_engine());
                 static_ctx->create_binding("this", Value(constructor_fn.get()), true);
                 if (blk->get_body()) blk->get_body()->evaluate(*static_ctx);
             } else if (sfi->get_type() == Type::CLASS_FIELD) {
@@ -1530,7 +1534,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
             auto self = async_gen;
             Value val = settled_val;
             bool thr = settled_throw;
-            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); });
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); }, {Value(self), val});
         }
 
         async_gen->await_result_ = wrapped_keepalive.is_undefined() ? expr_val : wrapped_keepalive;  // pin awaited value (or wrapper promise) as GC root during suspension
@@ -1556,7 +1560,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
             // `await` with no argument -- suspend once then return undefined
             auto self = exec->shared_from_this();
             Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
-            if (gctx) gctx->queue_microtask([self]() mutable { self->resume(Value(), false); });
+            if (gctx) gctx->queue_microtask([self]() mutable { self->resume(Value(), false); }, {});
             swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
             exec->await_result_ = Value();
             exec->await_is_throw_ = false;
@@ -1651,7 +1655,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
             auto self = exec->shared_from_this();
             Value val = settled_val;
             bool thr = settled_throw;
-            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); }, {val});
         }
 
         swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
@@ -1847,7 +1851,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     Value settled = p->get_value();
                     if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
                         async_gen->resume_from_await(settled, was_rejected);
-                    });
+                    }, {Value(async_gen), settled});
                     async_gen->await_result_ = wrapped_keepalive.is_undefined() ? v : wrapped_keepalive;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                     swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
@@ -2020,7 +2024,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                             Value settled = rp->get_value();
                             if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
                                 async_gen->resume_from_await(settled, was_rejected);
-                            });
+                            }, {Value(async_gen), settled});
                             async_gen->await_result_ = ret_result;
                             async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                             swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
@@ -2100,7 +2104,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                                         gctx->clear_exception();
                                         rjf3->call(*gctx, {exc});
                                     }
-                                });
+                                }, {Value(then_fn3), ret_result_capture, Value(rf3), Value(rjf3)});
                             }
                             async_gen->await_result_ = ret_result;
                             async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
@@ -2581,7 +2585,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     Value settled = p->get_value();
                     if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
                         async_gen->resume_from_await(settled, was_rejected);
-                    });
+                    }, {Value(async_gen), settled});
                     async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                     swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);

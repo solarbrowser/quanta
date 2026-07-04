@@ -252,6 +252,11 @@ void register_promise_builtins(Context& ctx) {
                     return Value();
                 }, 1);
             
+            // Invisible-capture rule: the resolve/reject closures hold the
+            // promise only in lambda storage; mirror it as a traced property.
+            resolve_fn->set_property("[[Promise]]", Value(promise.get()));
+            reject_fn->set_property("[[Promise]]", Value(promise.get()));
+
             Function* reject_fn_raw = reject_fn.get();
             std::vector<Value> executor_args = {
                 Value(resolve_fn.release()),
@@ -385,6 +390,8 @@ void register_promise_builtins(Context& ctx) {
                     }
                     return Value();
                 }, 1);
+            ful_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
+            ful_wrapper->set_property("[[CapReject]]", Value(cap_reject));
             auto rej_wrapper = ObjectFactory::create_native_function("",
                 [on_rejected, cap_resolve, cap_reject](Context& ctx, const std::vector<Value>& args) -> Value {
                     Value reason = args.empty() ? Value() : args[0];
@@ -404,6 +411,17 @@ void register_promise_builtins(Context& ctx) {
                     }
                     return Value();
                 }, 1);
+            rej_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
+            rej_wrapper->set_property("[[CapReject]]", Value(cap_reject));
+
+            // Lambda captures are invisible to the collector: mirror them as
+            // hidden properties so the wrappers keep their handler/capability.
+            if (on_fulfilled) ful_wrapper->set_property("[[Handler]]", Value(on_fulfilled));
+            ful_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
+            ful_wrapper->set_property("[[CapReject]]", Value(cap_reject));
+            if (on_rejected) rej_wrapper->set_property("[[Handler]]", Value(on_rejected));
+            rej_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
+            rej_wrapper->set_property("[[CapReject]]", Value(cap_reject));
 
             // The native child this creates is intentionally discarded -- cap.promise (built
             // via the species constructor above) is the promise actually returned to JS;
@@ -637,6 +655,7 @@ void register_promise_builtins(Context& ctx) {
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
                         state->results[this_idx] = val;
+                        cap_resolve->set_property("[[Res" + std::to_string(this_idx) + "]]", val);
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
@@ -650,6 +669,8 @@ void register_promise_builtins(Context& ctx) {
                         }
                         return Value();
                     }, 1);
+                on_ful->set_property("[[CapResolve]]", Value(cap_resolve));
+                on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 Function* ful_fn = on_ful.release();
                 // Keep handler alive (next_promise may be a non-Promise thenable with no GC pin of its own).
@@ -802,6 +823,7 @@ void register_promise_builtins(Context& ctx) {
                         settled->set_property("status", Value(std::string("fulfilled")));
                         settled->set_property("value", val);
                         state->results[this_idx] = Value(settled.release());
+                        cap_resolve->set_property("[[Res" + std::to_string(this_idx) + "]]", state->results[this_idx]);
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
@@ -815,6 +837,8 @@ void register_promise_builtins(Context& ctx) {
                         }
                         return Value();
                     }, 1);
+                on_ful->set_property("[[CapResolve]]", Value(cap_resolve));
+                on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 auto on_rej = ObjectFactory::create_native_function("",
                     [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -825,6 +849,7 @@ void register_promise_builtins(Context& ctx) {
                         settled->set_property("status", Value(std::string("rejected")));
                         settled->set_property("reason", reason);
                         state->results[this_idx] = Value(settled.release());
+                        cap_resolve->set_property("[[Res" + std::to_string(this_idx) + "]]", state->results[this_idx]);
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
@@ -838,6 +863,8 @@ void register_promise_builtins(Context& ctx) {
                         }
                         return Value();
                     }, 1);
+                on_rej->set_property("[[CapResolve]]", Value(cap_resolve));
+                on_rej->set_property("[[CapReject]]", Value(cap_reject));
 
                 Function* ful_fn = on_ful.release();
                 Function* rej_fn = on_rej.release();
@@ -953,6 +980,8 @@ void register_promise_builtins(Context& ctx) {
                         }
                         return Value();
                     }, 1);
+                on_ful->set_property("[[CapResolve]]", Value(cap_resolve));
+                on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 Function* ful_fn = on_ful.release();
                 pin_target->set_property("__allkeyed_ful_" + std::to_string(i) + "__", Value(ful_fn));
@@ -1066,6 +1095,8 @@ void register_promise_builtins(Context& ctx) {
                         }
                         return Value();
                     }, 1);
+                on_ful->set_property("[[CapResolve]]", Value(cap_resolve));
+                on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 auto on_rej = ObjectFactory::create_native_function("",
                     [key, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1087,6 +1118,8 @@ void register_promise_builtins(Context& ctx) {
                         }
                         return Value();
                     }, 1);
+                on_rej->set_property("[[CapResolve]]", Value(cap_resolve));
+                on_rej->set_property("[[CapReject]]", Value(cap_reject));
 
                 Function* ful_fn = on_ful.release();
                 Function* rej_fn = on_rej.release();
@@ -1190,6 +1223,7 @@ void register_promise_builtins(Context& ctx) {
                         if (*already_called) return Value();
                         *already_called = true;
                         state->errors[this_idx] = a.empty() ? Value() : a[0];
+                        state->cap_reject->set_property("[[Err" + std::to_string(this_idx) + "]]", state->errors[this_idx]);
                         if (--state->remaining == 0) finalize_aggregate_reject(c, state.get());
                         return Value();
                     }, 1);

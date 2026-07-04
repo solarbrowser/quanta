@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Promise.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Async.h"
@@ -13,6 +14,18 @@
 #include <iostream>
 
 namespace Quanta {
+
+void Promise::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit(value_);
+    for (const auto& r : then_records_) {
+        v.visit_object(r.on_fulfilled);
+        v.visit_object(r.on_rejected);
+        v.visit_object(r.child);
+    }
+    v.visit_context(context_);
+}
+
 
 Promise::Promise(Context* ctx)
     : Object(ObjectType::Promise), state_(PromiseState::PENDING), context_(ctx), engine_(nullptr) {
@@ -173,7 +186,7 @@ void Promise::fulfill(const Value& value) {
                             }
                         }
                     }
-                });
+                }, {Value(self), Value(then_fn), thenable});
                 return;
             }
         }
@@ -206,12 +219,6 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
     Promise* child = static_cast<Promise*>(child_obj.release());
 
     if (state_ == PromiseState::PENDING) {
-        // Also store callbacks as own properties so GC (which traces properties but
-        // not C++ then_records_ directly) keeps them alive during suspension.
-        std::string pin = "__then_" + std::to_string(then_records_.size());
-        if (on_fulfilled) set_property(pin + "f", Value(on_fulfilled));
-        if (on_rejected)  set_property(pin + "r", Value(on_rejected));
-        if (child)        set_property(pin + "c", Value(child));
         then_records_.push_back({on_fulfilled, on_rejected, child});
     } else if (state_ == PromiseState::FULFILLED) {
         // ES2015 25.4.5.3: PromiseReactionJob is always enqueued, never run
@@ -222,13 +229,7 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
         Function* cb = on_fulfilled;
         Promise* ch = child;
         if (queue_ctx && (cb || ch)) {
-            static thread_local size_t then_pin_counter = 0;
-            std::string pin = "__thenp_" + std::to_string(then_pin_counter++);
-            if (cb) self->set_property(pin + "f", Value(cb));
-            if (ch) self->set_property(pin + "c", Value(ch));
-            queue_ctx->queue_microtask([self, pin, cb, ch, val, call_ctx]() mutable {
-                self->delete_property(pin + "f");
-                self->delete_property(pin + "c");
+            queue_ctx->queue_microtask([self, cb, ch, val, call_ctx]() mutable {
                 if (cb) {
                     std::vector<Value> args = {val};
                     Value result = cb->call(*call_ctx, args);
@@ -242,7 +243,7 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
                 } else {
                     if (ch) ch->fulfill(val);
                 }
-            });
+            }, {Value(self), Value(cb), Value(ch), val});
         } else if (ch) {
             ch->fulfill(val);
         }
@@ -252,13 +253,7 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
         Function* cb = on_rejected;
         Promise* ch = child;
         if (queue_ctx && (cb || ch)) {
-            static thread_local size_t then_pin_counter = 0;
-            std::string pin = "__thenp_" + std::to_string(then_pin_counter++);
-            if (cb) self->set_property(pin + "f", Value(cb));
-            if (ch) self->set_property(pin + "c", Value(ch));
-            queue_ctx->queue_microtask([self, pin, cb, ch, val, call_ctx]() mutable {
-                self->delete_property(pin + "f");
-                self->delete_property(pin + "c");
+            queue_ctx->queue_microtask([self, cb, ch, val, call_ctx]() mutable {
                 if (cb) {
                     std::vector<Value> args = {val};
                     Value result = cb->call(*call_ctx, args);
@@ -272,7 +267,7 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
                 } else {
                     if (ch) ch->reject(val);
                 }
-            });
+            }, {Value(self), Value(cb), Value(ch), val});
         } else if (ch) {
             ch->reject(val);
         }
@@ -350,17 +345,13 @@ void Promise::execute_handlers() {
     // never inside fulfill()/reject(), so .then ordering matches what test262's
     // interleaving tests expect relative to other microtasks.
     for (size_t i = 0; i < records.size(); i++) {
-        std::string pin = "__then_" + std::to_string(i);
         Function* on_fulfilled = records[i].on_fulfilled;
         Function* on_rejected = records[i].on_rejected;
         Promise* child = records[i].child;
 
         if (!call_ctx || !queue_ctx) {
             // No context to queue on (shouldn't happen) -- run synchronously as a
-            // last resort, after dropping the GC pins.
-            delete_property(pin + "f");
-            delete_property(pin + "r");
-            delete_property(pin + "c");
+            // last resort.
             if (settled_state == PromiseState::FULFILLED) {
                 if (child) child->fulfill(settled_value);
             } else {
@@ -369,14 +360,9 @@ void Promise::execute_handlers() {
             continue;
         }
 
-        // Keep __then_ pins alive (GC root via self's properties) until the job runs.
         Context* ctx = call_ctx;
-        queue_ctx->queue_microtask([self, pin, ctx, on_fulfilled, on_rejected, child,
+        queue_ctx->queue_microtask([self, ctx, on_fulfilled, on_rejected, child,
                               settled_state, settled_value]() mutable {
-            self->delete_property(pin + "f");
-            self->delete_property(pin + "r");
-            self->delete_property(pin + "c");
-
             if (settled_state == PromiseState::FULFILLED) {
                 if (on_fulfilled) {
                     std::vector<Value> args = {settled_value};
@@ -406,7 +392,7 @@ void Promise::execute_handlers() {
                     if (child) child->reject(settled_value);
                 }
             }
-        });
+        }, {Value(self), Value(on_fulfilled), Value(on_rejected), Value(child), settled_value});
     }
 }
 
