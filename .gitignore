@@ -37,7 +37,6 @@ debug_*.js
 demo.js
 example*.js
 test262/
-tests/
 *.js
 neo/
 /logs/
