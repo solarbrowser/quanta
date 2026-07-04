@@ -1909,13 +1909,16 @@ Value YieldExpression::evaluate(Context& ctx) {
                     if (throw_fn_v.is_function()) {
                         nr = throw_fn_v.as_function()->call(ctx, {async_gen->sent_value_}, iter_val);
                     } else {
-                        // No throw method -- close inner iterator (if it has return) then throw TypeError
+                        // No throw method -- IteratorClose first; a failure while closing
+                        // (return getter or call throwing) wins over the pending TypeError.
                         Object::current_context_ = &ctx;
                         Value ret_fn_v = iter_obj->get_property("return");
                         Object::current_context_ = prev_oc_t;
-                        if (ret_fn_v.is_function())
+                        if (ctx.has_exception()) return Value();
+                        if (ret_fn_v.is_function()) {
                             ret_fn_v.as_function()->call(ctx, {}, iter_val);
-                        ctx.clear_exception();
+                            if (ctx.has_exception()) return Value();
+                        }
                         ctx.throw_type_error("The iterator does not have a 'throw' method");
                         return Value();
                     }
@@ -1950,7 +1953,34 @@ Value YieldExpression::evaluate(Context& ctx) {
                     if (done_val_tmp.to_boolean()) { delegate_done = true; break; }
                 }
 
-                if (!used_async_iterator && !await_before_yield(last_val)) return Value();
+                if (!used_async_iterator) {
+                    // AsyncFromSyncIteratorContinuation with closeOnRejection: PromiseResolve
+                    // reads value.constructor, and a rejected value closes the sync iterator
+                    // before the rejection propagates. Close failures are swallowed.
+                    bool value_threw = false;
+                    if (AsyncUtils::is_promise(last_val)) {
+                        Context* prev_oc_v = Object::current_context_;
+                        Object::current_context_ = &ctx;
+                        last_val.as_object()->get_property("constructor");
+                        Object::current_context_ = prev_oc_v;
+                        value_threw = ctx.has_exception();
+                    }
+                    if (!value_threw && !await_before_yield(last_val)) value_threw = true;
+                    if (value_threw) {
+                        Value original_err = ctx.get_exception();
+                        ctx.clear_exception();
+                        Context* prev_oc_c = Object::current_context_;
+                        Object::current_context_ = &ctx;
+                        Value close_fn = iter_obj->get_property("return");
+                        if (!ctx.has_exception() && close_fn.is_function()) {
+                            close_fn.as_function()->call(ctx, {}, iter_val);
+                        }
+                        Object::current_context_ = prev_oc_c;
+                        ctx.clear_exception();
+                        ctx.throw_exception(original_err, true);
+                        return Value();
+                    }
+                }
                 async_gen->yield_value_    = last_val;
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
                 swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);

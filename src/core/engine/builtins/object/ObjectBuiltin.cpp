@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/TypedArray.h"
 #include <cmath>
 #include <sstream>
 #include <algorithm>
@@ -1369,11 +1370,23 @@ void register_object_builtins(Context& ctx) {
         }, 1);
     object_constructor->set_property("getOwnPropertyDescriptors", Value(getOwnPropertyDescriptors_fn.release()), PropertyAttributes::BuiltinFunction);
 
+    // TypedArray [[PreventExtensions]] returns false for views over a resizable
+    // buffer (their index set can still change), so seal/freeze/preventExtensions throw.
+    auto rejects_prevent_extensions = [](Object* obj) -> bool {
+        if (!obj->is_typed_array()) return false;
+        ArrayBuffer* buf = static_cast<TypedArrayBase*>(obj)->buffer();
+        return buf && buf->is_resizable();
+    };
+
     auto seal_fn = ObjectFactory::create_native_function("seal",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [rejects_prevent_extensions](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value();
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
+            if (rejects_prevent_extensions(obj)) {
+                ctx.throw_type_error("Cannot seal a typed array backed by a resizable buffer");
+                return Value();
+            }
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 Proxy* proxy = static_cast<Proxy*>(obj);
                 bool ok = proxy->prevent_extensions_trap();
@@ -1396,10 +1409,14 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("seal", Value(seal_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto freeze_fn = ObjectFactory::create_native_function("freeze",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [rejects_prevent_extensions](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value();
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
+            if (rejects_prevent_extensions(obj)) {
+                ctx.throw_type_error("Cannot freeze a typed array backed by a resizable buffer");
+                return Value();
+            }
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 Proxy* proxy = static_cast<Proxy*>(obj);
                 bool ok = proxy->prevent_extensions_trap();
@@ -1426,12 +1443,16 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("freeze", Value(freeze_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto preventExtensions_fn = ObjectFactory::create_native_function("preventExtensions",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [rejects_prevent_extensions](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             if (args.empty()) return Value();
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
 
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
+            if (rejects_prevent_extensions(obj)) {
+                ctx.throw_type_error("Cannot prevent extensions on a typed array backed by a resizable buffer");
+                return Value();
+            }
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 bool ok = static_cast<Proxy*>(obj)->prevent_extensions_trap();
                 if (ctx.has_exception()) return Value();

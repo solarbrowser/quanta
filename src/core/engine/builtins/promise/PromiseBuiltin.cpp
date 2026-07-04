@@ -1292,88 +1292,111 @@ void register_promise_builtins(Context& ctx) {
     weakref_constructor->set_property("prototype", Value(weakref_prototype.release()), PropertyAttributes::None);
     ctx.register_built_in_object("WeakRef", weakref_constructor.release());
 
-    auto finalizationregistry_prototype = ObjectFactory::create_object();
-    Object* fr_proto_ptr = finalizationregistry_prototype.get();
-    finalizationregistry_prototype.release();
+    // FinalizationRegistry: cells are tracked but cleanup callbacks never fire --
+    // without real GC-driven finalization there is no observable collection event.
+    {
+        auto can_hold_weakly = [](const Value& v) -> bool {
+            if (v.is_object() || v.is_function()) return true;
+            if (v.is_symbol()) return Symbol::key_for(v.as_symbol()).empty();
+            return false;
+        };
 
-    auto finalizationregistry_constructor = ObjectFactory::create_native_constructor("FinalizationRegistry",
-        [fr_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_function()) {
-                ctx.throw_type_error("FinalizationRegistry constructor requires a callback function");
-                return Value();
-            }
+        auto fr_prototype = ObjectFactory::create_object();
+        Object* fr_proto_ptr = fr_prototype.get();
 
-            auto registry_obj = ObjectFactory::create_object();
-            registry_obj->set_prototype(fr_proto_ptr);
-            registry_obj->set_property("_callback", args[0]);
-
-            auto map_constructor = ctx.get_binding("Map");
-            if (map_constructor.is_function()) {
-                Function* map_ctor = map_constructor.as_function();
-                std::vector<Value> no_args;
-                Value map_instance = map_ctor->call(ctx, no_args);
-                registry_obj->set_property("_registry", map_instance);
-            }
-
-            auto register_fn = ObjectFactory::create_native_function("register",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    if (args.size() < 2 || !args[0].is_object()) {
-                        return Value();
-                    }
-
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value registry_map = this_obj->get_property("_registry");
-                    if (registry_map.is_object()) {
-                        Object* map_obj = registry_map.as_object();
-
-                        if (args.size() >= 3 && !args[2].is_undefined()) {
-                            auto entry = ObjectFactory::create_object();
-                            entry->set_property("target", args[0]);
-                            entry->set_property("heldValue", args[1]);
-
-                            Value set_method = map_obj->get_property("set");
-                            if (set_method.is_function()) {
-                                Function* set_fn = set_method.as_function();
-                                std::vector<Value> set_args = {args[2], Value(entry.release())};
-                                set_fn->call(ctx, set_args, Value(map_obj));
-                            }
-                        }
-                    }
+        auto fr_constructor = ObjectFactory::create_native_constructor("FinalizationRegistry",
+            [fr_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+                if (!ctx.is_in_constructor_call()) {
+                    ctx.throw_type_error("Constructor FinalizationRegistry requires 'new'");
                     return Value();
-                }, 2);
-            registry_obj->set_property("register", Value(register_fn.release()), PropertyAttributes::BuiltinFunction);
+                }
+                if (args.empty() || !args[0].is_function()) {
+                    ctx.throw_type_error("FinalizationRegistry cleanup callback must be callable");
+                    return Value();
+                }
+                auto registry_obj = ObjectFactory::create_object();
+                Object* proto = fr_proto_ptr;
+                Value nt = ctx.get_new_target();
+                if (nt.is_object() || nt.is_function()) {
+                    Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
+                    Value pv = nt_obj->get_property("prototype");
+                    if (ctx.has_exception()) return Value();
+                    if (pv.is_object()) proto = pv.as_object();
+                    else if (pv.is_function()) proto = static_cast<Object*>(pv.as_function());
+                }
+                registry_obj->set_prototype(proto);
+                registry_obj->set_property("[[CleanupCallback]]", args[0], PropertyAttributes::Writable);
+                registry_obj->set_property("[[FinalizationCells]]", Value(ObjectFactory::create_array(0).release()), PropertyAttributes::Writable);
+                return Value(registry_obj.release());
+            }, 1);
 
-            auto unregister_fn = ObjectFactory::create_native_function("unregister",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    if (args.empty()) {
-                        return Value(false);
+        auto require_registry = [](Context& ctx, const char* name) -> Object* {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || ctx.original_this_was_primitive() || ctx.original_this_was_nullish() ||
+                !obj->get_property("[[FinalizationCells]]").is_object()) {
+                ctx.throw_type_error(std::string(name) + " requires a FinalizationRegistry this");
+                return nullptr;
+            }
+            return obj;
+        };
+
+        auto register_fn = ObjectFactory::create_native_function("register",
+            [can_hold_weakly, require_registry](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* obj = require_registry(ctx, "register");
+                if (!obj) return Value();
+                Value target = args.empty() ? Value() : args[0];
+                Value held = args.size() > 1 ? args[1] : Value();
+                Value token = args.size() > 2 ? args[2] : Value();
+                if (!can_hold_weakly(target)) { ctx.throw_type_error("FinalizationRegistry target must be held weakly"); return Value(); }
+                if (target.same_value(held)) { ctx.throw_type_error("heldValue cannot be the target itself"); return Value(); }
+                if (!token.is_undefined() && !can_hold_weakly(token)) {
+                    ctx.throw_type_error("unregisterToken must be held weakly");
+                    return Value();
+                }
+                auto cell = ObjectFactory::create_object();
+                cell->set_property("t", target);
+                cell->set_property("h", held);
+                cell->set_property("u", token);
+                obj->get_property("[[FinalizationCells]]").as_object()->push(Value(cell.release()));
+                return Value();
+            }, 2);
+        fr_prototype->set_property_descriptor("register",
+            PropertyDescriptor(Value(register_fn.release()), PropertyAttributes::BuiltinFunction));
+
+        auto unregister_fn = ObjectFactory::create_native_function("unregister",
+            [can_hold_weakly, require_registry](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* obj = require_registry(ctx, "unregister");
+                if (!obj) return Value();
+                Value token = args.empty() ? Value() : args[0];
+                if (!can_hold_weakly(token)) { ctx.throw_type_error("unregisterToken must be held weakly"); return Value(); }
+                Object* cells = obj->get_property("[[FinalizationCells]]").as_object();
+                auto kept = ObjectFactory::create_array(0);
+                bool removed = false;
+                for (uint32_t i = 0; i < cells->get_length(); i++) {
+                    Value cell = cells->get_element(i);
+                    if (cell.is_object() && cell.as_object()->get_property("u").same_value(token)) {
+                        removed = true;
+                    } else {
+                        kept->push(cell);
                     }
+                }
+                obj->set_property("[[FinalizationCells]]", Value(kept.release()));
+                return Value(removed);
+            }, 1);
+        fr_prototype->set_property_descriptor("unregister",
+            PropertyDescriptor(Value(unregister_fn.release()), PropertyAttributes::BuiltinFunction));
 
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value(false);
-
-                    Value registry_map = this_obj->get_property("_registry");
-                    if (registry_map.is_object()) {
-                        Object* map_obj = registry_map.as_object();
-
-                        Value delete_method = map_obj->get_property("delete");
-                        if (delete_method.is_function()) {
-                            Function* delete_fn = delete_method.as_function();
-                            std::vector<Value> delete_args = {args[0]};
-                            return delete_fn->call(ctx, delete_args, Value(map_obj));
-                        }
-                    }
-                    return Value(false);
-                }, 1);
-            registry_obj->set_property("unregister", Value(unregister_fn.release()), PropertyAttributes::BuiltinFunction);
-
-            return Value(registry_obj.release());
-        });
-    finalizationregistry_constructor->set_property("prototype", Value(fr_proto_ptr), PropertyAttributes::None);
-    fr_proto_ptr->set_property("constructor", Value(finalizationregistry_constructor.get()), PropertyAttributes::BuiltinFunction);
-    ctx.register_built_in_object("FinalizationRegistry", finalizationregistry_constructor.release());
+        Symbol* fr_tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (fr_tag_sym) {
+            fr_prototype->set_property_descriptor(fr_tag_sym->to_property_key(),
+                PropertyDescriptor(Value(std::string("FinalizationRegistry")), PropertyAttributes::Configurable));
+        }
+        fr_prototype->set_property_descriptor("constructor",
+            PropertyDescriptor(Value(fr_constructor.get()),
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+        fr_constructor->set_property("prototype", Value(fr_prototype.release()), PropertyAttributes::None);
+        ctx.register_built_in_object("FinalizationRegistry", fr_constructor.release());
+    }
 }
 
 } // namespace Quanta

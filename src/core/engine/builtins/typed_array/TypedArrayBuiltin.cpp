@@ -1950,6 +1950,25 @@ void register_typed_array_builtins(Context& ctx) {
                 if (p.is_object()) proto = p.as_object();
                 else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
             }
+
+            // The prototype getter may have detached or shrunk the buffer;
+            // the spec revalidates after OrdinaryCreateFromConstructor.
+            DataView* dv = static_cast<DataView*>(result.as_object());
+            ArrayBuffer* buf = dv->buffer();
+            if (buf && buf->is_detached()) {
+                ctx.throw_type_error("Cannot construct DataView with a detached ArrayBuffer");
+                return Value();
+            }
+            if (buf) {
+                double buf_len = static_cast<double>(buf->byte_length());
+                double view_end = static_cast<double>(dv->byte_offset()) +
+                                  (dv->is_length_tracking() ? 0.0 : static_cast<double>(dv->byte_length()));
+                if (view_end > buf_len || static_cast<double>(dv->byte_offset()) > buf_len) {
+                    ctx.throw_range_error("DataView extends beyond ArrayBuffer bounds");
+                    return Value();
+                }
+            }
+
             result.as_object()->set_prototype(proto);
             return result;
         });

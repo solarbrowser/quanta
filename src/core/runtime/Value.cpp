@@ -107,45 +107,34 @@ std::string Value::to_string() const {
             return "0";
         }
 
-        // Use exponential notation only if:
-        // - abs value < 1e-6 (excluding 0), or
-        // - abs value >= 1e21
-        // Otherwise use decimal notation
-        double abs_num = std::abs(num);
-        bool use_exponential = (abs_num < 1e-6 && abs_num != 0.0) || abs_num >= 1e21;
+        // Number::toString(10): shortest round-tripping significant digits
+        // (to_chars scientific), placed by the spec 6.1.6.1.20 rules. Fixed-format
+        // to_chars would print large integers exactly (more digits than needed).
+        char buf[64];
+        auto res = std::to_chars(buf, buf + sizeof(buf), num, std::chars_format::scientific);
+        std::string sci(buf, res.ptr);
+        bool neg = sci[0] == '-';
+        size_t pos = neg ? 1 : 0;
+        size_t e_pos = sci.find('e', pos);
+        std::string digits(1, sci[pos]);
+        if (pos + 1 < e_pos && sci[pos + 1] == '.') digits += sci.substr(pos + 2, e_pos - pos - 2);
+        int n = std::stoi(sci.substr(e_pos + 1)) + 1;  // value = 0.digits * 10^n
+        int k = static_cast<int>(digits.size());
 
-        std::ostringstream oss;
-        if (use_exponential) {
-            oss << num;
+        std::string result;
+        if (k <= n && n <= 21) {
+            result = digits + std::string(n - k, '0');
+        } else if (0 < n && n <= 21) {
+            result = digits.substr(0, n) + "." + digits.substr(n);
+        } else if (-6 < n && n <= 0) {
+            result = "0." + std::string(-n, '0') + digits;
         } else {
-            // to_chars gives the shortest round-tripping digits in fixed notation; setprecision(0) for integers would print the EXACT value instead, which can be longer.
-            char buf[400];
-            auto res = std::to_chars(buf, buf + sizeof(buf), num, std::chars_format::fixed);
-            oss << std::string(buf, res.ptr);
+            result = digits.substr(0, 1);
+            if (k > 1) result += "." + digits.substr(1);
+            result += (n - 1 >= 0) ? "e+" : "e-";
+            result += std::to_string(std::abs(n - 1));
         }
-        std::string result = oss.str();
-
-        // Fix exponential notation format (e-07 → e-7, e+21 → e+21)
-        size_t e_pos = result.find('e');
-        if (e_pos != std::string::npos && e_pos + 2 < result.length()) {
-            // Check if next char is + or -
-            if (result[e_pos + 1] == '+' || result[e_pos + 1] == '-') {
-                // Remove leading zeros from exponent
-                size_t exp_start = e_pos + 2;
-                size_t first_nonzero = exp_start;
-                while (first_nonzero < result.length() && result[first_nonzero] == '0') {
-                    first_nonzero++;
-                }
-                // If all zeros or no zeros to remove, keep at least one digit
-                if (first_nonzero >= result.length()) {
-                    result = result.substr(0, e_pos + 2) + "0";
-                } else if (first_nonzero > exp_start) {
-                    result = result.substr(0, e_pos + 2) + result.substr(first_nonzero);
-                }
-            }
-        }
-
-        return result;
+        return neg ? "-" + result : result;
     }
     if (is_string()) {
         String* str_ptr = as_string();
