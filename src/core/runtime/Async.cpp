@@ -590,6 +590,51 @@ void AsyncGenerator::process_next_request() {
                 p->reject(front.value);
                 break;
             case Request::Type::Return: {
+                // AsyncGeneratorAwaitReturn: PromiseResolve(%Promise%, value) unwraps a
+                // promise-valued completion; its "constructor" lookup can throw.
+                if (AsyncUtils::is_promise(front.value)) {
+                    Context* cctx = outer_context_ ? outer_context_ : generator_context_;
+                    Context* prev_cc = Object::current_context_;
+                    Object::current_context_ = cctx;
+                    front.value.as_object()->get_property("constructor");
+                    Object::current_context_ = prev_cc;
+                    if (cctx && cctx->has_exception()) {
+                        Value err = cctx->get_exception();
+                        cctx->clear_exception();
+                        p->reject(err);
+                        break;
+                    }
+                    pending_promise_ = p;
+                    set_property("__pending_promise__", Value(p));
+                    Value gen_val(static_cast<Object*>(this));
+                    auto on_ok = ObjectFactory::create_native_function("",
+                        [gen_val](Context&, const std::vector<Value>& a) -> Value {
+                            auto* gen = static_cast<AsyncGenerator*>(gen_val.as_object());
+                            Promise* settled = gen->pending_promise_;
+                            if (settled) {
+                                auto result_obj = ObjectFactory::create_object();
+                                result_obj->set_property("value", a.empty() ? Value() : a[0]);
+                                result_obj->set_property("done", Value(true));
+                                settled->fulfill(Value(result_obj.release()));
+                            }
+                            gen->advance_queue();
+                            return Value();
+                        }, 1);
+                    auto on_err = ObjectFactory::create_native_function("",
+                        [gen_val](Context&, const std::vector<Value>& a) -> Value {
+                            auto* gen = static_cast<AsyncGenerator*>(gen_val.as_object());
+                            Promise* settled = gen->pending_promise_;
+                            if (settled) settled->reject(a.empty() ? Value() : a[0]);
+                            gen->advance_queue();
+                            return Value();
+                        }, 1);
+                    // Handlers are pinned on the generator so GC keeps them alive
+                    // until the awaited promise settles.
+                    set_property("[[AwaitReturnOk]]", Value(on_ok.get()));
+                    set_property("[[AwaitReturnErr]]", Value(on_err.get()));
+                    static_cast<Promise*>(front.value.as_object())->then(on_ok.release(), on_err.release());
+                    return;
+                }
                 auto result_obj = ObjectFactory::create_object();
                 result_obj->set_property("value", front.value);
                 result_obj->set_property("done", Value(true));
@@ -682,23 +727,14 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
     }
 
     auto next_fn = ObjectFactory::create_native_function("next", async_generator_next, 1);
-    async_gen_prototype->set_property("next", Value(next_fn.release()));
+    async_gen_prototype->set_property("next", Value(next_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto return_fn = ObjectFactory::create_native_function("return", async_generator_return, 1);
-    async_gen_prototype->set_property("return", Value(return_fn.release()));
+    async_gen_prototype->set_property("return", Value(return_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto throw_fn = ObjectFactory::create_native_function("throw", async_generator_throw, 1);
-    async_gen_prototype->set_property("throw", Value(throw_fn.release()));
-
-    Symbol* async_iterator_symbol = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
-    if (async_iterator_symbol) {
-        auto async_iterator_fn = ObjectFactory::create_native_function("@@asyncIterator",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)args;
-                return ctx.get_binding("this");
-            });
-        async_gen_prototype->set_property(async_iterator_symbol->to_property_key(), Value(async_iterator_fn.release()));
-    }
+    async_gen_prototype->set_property("throw", Value(throw_fn.release()), PropertyAttributes::BuiltinFunction);
+    // @@asyncIterator is inherited from %AsyncIteratorPrototype%, no own property here.
 
     Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
     if (tag_sym) {
@@ -718,8 +754,8 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
         PropertyDescriptor agf_tag(Value(std::string("AsyncGeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         async_gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), agf_tag);
     }
-    // %AsyncGeneratorFunction.prototype%.prototype = %AsyncGeneratorPrototype% (non-writable, non-enumerable, non-configurable per spec 27.4.3.3)
-    PropertyDescriptor agfp_proto_desc(Value(s_async_generator_prototype_), static_cast<PropertyAttributes>(PropertyAttributes::None));
+    // %AsyncGeneratorFunction.prototype%.prototype = %AsyncGeneratorPrototype% (27.4.3.3: non-writable, non-enumerable, configurable)
+    PropertyDescriptor agfp_proto_desc(Value(s_async_generator_prototype_), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     async_gen_fn_proto->set_property_descriptor("prototype", agfp_proto_desc);
 
     s_async_generator_function_prototype_ = async_gen_fn_proto.get();
@@ -761,12 +797,20 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
                     ctx.throw_syntax_error(msg);
                     return Value();
                 }
+                // A single argument like "x, y" declares two parameters, so the
+                // function's params (and its .length) come from the parse.
+                auto clone_params = [](const std::vector<std::unique_ptr<Parameter>>& src) {
+                    std::vector<std::unique_ptr<Parameter>> out;
+                    for (const auto& p : src)
+                        out.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                    return out;
+                };
                 if (expr) {
                     if (expr->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* fe = static_cast<FunctionExpression*>(expr.get());
                         if (fe->is_async() && fe->is_generator()) {
                             auto body_clone = fe->get_body() ? fe->get_body()->clone() : nullptr;
-                            auto gen_fn = std::make_unique<AsyncGeneratorFunction>("anonymous", param_names, std::move(body_clone), &ctx);
+                            auto gen_fn = std::make_unique<AsyncGeneratorFunction>("anonymous", clone_params(fe->get_params()), std::move(body_clone), &ctx);
                             gen_fn->set_source_text(toString_src);
                             return Value(gen_fn.release());
                         }
@@ -774,7 +818,7 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
                         FunctionDeclaration* fd = static_cast<FunctionDeclaration*>(expr.get());
                         if (fd->is_async() && fd->is_generator()) {
                             auto body_clone = fd->get_body() ? fd->get_body()->clone() : nullptr;
-                            auto gen_fn = std::make_unique<AsyncGeneratorFunction>("anonymous", param_names, std::move(body_clone), &ctx);
+                            auto gen_fn = std::make_unique<AsyncGeneratorFunction>("anonymous", clone_params(fd->get_params()), std::move(body_clone), &ctx);
                             gen_fn->set_source_text(toString_src);
                             return Value(gen_fn.release());
                         }
@@ -789,69 +833,64 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
 
     async_generator_function_constructor->set_property("name", Value(std::string("AsyncGeneratorFunction")));
 
+    // Both constructor links are { writable: false, enumerable: false, configurable: true };
+    // %AsyncGeneratorPrototype%.constructor is %AsyncGeneratorFunction.prototype%, not the ctor.
     if (s_async_generator_function_prototype_) {
-        s_async_generator_function_prototype_->set_property("constructor", Value(async_generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
+        s_async_generator_function_prototype_->set_property("constructor", Value(async_generator_function_constructor.get()), PropertyAttributes::Configurable);
         async_generator_function_constructor->set_property("prototype", Value(s_async_generator_function_prototype_), PropertyAttributes::None);
+        s_async_generator_prototype_->set_property("constructor", Value(s_async_generator_function_prototype_), PropertyAttributes::Configurable);
     }
-    s_async_generator_prototype_->set_property("constructor", Value(async_generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
 
     ctx.create_binding("AsyncGeneratorFunction", Value(async_generator_function_constructor.release()));
 }
 
+// AsyncGeneratorEnqueue: a bad `this` rejects the returned promise, never throws.
+static Value reject_bad_generator(Context& ctx, const std::string& msg) {
+    auto promise_obj = ObjectFactory::create_promise(&ctx);
+    Promise* p = static_cast<Promise*>(promise_obj.release());
+    ctx.throw_type_error(msg);
+    Value err = ctx.get_exception();
+    ctx.clear_exception();
+    p->reject(err);
+    return Value(p);
+}
+
 Value AsyncGenerator::async_generator_next(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
-        ctx.throw_type_error("AsyncGenerator.next called on non-object");
-        return Value();
-    }
-    
-    AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
+    AsyncGenerator* async_gen = this_value.is_object() ? dynamic_cast<AsyncGenerator*>(this_value.as_object()) : nullptr;
     if (!async_gen) {
-        ctx.throw_type_error("AsyncGenerator.next called on wrong type");
-        return Value();
+        return reject_bad_generator(ctx, "AsyncGenerator.prototype.next called on incompatible receiver");
     }
-    
+
     Value value = args.empty() ? Value() : args[0];
     auto result = async_gen->next(value);
-    
+
     return Value(result.promise.release());
 }
 
 Value AsyncGenerator::async_generator_return(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
-        ctx.throw_type_error("AsyncGenerator.return called on non-object");
-        return Value();
-    }
-    
-    AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
+    AsyncGenerator* async_gen = this_value.is_object() ? dynamic_cast<AsyncGenerator*>(this_value.as_object()) : nullptr;
     if (!async_gen) {
-        ctx.throw_type_error("AsyncGenerator.return called on wrong type");
-        return Value();
+        return reject_bad_generator(ctx, "AsyncGenerator.prototype.return called on incompatible receiver");
     }
-    
+
     Value value = args.empty() ? Value() : args[0];
     auto result = async_gen->return_value(value);
-    
+
     return Value(result.promise.release());
 }
 
 Value AsyncGenerator::async_generator_throw(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
-        ctx.throw_type_error("AsyncGenerator.throw called on non-object");
-        return Value();
-    }
-    
-    AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
+    AsyncGenerator* async_gen = this_value.is_object() ? dynamic_cast<AsyncGenerator*>(this_value.as_object()) : nullptr;
     if (!async_gen) {
-        ctx.throw_type_error("AsyncGenerator.throw called on wrong type");
-        return Value();
+        return reject_bad_generator(ctx, "AsyncGenerator.prototype.throw called on incompatible receiver");
     }
-    
+
     Value exception = args.empty() ? Value() : args[0];
     auto result = async_gen->throw_exception(exception);
-    
+
     return Value(result.promise.release());
 }
 
@@ -900,24 +939,80 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
     auto async_iterator_prototype = ObjectFactory::create_object();
     
     auto next_fn = ObjectFactory::create_native_function("next", async_iterator_next, 1);
-    async_iterator_prototype->set_property("next", Value(next_fn.release()));
-    
+    async_iterator_prototype->set_property("next", Value(next_fn.release()), PropertyAttributes::BuiltinFunction);
+
     auto return_fn = ObjectFactory::create_native_function("return", async_iterator_return, 1);
-    async_iterator_prototype->set_property("return", Value(return_fn.release()));
-    
+    async_iterator_prototype->set_property("return", Value(return_fn.release()), PropertyAttributes::BuiltinFunction);
+
     auto throw_fn = ObjectFactory::create_native_function("throw", async_iterator_throw, 1);
-    async_iterator_prototype->set_property("throw", Value(throw_fn.release()));
+    async_iterator_prototype->set_property("throw", Value(throw_fn.release()), PropertyAttributes::BuiltinFunction);
     
     Symbol* async_iterator_symbol = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
     if (async_iterator_symbol) {
-        auto self_async_iterator_fn = ObjectFactory::create_native_function("@@asyncIterator", 
+        auto self_async_iterator_fn = ObjectFactory::create_native_function("[Symbol.asyncIterator]",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
                 return ctx.get_binding("this");
-            });
-        async_iterator_prototype->set_property(async_iterator_symbol->to_property_key(), Value(self_async_iterator_fn.release()));
+            }, 0);
+        async_iterator_prototype->set_property(async_iterator_symbol->to_property_key(),
+            Value(self_async_iterator_fn.release()), PropertyAttributes::BuiltinFunction);
     }
-    
+
+    // %AsyncIteratorPrototype%[@@asyncDispose]: GetMethod(this, "return"), call it,
+    // unwrap the result to undefined; every abrupt step rejects the returned promise.
+    Symbol* async_dispose_symbol = Symbol::get_well_known(Symbol::ASYNC_DISPOSE);
+    if (async_dispose_symbol) {
+        auto async_dispose_fn = ObjectFactory::create_native_function("[Symbol.asyncDispose]",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args;
+                auto cap_obj = ObjectFactory::create_promise(&ctx);
+                Promise* cap = static_cast<Promise*>(cap_obj.release());
+                auto reject_pending = [&]() {
+                    Value e = ctx.get_exception();
+                    ctx.clear_exception();
+                    cap->reject(e);
+                    return Value(cap);
+                };
+                Object* obj = ctx.get_this_binding();
+                if (!obj) {
+                    ctx.throw_type_error("Symbol.asyncDispose requires an object this");
+                    return reject_pending();
+                }
+                Value ret = obj->get_property("return");
+                if (ctx.has_exception()) return reject_pending();
+                if (ret.is_undefined() || ret.is_null()) {
+                    cap->fulfill(Value());
+                    return Value(cap);
+                }
+                if (!ret.is_function()) {
+                    ctx.throw_type_error("return method is not callable");
+                    return reject_pending();
+                }
+                Value result = ret.as_function()->call(ctx, {Value()}, Value(obj));
+                if (ctx.has_exception()) return reject_pending();
+                Promise* rp = (result.is_object() && result.as_object()->get_type() == Object::ObjectType::Promise)
+                    ? static_cast<Promise*>(result.as_object())
+                    : Promise::resolve(result);
+                Value cap_val(static_cast<Object*>(cap));
+                auto on_ok = ObjectFactory::create_native_function("",
+                    [cap_val](Context&, const std::vector<Value>&) -> Value {
+                        static_cast<Promise*>(cap_val.as_object())->fulfill(Value());
+                        return Value();
+                    }, 1);
+                auto on_err = ObjectFactory::create_native_function("",
+                    [cap_val](Context&, const std::vector<Value>& a) -> Value {
+                        static_cast<Promise*>(cap_val.as_object())->reject(a.empty() ? Value() : a[0]);
+                        return Value();
+                    }, 1);
+                on_ok->set_property("[[Capability]]", cap_val);
+                on_err->set_property("[[Capability]]", cap_val);
+                rp->then(on_ok.release(), on_err.release());
+                return Value(cap);
+            }, 0);
+        async_iterator_prototype->set_property(async_dispose_symbol->to_property_key(),
+            Value(async_dispose_fn.release()), PropertyAttributes::BuiltinFunction);
+    }
+
     ctx.create_binding("AsyncIteratorPrototype", Value(async_iterator_prototype.release()));
 }
 
@@ -1515,6 +1610,10 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     Context* outer_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
     std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;
     auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), std::move(body_clone), outer_ctx);
+    // OrdinaryCreateFromConstructor: the instance inherits from this function's
+    // own "prototype" object, not %AsyncGeneratorPrototype% directly.
+    Value own_proto = get_property("prototype");
+    if (own_proto.is_object()) async_gen->set_prototype(own_proto.as_object());
     return Value(async_gen.release());
 }
 

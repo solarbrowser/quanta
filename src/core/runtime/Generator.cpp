@@ -474,8 +474,8 @@ void Generator::setup_generator_prototype(Context& ctx) {
         PropertyDescriptor gf_tag(Value(std::string("GeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), gf_tag);
     }
-    // %GeneratorFunction.prototype%.prototype = %GeneratorPrototype% (non-writable, non-enumerable, non-configurable per spec 25.2.3.3)
-    PropertyDescriptor gfp_proto_desc(Value(s_generator_prototype_), static_cast<PropertyAttributes>(PropertyAttributes::None));
+    // %GeneratorFunction.prototype%.prototype = %GeneratorPrototype% (27.3.3.2: non-writable, non-enumerable, configurable)
+    PropertyDescriptor gfp_proto_desc(Value(s_generator_prototype_), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     gen_fn_proto->set_property_descriptor("prototype", gfp_proto_desc);
 
     s_generator_function_prototype_ = gen_fn_proto.get();
@@ -517,12 +517,20 @@ void Generator::setup_generator_prototype(Context& ctx) {
                     ctx.throw_syntax_error(msg);
                     return Value();
                 }
+                // A single argument like "x, y" declares two parameters, so the
+                // function's params (and its .length) come from the parse.
+                auto clone_params = [](const std::vector<std::unique_ptr<Parameter>>& src) {
+                    std::vector<std::unique_ptr<Parameter>> out;
+                    for (const auto& p : src)
+                        out.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                    return out;
+                };
                 if (expr) {
                     if (expr->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* fe = static_cast<FunctionExpression*>(expr.get());
                         if (fe->is_generator()) {
                             auto body_clone = fe->get_body() ? fe->get_body()->clone() : nullptr;
-                            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", param_names, std::move(body_clone), &ctx);
+                            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", clone_params(fe->get_params()), std::move(body_clone), &ctx);
                             gen_fn->set_source_text(toString_src);
                             return Value(gen_fn.release());
                         }
@@ -530,7 +538,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
                         FunctionDeclaration* fd = static_cast<FunctionDeclaration*>(expr.get());
                         if (fd->is_generator()) {
                             auto body_clone = fd->get_body() ? fd->get_body()->clone() : nullptr;
-                            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", param_names, std::move(body_clone), &ctx);
+                            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", clone_params(fd->get_params()), std::move(body_clone), &ctx);
                             gen_fn->set_source_text(toString_src);
                             return Value(gen_fn.release());
                         }
@@ -546,7 +554,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
     generator_function_constructor->set_property("name", Value(std::string("GeneratorFunction")));
 
     if (s_generator_function_prototype_) {
-        s_generator_function_prototype_->set_property("constructor", Value(generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
+        s_generator_function_prototype_->set_property("constructor", Value(generator_function_constructor.get()), PropertyAttributes::Configurable);
         generator_function_constructor->set_property("prototype", Value(s_generator_function_prototype_), PropertyAttributes::None);
     }
     // Per spec 27.5.1.1: %GeneratorPrototype%.constructor is %GeneratorFunction.prototype%, not %GeneratorFunction%.

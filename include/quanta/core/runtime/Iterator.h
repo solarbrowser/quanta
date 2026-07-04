@@ -80,6 +80,8 @@ public:
     static std::unique_ptr<ArrayIterator> create_keys_iterator(Object* array);
     static std::unique_ptr<ArrayIterator> create_values_iterator(Object* array);
     static std::unique_ptr<ArrayIterator> create_entries_iterator(Object* array);
+
+    Object* get_array() const { return array_; }
     
 private:
     IteratorResult next_impl();

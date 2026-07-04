@@ -482,6 +482,8 @@ void Map::setup_map_prototype(Context& ctx) {
             if (args.size() < 2 || !args[1].is_function()) { ctx.throw_type_error("callbackFn is not a function"); return Value(); }
             Map* m = static_cast<Map*>(obj);
             Value key = args.empty() ? Value() : args[0];
+            // CanonicalizeKeyedCollectionKey: -0 becomes +0 before the callback sees it.
+            if (key.is_number() && key.as_number() == 0.0) key = Value(0.0);
             if (m->has(key)) return m->get(key);
             Value val = args[1].as_function()->call(ctx, {key}, Value());
             if (ctx.has_exception()) return Value();

@@ -1149,6 +1149,17 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
     Value wrapped_keepalive;
 
     if (AsyncUtils::is_promise(value)) {
+        // Await -> PromiseResolve(%Promise%, value) reads value.constructor;
+        // a throwing getter makes the whole Await complete abruptly.
+        Context* prev_cc = Object::current_context_;
+        Object::current_context_ = &ctx;
+        value.as_object()->get_property("constructor");
+        Object::current_context_ = prev_cc;
+        if (ctx.has_exception()) {
+            out_result = ctx.get_exception();
+            ctx.clear_exception();
+            return true;
+        }
         awaited_promise = static_cast<Promise*>(value.as_object());
     } else if (AsyncUtils::is_thenable(value)) {
         auto wrapped_obj = ObjectFactory::create_promise(gctx);

@@ -154,12 +154,15 @@ static void iterator_zip_close_all(Context& ctx, Object* iters_arr, Object* aliv
 static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
     Object* self = ctx.get_this_binding();
     if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
-    if (self->get_property("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true));
+    // GeneratorValidate runs before the completed-state check: a reentrant call
+    // while executing is a TypeError even if the generator was just completed.
     if (self->get_property("__iz_running__").to_boolean()) {
         ctx.throw_type_error("Iterator.zip helper is already running");
         return Value();
     }
+    if (self->get_property("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true));
     self->set_property("__iz_running__", Value(true));
+    self->set_property("__iz_started__", Value(true));
 
     uint32_t count = (uint32_t)self->get_property("__iz_count__").to_number();
     std::string mode = self->get_property("__iz_mode__").to_string();
@@ -263,12 +266,16 @@ static Value iterator_zip_return(Context& ctx, const std::vector<Value>&) {
     }
     if (!self->get_property("__iz_done__").to_boolean()) {
         self->set_property("__iz_done__", Value(true));
-        self->set_property("__iz_running__", Value(true));
+        // At suspendedStart the generator is completed without resuming, so the
+        // closes run outside the body and reentrant calls see state "completed".
+        // Once started, return() resumes the body and closes run while "executing".
+        bool started = self->get_property("__iz_started__").to_boolean();
+        if (started) self->set_property("__iz_running__", Value(true));
         uint32_t count = (uint32_t)self->get_property("__iz_count__").to_number();
         Object* iters_arr = self->get_property("__iz_iters__").as_object();
         Object* alive_arr = self->get_property("__iz_alive__").as_object();
         iterator_zip_close_all(ctx, iters_arr, alive_arr, count);
-        self->set_property("__iz_running__", Value(false));
+        if (started) self->set_property("__iz_running__", Value(false));
         if (ctx.has_exception()) return Value();
     }
     return Value(make_iter_result(Value(), true));

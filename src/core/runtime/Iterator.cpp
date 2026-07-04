@@ -8,6 +8,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/MapSet.h"
+#include "quanta/core/runtime/TypedArray.h"
 #include "quanta/parser/AST.h"
 #include <iostream>
 
@@ -55,8 +56,17 @@ Value Iterator::iterator_next(Context& ctx, const std::vector<Value>& args) {
     }
     
     Iterator* iterator = static_cast<Iterator*>(obj);
+    // %ArrayIteratorPrototype%.next revalidates a typed-array target: a buffer
+    // resize can take it out of bounds between calls.
+    if (auto* arr_it = dynamic_cast<ArrayIterator*>(iterator)) {
+        Object* target = arr_it->get_array();
+        if (target && target->is_typed_array() && static_cast<TypedArrayBase*>(target)->is_out_of_bounds()) {
+            ctx.throw_type_error("Array iterator: underlying typed array is out of bounds");
+            return Value();
+        }
+    }
     auto result = iterator->next();
-    
+
     return create_iterator_result(result.value, result.done);
 }
 
@@ -297,6 +307,18 @@ Iterator::IteratorResult StringIterator::next_impl() {
     else if (ch >= 0xE0) char_len = 3;
     else if (ch >= 0xC0) char_len = 2;
     if (position_ + char_len > string_.length()) char_len = 1;
+
+    // WTF-8 stores each surrogate as its own 3-byte unit (0xED 0xA0-0xBF ..);
+    // a high+low pair forms one code point, so the iterator emits both together.
+    if (char_len == 3 && ch == 0xED && position_ + 6 <= string_.length()) {
+        unsigned char b1 = static_cast<unsigned char>(string_[position_ + 1]);
+        unsigned char n0 = static_cast<unsigned char>(string_[position_ + 3]);
+        unsigned char n1 = static_cast<unsigned char>(string_[position_ + 4]);
+        bool high = b1 >= 0xA0 && b1 <= 0xAF;
+        bool next_low = n0 == 0xED && n1 >= 0xB0 && n1 <= 0xBF;
+        if (high && next_low) char_len = 6;
+    }
+
     std::string codepoint = string_.substr(position_, char_len);
     position_ += char_len;
     return IteratorResult(Value(codepoint), false);

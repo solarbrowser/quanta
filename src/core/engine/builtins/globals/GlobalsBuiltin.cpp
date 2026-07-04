@@ -203,17 +203,19 @@ void register_global_builtins(Context& ctx) {
             size_t start = 0;
             if (start >= str.length()) return Value::nan();
 
-            // Per spec: ToInt32(radix) then validate range
+            // Per spec: ToInt32(radix) then validate range; a radix of 0 behaves
+            // exactly like an omitted radix (hex-prefix detection stays enabled).
             int radix = 10;
             bool radix_provided = args.size() > 1 && !args[1].is_undefined();
+            bool radix_zero = false;
             if (radix_provided) {
                 double r = args[1].to_number();
                 if (ctx.has_exception()) return Value::nan();
                 // ToInt32 wrapping per spec: handles overflow like 4294967298 → 2
-                if (std::isnan(r) || r == 0.0 || std::isinf(r)) radix = 10;
+                if (std::isnan(r) || r == 0.0 || std::isinf(r)) { radix = 10; radix_zero = true; }
                 else {
                     int32_t ri = static_cast<int32_t>(static_cast<uint32_t>(static_cast<int64_t>(r) & 0xFFFFFFFF));
-                    if (ri == 0) radix = 10;
+                    if (ri == 0) { radix = 10; radix_zero = true; }
                     else if (ri < 2 || ri > 36) return Value::nan();
                     else radix = ri;
                 }
@@ -226,7 +228,7 @@ void register_global_builtins(Context& ctx) {
             }
 
             // Hex prefix strips only when radix is 16 or was left unspecified.
-            bool default_radix = !radix_provided;
+            bool default_radix = !radix_provided || radix_zero;
             if (start + 1 < str.length() && str[start] == '0' &&
                 (str[start + 1] == 'x' || str[start + 1] == 'X') &&
                 (radix == 16 || default_radix)) {
@@ -744,6 +746,31 @@ void register_global_builtins(Context& ctx) {
                 return (*make_realm_fn)(ctx, args);
             }, 0);
         test262_host->set_property("createRealm", Value(createRealm_fn.release()), PropertyAttributes::BuiltinFunction);
+
+        // %AbstractModuleSource% (28.3): constructing it always throws; the @@toStringTag
+        // getter reads a [[ModuleSourceClassName]] slot that no object carries yet.
+        {
+            auto ams_ctor = ObjectFactory::create_native_function("AbstractModuleSource",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    ctx.throw_type_error("%AbstractModuleSource% is not constructible");
+                    return Value();
+                }, 0);
+            auto ams_proto = ObjectFactory::create_object();
+            ams_proto->set_property("constructor", Value(ams_ctor.get()), PropertyAttributes::BuiltinFunction);
+            Symbol* ams_tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+            if (ams_tag_sym) {
+                auto tag_getter = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
+                    [](Context&, const std::vector<Value>&) -> Value { return Value(); }, 0);
+                PropertyDescriptor tag_desc;
+                tag_desc.set_getter(tag_getter.release());
+                tag_desc.set_enumerable(false);
+                tag_desc.set_configurable(true);
+                ams_proto->set_property_descriptor(ams_tag_sym->to_property_key(), tag_desc);
+            }
+            ams_ctor->set_property_descriptor("prototype",
+                PropertyDescriptor(Value(ams_proto.release()), PropertyAttributes::None));
+            test262_host->set_property("AbstractModuleSource", Value(ams_ctor.release()));
+        }
 
         ctx.get_lexical_environment()->create_binding("$262", Value(test262_host.release()), true);
     }

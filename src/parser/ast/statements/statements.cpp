@@ -1620,10 +1620,19 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         value_wrapper->get_property("constructor");
                         rescue_getter_exception();
                         if (ctx.has_exception()) {
-                            // IfAbruptRejectPromise: no valueWrapper at all -- reject
-                            // next_result_promise directly.
                             Value err = ctx.get_exception();
                             ctx.clear_exception();
+                            // Continuation step 6: an abrupt PromiseResolve with done false
+                            // closes the sync iterator; close failures are swallowed.
+                            if (!sync_done) {
+                                Value close_fn = iterator_obj->get_property("return");
+                                rescue_getter_exception();
+                                if (!ctx.has_exception() && close_fn.is_function()) {
+                                    close_fn.as_function()->call(ctx, {}, iterator_val);
+                                    rescue_getter_exception();
+                                }
+                                ctx.clear_exception();
+                            }
                             next_result_promise->reject(err);
                             value_wrapper = nullptr;
                         }
@@ -1645,8 +1654,17 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 return Value();
                             });
                         auto unwrap_r = ObjectFactory::create_native_function("",
-                            [next_result_promise](Context&, const std::vector<Value>& args) -> Value {
+                            [next_result_promise, sync_done, iterator_val, gctx](Context&, const std::vector<Value>& args) -> Value {
                                 Value reason = args.empty() ? Value() : args[0];
+                                // closeOnRejection: a rejected value closes the sync iterator
+                                // before the rejection propagates; close failures are swallowed.
+                                if (!sync_done && iterator_val.is_object() && gctx) {
+                                    Value close_fn = iterator_val.as_object()->get_property("return");
+                                    if (!gctx->has_exception() && close_fn.is_function()) {
+                                        close_fn.as_function()->call(*gctx, {}, iterator_val);
+                                    }
+                                    gctx->clear_exception();
+                                }
                                 next_result_promise->reject(reason);
                                 return Value();
                             });
