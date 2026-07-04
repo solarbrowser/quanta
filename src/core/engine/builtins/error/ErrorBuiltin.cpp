@@ -16,9 +16,15 @@ namespace Quanta {
 // OrdinaryCreateFromConstructor's prototype source: new.target.prototype, else a subclass `this` already wired up by super(), else the intrinsic default.
 static Object* resolve_error_prototype(Context& ctx, Object* default_proto) {
     Value new_target = ctx.get_new_target();
-    if (new_target.is_function()) {
-        Value nt_proto = new_target.as_function()->get_property("prototype");
+    if (new_target.is_function() || new_target.is_object()) {
+        Object* nt = new_target.is_function() ? static_cast<Object*>(new_target.as_function())
+                                              : new_target.as_object();
+        Value nt_proto = nt->get_property("prototype");
+        if (ctx.has_exception()) return default_proto;
         if (nt_proto.is_object()) return nt_proto.as_object();
+        if (nt_proto.is_function()) return static_cast<Object*>(nt_proto.as_function());
+        // GetPrototypeFromConstructor: a non-object prototype falls back to the intrinsic.
+        return default_proto;
     }
     Object* this_obj = ctx.get_this_binding();
     if (this_obj) {
