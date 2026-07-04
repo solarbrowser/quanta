@@ -1225,7 +1225,7 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
         }
         async_gen->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-        swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+        swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
         if (async_gen->await_is_throw_) {
             out_result = async_gen->await_result_;
             async_gen->await_is_throw_ = false;
@@ -1263,7 +1263,7 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
             if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
         }
         exec->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
-        swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+        swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
         if (exec->await_is_throw_) {
             out_result = exec->await_result_;
             exec->await_is_throw_ = false;

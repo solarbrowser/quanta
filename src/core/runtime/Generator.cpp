@@ -37,7 +37,7 @@ void Generator::run_body() {
         // Other exceptions -- propagated via generator_context_
     } catch (...) {}
     state_ = State::Completed;
-    swapcontext(&fiber_ctx_, &caller_ctx_);
+    swapcontext(&fiber_->fiber_ctx, &fiber_->caller_ctx);
 }
 
 Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
@@ -55,12 +55,12 @@ Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> 
     }
 
     // Set up fiber context
-    getcontext(&fiber_ctx_);
-    fiber_ctx_.uc_stack.ss_sp   = fiber_stack_.data();
-    fiber_ctx_.uc_stack.ss_size = STACK_SIZE;
-    fiber_ctx_.uc_link = nullptr;
+    getcontext(&fiber_->fiber_ctx);
+    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
+    fiber_->fiber_ctx.uc_link = nullptr;
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
-    makecontext(&fiber_ctx_, (void(*)())fiber_entry, 2,
+    makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFF), (uint32_t)(ptr >> 32));
 }
 
@@ -75,7 +75,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
-    swapcontext(&caller_ctx_, &fiber_ctx_);
+    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
     current_generator_ = prev;
 
     if (state_ == State::Completed) {
@@ -115,7 +115,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
-    swapcontext(&caller_ctx_, &fiber_ctx_);
+    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
     current_generator_ = prev;
 
     // Check if the fiber propagated an exception (e.g. IteratorClose threw TypeError).
@@ -150,7 +150,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
-    swapcontext(&caller_ctx_, &fiber_ctx_);
+    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
     current_generator_ = prev;
 
     if (state_ == State::Completed) {

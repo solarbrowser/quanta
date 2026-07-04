@@ -31,12 +31,12 @@ AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
       engine_(engine),
       fiber_stack_(STACK_SIZE),
       body_(std::move(body)) {
-    getcontext(&fiber_ctx_);
-    fiber_ctx_.uc_stack.ss_sp   = fiber_stack_.data();
-    fiber_ctx_.uc_stack.ss_size = STACK_SIZE;
-    fiber_ctx_.uc_link = nullptr;
+    getcontext(&fiber_->fiber_ctx);
+    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
+    fiber_->fiber_ctx.uc_link = nullptr;
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
-    makecontext(&fiber_ctx_, (void(*)())fiber_entry, 2,
+    makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
     // Keep outer_promise alive as a GC root for the lifetime of this executor.
     // Without this, GC may collect the promise (and the awaited inner Promises
@@ -99,13 +99,13 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
     EventLoop::instance().release_context(ctx);
 
     // Return control to whoever called run()/resume()
-    swapcontext(&self->fiber_ctx_, &self->caller_ctx_);
+    swapcontext(&self->fiber_->fiber_ctx, &self->fiber_->caller_ctx);
 }
 
 void AsyncExecutor::run() {
     auto* prev = current_;
     current_ = this;
-    swapcontext(&caller_ctx_, &fiber_ctx_);  // enter or re-enter fiber
+    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);  // enter or re-enter fiber
     current_ = prev;
 }
 
@@ -405,7 +405,7 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
         }
 
         // Suspend fiber -- return control to the microtask runner
-        swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+        swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
 
         // Resumed by resume() -- await_result_ holds the settled value
         exec->outer_promise_->delete_property(pin_key);
@@ -459,12 +459,12 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<AST
       outer_context_(outer_ctx),
       body_(std::move(body)), state_(State::SuspendedStart),
       fiber_stack_(STACK_SIZE) {
-    getcontext(&fiber_ctx_);
-    fiber_ctx_.uc_stack.ss_sp   = fiber_stack_.data();
-    fiber_ctx_.uc_stack.ss_size = STACK_SIZE;
-    fiber_ctx_.uc_link = nullptr;
+    getcontext(&fiber_->fiber_ctx);
+    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
+    fiber_->fiber_ctx.uc_link = nullptr;
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
-    makecontext(&fiber_ctx_, (void(*)())fiber_entry, 2,
+    makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
     if (s_async_generator_prototype_) {
         set_prototype(s_async_generator_prototype_);
@@ -510,13 +510,13 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
         self->return_value_ = Value();
     }
 
-    swapcontext(&self->fiber_ctx_, &self->caller_ctx_);
+    swapcontext(&self->fiber_->fiber_ctx, &self->fiber_->caller_ctx);
 }
 
 void AsyncGenerator::enter_fiber() {
     auto* prev = current_;
     current_ = this;
-    swapcontext(&caller_ctx_, &fiber_ctx_);
+    swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
     current_ = prev;
     handle_suspension();
 }

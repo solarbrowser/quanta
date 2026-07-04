@@ -1557,7 +1557,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                 async_gen->await_result_ = next_result;  // pin promise as GC root during suspension
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                 Object::current_context_ = &ctx;
 
                 if (async_gen->await_is_throw_) {
@@ -1755,7 +1755,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 }
 
                 exec->await_result_ = next_result;  // pin promise as GC root during suspension
-                swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+                swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
                 Object::current_context_ = &ctx;
 
                 if (exec->await_is_throw_) {
@@ -1846,7 +1846,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     async_gen->await_result_ = value;  // pin as GC root during suspension
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                    swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                    swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                     Object::current_context_ = &ctx;
                     if (async_gen->await_is_throw_) {
                         ctx.throw_exception(async_gen->await_result_, true);

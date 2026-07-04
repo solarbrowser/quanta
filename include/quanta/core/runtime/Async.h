@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <ucontext.h>
+#include "quanta/core/runtime/FiberState.h"
 
 namespace Quanta {
 
@@ -57,8 +58,7 @@ public:
 
     // Fiber infrastructure
     static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
-    ucontext_t fiber_ctx_;
-    ucontext_t caller_ctx_;
+    std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
     std::vector<char> fiber_stack_;
 
 private:
@@ -138,8 +138,7 @@ public:
 
     // Fiber infrastructure
     static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
-    ucontext_t fiber_ctx_;
-    ucontext_t caller_ctx_;
+    std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
     std::vector<char> fiber_stack_;
 
     // Yield protocol (written by fiber, read by caller after suspend)

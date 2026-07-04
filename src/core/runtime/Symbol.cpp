@@ -5,11 +5,21 @@
  */
 
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/gc/Heap.h"
 #include "quanta/core/engine/Context.h"
 #include <sstream>
 #include <atomic>
 
 namespace Quanta {
+
+void* Symbol::operator new(size_t size) {
+    return Heap::active().allocate(size, CellKind::Symbol);
+}
+
+void Symbol::operator delete(void* p) noexcept {
+    Heap::cell_free(p);
+}
+
 
 uint64_t Symbol::next_id_ = 1;
 std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::well_known_symbols_;

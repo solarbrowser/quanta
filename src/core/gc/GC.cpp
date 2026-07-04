@@ -119,6 +119,10 @@ void GarbageCollector::remove_root_object(Object* obj) {
 }
 
 void GarbageCollector::collect_garbage() {
+    // Retired: this collector never had correct roots and its managed set is
+    // empty in practice. Neutered so it can never touch cells owned by the
+    // new Heap; deleted entirely once the real collector lands.
+    return;
     if (gc_running_) return;
     
     auto start = std::chrono::high_resolution_clock::now();

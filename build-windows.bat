@@ -39,6 +39,22 @@ echo   [OK] Clang++ %CLANG_VER% detected
 echo [%time%] Clang version: %CLANG_VER% >> "%LOG_FILE%"
 echo.
 
+REM build-windows.bat heap-test -> build and run the GC heap unit tests only
+if /i "%~1"=="heap-test" (
+    echo [TEST] Building heap-test...
+    if not exist "build\bin" mkdir build\bin
+    clang++ -std=c++20 -Wall -g -O1 -Iinclude -o build\bin\heap-test.exe ^
+        tests\gc\heap_test.cpp ^
+        src\core\gc\Heap.cpp src\core\gc\HeapBlock.cpp src\core\gc\BlockAllocator.cpp ^
+        2>> "%ERROR_LOG%"
+    if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] heap-test compilation failed
+        exit /b 1
+    )
+    build\bin\heap-test.exe
+    exit /b !ERRORLEVEL!
+)
+
 REM Initialize submodules if needed
 echo [INFO] Checking submodules...
 if not exist "third_party\pcre2\src\pcre2.h.generic" (

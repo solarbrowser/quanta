@@ -33,8 +33,14 @@ private:
     Symbol(const std::string& description);
 
 public:
+    // GC cell protocol (see Object.h).
+    static void* operator new(size_t size);
+    static void  operator delete(void* p) noexcept;
+    static void* operator new[](size_t) = delete;
+    static void  operator delete[](void*) = delete;
+
     ~Symbol() = default;
-    
+
     static std::unique_ptr<Symbol> create(const std::string& description = "", bool has_description = true);
     
     static Symbol* for_key(const std::string& key);
