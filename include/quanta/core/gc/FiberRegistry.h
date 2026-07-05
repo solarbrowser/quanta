@@ -13,6 +13,7 @@
 namespace Quanta {
 
 struct FiberState;
+class Object;
 class Visitor;
 
 // Live fibers (Generator / AsyncGenerator / AsyncExecutor). A suspended
@@ -27,13 +28,18 @@ public:
         const char* stack_lo;
         const char* stack_hi;
         const FiberState* state;
+        // Owner as a GC cell (Generator/AsyncGenerator), null for non-cell
+        // owners. A suspended fiber's owner mutates its traced fields on
+        // every resume, so minor collections treat it as a root instead of
+        // requiring a barrier at each of those writes.
+        Object* owner_cell;
         // Non-cell fiber owners (AsyncExecutor) report the cells their C++
         // fields reference here; cell owners are traced like any object.
         std::function<void(Visitor&)> extra_roots;
     };
 
     static void register_fiber(const void* owner, const char* stack, size_t size,
-                               const FiberState* state,
+                               const FiberState* state, Object* owner_cell,
                                std::function<void(Visitor&)> extra_roots = {});
     static void unregister_fiber(const void* owner);
     static void for_each(const std::function<void(const Record&)>& fn);

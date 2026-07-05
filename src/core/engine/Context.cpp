@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/builtins/ArrayBuiltin.h"
@@ -866,6 +867,7 @@ Value Environment::get_binding_with_depth(const std::string& name, int depth) co
 }
 
 bool Environment::set_binding(const std::string& name, const Value& value) {
+    Collector::write_barrier_env(this);
     if (has_own_binding(name)) {
         if (type_ == Type::Object && binding_object_) {
             return binding_object_->set_property(name, value);
@@ -904,6 +906,7 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
 }
 
 bool Environment::set_binding_direct(const std::string& name, const Value& value, Context* ctx) {
+    Collector::write_barrier_env(this);
     if (type_ == Type::Object && binding_object_) {
         // SetMutableBinding step 2-3: strict mode throws if the binding vanished (e.g. a `with` getter deleted it mid-update).
         bool still_exists = binding_object_->has_property(name);
@@ -921,6 +924,7 @@ bool Environment::set_binding_direct(const std::string& name, const Value& value
 }
 
 void Environment::force_set_binding(const std::string& name, const Value& value) {
+    Collector::write_barrier_env(this);
     if (type_ == Type::Object && binding_object_) {
         binding_object_->set_property(name, value);
     } else {
@@ -931,6 +935,7 @@ void Environment::force_set_binding(const std::string& name, const Value& value)
 }
 
 void Environment::create_uninitialized_binding(const std::string& name, bool is_mutable) {
+    Collector::write_barrier_env(this);
     if (has_own_binding(name)) return;
     bindings_[name] = Value();
     mutable_flags_[name] = is_mutable;
@@ -938,6 +943,7 @@ void Environment::create_uninitialized_binding(const std::string& name, bool is_
 }
 
 void Environment::create_global_function_binding(const std::string& name, const Value& value, bool configurable) {
+    Collector::write_barrier_env(this);
     if (type_ == Type::Object && binding_object_) {
         PropertyDescriptor existing = binding_object_->get_property_descriptor(name);
         PropertyDescriptor desc;
@@ -958,6 +964,7 @@ void Environment::create_global_function_binding(const std::string& name, const 
 }
 
 bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable, bool enumerable) {
+    Collector::write_barrier_env(this);
     if (has_own_binding(name)) {
         return false;
     }
@@ -1018,6 +1025,7 @@ bool Environment::is_initialized_binding(const std::string& name) const {
 }
 
 void Environment::initialize_binding(const std::string& name, const Value& value) {
+    Collector::write_barrier_env(this);
     bindings_[name] = value;
     initialized_flags_[name] = true;
 }

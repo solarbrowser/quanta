@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace Quanta {
 
@@ -70,9 +71,17 @@ public:
     // Exact, known-live cell (from a trace edge, not a guess).
     static ProbeResult exact_cell(const void* p);
 
+    // Write-barrier dedup bit: previous state, set as a side effect.
+    static bool test_and_set_remembered(const ProbeResult& p);
+    static void clear_remembered(const ProbeResult& p);
+
     static void clear_all_marks();   // every heap, every block, every large
     // Walks every live cell of every heap: fn(cell, kind, marked).
     static void for_each_cell(const std::function<void(void*, CellKind, bool)>& fn);
+
+    // Post-sweep: re-queue every block with free slots as an allocation
+    // candidate, so reclaimed cells actually get reused.
+    static void rebuild_allocation_candidates();
 
     // Allocation-triggered GC request; the interpreter's safepoint consumes it.
     static bool gc_requested() { return gc_requested_; }
@@ -99,6 +108,7 @@ public:
         size_t     size;
         CellKind   kind;
         bool       marked;
+        bool       remembered;
         // payload follows, 16B aligned
     };
     static constexpr size_t kLargeHeaderSize =
@@ -118,9 +128,10 @@ private:
 
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into
-    // all_blocks_ chains.
+    // all_blocks_ chains and come back via partial_blocks_ after a sweep.
     HeapBlock* active_block_[kNumCellKinds][kNumSizeClasses] = {};
     HeapBlock* all_blocks_[kNumCellKinds][kNumSizeClasses] = {};
+    std::vector<HeapBlock*> partial_blocks_[kNumCellKinds][kNumSizeClasses];
     LargeCell* large_cells_ = nullptr;
     size_t block_count_ = 0;
 };

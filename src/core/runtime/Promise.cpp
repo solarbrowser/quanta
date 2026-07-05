@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Promise.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
@@ -53,6 +54,7 @@ static Context* get_exec_ctx(Engine* engine, Context* fallback) {
 }
 
 void Promise::fulfill(const Value& value) {
+    Collector::write_barrier(this);
     if (state_ != PromiseState::PENDING) return;
 
     // Self-resolution (SameValue(resolution, promise)) applies regardless of type.
@@ -198,6 +200,7 @@ void Promise::fulfill(const Value& value) {
 }
 
 void Promise::reject(const Value& reason) {
+    Collector::write_barrier(this);
     if (state_ != PromiseState::PENDING) return;
 
     state_ = PromiseState::REJECTED;
@@ -206,6 +209,7 @@ void Promise::reject(const Value& reason) {
 }
 
 Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
+    Collector::write_barrier(this);
     Context* exec_ctx = get_exec_ctx(engine_, context_);
     // Invoke handlers on the promise's creation context (closures need the right
     // defining scope) but always schedule on the global queue -- the only one

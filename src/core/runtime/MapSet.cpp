@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/MapSet.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -105,6 +106,7 @@ Value Map::get(const Value& key) const {
 }
 
 void Map::set(const Value& key, const Value& value) {
+    Collector::write_barrier(this);
     auto it = find_entry(key);
     if (it != entries_.end()) {
         it->value = value;
@@ -658,6 +660,7 @@ bool Set::has(const Value& value) const {
 }
 
 void Set::add(const Value& value) {
+    Collector::write_barrier(this);
     if (find_value(value) == values_.end()) {
         values_.emplace_back(value);
         size_++;
@@ -1339,6 +1342,7 @@ Value WeakMap::get(Object* key) const {
 }
 
 void WeakMap::set(Object* key, const Value& value) {
+    Collector::write_barrier(this);
     entries_[key] = value;
 }
 
@@ -1356,7 +1360,10 @@ Value WeakMap::get_symbol(Symbol* sym) const {
     auto it = symbol_entries_.find(sym->get_id());
     return it != symbol_entries_.end() ? it->second : Value();
 }
-void WeakMap::set_symbol(Symbol* sym, const Value& value) { symbol_entries_[sym->get_id()] = value; }
+void WeakMap::set_symbol(Symbol* sym, const Value& value) {
+    Collector::write_barrier(this);
+    symbol_entries_[sym->get_id()] = value;
+}
 bool WeakMap::delete_symbol(Symbol* sym) {
     auto it = symbol_entries_.find(sym->get_id());
     if (it != symbol_entries_.end()) { symbol_entries_.erase(it); return true; }
@@ -1459,6 +1466,7 @@ bool WeakSet::has(Object* value) const {
 }
 
 void WeakSet::add(Object* value) {
+    Collector::write_barrier(this);
     values_.insert(value);
 }
 

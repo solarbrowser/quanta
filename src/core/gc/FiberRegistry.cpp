@@ -26,9 +26,9 @@ std::vector<const void*>& enter_sps() {
 }
 
 void FiberRegistry::register_fiber(const void* owner, const char* stack, size_t size,
-                                   const FiberState* state,
+                                   const FiberState* state, Object* owner_cell,
                                    std::function<void(Visitor&)> extra_roots) {
-    records().push_back({owner, stack, stack + size, state, std::move(extra_roots)});
+    records().push_back({owner, stack, stack + size, state, owner_cell, std::move(extra_roots)});
 }
 
 void FiberRegistry::unregister_fiber(const void* owner) {

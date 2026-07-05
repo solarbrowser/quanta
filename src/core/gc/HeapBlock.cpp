@@ -29,6 +29,7 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
     h.segment     = segment;
     std::memset(h.alloc_bitmap, 0, sizeof(h.alloc_bitmap));
     std::memset(h.mark_bitmap, 0, sizeof(h.mark_bitmap));
+    std::memset(h.remembered_bitmap, 0, sizeof(h.remembered_bitmap));
     return block;
 }
 
@@ -55,6 +56,10 @@ void HeapBlock::free_cell(void* p) {
     uint64_t bit = 1ULL << (idx % 64);
     assert((h_.alloc_bitmap[idx / 64] & bit) && "double free of heap cell");
     h_.alloc_bitmap[idx / 64] &= ~bit;
+    // Marks are sticky across minor collections: a recycled slot must not
+    // inherit the dead cell's old-generation status.
+    h_.mark_bitmap[idx / 64] &= ~bit;
+    h_.remembered_bitmap[idx / 64] &= ~bit;
     auto* cell = static_cast<FreeCell*>(p);
     cell->next = h_.free_list;
     h_.free_list = cell;
@@ -64,7 +69,10 @@ void HeapBlock::free_cell(void* p) {
 void HeapBlock::retire_cell(void* p) {
     size_t idx = slot_index(p);
     assert(idx != SIZE_MAX);
-    h_.alloc_bitmap[idx / 64] &= ~(1ULL << (idx % 64));
+    uint64_t bit = 1ULL << (idx % 64);
+    h_.alloc_bitmap[idx / 64] &= ~bit;
+    h_.mark_bitmap[idx / 64] &= ~bit;
+    h_.remembered_bitmap[idx / 64] &= ~bit;
     h_.free_count++;
 }
 
@@ -104,6 +112,21 @@ void HeapBlock::set_mark(const void* p) {
 
 void HeapBlock::clear_marks() {
     std::memset(h_.mark_bitmap, 0, sizeof(h_.mark_bitmap));
+}
+
+bool HeapBlock::test_and_set_remembered(const void* p) {
+    size_t idx = slot_index(p);
+    if (idx == SIZE_MAX) return true;
+    uint64_t bit = 1ULL << (idx % 64);
+    bool was = (h_.remembered_bitmap[idx / 64] & bit) != 0;
+    h_.remembered_bitmap[idx / 64] |= bit;
+    return was;
+}
+
+void HeapBlock::clear_remembered(const void* p) {
+    size_t idx = slot_index(p);
+    if (idx == SIZE_MAX) return;
+    h_.remembered_bitmap[idx / 64] &= ~(1ULL << (idx % 64));
 }
 
 }

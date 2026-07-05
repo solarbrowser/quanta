@@ -1401,6 +1401,13 @@ void register_global_builtins(Context& ctx) {
             return Value();
         }, 0);
 
+    auto gc_obj_minor_fn = ObjectFactory::create_native_function("minor",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
+            Collector::collect_minor();
+            return Value();
+        }, 0);
+
     auto gc_obj_heap_size_fn = ObjectFactory::create_native_function("heapSize",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
@@ -1412,6 +1419,7 @@ void register_global_builtins(Context& ctx) {
 
     gc_obj->set_property("stats", Value(gc_obj_stats_fn.release()), PropertyAttributes::BuiltinFunction);
     gc_obj->set_property("collect", Value(gc_obj_collect_fn.release()), PropertyAttributes::BuiltinFunction);
+    gc_obj->set_property("minor", Value(gc_obj_minor_fn.release()), PropertyAttributes::BuiltinFunction);
     gc_obj->set_property("heapSize", Value(gc_obj_heap_size_fn.release()), PropertyAttributes::BuiltinFunction);
 
     ctx.get_lexical_environment()->create_binding("gc", Value(gc_obj.release()), false);
