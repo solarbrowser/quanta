@@ -535,15 +535,16 @@ void register_arraybuffer_builtins(Context& ctx) {
                     return Value();
                 }
                 if (!obj->is_shared_array_buffer()) { ctx.throw_type_error("grow requires a SharedArrayBuffer this"); return Value(); }
-                ArrayBuffer* ab = static_cast<ArrayBuffer*>(obj);
+                SharedArrayBuffer* sab = static_cast<SharedArrayBuffer*>(obj);
                 // Spec: ToIntegerOrInfinity here, not ToIndex (grow uses a plain range check below).
                 double new_len = to_integer_or_infinity_checked(ctx, args.empty() ? Value() : args[0]);
                 if (ctx.has_exception()) return Value();
-                if (new_len < 0 || new_len > ab->max_byte_length()) {
+                // grow() itself rejects a shrink (spec: grow never shrinks).
+                if (new_len < 0 || new_len > sab->max_byte_length() ||
+                    !sab->grow(static_cast<size_t>(new_len))) {
                     ctx.throw_range_error("Invalid SharedArrayBuffer grow length");
                     return Value();
                 }
-                ab->resize(static_cast<size_t>(new_len));
                 return Value();
             }, 1);
         sab_prototype->set_property_descriptor("grow",

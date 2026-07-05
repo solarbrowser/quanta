@@ -9,6 +9,7 @@
 
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Value.h"
+#include <atomic>
 #include <vector>
 #include <memory>
 #include <cstdint>
@@ -26,31 +27,49 @@ class Context;
 class TypedArrayBase;
 
 class ArrayBuffer : public Object {
+public:
+    // Refcounted byte storage, decoupled from the GC-cell wrapper. A
+    // SharedArrayBuffer's store is referenced by wrapper cells in several
+    // agents at once (each agent's heap owns its own wrapper, threads never
+    // share cells); byte_length is atomic so grow() in one agent is visible
+    // in every other. Growable stores allocate max_byte_length up front and
+    // zero it, so growing never moves or exposes stale bytes.
+    struct BackingStore {
+        uint8_t* data = nullptr;
+        std::atomic<size_t> byte_length{0};
+        size_t max_byte_length = 0;
+        bool growable = false;
+        ~BackingStore();
+    };
+
 private:
-    std::unique_ptr<uint8_t[]> data_;
-    size_t byte_length_;
-    size_t max_byte_length_;
+    std::shared_ptr<BackingStore> store_;
     bool is_detached_;
     bool is_resizable_;
-    
+
     std::vector<TypedArrayBase*> attached_views_;
-    
+
     static constexpr size_t DEFAULT_ALIGNMENT = 16;
-    
+
 public:
     explicit ArrayBuffer(size_t byte_length);
     explicit ArrayBuffer(size_t byte_length, size_t max_byte_length);
     ArrayBuffer(const uint8_t* source, size_t byte_length);
-    
+    explicit ArrayBuffer(std::shared_ptr<BackingStore> store);
+
     ~ArrayBuffer() override;
-    
-    size_t byte_length() const { return is_detached_ ? 0 : byte_length_; }
-    size_t max_byte_length() const { return max_byte_length_; }
+
+    size_t byte_length() const {
+        return (is_detached_ || !store_) ? 0 : store_->byte_length.load(std::memory_order_seq_cst);
+    }
+    size_t max_byte_length() const { return store_ ? store_->max_byte_length : 0; }
     bool is_detached() const { return is_detached_; }
     bool is_resizable() const { return is_resizable_; }
-    
-    uint8_t* data() { return is_detached_ ? nullptr : data_.get(); }
-    const uint8_t* data() const { return is_detached_ ? nullptr : data_.get(); }
+
+    uint8_t* data() { return (is_detached_ || !store_) ? nullptr : store_->data; }
+    const uint8_t* data() const { return (is_detached_ || !store_) ? nullptr : store_->data; }
+
+    const std::shared_ptr<BackingStore>& backing_store() const { return store_; }
     
     bool read_bytes(size_t offset, void* dest, size_t count) const;
     bool write_bytes(size_t offset, const void* src, size_t count);
@@ -83,7 +102,9 @@ public:
     bool is_array_buffer() const override { return true; }
     
 private:
-    void allocate_buffer(size_t byte_length);
+    static std::shared_ptr<BackingStore> make_store(size_t byte_length,
+                                                    size_t max_byte_length,
+                                                    bool growable);
     static uint8_t* allocate_aligned(size_t size, size_t alignment = DEFAULT_ALIGNMENT);
     static void deallocate_aligned(uint8_t* ptr);
     bool check_bounds(size_t offset, size_t count) const;
@@ -103,13 +124,16 @@ namespace ArrayBufferFactory {
 
 
 class SharedArrayBuffer : public ArrayBuffer {
-private:
-
 public:
     explicit SharedArrayBuffer(size_t byte_length);
     SharedArrayBuffer(size_t byte_length, size_t max_byte_length);
+    // Wraps an existing store: how a second agent receives a SAB. The new
+    // wrapper is a cell of the receiving agent's heap; only the store is shared.
+    explicit SharedArrayBuffer(std::shared_ptr<BackingStore> store);
 
-    static Value constructor(Context& ctx, const std::vector<Value>& args);
+    // Monotonic: false when new_byte_length is below the current length
+    // (spec: grow never shrinks), even if another agent grows concurrently.
+    bool grow(size_t new_byte_length);
 
     bool is_shared_array_buffer() const override { return true; }
 };
