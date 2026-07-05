@@ -49,12 +49,13 @@ public:
 
     static Value create_iterator_result(const Value& value, bool done);
 
-    // Well-known prototype objects (set during setup_iterator_prototype)
-    static Object* s_iterator_prototype_;
-    static Object* s_array_iterator_prototype_;
-    static Object* s_string_iterator_prototype_;
-    static Object* s_map_iterator_prototype_;
-    static Object* s_set_iterator_prototype_;
+    // Well-known prototype objects (set during setup_iterator_prototype).
+    // Thread-local: each agent builds and owns its own intrinsics.
+    static thread_local Object* s_iterator_prototype_;
+    static thread_local Object* s_array_iterator_prototype_;
+    static thread_local Object* s_string_iterator_prototype_;
+    static thread_local Object* s_map_iterator_prototype_;
+    static thread_local Object* s_set_iterator_prototype_;
 };
 
 /**

@@ -234,7 +234,7 @@ public:
 
 private:
 
-    static std::unordered_map<std::string, std::string> interned_keys_;
+    static thread_local std::unordered_map<std::string, std::string> interned_keys_;
     static const std::string& intern_key(const std::string& key);
     
     bool is_array_index(const std::string& key, uint32_t* index = nullptr) const;
@@ -414,7 +414,7 @@ public:
     std::string to_string() const;
 
     // The %ThrowTypeError% intrinsic, shared by Function.prototype.caller/.arguments and arguments.callee.
-    static Object* s_throw_type_error_;
+    static thread_local Object* s_throw_type_error_;
 
 protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx);

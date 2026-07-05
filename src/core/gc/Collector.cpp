@@ -186,15 +186,15 @@ void scan_stacks(MarkVisitor& v) {
 }
 
 
-Collector::CycleStats g_last_cycle;
+thread_local Collector::CycleStats g_last_cycle;
 
 std::vector<Context*>& exec_context_stack() {
-    static std::vector<Context*> stack;
+    static thread_local std::vector<Context*> stack;
     return stack;
 }
 
 std::vector<const std::vector<Value>*>& value_vector_roots() {
-    static std::vector<const std::vector<Value>*> roots;
+    static thread_local std::vector<const std::vector<Value>*> roots;
     return roots;
 }
 

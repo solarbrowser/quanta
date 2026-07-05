@@ -47,7 +47,7 @@ namespace Quanta {
 
 
 
-uint32_t Context::next_context_id_ = 1;
+thread_local uint32_t Context::next_context_id_ = 1;
 
 ContextSurvivorGuard::~ContextSurvivorGuard() {
     if (eng && ptr) eng->add_survivor_context(ptr.release());

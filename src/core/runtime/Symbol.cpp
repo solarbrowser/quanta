@@ -29,10 +29,10 @@ void Symbol::operator delete(void* p) noexcept {
 }
 
 
-uint64_t Symbol::next_id_ = 1;
-std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::well_known_symbols_;
-std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::global_registry_;
-std::unordered_map<std::string, Symbol*> Symbol::user_symbol_registry_;
+thread_local uint64_t Symbol::next_id_ = 1;
+thread_local std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::well_known_symbols_;
+thread_local std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::global_registry_;
+thread_local std::unordered_map<std::string, Symbol*> Symbol::user_symbol_registry_;
 
 const std::string Symbol::ITERATOR = "Symbol.iterator";
 const std::string Symbol::ASYNC_ITERATOR = "Symbol.asyncIterator";

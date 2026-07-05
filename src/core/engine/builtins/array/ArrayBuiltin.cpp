@@ -323,9 +323,10 @@ static void fa_request_next(Context& ctx, Promise* result_promise) {
     fa_chain(ctx, result_promise, np, "__fa_on_next_settled__");
 }
 
-// GetFunctionRealm-lite: tracks every realm's intrinsic %Array% so a foreign one can be detected.
+// GetFunctionRealm-lite: tracks every realm's intrinsic %Array% so a foreign one can be
+// detected. Thread-local: createRealm's realms all share the creating thread.
 static std::unordered_set<Function*>& all_array_intrinsics() {
-    static std::unordered_set<Function*> registry;
+    static thread_local std::unordered_set<Function*> registry;
     return registry;
 }
 

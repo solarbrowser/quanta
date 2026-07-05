@@ -1252,17 +1252,8 @@ void register_global_builtins(Context& ctx) {
             Engine* engine = ctx.get_engine();
             Promise* promise_ptr = promise;
 
-            // GC-root the promise until the job runs -- the caller may not keep a reference (e.g. side-effect-only import()).
-            static int64_t import_job_id = 0;
-            int64_t job_id = ++import_job_id;
-            std::string pin = "__import_" + std::to_string(job_id) + "_p";
-            Object* global = ctx.get_global_object();
-            if (global) global->set_property(pin, Value(promise_obj.get()));
-
             Context* queue_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : &ctx;
-            queue_ctx->queue_microtask([global, pin, specifier, current_file, engine, promise_ptr]() {
-                if (global) global->delete_property(pin);
-
+            queue_ctx->queue_microtask([specifier, current_file, engine, promise_ptr]() {
                 std::string resolved;
                 if ((specifier.length() >= 2 && specifier.substr(0, 2) == "./") ||
                     (specifier.length() >= 3 && specifier.substr(0, 3) == "../")) {
@@ -1294,7 +1285,7 @@ void register_global_builtins(Context& ctx) {
                 }
 
                 promise_ptr->reject(Value(std::string("Error: Cannot find module '" + specifier + "'")));
-            }, {Value(global), Value(promise_ptr)});
+            }, {Value(promise_ptr)});
 
             return Value(promise_obj.release());
         }, 1);
@@ -1505,22 +1496,14 @@ void register_global_builtins(Context& ctx) {
             Engine* engine = ctx.get_engine();
             Context* queue_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : call_ctx;
 
-            // GC-root the callback until the job runs (mirrors setTimeout's __timer_<id>_cb idiom).
-            static int64_t qmt_next_id = 0;
-            int64_t id = ++qmt_next_id;
-            std::string pin = "__qmt_" + std::to_string(id) + "_cb";
-            Object* global = ctx.get_global_object();
-            if (global) global->set_property(pin, Value(cb));
-
-            queue_ctx->queue_microtask([call_ctx, cb, global, pin]() {
-                if (global) global->delete_property(pin);
+            queue_ctx->queue_microtask([call_ctx, cb]() {
                 cb->call(*call_ctx, {});
                 if (call_ctx->has_exception()) {
                     Value exc = call_ctx->get_exception();
                     call_ctx->clear_exception();
                     std::cerr << "Uncaught (in queueMicrotask) " << exc.to_string() << std::endl;
                 }
-            }, {Value(cb), Value(global)});
+            }, {Value(cb)});
             return Value();
         }, 1);
     ctx.get_lexical_environment()->create_binding("queueMicrotask", Value(queueMicrotask_fn.release()), false);
