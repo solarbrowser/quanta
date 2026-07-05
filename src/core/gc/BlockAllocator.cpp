@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <mutex>
+#include <sys/mman.h>
 
 namespace Quanta {
 
@@ -109,6 +110,27 @@ void* BlockAllocator::allocate_block_region() {
 
 void BlockAllocator::release_block_region(void* region) {
     free_regions_.push_back(region);
+}
+
+void BlockAllocator::decommit_idle_chunks() const {
+    for (void* chunk : chunks_) {
+        uintptr_t base = reinterpret_cast<uintptr_t>(chunk);
+        uintptr_t end = base + kChunkSize;
+        size_t free_in_chunk = 0;
+        for (void* r : free_regions_) {
+            uintptr_t a = reinterpret_cast<uintptr_t>(r);
+            if (a >= base && a < end) free_in_chunk++;
+        }
+        if (free_in_chunk < kBlocksPerChunk) continue;
+        // Every block in this chunk is free: hand its physical pages back to
+        // the OS without unmapping the virtual range. The chunk stays a
+        // known-valid address for the registry and its thread-local MRU
+        // cache, so a stale hit here just faults in a fresh zero page
+        // instead of touching unmapped memory -- HeapBlock::init()
+        // overwrites every field on the next use regardless of what the OS
+        // hands back.
+        madvise(chunk, kChunkSize, MADV_DONTNEED);
+    }
 }
 
 bool BlockAllocator::owns_address(const void* p) {

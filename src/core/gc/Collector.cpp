@@ -421,6 +421,8 @@ void run_collection(bool minor) {
     if (!mark_only) {
         g_last_cycle.swept_cells = run_sweep();
         Heap::rebuild_allocation_candidates();
+        // Full idle-chunk scan: major-only, not part of the minor pause budget.
+        if (!minor) Heap::decommit_idle_memory();
     }
     auto t6 = std::chrono::steady_clock::now();
 

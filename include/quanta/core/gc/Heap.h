@@ -86,6 +86,10 @@ public:
     // candidate, so reclaimed cells actually get reused.
     static void rebuild_allocation_candidates();
 
+    // Full idle-chunk scan (see BlockAllocator::decommit_idle_chunks) --
+    // major-collection-only housekeeping, not part of the minor pause budget.
+    static void decommit_idle_memory();
+
     // Allocation-triggered GC request; the interpreter's safepoint consumes it.
     static bool gc_requested() { return gc_requested_; }
     static void request_gc()   { gc_requested_ = true; }

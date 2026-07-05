@@ -11,6 +11,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 
 namespace Quanta {
 
@@ -307,14 +310,46 @@ void Heap::rebuild_allocation_candidates() {
             for (size_t c = 0; c < kNumSizeClasses; c++) {
                 auto& partial = heap->partial_blocks_[k][c];
                 partial.clear();
-                for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
-                    if (b != heap->active_block_[k][c] && !b->is_full()) {
-                        partial.push_back(b);
+                HeapBlock* prev = nullptr;
+                HeapBlock* b = heap->all_blocks_[k][c];
+                while (b) {
+                    HeapBlock* next = b->next();
+                    if (b != heap->active_block_[k][c] && b->is_empty()) {
+                        // Fully-dead block: unlink and return its raw 16KB region to
+                        // the allocator's pool, so a future block of ANY (kind, size
+                        // class) can reuse it -- otherwise memory stays permanently
+                        // pinned to whatever pairing first claimed it, even once
+                        // nothing of that kind is left.
+                        if (prev) prev->set_next(next);
+                        else heap->all_blocks_[k][c] = next;
+                        heap->block_count_--;
+                        heap->block_allocator_.release_block_region(b);
+                    } else {
+                        if (b != heap->active_block_[k][c] && !b->is_full()) {
+                            partial.push_back(b);
+                        }
+                        prev = b;
                     }
+                    b = next;
                 }
             }
         }
     }
+}
+
+void Heap::decommit_idle_memory() {
+    for (Heap* heap : thread_heaps()) {
+        heap->block_allocator_.decommit_idle_chunks();
+    }
+    // GC-managed cells are only part of the footprint: property storage
+    // (overflow_properties_/descriptors_), array elements_, and rope/string
+    // internals are plain heap allocations glibc's own arena holds onto
+    // after they're freed. malloc_trim asks it to give what it can back to
+    // the OS -- measured to matter far more than the chunk decommit above
+    // for a typical churn-heavy workload.
+#ifdef __GLIBC__
+    malloc_trim(0);
+#endif
 }
 
 void Heap::clear_all_marks() {
