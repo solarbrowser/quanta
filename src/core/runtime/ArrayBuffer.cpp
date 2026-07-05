@@ -40,48 +40,56 @@ extern "C" {
 namespace Quanta {
 
 
+ArrayBuffer::BackingStore::~BackingStore() {
+    ArrayBuffer::deallocate_aligned(data);
+}
+
 ArrayBuffer::ArrayBuffer(size_t byte_length)
-    : Object(ObjectType::ArrayBuffer), byte_length_(byte_length), 
-      max_byte_length_(byte_length), is_detached_(false), is_resizable_(false) {
-    allocate_buffer(byte_length);
+    : Object(ObjectType::ArrayBuffer), is_detached_(false), is_resizable_(false) {
+    store_ = make_store(byte_length, byte_length, false);
 }
 
 ArrayBuffer::ArrayBuffer(size_t byte_length, size_t max_byte_length)
-    : Object(ObjectType::ArrayBuffer), byte_length_(byte_length),
-      max_byte_length_(max_byte_length), is_detached_(false), is_resizable_(true) {
+    : Object(ObjectType::ArrayBuffer), is_detached_(false), is_resizable_(true) {
     if (byte_length > max_byte_length) {
         throw std::invalid_argument("byte_length cannot exceed max_byte_length");
     }
-    allocate_buffer(max_byte_length);
+    store_ = make_store(byte_length, max_byte_length, true);
 }
 
 ArrayBuffer::ArrayBuffer(const uint8_t* source, size_t byte_length)
-    : Object(ObjectType::ArrayBuffer), byte_length_(byte_length),
-      max_byte_length_(byte_length), is_detached_(false), is_resizable_(false) {
-    allocate_buffer(byte_length);
-    if (source && data_) {
-        quanta_memcpy(data_.get(), source, byte_length);
+    : Object(ObjectType::ArrayBuffer), is_detached_(false), is_resizable_(false) {
+    store_ = make_store(byte_length, byte_length, false);
+    if (source && store_->data) {
+        quanta_memcpy(store_->data, source, byte_length);
     }
+}
+
+ArrayBuffer::ArrayBuffer(std::shared_ptr<BackingStore> store)
+    : Object(ObjectType::ArrayBuffer), store_(std::move(store)),
+      is_detached_(false), is_resizable_(store_ && store_->growable) {
 }
 
 ArrayBuffer::~ArrayBuffer() {
     detach_all_views();
 }
 
-void ArrayBuffer::allocate_buffer(size_t byte_length) {
-    if (byte_length == 0) {
-        data_ = nullptr;
-        return;
+std::shared_ptr<ArrayBuffer::BackingStore> ArrayBuffer::make_store(size_t byte_length,
+                                                                   size_t max_byte_length,
+                                                                   bool growable) {
+    auto store = std::make_shared<BackingStore>();
+    store->max_byte_length = max_byte_length;
+    store->growable = growable;
+    store->byte_length.store(byte_length, std::memory_order_relaxed);
+    if (max_byte_length > 0) {
+        try {
+            store->data = allocate_aligned(max_byte_length);
+        } catch (const std::bad_alloc&) {
+            throw std::runtime_error("ArrayBuffer allocation failed: out of memory");
+        }
+        quanta_memset(store->data, 0, max_byte_length);
     }
-    
-    try {
-        uint8_t* raw_ptr = allocate_aligned(byte_length);
-        data_ = std::unique_ptr<uint8_t[]>(raw_ptr);
-        
-        quanta_memset(data_.get(), 0, byte_length);
-    } catch (const std::bad_alloc&) {
-        throw std::runtime_error("ArrayBuffer allocation failed: out of memory");
-    }
+    return store;
 }
 
 uint8_t* ArrayBuffer::allocate_aligned(size_t size, size_t alignment) {
@@ -112,8 +120,8 @@ bool ArrayBuffer::read_bytes(size_t offset, void* dest, size_t count) const {
     if (!check_bounds(offset, count) || !dest || is_detached_) {
         return false;
     }
-    
-    quanta_memcpy(dest, data_.get() + offset, count);
+
+    quanta_memcpy(dest, data() + offset, count);
     return true;
 }
 
@@ -121,20 +129,21 @@ bool ArrayBuffer::write_bytes(size_t offset, const void* src, size_t count) {
     if (!check_bounds(offset, count) || !src || is_detached_) {
         return false;
     }
-    
-    quanta_memcpy(data_.get() + offset, src, count);
+
+    quanta_memcpy(data() + offset, src, count);
     return true;
 }
 
 bool ArrayBuffer::check_bounds(size_t offset, size_t count) const {
-    if (is_detached_ || offset > byte_length_) {
+    size_t length = byte_length();
+    if (is_detached_ || offset > length) {
         return false;
     }
-    
-    if (offset + count < offset || offset + count > byte_length_) {
+
+    if (offset + count < offset || offset + count > length) {
         return false;
     }
-    
+
     return true;
 }
 
@@ -142,40 +151,42 @@ std::unique_ptr<ArrayBuffer> ArrayBuffer::slice(size_t start, size_t end) const 
     if (is_detached_) {
         return nullptr;
     }
-    
+
+    size_t length = byte_length();
     if (end == SIZE_MAX) {
-        end = byte_length_;
+        end = length;
     }
-    
-    start = std::min(start, byte_length_);
-    end = std::min(end, byte_length_);
-    
+
+    start = std::min(start, length);
+    end = std::min(end, length);
+
     if (start >= end) {
         return std::make_unique<ArrayBuffer>(0);
     }
-    
+
     size_t slice_length = end - start;
-    return std::make_unique<ArrayBuffer>(data_.get() + start, slice_length);
+    return std::make_unique<ArrayBuffer>(data() + start, slice_length);
 }
 
 bool ArrayBuffer::resize(size_t new_byte_length) {
-    if (!is_resizable_ || is_detached_) {
+    if (!is_resizable_ || is_detached_ || !store_) {
         return false;
     }
 
-    if (new_byte_length > max_byte_length_) {
+    if (new_byte_length > store_->max_byte_length) {
         return false;
     }
 
     // Growing must re-zero the newly exposed region: bytes written while a prior, larger size
     // was in effect must not reappear as stale data once the buffer shrinks and grows back over them.
-    if (new_byte_length > byte_length_ && data_) {
-        quanta_memset(data_.get() + byte_length_, 0, new_byte_length - byte_length_);
+    size_t old_length = store_->byte_length.load(std::memory_order_seq_cst);
+    if (new_byte_length > old_length && store_->data) {
+        quanta_memset(store_->data + old_length, 0, new_byte_length - old_length);
     }
 
-    byte_length_ = new_byte_length;
+    store_->byte_length.store(new_byte_length, std::memory_order_seq_cst);
 
-    set_property("byteLength", Value(static_cast<double>(byte_length_)));
+    set_property("byteLength", Value(static_cast<double>(new_byte_length)));
 
     return true;
 }
@@ -209,16 +220,16 @@ void ArrayBuffer::detach_all_views() {
 }
 
 void ArrayBuffer::initialize_properties() {
-    set_property("byteLength", Value(static_cast<double>(byte_length_)));
-    set_property("maxByteLength", Value(static_cast<double>(max_byte_length_)));
+    set_property("byteLength", Value(static_cast<double>(byte_length())));
+    set_property("maxByteLength", Value(static_cast<double>(max_byte_length())));
     set_property("resizable", Value(is_resizable_));
 }
 
 Value ArrayBuffer::get_property(const std::string& key) const {
     if (key == "byteLength") {
-        return Value(static_cast<double>(byte_length_));
+        return Value(static_cast<double>(byte_length()));
     } else if (key == "maxByteLength") {
-        return Value(static_cast<double>(max_byte_length_));
+        return Value(static_cast<double>(max_byte_length()));
     } else if (key == "resizable") {
         return Value(is_resizable_);
     } else if (key == "_isArrayBuffer") {
@@ -391,8 +402,26 @@ SharedArrayBuffer::SharedArrayBuffer(size_t byte_length, size_t max_byte_length)
     : ArrayBuffer(byte_length, max_byte_length) {
 }
 
-Value SharedArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
-    return ArrayBuffer::constructor(ctx, args);
+SharedArrayBuffer::SharedArrayBuffer(std::shared_ptr<BackingStore> store)
+    : ArrayBuffer(std::move(store)) {
+}
+
+bool SharedArrayBuffer::grow(size_t new_byte_length) {
+    const std::shared_ptr<BackingStore>& store = backing_store();
+    if (!store || !store->growable || new_byte_length > store->max_byte_length) {
+        return false;
+    }
+    // The store is pre-zeroed to max_byte_length and never shrinks, so the
+    // newly exposed region needs no zeroing and racing growers stay safe:
+    // the CAS retries until this grow wins or turns out to be a shrink.
+    size_t current = store->byte_length.load(std::memory_order_seq_cst);
+    do {
+        if (new_byte_length < current) {
+            return false;
+        }
+    } while (!store->byte_length.compare_exchange_weak(current, new_byte_length,
+                                                       std::memory_order_seq_cst));
+    return true;
 }
 
 }
