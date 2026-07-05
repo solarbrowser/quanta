@@ -16,6 +16,7 @@
 #include "quanta/core/runtime/MapSet.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -327,8 +328,8 @@ size_t run_sweep() {
     // first keeps the block bitmaps stable while destructors run.
     struct Dead { void* cell; CellKind kind; };
     std::vector<Dead> dead;
-    Heap::for_each_cell([&](void* cell, CellKind kind, bool marked) {
-        if (!marked) dead.push_back({cell, kind});
+    Heap::for_each_dead_cell([&](void* cell, CellKind kind) {
+        dead.push_back({cell, kind});
     });
     // QUANTA_GC_POISON=1: fill freed cells with a recognizable pattern and
     // leak the slot instead of reusing it -- any use-after-free then crashes
@@ -375,6 +376,9 @@ void run_collection(bool minor) {
     Heap::clear_gc_request();
     if (!minor) Heap::clear_all_marks();
 
+    static const bool prof = env_flag("QUANTA_GC_PROFILE");
+    auto t0 = std::chrono::steady_clock::now();
+
     MarkVisitor v;
     if (minor) {
         // Old cells/environments mutated since the last cycle: their new
@@ -387,6 +391,7 @@ void run_collection(bool minor) {
         });
     }
     scan_stacks(v);
+    auto t1 = std::chrono::steady_clock::now();
 
     for (Engine* engine : Engine::all_engines()) {
         v.visit_context(engine->get_global_context());
@@ -398,20 +403,31 @@ void run_collection(bool minor) {
         for (const Value& val : *vec) v.visit(val);
     Symbol::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
+    auto t2 = std::chrono::steady_clock::now();
 
     v.drain();
+    auto t3 = std::chrono::steady_clock::now();
     v.drain_ephemerons();
     v.finalize_ephemerons();
+    auto t4 = std::chrono::steady_clock::now();
 
     g_last_cycle = Collector::CycleStats{};
     g_last_cycle.minor = minor;
     g_last_cycle.marked_cells = v.marked_cells;
     if (verify) run_verify(g_last_cycle);
+    auto t5 = std::chrono::steady_clock::now();
 
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {
         g_last_cycle.swept_cells = run_sweep();
         Heap::rebuild_allocation_candidates();
+    }
+    auto t6 = std::chrono::steady_clock::now();
+
+    if (prof) {
+        auto us = [](auto a, auto b) { return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count(); };
+        std::fprintf(stderr, "[gc-prof] %s scan_stacks=%ldus roots=%ldus drain=%ldus ephemeron=%ldus verify=%ldus sweep+rebuild=%ldus marked=%zu\n",
+                     minor ? "minor" : "major", us(t0,t1), us(t1,t2), us(t2,t3), us(t3,t4), us(t4,t5), us(t5,t6), v.marked_cells);
     }
 
     for (const Heap::ProbeResult& p : remembered_cells()) Heap::clear_remembered(p);

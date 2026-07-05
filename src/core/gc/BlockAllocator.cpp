@@ -52,13 +52,24 @@ struct ChunkRegistry {
     }
 
     bool contains(const void* p) const {
-        const Ranges& ranges = *snapshot.load(std::memory_order_acquire);
         uintptr_t a = reinterpret_cast<uintptr_t>(p);
+        // MRU: the collector's mark phase visits many pointers from the same
+        // chunk in a row (an array's elements, a block's bump-allocated
+        // neighbors), so the last hit usually covers the next call too --
+        // skips the atomic load and binary search entirely on a hit.
+        static thread_local std::pair<uintptr_t, uintptr_t> mru{0, 0};
+        if (a >= mru.first && a < mru.second) return true;
+
+        const Ranges& ranges = *snapshot.load(std::memory_order_acquire);
         auto it = std::upper_bound(ranges.begin(), ranges.end(),
                                    std::make_pair(a, UINTPTR_MAX));
         if (it == ranges.begin()) return false;
         --it;
-        return a >= it->first && a < it->second;
+        if (a >= it->first && a < it->second) {
+            mru = *it;
+            return true;
+        }
+        return false;
     }
 };
 

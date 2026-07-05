@@ -78,6 +78,9 @@ public:
     static void clear_all_marks();   // every heap, every block, every large
     // Walks every live cell of every heap: fn(cell, kind, marked).
     static void for_each_cell(const std::function<void(void*, CellKind, bool)>& fn);
+    // Sweep's fast path: fn(cell, kind) for every dead cell only (see
+    // HeapBlock::for_each_dead_cell for the word-level skip).
+    static void for_each_dead_cell(const std::function<void(void*, CellKind)>& fn);
 
     // Post-sweep: re-queue every block with free slots as an allocation
     // candidate, so reclaimed cells actually get reused.

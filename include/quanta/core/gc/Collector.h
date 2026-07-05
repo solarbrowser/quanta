@@ -30,6 +30,7 @@ public:
     //   QUANTA_GC_VERIFY=1   after marking, check every marked cell's edges
     //   QUANTA_GC_LOG=1      one summary line per collection to stderr
     //   QUANTA_GC_MARK_ONLY=1  skip the sweep (marking soak-test mode)
+    //   QUANTA_GC_PROFILE=1  per-phase timing breakdown to stderr
 
     // The interpreter's per-statement hook: collects when requested/stressed.
     static void safepoint();
