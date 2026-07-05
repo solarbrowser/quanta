@@ -13,9 +13,12 @@
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <limits>
+#include <mutex>
 #include <thread>
 
 namespace Quanta {
@@ -125,14 +128,6 @@ double truncate_to_element_type(double raw, AT t) {
     return mod_val;
 }
 
-// Truncates a BigInt to the stored 64-bit representation, so e.g. -5n compares
-// equal to a BigUint64Array slot holding 2^64-5.
-Value truncate_bigint_to_element_type(const BigInt& b, AT t) {
-    int64_t raw = b.to_int64();
-    if (t == AT::BIGINT64) return Value(new BigInt(raw));
-    return Value(new BigInt(std::to_string(static_cast<uint64_t>(raw))));
-}
-
 // ValidateIntegerTypedArray: RequireInternalSlot + allowed-type check, which must run (and throw
 // TypeError) before the index/value arguments are ever coerced.
 TypedArrayBase* validate_integer_typed_array(Context& ctx, const Value& v, bool waitable) {
@@ -163,20 +158,110 @@ double validate_atomic_access(Context& ctx, TypedArrayBase* ta, const Value& ind
     return idx;
 }
 
-// A pending waitAsync is a promise keyed by absolute buffer position; a same-agent
-// Atomics.notify() finds and resolves it here, no cross-thread wakeup needed.
+// Pending waitAsync promises, keyed by element address. Thread-local: a
+// promise is a GC cell of its own agent, only a same-agent notify may touch it.
 struct PendingWaiter {
-    ArrayBuffer* buffer;
-    size_t byte_index;
+    const void* addr;
     Promise* promise;
 };
 
 std::vector<PendingWaiter>& pending_waiters() {
-    static std::vector<PendingWaiter> registry;
+    static thread_local std::vector<PendingWaiter> registry;
     return registry;
 }
 
+// Blocked Atomics.wait calls, process-wide: a notify in any agent must wake
+// them. The mutex also covers wait's value re-check, so a concurrent
+// store+notify cannot slip in before enrollment (no lost wakeup).
+struct BlockingWaiter {
+    const void* addr = nullptr;
+    std::condition_variable cv;
+    bool notified = false;
+};
+
+std::mutex& blocking_waiter_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::vector<BlockingWaiter*>& blocking_waiters() {
+    static std::vector<BlockingWaiter*> waiters;
+    return waiters;
+}
+
 enum class RmwOp { Add, And, Or, Xor, Sub, Exchange };
+
+uint8_t* atomic_element_ptr(TypedArrayBase* ta, size_t idx) {
+    return ta->buffer()->data() + ta->byte_offset() + idx * ta->bytes_per_element();
+}
+
+// The value/expected coercion can run arbitrary JS (valueOf) that detaches
+// or shrinks the buffer; the raw pointer access needs the bounds re-proved.
+bool revalidate_atomic_access(Context& ctx, TypedArrayBase* ta, size_t idx) {
+    ArrayBuffer* buf = ta->buffer();
+    if (!buf || buf->is_detached() || !buf->data()) {
+        ctx.throw_type_error("Atomics: buffer is detached");
+        return false;
+    }
+    if (ta->is_out_of_bounds() || idx >= ta->length()) {
+        ctx.throw_range_error("Atomics access index out of range");
+        return false;
+    }
+    return true;
+}
+
+// Coerced JS operand -> the element's raw bits in an int64; pairs with
+// atomic_load_bits so bit patterns compare directly.
+int64_t operand_bits(const Value& coerced, AT type) {
+    if (is_bigint_array_type(type)) return coerced.as_bigint()->to_int64();
+    return static_cast<int64_t>(truncate_to_element_type(coerced.to_number(), type));
+}
+
+template <typename T>
+T atomic_rmw_bits(uint8_t* addr, RmwOp op, T operand) {
+    T* p = reinterpret_cast<T*>(addr);
+    switch (op) {
+        case RmwOp::Add:      return __atomic_fetch_add(p, operand, __ATOMIC_SEQ_CST);
+        case RmwOp::Sub:      return __atomic_fetch_sub(p, operand, __ATOMIC_SEQ_CST);
+        case RmwOp::And:      return __atomic_fetch_and(p, operand, __ATOMIC_SEQ_CST);
+        case RmwOp::Or:       return __atomic_fetch_or(p, operand, __ATOMIC_SEQ_CST);
+        case RmwOp::Xor:      return __atomic_fetch_xor(p, operand, __ATOMIC_SEQ_CST);
+        case RmwOp::Exchange: return __atomic_exchange_n(p, operand, __ATOMIC_SEQ_CST);
+    }
+    return 0;
+}
+
+// Runs fn with T bound to the element's C type. The spec forces byteOffset %
+// element size == 0, so the raw pointer is always aligned for __atomic ops.
+template <typename Fn>
+Value atomic_with_element_type(AT type, Fn&& fn) {
+    switch (type) {
+        case AT::INT8:      return Value(static_cast<double>(fn(int8_t{})));
+        case AT::UINT8:     return Value(static_cast<double>(fn(uint8_t{})));
+        case AT::INT16:     return Value(static_cast<double>(fn(int16_t{})));
+        case AT::UINT16:    return Value(static_cast<double>(fn(uint16_t{})));
+        case AT::INT32:     return Value(static_cast<double>(fn(int32_t{})));
+        case AT::UINT32:    return Value(static_cast<double>(fn(uint32_t{})));
+        case AT::BIGINT64:  return Value(new BigInt(static_cast<int64_t>(fn(int64_t{}))));
+        case AT::BIGUINT64: return Value(new BigInt(std::to_string(static_cast<uint64_t>(fn(uint64_t{})))));
+        default:            return Value();
+    }
+}
+
+// Sign/zero-extended-to-int64 seq_cst load (wait/waitAsync equality checks).
+int64_t atomic_load_bits(uint8_t* addr, AT type) {
+    switch (type) {
+        case AT::INT8:      return __atomic_load_n(reinterpret_cast<int8_t*>(addr), __ATOMIC_SEQ_CST);
+        case AT::UINT8:     return __atomic_load_n(reinterpret_cast<uint8_t*>(addr), __ATOMIC_SEQ_CST);
+        case AT::INT16:     return __atomic_load_n(reinterpret_cast<int16_t*>(addr), __ATOMIC_SEQ_CST);
+        case AT::UINT16:    return __atomic_load_n(reinterpret_cast<uint16_t*>(addr), __ATOMIC_SEQ_CST);
+        case AT::INT32:     return __atomic_load_n(reinterpret_cast<int32_t*>(addr), __ATOMIC_SEQ_CST);
+        case AT::UINT32:    return __atomic_load_n(reinterpret_cast<uint32_t*>(addr), __ATOMIC_SEQ_CST);
+        case AT::BIGINT64:  return __atomic_load_n(reinterpret_cast<int64_t*>(addr), __ATOMIC_SEQ_CST);
+        case AT::BIGUINT64: return static_cast<int64_t>(__atomic_load_n(reinterpret_cast<uint64_t*>(addr), __ATOMIC_SEQ_CST));
+        default:            return 0;
+    }
+}
 
 Value atomic_read_modify_write(Context& ctx, const std::vector<Value>& args, RmwOp op) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], false);
@@ -189,37 +274,14 @@ Value atomic_read_modify_write(Context& ctx, const std::vector<Value>& args, Rmw
     if (ctx.has_exception()) return Value();
 
     size_t idx = static_cast<size_t>(idx_d);
-    Value old_val = ta->get_element(idx);
-    Value new_val;
-    if (op == RmwOp::Exchange) {
-        new_val = coerced;
-    } else if (big) {
-        BigInt& a = *old_val.as_bigint();
-        BigInt& b = *coerced.as_bigint();
-        switch (op) {
-            case RmwOp::Add: new_val = Value(new BigInt(a + b)); break;
-            case RmwOp::And: new_val = Value(new BigInt(a.bitwise_and(b))); break;
-            case RmwOp::Or:  new_val = Value(new BigInt(a.bitwise_or(b))); break;
-            case RmwOp::Xor: new_val = Value(new BigInt(a.bitwise_xor(b))); break;
-            case RmwOp::Sub: new_val = Value(new BigInt(a - b)); break;
-            default: break;
-        }
-    } else {
-        int64_t a = static_cast<int64_t>(old_val.to_number());
-        int64_t b = static_cast<int64_t>(coerced.to_number());
-        int64_t r = 0;
-        switch (op) {
-            case RmwOp::Add: r = a + b; break;
-            case RmwOp::And: r = a & b; break;
-            case RmwOp::Or:  r = a | b; break;
-            case RmwOp::Xor: r = a ^ b; break;
-            case RmwOp::Sub: r = a - b; break;
-            default: break;
-        }
-        new_val = Value(static_cast<double>(r));
-    }
-    ta->set_element(idx, new_val);
-    return old_val;
+    if (!revalidate_atomic_access(ctx, ta, idx)) return Value();
+
+    uint8_t* addr = atomic_element_ptr(ta, idx);
+    int64_t bits = operand_bits(coerced, ta->get_array_type());
+    return atomic_with_element_type(ta->get_array_type(), [&](auto tag) {
+        using T = decltype(tag);
+        return atomic_rmw_bits<T>(addr, op, static_cast<T>(bits));
+    });
 }
 
 Value atomics_compare_exchange(Context& ctx, const std::vector<Value>& args) {
@@ -236,16 +298,21 @@ Value atomics_compare_exchange(Context& ctx, const std::vector<Value>& args) {
     if (ctx.has_exception()) return Value();
 
     size_t idx = static_cast<size_t>(idx_d);
-    Value old_val = ta->get_element(idx);
-    bool equal;
-    if (big) {
-        Value expected_canon = truncate_bigint_to_element_type(*expected.as_bigint(), ta->get_array_type());
-        equal = (*old_val.as_bigint() == *expected_canon.as_bigint());
-    } else {
-        equal = (old_val.to_number() == truncate_to_element_type(expected.to_number(), ta->get_array_type()));
-    }
-    if (equal) ta->set_element(idx, replacement);
-    return old_val;
+    if (!revalidate_atomic_access(ctx, ta, idx)) return Value();
+
+    uint8_t* addr = atomic_element_ptr(ta, idx);
+    int64_t expected_bits = operand_bits(expected, ta->get_array_type());
+    int64_t replacement_bits = operand_bits(replacement, ta->get_array_type());
+    return atomic_with_element_type(ta->get_array_type(), [&](auto tag) {
+        using T = decltype(tag);
+        // After the CAS, `witnessed` holds the old element value either way
+        // (rewritten on failure, untouched on success) -- the spec's result.
+        T witnessed = static_cast<T>(expected_bits);
+        __atomic_compare_exchange_n(reinterpret_cast<T*>(addr), &witnessed,
+                                    static_cast<T>(replacement_bits), false,
+                                    __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        return witnessed;
+    });
 }
 
 Value atomics_load(Context& ctx, const std::vector<Value>& args) {
@@ -253,7 +320,14 @@ Value atomics_load(Context& ctx, const std::vector<Value>& args) {
     if (!ta) return Value();
     double idx_d = validate_atomic_access(ctx, ta, args.size() > 1 ? args[1] : Value());
     if (ctx.has_exception()) return Value();
-    return ta->get_element(static_cast<size_t>(idx_d));
+    size_t idx = static_cast<size_t>(idx_d);
+    if (!revalidate_atomic_access(ctx, ta, idx)) return Value();
+
+    uint8_t* addr = atomic_element_ptr(ta, idx);
+    return atomic_with_element_type(ta->get_array_type(), [&](auto tag) {
+        using T = decltype(tag);
+        return __atomic_load_n(reinterpret_cast<T*>(addr), __ATOMIC_SEQ_CST);
+    });
 }
 
 Value atomics_store(Context& ctx, const std::vector<Value>& args) {
@@ -267,7 +341,20 @@ Value atomics_store(Context& ctx, const std::vector<Value>& args) {
     Value coerced = big ? to_bigint_value(ctx, raw) : Value(to_integer_or_infinity(ctx, raw));
     if (ctx.has_exception()) return Value();
     size_t idx = static_cast<size_t>(idx_d);
-    ta->set_element(idx, coerced);
+    if (!revalidate_atomic_access(ctx, ta, idx)) return Value();
+
+    uint8_t* addr = atomic_element_ptr(ta, idx);
+    // The written bits are width-truncated (infinity -> 0); the return
+    // value is the un-truncated coercion.
+    double for_bits = coerced.is_bigint() ? 0.0 : coerced.to_number();
+    int64_t bits = coerced.is_bigint()
+        ? coerced.as_bigint()->to_int64()
+        : static_cast<int64_t>(truncate_to_element_type(for_bits, ta->get_array_type()));
+    atomic_with_element_type(ta->get_array_type(), [&](auto tag) {
+        using T = decltype(tag);
+        __atomic_store_n(reinterpret_cast<T*>(addr), static_cast<T>(bits), __ATOMIC_SEQ_CST);
+        return T{};
+    });
     return coerced;
 }
 
@@ -277,8 +364,6 @@ Value atomics_is_lock_free(Context& ctx, const std::vector<Value>& args) {
     return Value(n == 1.0 || n == 2.0 || n == 4.0 || n == 8.0);
 }
 
-// Atomics.wait: nothing can ever notify a blocking wait here, so a mismatch returns
-// "not-equal" and a match sleeps out the (capped) timeout as "timed-out".
 Value atomics_wait(Context& ctx, const std::vector<Value>& args) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], true);
     if (!ta) return Value();
@@ -297,22 +382,37 @@ Value atomics_wait(Context& ctx, const std::vector<Value>& args) {
     double timeout_ms = std::isnan(timeout_raw) ? std::numeric_limits<double>::infinity() : std::max(timeout_raw, 0.0);
 
     size_t idx = static_cast<size_t>(idx_d);
-    Value current = ta->get_element(idx);
-    bool equal;
-    if (big) {
-        Value expected_canon = truncate_bigint_to_element_type(*expected.as_bigint(), ta->get_array_type());
-        equal = (*current.as_bigint() == *expected_canon.as_bigint());
-    } else {
-        equal = (current.to_number() == truncate_to_element_type(expected.to_number(), ta->get_array_type()));
-    }
-    if (!equal) return Value(std::string("not-equal"));
+    if (!revalidate_atomic_access(ctx, ta, idx)) return Value();
 
-    double sleep_ms = std::isinf(timeout_ms) ? 1000.0 : std::min(timeout_ms, 1000.0);
-    if (sleep_ms > 0.0) std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleep_ms));
-    return Value(std::string("timed-out"));
+    uint8_t* addr = atomic_element_ptr(ta, idx);
+    int64_t expected_bits = operand_bits(expected, ta->get_array_type());
+
+    std::unique_lock<std::mutex> lock(blocking_waiter_mutex());
+    if (atomic_load_bits(addr, ta->get_array_type()) != expected_bits) {
+        return Value(std::string("not-equal"));
+    }
+    if (timeout_ms <= 0.0) {
+        return Value(std::string("timed-out"));
+    }
+
+    BlockingWaiter self;
+    self.addr = addr;
+    blocking_waiters().push_back(&self);
+    if (std::isinf(timeout_ms)) {
+        self.cv.wait(lock, [&] { return self.notified; });
+    } else {
+        auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                            std::chrono::duration<double, std::milli>(timeout_ms));
+        self.cv.wait_until(lock, deadline, [&] { return self.notified; });
+    }
+    auto& waiters = blocking_waiters();
+    waiters.erase(std::find(waiters.begin(), waiters.end(), &self));
+    return Value(std::string(self.notified ? "ok" : "timed-out"));
 }
 
-// Atomics.notify: wakes up to `count` same-agent waitAsync promises at this buffer position.
+// Atomics.notify: wakes up to `count` blocked waits (any agent), then up to
+// the remainder of `count` same-agent waitAsync promises, at this address.
 Value atomics_notify(Context& ctx, const std::vector<Value>& args) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], true);
     if (!ta) return Value();
@@ -326,12 +426,22 @@ Value atomics_notify(Context& ctx, const std::vector<Value>& args) {
         count = std::max(count, 0.0);
     }
 
-    ArrayBuffer* buffer = ta->buffer();
-    size_t byte_index = ta->byte_offset() + static_cast<size_t>(idx_d) * ta->bytes_per_element();
+    const void* addr = atomic_element_ptr(ta, static_cast<size_t>(idx_d));
     double woken = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(blocking_waiter_mutex());
+        for (BlockingWaiter* w : blocking_waiters()) {
+            if (woken >= count) break;
+            if (w->addr == addr && !w->notified) {
+                w->notified = true;
+                w->cv.notify_one();
+                woken += 1.0;
+            }
+        }
+    }
     auto& reg = pending_waiters();
     for (auto it = reg.begin(); it != reg.end() && woken < count;) {
-        if (it->buffer == buffer && it->byte_index == byte_index) {
+        if (it->addr == addr) {
             it->promise->fulfill(Value(std::string("ok")));
             it = reg.erase(it);
             woken += 1.0;
@@ -362,14 +472,11 @@ Value atomics_wait_async(Context& ctx, const std::vector<Value>& args) {
     double timeout_ms = std::isnan(timeout_raw) ? std::numeric_limits<double>::infinity() : std::max(timeout_raw, 0.0);
 
     size_t idx = static_cast<size_t>(idx_d);
-    Value current = ta->get_element(idx);
-    bool equal;
-    if (big) {
-        Value expected_canon = truncate_bigint_to_element_type(*expected.as_bigint(), ta->get_array_type());
-        equal = (*current.as_bigint() == *expected_canon.as_bigint());
-    } else {
-        equal = (current.to_number() == truncate_to_element_type(expected.to_number(), ta->get_array_type()));
-    }
+    if (!revalidate_atomic_access(ctx, ta, idx)) return Value();
+
+    uint8_t* addr = atomic_element_ptr(ta, idx);
+    bool equal = atomic_load_bits(addr, ta->get_array_type()) ==
+                 operand_bits(expected, ta->get_array_type());
 
     auto result = ObjectFactory::create_object();
     if (!equal) {
@@ -385,8 +492,7 @@ Value atomics_wait_async(Context& ctx, const std::vector<Value>& args) {
 
     auto promise_obj = ObjectFactory::create_promise(&ctx);
     Promise* promise = static_cast<Promise*>(promise_obj.release());
-    size_t byte_index = ta->byte_offset() + idx * ta->bytes_per_element();
-    pending_waiters().push_back({ta->buffer(), byte_index, promise});
+    pending_waiters().push_back({addr, promise});
     result->set_property("async", Value(true));
     result->set_property("value", Value(promise));
     return Value(result.release());
@@ -408,7 +514,6 @@ Value atomics_pause(Context& ctx, const std::vector<Value>& args) {
 
 void trace_atomics_gc_roots(Visitor& v) {
     for (const auto& w : pending_waiters()) {
-        v.visit_object(w.buffer);
         v.visit_object(w.promise);
     }
 }
