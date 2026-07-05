@@ -30,8 +30,15 @@ public:
 
     // A fresh 16KB aligned region (not yet a HeapBlock; caller runs init).
     void* allocate_block_region();
-    // Regions are never recycled yet; hook exists for the collector's sweep.
     void release_block_region(void* region);
+
+    // Scans every chunk for one whose 64 regions are all currently free --
+    // including a chunk that was carved out by grow() but never had all of
+    // its regions drawn, since LIFO consumption can leave an older chunk's
+    // regions untouched underneath newer ones indefinitely -- and hands its
+    // physical pages back to the OS. Call once per major collection, not
+    // per allocation: it is a full scan, not an incremental check.
+    void decommit_idle_chunks() const;
 
     size_t chunk_count() const { return chunks_.size(); }
     size_t block_capacity() const { return chunks_.size() * kBlocksPerChunk; }
