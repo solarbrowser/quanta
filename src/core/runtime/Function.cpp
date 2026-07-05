@@ -835,6 +835,17 @@ Value Function::get_property(const std::string& key) const {
     return Value();
 }
 
+void Function::set_function_prototype(Object* proto) {
+    Collector::write_barrier(this);
+    prototype_ = proto;
+    if (!proto) remove_own_property("prototype");
+}
+
+void Function::set_closure_environment(Environment* env) {
+    Collector::write_barrier(this);
+    closure_environment_ = env;
+}
+
 void Function::set_name(const std::string& name) {
     name_ = name;
     // Force-update the name in descriptors (bypasses writable check)
@@ -874,6 +885,7 @@ std::vector<std::string> Function::get_own_property_keys() const {
 }
 
 bool Function::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    Collector::write_barrier(this);
     if (key == "prototype") {
         if (attrs == PropertyAttributes::Default && descriptors_) {
             auto it = descriptors_->find("prototype");

@@ -375,7 +375,7 @@ public:
     bool is_arrow() const { return is_arrow_; }
     class Context* get_closure_context() const { return closure_context_; }
     class Environment* get_closure_environment() const { return closure_environment_; }
-    void set_closure_environment(class Environment* env) { closure_environment_ = env; }
+    void set_closure_environment(class Environment* env);
     void set_is_arrow(bool value) { is_arrow_ = value; }
     bool is_class_constructor() const { return is_class_constructor_; }
     void set_is_class_constructor(bool value) { is_class_constructor_ = value; }
@@ -404,10 +404,7 @@ public:
     }
 
     Object* get_function_prototype() const { return prototype_; }
-    void set_function_prototype(Object* proto) {
-        prototype_ = proto;
-        if (!proto) remove_own_property("prototype");
-    }
+    void set_function_prototype(Object* proto);
 
     static Function* create_function_prototype();
 

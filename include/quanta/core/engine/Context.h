@@ -373,6 +373,10 @@ private:
     bool is_closure_boundary_ = false; // marks script-level env: stop snapshot loops here
 
 public:
+    // Write-barrier dedup flag, owned by the Collector (set on first binding
+    // write per GC cycle, cleared after the cycle).
+    bool gc_remembered_ = false;
+
     void gc_trace(Visitor& v) const;
 
     Environment(Type type, Environment* outer = nullptr);

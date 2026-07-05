@@ -58,11 +58,14 @@ public:
     HeapBlock*  next() const           { return h_.next; }
     void        set_next(HeapBlock* n) { h_.next = n; }
 
-    // Mark bitmap accessors -- reserved for the collector's mark phase so
-    // the block layout does not change underneath it later.
     bool test_mark(const void* p) const;
     void set_mark(const void* p);
     void clear_marks();
+
+    // Remembered set membership (write barrier dedup): returns the previous
+    // state, setting the bit as a side effect.
+    bool test_and_set_remembered(const void* p);
+    void clear_remembered(const void* p);
 
     // fn(cell_base, marked) for every allocated cell in this block.
     template <typename Fn>
@@ -89,6 +92,7 @@ private:
         HeapSegment segment;
         uint64_t   alloc_bitmap[kBitmapWords];
         uint64_t   mark_bitmap[kBitmapWords];
+        uint64_t   remembered_bitmap[kBitmapWords];
     };
 
 public:

@@ -136,9 +136,15 @@ void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
     if (block) {
         if (void* p = block->try_allocate()) return p;
     }
-    // Partially-freed blocks are never revisited (no sweep yet); a full
-    // active block is simply replaced. The collector's sweep will rebuild
-    // free lists and re-link refillable blocks.
+    auto& partial = partial_blocks_[k][cls];
+    while (!partial.empty()) {
+        block = partial.back();
+        partial.pop_back();
+        if (void* p = block->try_allocate()) {
+            active_block_[k][cls] = block;
+            return p;
+        }
+    }
     block = fresh_block(kind, segment, cls);
     active_block_[k][cls] = block;
     void* p = block->try_allocate();
@@ -157,6 +163,7 @@ void* Heap::allocate_large(size_t size, CellKind kind) {
     lc->size = size;
     lc->kind = kind;
     lc->marked = false;
+    lc->remembered = false;
     if (large_cells_) large_cells_->prev = lc;
     large_cells_ = lc;
     return reinterpret_cast<char*>(lc) + kLargeHeaderSize;
@@ -271,6 +278,43 @@ void Heap::set_mark(const ProbeResult& p) {
         return;
     }
     HeapBlock::from_cell(p.cell)->set_mark(p.cell);
+}
+
+bool Heap::test_and_set_remembered(const ProbeResult& p) {
+    if (!p.cell) return true;
+    if (p.is_large) {
+        auto* lc = reinterpret_cast<LargeCell*>(static_cast<char*>(p.cell) - kLargeHeaderSize);
+        bool was = lc->remembered;
+        lc->remembered = true;
+        return was;
+    }
+    return HeapBlock::from_cell(p.cell)->test_and_set_remembered(p.cell);
+}
+
+void Heap::clear_remembered(const ProbeResult& p) {
+    if (!p.cell) return;
+    if (p.is_large) {
+        auto* lc = reinterpret_cast<LargeCell*>(static_cast<char*>(p.cell) - kLargeHeaderSize);
+        lc->remembered = false;
+        return;
+    }
+    HeapBlock::from_cell(p.cell)->clear_remembered(p.cell);
+}
+
+void Heap::rebuild_allocation_candidates() {
+    for (Heap* heap : thread_heaps()) {
+        for (size_t k = 0; k < kNumCellKinds; k++) {
+            for (size_t c = 0; c < kNumSizeClasses; c++) {
+                auto& partial = heap->partial_blocks_[k][c];
+                partial.clear();
+                for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
+                    if (b != heap->active_block_[k][c] && !b->is_full()) {
+                        partial.push_back(b);
+                    }
+                }
+            }
+        }
+    }
 }
 
 void Heap::clear_all_marks() {

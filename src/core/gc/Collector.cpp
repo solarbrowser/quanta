@@ -37,6 +37,14 @@ public:
         mark(Heap::probe_word(word));
     }
 
+    // Remembered-set entry: already marked in a previous cycle, but its
+    // fields changed since -- re-trace without re-marking.
+    void push_remembered(const Heap::ProbeResult& p) {
+        if (p.kind == CellKind::Object || p.kind == CellKind::String) {
+            gray_.push_back(p);
+        }
+    }
+
     void visit_object(Object* o) override { if (o) mark(Heap::exact_cell(o)); }
     void visit_string(String* s) override { if (s) mark(Heap::exact_cell(s)); }
     void visit_symbol(Symbol* s) override { if (s) mark(Heap::exact_cell(s)); }
@@ -198,6 +206,16 @@ std::vector<const std::vector<Value>*>& value_vector_roots() {
     return roots;
 }
 
+std::vector<Heap::ProbeResult>& remembered_cells() {
+    static thread_local std::vector<Heap::ProbeResult> cells;
+    return cells;
+}
+
+std::vector<Environment*>& remembered_envs() {
+    static thread_local std::vector<Environment*> envs;
+    return envs;
+}
+
 bool env_flag(const char* name) {
     const char* val = std::getenv(name);
     return val && *val && *val != '0';
@@ -248,14 +266,26 @@ void run_verify(Collector::CycleStats& stats) {
 
 }
 
-void Collector::collect() {
+namespace {
+
+void run_collection(bool minor) {
     static const bool verify = env_flag("QUANTA_GC_VERIFY");
     static const bool log = env_flag("QUANTA_GC_LOG");
 
     Heap::clear_gc_request();
-    Heap::clear_all_marks();
+    if (!minor) Heap::clear_all_marks();
 
     MarkVisitor v;
+    if (minor) {
+        // Old cells/environments mutated since the last cycle: their new
+        // edges may be the only path to young cells.
+        for (const Heap::ProbeResult& p : remembered_cells()) v.push_remembered(p);
+        for (Environment* e : remembered_envs()) v.visit_environment(e);
+        // See FiberRegistry::Record::owner_cell for why these are minor roots.
+        FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
+            if (rec.owner_cell) v.visit_object(rec.owner_cell);
+        });
+    }
     scan_stacks(v);
 
     for (Engine* engine : Engine::all_engines()) {
@@ -271,23 +301,90 @@ void Collector::collect() {
 
     v.drain();
 
-    g_last_cycle = CycleStats{};
+    g_last_cycle = Collector::CycleStats{};
+    g_last_cycle.minor = minor;
     g_last_cycle.marked_cells = v.marked_cells;
     if (verify) run_verify(g_last_cycle);
 
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
-    if (!mark_only) g_last_cycle.swept_cells = run_sweep();
+    if (!mark_only) {
+        g_last_cycle.swept_cells = run_sweep();
+        Heap::rebuild_allocation_candidates();
+    }
+
+    for (const Heap::ProbeResult& p : remembered_cells()) Heap::clear_remembered(p);
+    remembered_cells().clear();
+    for (Environment* e : remembered_envs()) e->gc_remembered_ = false;
+    remembered_envs().clear();
 
     if (log) {
-        std::fprintf(stderr, "[gc] marked=%zu swept=%zu verify_violations=%zu\n",
+        std::fprintf(stderr, "[gc] %s marked=%zu swept=%zu verify_violations=%zu\n",
+                     minor ? "minor" : "major",
                      g_last_cycle.marked_cells, g_last_cycle.swept_cells,
                      g_last_cycle.verify_violations);
     }
 }
 
+}
+
+namespace {
+
+// QUANTA_GC_NO_BARRIER=1: perf-diagnosis knob. With barriers off, the
+// safepoint policy runs full collections only -- minors would miscollect.
+bool barriers_disabled() {
+    static const bool disabled = env_flag("QUANTA_GC_NO_BARRIER");
+    return disabled;
+}
+
+}
+
+void Collector::collect() {
+    run_collection(false);
+}
+
+void Collector::collect_minor() {
+    run_collection(!barriers_disabled());
+}
+
+void Collector::write_barrier(const void* cell) {
+    if (barriers_disabled() || !cell) return;
+    Heap::ProbeResult p = Heap::exact_cell(cell);
+    // Young (or non-cell) targets need no record: a minor trace reaches every
+    // live young cell from the roots; only marked-old cells go dark.
+    if (!p.cell || !Heap::test_mark(p)) return;
+    if (Heap::test_and_set_remembered(p)) return;
+    remembered_cells().push_back(p);
+}
+
+void Collector::write_barrier_env(Environment* env) {
+    if (barriers_disabled() || !env || env->gc_remembered_) return;
+    env->gc_remembered_ = true;
+    remembered_envs().push_back(env);
+}
+
 void Collector::safepoint() {
-    static const bool stress = env_flag("QUANTA_GC_STRESS");
-    if (stress || Heap::gc_requested()) collect();
+    // QUANTA_GC_STRESS: "2" = minor at every safepoint (write-barrier soak,
+    // full every 64th); any other truthy value = full at every safepoint.
+    static const int stress = [] {
+        const char* v = std::getenv("QUANTA_GC_STRESS");
+        if (!v || !*v || *v == '0') return 0;
+        return *v == '2' ? 2 : 1;
+    }();
+    static thread_local uint32_t cycle_count = 0;
+
+    if (stress == 1) {
+        run_collection(false);
+        return;
+    }
+    if (stress == 2) {
+        run_collection(++cycle_count % 64 != 0);
+        return;
+    }
+    if (Heap::gc_requested()) {
+        // Every 8th requested collection is a full one: minors never reclaim
+        // old-generation garbage, so majors must keep coming.
+        run_collection(!barriers_disabled() && ++cycle_count % 8 != 0);
+    }
 }
 
 const Collector::CycleStats& Collector::last_cycle() {

@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
@@ -87,6 +88,7 @@ Object::Object(Object* prototype, ObjectType type) : Object(type) {
 }
 
 void Object::set_prototype(Object* prototype) {
+    Collector::write_barrier(this);
     header_.prototype = prototype;
     update_hash_code();
 }
@@ -122,6 +124,7 @@ bool Object::has_property(const std::string& key) const {
 }
 
 void Object::add_private_field(const std::string& key, const Value& value) {
+    Collector::write_barrier(this);
     // PrivateFieldAdd: creates the private field slot on this instance.
     // Spec: if object is not extensible, throw TypeError.
     if (!is_extensible()) {
@@ -466,6 +469,7 @@ static bool array_set_length_coerce(Context* ctx, const Value& value, double& ou
 }
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    Collector::write_barrier(this);
     if (header_.type == ObjectType::Array && key == "length") {
         // Coerce (can throw/run side effects) before the [[Writable]] check, not after.
         double length_double;
@@ -808,6 +812,7 @@ Value Object::get_element(uint32_t index) const {
 }
 
 bool Object::set_element(uint32_t index, const Value& value) {
+    Collector::write_barrier(this);
     // Same dispatch problem as get_element: TypedArrayBase::set_element(size_t) doesn't
     // override this uint32_t signature, so generic Array.prototype methods called via
     // .call()/.apply() on a typed array must be routed there explicitly.
@@ -1051,6 +1056,7 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
 }
 
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    Collector::write_barrier(this);
     // [[DefineOwnProperty]] on a Proxy is just its "defineProperty" trap.
     // The generic logic below would call has_own_property() first, firing the
     // unrelated "has" trap instead.

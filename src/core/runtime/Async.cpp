@@ -61,7 +61,7 @@ AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get(),
+    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get(), nullptr,
         [this](Visitor& v) {
             v.visit_object(outer_promise_);
             v.visit_context(exec_context_);
@@ -472,7 +472,7 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<AST
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get());
+    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get(), this);
     if (s_async_generator_prototype_) {
         set_prototype(s_async_generator_prototype_);
     }

@@ -80,7 +80,7 @@ Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> 
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFF), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get());
+    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get(), this);
 }
 
 Generator::~Generator() {
