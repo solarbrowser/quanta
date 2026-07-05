@@ -13,6 +13,7 @@
 #include "quanta/core/engine/builtins/AtomicsBuiltin.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/FiberState.h"
+#include "quanta/core/runtime/MapSet.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
 #include <cstdio>
@@ -57,6 +58,13 @@ public:
         if (env && seen_.insert(env).second) environment_work_.push_back(env);
     }
 
+    void visit_weak_map(WeakMap* w) override { if (w) pending_weak_maps_.push_back(w); }
+    void visit_weak_set(WeakSet* w) override { if (w) pending_weak_sets_.push_back(w); }
+    void visit_weak_ref(WeakRef* w) override { if (w) pending_weak_refs_.push_back(w); }
+    void visit_finalization_registry(FinalizationRegistry* r) override {
+        if (r) pending_fin_registries_.push_back(r);
+    }
+
     void drain() {
         while (!gray_.empty() || !context_work_.empty() || !environment_work_.empty()) {
             if (!gray_.empty()) {
@@ -73,6 +81,93 @@ public:
                 c->gc_trace(*this);
             }
         }
+    }
+
+    static bool alive(const void* p) {
+        if (!p) return false;
+        return Heap::test_mark(Heap::exact_cell(p));
+    }
+
+    // A WeakMap/WeakSet value is only reachable through a live key; marking
+    // it can itself unlock other maps' entries (ephemeron chains), so this
+    // iterates to a fixpoint, redraining ordinary edges after each pass.
+    void drain_ephemerons() {
+        bool progress = true;
+        while (progress) {
+            progress = false;
+            for (WeakMap* wm : pending_weak_maps_) {
+                for (auto& e : wm->raw_entries()) {
+                    if (!alive(e.first)) continue;
+                    size_t before = marked_cells;
+                    visit(e.second);
+                    if (marked_cells != before) progress = true;
+                }
+                for (auto& e : wm->raw_symbol_entries()) {
+                    if (!alive(e.first)) continue;
+                    size_t before = marked_cells;
+                    visit(e.second);
+                    if (marked_cells != before) progress = true;
+                }
+            }
+            if (progress) drain();
+        }
+    }
+
+    // Keys/targets still unmarked after the fixpoint are truly dead. Erases
+    // dead WeakMap/WeakSet entries (a stale Object* key must not linger --
+    // once its memory is reused, pointer-identity lookups would alias a new
+    // object), clears dead WeakRef targets, and schedules FinalizationRegistry
+    // cleanup jobs for cells whose target died. Must run before sweep frees
+    // anything: it reads mark bits, not post-sweep memory.
+    void finalize_ephemerons() {
+        for (WeakMap* wm : pending_weak_maps_) {
+            auto& m = wm->raw_entries();
+            for (auto it = m.begin(); it != m.end();) {
+                if (!alive(it->first)) it = m.erase(it); else ++it;
+            }
+            auto& sm = wm->raw_symbol_entries();
+            for (auto it = sm.begin(); it != sm.end();) {
+                if (!alive(it->first)) it = sm.erase(it); else ++it;
+            }
+        }
+        for (WeakSet* ws : pending_weak_sets_) {
+            auto& s = ws->raw_values();
+            for (auto it = s.begin(); it != s.end();) {
+                if (!alive(*it)) it = s.erase(it); else ++it;
+            }
+            auto& ss = ws->raw_symbol_values();
+            for (auto it = ss.begin(); it != ss.end();) {
+                if (!alive(*it)) it = ss.erase(it); else ++it;
+            }
+        }
+        for (WeakRef* wr : pending_weak_refs_) {
+            if (!alive(wr->target_object()) && !alive(wr->target_symbol())) wr->clear_target();
+        }
+        for (FinalizationRegistry* fr : pending_fin_registries_) {
+            bool any_cleared = false;
+            for (auto& cell : fr->raw_cells()) {
+                // Independent of target liveness: a dead token can no longer
+                // be matched by unregister(), so its stale pointer is nulled.
+                if (cell.token_object && !alive(cell.token_object)) cell.token_object = nullptr;
+                if (cell.token_symbol && !alive(cell.token_symbol)) cell.token_symbol = nullptr;
+
+                if (cell.cleared) continue;
+                const void* target = cell.target_object
+                    ? static_cast<const void*>(cell.target_object)
+                    : static_cast<const void*>(cell.target_symbol);
+                if (target && !alive(target)) {
+                    cell.cleared = true;
+                    cell.target_object = nullptr;
+                    cell.target_symbol = nullptr;
+                    any_cleared = true;
+                }
+            }
+            if (any_cleared) fr->enqueue_cleanup_job();
+        }
+        pending_weak_maps_.clear();
+        pending_weak_sets_.clear();
+        pending_weak_refs_.clear();
+        pending_fin_registries_.clear();
     }
 
 private:
@@ -98,6 +193,11 @@ private:
     std::vector<Context*> context_work_;
     std::vector<Environment*> environment_work_;
     std::unordered_set<const void*> seen_;
+
+    std::vector<WeakMap*> pending_weak_maps_;
+    std::vector<WeakSet*> pending_weak_sets_;
+    std::vector<WeakRef*> pending_weak_refs_;
+    std::vector<FinalizationRegistry*> pending_fin_registries_;
 };
 
 // Post-mark verifier: the single-pass form of the tri-color invariant.
@@ -300,6 +400,8 @@ void run_collection(bool minor) {
     trace_atomics_gc_roots(v);
 
     v.drain();
+    v.drain_ephemerons();
+    v.finalize_ephemerons();
 
     g_last_cycle = Collector::CycleStats{};
     g_last_cycle.minor = minor;

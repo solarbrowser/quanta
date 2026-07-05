@@ -653,7 +653,9 @@ void Context::initialize_built_ins() {
     
     WeakMap::setup_weakmap_prototype(*this);
     WeakSet::setup_weakset_prototype(*this);
-    
+    WeakRef::setup_weakref_prototype(*this);
+    FinalizationRegistry::setup_finalization_registry_prototype(*this);
+
     AsyncUtils::setup_async_functions(*this);
     AsyncIterator::setup_async_iterator_prototype(*this);
     AsyncGenerator::setup_async_generator_prototype(*this);

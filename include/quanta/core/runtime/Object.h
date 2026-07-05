@@ -44,6 +44,8 @@ public:
         Set,
         WeakMap,
         WeakSet,
+        WeakRef,
+        FinalizationRegistry,
         ArrayBuffer,
         TypedArray,
         DataView,

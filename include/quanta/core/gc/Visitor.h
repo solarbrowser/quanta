@@ -14,6 +14,10 @@ namespace Quanta {
 
 class Context;
 class Environment;
+class WeakMap;
+class WeakSet;
+class WeakRef;
+class FinalizationRegistry;
 
 // Edge callback for the marking phase. `trace` implementations report every
 // cell reference their object holds; the collector supplies the concrete
@@ -32,6 +36,16 @@ public:
     // per collection -- the visitor keeps the visited set.
     virtual void visit_context(Context* ctx) = 0;
     virtual void visit_environment(Environment* env) = 0;
+
+    // Ephemeron participants: their weakly-held members are not ordinary
+    // edges (a live WeakMap pointing at a dead key is not a bug), so trace()
+    // reports them here instead of via visit_object/visit. Only the
+    // collector's mark pass needs to act on these; every other visitor
+    // (verify, etc.) uses the no-op default.
+    virtual void visit_weak_map(WeakMap*) {}
+    virtual void visit_weak_set(WeakSet*) {}
+    virtual void visit_weak_ref(WeakRef*) {}
+    virtual void visit_finalization_registry(FinalizationRegistry*) {}
 
     // NaN-box decode + dispatch.
     void visit(const Value& v) {
