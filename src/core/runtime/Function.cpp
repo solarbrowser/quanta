@@ -775,8 +775,8 @@ Value Function::get_property(const std::string& key) const {
                 return Value();
             }
         }
-        if (overflow_properties_ && overflow_properties_->count("length")) {
-            return (*overflow_properties_)["length"];
+        if (const Value* slot = find_shape_slot("length")) {
+            return *slot;
         }
         if (!has_own_property("length")) return Value(0.0);
         return Value(static_cast<double>(parameters_.size()));
@@ -919,6 +919,9 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     }
 
     auto new_object = ObjectFactory::create_object();
+    if (construct_slot_hint_ > 0) {
+        new_object->reserve_property_slots(construct_slot_hint_);
+    }
     Value this_value(new_object.get());
 
     Value constructor_prototype = get_property("prototype");

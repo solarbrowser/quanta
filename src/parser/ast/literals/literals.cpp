@@ -69,6 +69,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         ctx.throw_exception(Value(std::string("Failed to create object")));
         return Value();
     }
+    object->reserve_property_slots(properties_.size());
 
 
     for (const auto& prop : properties_) {

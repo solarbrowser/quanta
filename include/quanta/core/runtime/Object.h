@@ -8,6 +8,7 @@
 #define QUANTA_OBJECT_H
 
 #include "quanta/core/runtime/Value.h"
+#include "quanta/core/runtime/Shape.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -67,14 +68,27 @@ private:
 
     std::vector<Value> elements_;
 
-    std::unique_ptr<std::unordered_map<std::string, Value>> overflow_properties_;
+    // Named (non-index) fast-path properties: shape describes the layout
+    // (which keys, in what slot), shape_slots_ holds this instance's own
+    // values at those slots. Every plain object starts at Shape::root()
+    // (no properties) and transitions as keys are added. A property that
+    // needs non-default attributes, or any delete, moves everything into
+    // descriptors_ and sets shape_ to nullptr -- see migrate_to_dictionary_mode.
+    Shape* shape_ = Shape::root();
+    std::vector<Value> shape_slots_;
+
+    // Sparse array-index overflow: elements_ is dense from 0, so an index
+    // far beyond its size (or set on a non-Array) falls back here instead
+    // of growing elements_ to match. Numeric keys only -- named properties
+    // never reach this map.
+    std::unique_ptr<std::unordered_map<std::string, Value>> sparse_overflow_;
 
     std::unique_ptr<std::unordered_map<std::string, PropertyDescriptor>> descriptors_;
 
     std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements_;
 
-    // Creation order for overflow/descriptor-tracked properties; overflow_properties_ is
-    // an unordered_map and has no enumeration order of its own (see get_own_property_keys).
+    // Creation order across shape-mode, sparse-overflow, and descriptor-tracked
+    // properties alike (none of those on their own preserve insertion order).
     std::vector<std::string> property_insertion_order_;
 
 public:
@@ -214,7 +228,6 @@ public:
     size_t memory_usage() const;
     
     const std::unordered_map<std::string, PropertyDescriptor>* get_descriptors() const { return descriptors_.get(); }
-    const std::unordered_map<std::string, Value>* get_overflow_properties() const { return overflow_properties_.get(); }
 
     Value get_internal_property(const std::string& key) const;
     void set_internal_property(const std::string& key, const Value& value);
@@ -227,18 +240,42 @@ protected:
     
     void ensure_element_capacity(uint32_t capacity);
     void compact_elements();
-    
-    void ensure_property_capacity(size_t capacity);
+
     bool store_in_overflow(const std::string& key, const Value& value);
+
+    // Shape-mode fast-path helpers (named, non-index keys only -- see
+    // shape_/shape_slots_). Every one is a no-op/miss once shape_ is
+    // nullptr (object already migrated to dictionary mode).
+    Value* find_shape_slot(const std::string& key);
+    const Value* find_shape_slot(const std::string& key) const;
+    // Adds or updates `key`. False means a NEW key would exceed the shape's
+    // transition cap -- caller must migrate_to_dictionary_mode() and store
+    // it there instead.
+    bool set_shape_slot(const std::string& key, const Value& value);
+    bool has_shape_slot(const std::string& key) const;
+    // Moves every shape-mode property into descriptors_ (default attributes,
+    // unless the key already has a descriptor entry -- then only the data
+    // value is synced, so real attributes and accessors survive) and clears
+    // shape_/shape_slots_. One-way: an object that migrates never re-enters
+    // shape mode. Triggered by delete or a shape-cap miss.
+    void migrate_to_dictionary_mode();
+    // ArraySetLength side-effect helper: bumps the stored "length" value in
+    // place (shape slot or, post-migration, descriptors_) iff candidate is larger.
+    void bump_array_length(double candidate);
 
 public:
     void clear_properties();
+    // Pre-sizes shape-mode slot storage when the property count is known at
+    // creation (object literals, class field lists) so the first N adds
+    // don't reallocate. Capacity only -- the shape chain itself still grows
+    // one transition per property.
+    void reserve_property_slots(size_t count);
 
 private:
 
     static thread_local std::unordered_map<std::string, std::string> interned_keys_;
     static const std::string& intern_key(const std::string& key);
-    
+
     bool is_array_index(const std::string& key, uint32_t* index = nullptr) const;
     void update_hash_code();
     PropertyDescriptor create_data_descriptor(const Value& value, PropertyAttributes attrs) const;
@@ -335,6 +372,7 @@ private:
     bool is_class_constructor_;  // Class constructors must be called with new
     bool is_strict_;       // Function runs in strict mode (e.g. class methods)
     bool is_param_default_;  // Created as a default param expression; uses param scope as outer env
+    uint32_t construct_slot_hint_ = 0;  // Class field count: pre-sizes new instances' shape slots
     std::string source_text_;
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
@@ -385,6 +423,7 @@ public:
     void set_is_strict(bool value) { is_strict_ = value; }
     bool is_param_default() const { return is_param_default_; }
     void set_is_param_default(bool v) { is_param_default_ = v; }
+    void set_construct_slot_hint(uint32_t count) { construct_slot_hint_ = count; }
     const std::string& get_source_text() const { return source_text_; }
     void set_source_text(const std::string& s) { source_text_ = s; }
     

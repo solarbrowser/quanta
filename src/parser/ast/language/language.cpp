@@ -717,6 +717,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             proto_ptr->set_property_descriptor(dm.first, dm.second);
         constructor_fn->set_is_class_constructor(true);
         constructor_fn->set_is_strict(true);
+        constructor_fn->set_construct_slot_hint(static_cast<uint32_t>(field_initializers.size()));
         constructor_fn->set_property("__private_class_brand__", Value(proto_ptr));
 
         {
