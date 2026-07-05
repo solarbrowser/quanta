@@ -342,7 +342,7 @@ void Heap::decommit_idle_memory() {
         heap->block_allocator_.decommit_idle_chunks();
     }
     // GC-managed cells are only part of the footprint: property storage
-    // (overflow_properties_/descriptors_), array elements_, and rope/string
+    // (shape_slots_/sparse_overflow_/descriptors_), array elements_, and rope/string
     // internals are plain heap allocations glibc's own arena holds onto
     // after they're freed. malloc_trim asks it to give what it can back to
     // the OS -- measured to matter far more than the chunk decommit above

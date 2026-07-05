@@ -38,8 +38,9 @@ void Object::operator delete(void* p) noexcept {
 void Object::trace(Visitor& v) {
     v.visit_object(header_.prototype);
     for (const auto& val : elements_) v.visit(val);
-    if (overflow_properties_) {
-        for (const auto& entry : *overflow_properties_) v.visit(entry.second);
+    for (const auto& val : shape_slots_) v.visit(val);
+    if (sparse_overflow_) {
+        for (const auto& entry : *sparse_overflow_) v.visit(entry.second);
     }
     if (descriptors_) {
         for (const auto& entry : *descriptors_) {
@@ -47,6 +48,80 @@ void Object::trace(Visitor& v) {
             if (d.has_value()) v.visit(d.get_value());
             v.visit_object(d.get_getter());
             v.visit_object(d.get_setter());
+        }
+    }
+}
+
+Value* Object::find_shape_slot(const std::string& key) {
+    if (!shape_) return nullptr;
+    int32_t slot = shape_->find_slot(key);
+    return slot >= 0 ? &shape_slots_[slot] : nullptr;
+}
+
+const Value* Object::find_shape_slot(const std::string& key) const {
+    if (!shape_) return nullptr;
+    int32_t slot = shape_->find_slot(key);
+    return slot >= 0 ? &shape_slots_[slot] : nullptr;
+}
+
+bool Object::has_shape_slot(const std::string& key) const {
+    return shape_ && shape_->find_slot(key) >= 0;
+}
+
+bool Object::set_shape_slot(const std::string& key, const Value& value) {
+    if (!shape_) return false;
+    if (Value* existing = find_shape_slot(key)) { *existing = value; return true; }
+    Shape* next = shape_->transition(key);
+    if (!next) return false;
+    shape_ = next;
+    shape_slots_.push_back(value);
+    return true;
+}
+
+void Object::migrate_to_dictionary_mode() {
+    if (!shape_) return;
+    if (!descriptors_) {
+        descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+    }
+    auto keys = shape_->keys_in_order();
+    for (size_t i = 0; i < keys.size(); i++) {
+        auto it = descriptors_->find(keys[i]);
+        if (it != descriptors_->end()) {
+            // Non-default attrs (or an accessor pair) already live here; the shape
+            // slot was only the value mirror (or a placeholder for accessors).
+            // Overwriting would reset attributes and destroy getters/setters.
+            if (it->second.is_data_descriptor()) {
+                it->second.set_value(shape_slots_[i]);
+            }
+        } else {
+            (*descriptors_)[keys[i]] = PropertyDescriptor(shape_slots_[i], PropertyAttributes::Default);
+        }
+    }
+    shape_ = nullptr;
+    shape_slots_.clear();
+}
+
+void Object::reserve_property_slots(size_t count) {
+    shape_slots_.reserve(count);
+    property_insertion_order_.reserve(count);
+}
+
+void Object::bump_array_length(double candidate) {
+    if (Value* slot = find_shape_slot("length")) {
+        if (candidate > slot->to_number()) {
+            Value new_len(candidate);
+            *slot = new_len;
+            if (descriptors_) {
+                auto dit = descriptors_->find("length");
+                if (dit != descriptors_->end()) dit->second.set_value(new_len);
+            }
+        }
+        return;
+    }
+    if (descriptors_) {
+        auto dit = descriptors_->find("length");
+        if (dit != descriptors_->end() && candidate > dit->second.get_value().to_number()) {
+            dit->second.set_value(Value(candidate));
         }
     }
 }
@@ -133,11 +208,11 @@ void Object::add_private_field(const std::string& key, const Value& value) {
         }
         return;
     }
-    if (!overflow_properties_) {
-        overflow_properties_ = std::make_unique<std::unordered_map<std::string, Value>>();
+    if (!sparse_overflow_) {
+        sparse_overflow_ = std::make_unique<std::unordered_map<std::string, Value>>();
     }
-    if (overflow_properties_->find(key) == overflow_properties_->end()) {
-        (*overflow_properties_)[key] = value;
+    if (sparse_overflow_->find(key) == sparse_overflow_->end()) {
+        (*sparse_overflow_)[key] = value;
         property_insertion_order_.push_back(key);
     }
 }
@@ -148,8 +223,8 @@ bool Object::has_private_slot(const std::string& key) const {
         auto it = descriptors_->find(key);
         if (it != descriptors_->end()) return true;
     }
-    if (overflow_properties_) {
-        if (overflow_properties_->find(key) != overflow_properties_->end()) return true;
+    if (sparse_overflow_) {
+        if (sparse_overflow_->find(key) != sparse_overflow_->end()) return true;
     }
     return false;
 }
@@ -175,15 +250,11 @@ bool Object::has_own_property(const std::string& key) const {
         if (index < elements_.size() && !(deleted_elements_ && deleted_elements_->count(index) > 0)) {
             return true;
         }
-        // Not in elements_ (or a hole there) -- may still live in overflow_properties_.
-        return overflow_properties_ && overflow_properties_->count(key) > 0;
+        // Not in elements_ (or a hole there) -- may still live in sparse_overflow_.
+        return sparse_overflow_ && sparse_overflow_->count(key) > 0;
     }
 
-    if (overflow_properties_) {
-        return overflow_properties_->find(key) != overflow_properties_->end();
-    }
-
-    return false;
+    return has_shape_slot(key);
 }
 
 
@@ -250,7 +321,7 @@ Value Object::get_property(const std::string& key) const {
         if (key == "length") {
             // defineProperty can shadow "length" with an own property; that wins.
             if (descriptors_ && descriptors_->count(key)) return get_own_property(key);
-            if (overflow_properties_ && overflow_properties_->count(key)) return get_own_property(key);
+            if (has_shape_slot(key)) return get_own_property(key);
             return Value(static_cast<double>(typed_array->length()));
         }
         if (key == "byteLength") {
@@ -389,9 +460,9 @@ Value Object::get_own_property(const std::string& key) const {
         if (index < elements_.size() && !is_hole) {
             return elements_[index];
         }
-        if (overflow_properties_) {
-            auto it = overflow_properties_->find(key);
-            if (it != overflow_properties_->end()) return it->second;
+        if (sparse_overflow_) {
+            auto it = sparse_overflow_->find(key);
+            if (it != sparse_overflow_->end()) return it->second;
         }
         return Value();
     }
@@ -425,11 +496,8 @@ Value Object::get_own_property(const std::string& key) const {
         }
     }
 
-    if (overflow_properties_) {
-        auto it = overflow_properties_->find(key);
-        if (it != overflow_properties_->end()) {
-            return it->second;
-        }
+    if (const Value* slot = find_shape_slot(key)) {
+        return *slot;
     }
 
     if (descriptors_) {
@@ -488,12 +556,12 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 
         if (new_length < old_length) {
             elements_.resize(new_length);
-            if (overflow_properties_) {
-                auto it = overflow_properties_->begin();
-                while (it != overflow_properties_->end()) {
+            if (sparse_overflow_) {
+                auto it = sparse_overflow_->begin();
+                while (it != sparse_overflow_->end()) {
                     uint32_t idx;
                     if (is_array_index(it->first, &idx) && idx >= new_length) {
-                        it = overflow_properties_->erase(it);
+                        it = sparse_overflow_->erase(it);
                     } else {
                         ++it;
                     }
@@ -502,10 +570,18 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         }
         Value length_value(static_cast<double>(new_length));
 
-        if (!overflow_properties_) {
-            overflow_properties_ = std::make_unique<std::unordered_map<std::string, Value>>();
+        if (!set_shape_slot("length", length_value)) {
+            migrate_to_dictionary_mode();
+            if (!descriptors_) {
+                descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+            }
+            auto it = descriptors_->find("length");
+            if (it != descriptors_->end()) {
+                it->second.set_value(length_value);
+            } else {
+                (*descriptors_)["length"] = PropertyDescriptor(length_value, PropertyAttributes::Writable);
+            }
         }
-        (*overflow_properties_)["length"] = length_value;
         // get_property_descriptor() checks descriptors_ first -- keep it in sync or it
         // keeps reporting the pre-update length.
         if (descriptors_) {
@@ -624,8 +700,10 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             return false;
         }
 
-        if (overflow_properties_) {
-            (*overflow_properties_)[key] = value;
+        if (has_shape_slot(key) || (descriptors_ && descriptors_->count(key))) {
+            if (has_shape_slot(key)) {
+                set_shape_slot(key, value);
+            }
             if (descriptors_) {
                 auto dit = descriptors_->find(key);
                 if (dit != descriptors_->end() && dit->second.is_data_descriptor()) {
@@ -640,9 +718,13 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         return false;
     }
 
-    // Store non-default attrs in descriptor map. Insertion-order tracking happens in
-    // store_in_overflow below (which always runs for a new key now), not here -- pushing
-    // here too would double-insert the key into property_insertion_order_.
+    // store_in_overflow FIRST: it decides "is this key new?" from shape/descriptors
+    // membership, so seeding descriptors_ before the call would make every
+    // non-default-attrs property look pre-existing and skip insertion-order tracking.
+    bool stored = store_in_overflow(key, value);
+
+    // Non-default attrs overwrite the Default-attrs entry the dictionary-mode
+    // fallback inside store_in_overflow may have just created.
     if (attrs != PropertyAttributes::Default) {
         if (!descriptors_) {
             descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
@@ -650,7 +732,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         (*descriptors_)[key] = PropertyDescriptor(value, attrs);
     }
 
-    return store_in_overflow(key, value);
+    return stored;
 }
 
 bool Object::set_property(const Value& key, const Value& value, PropertyAttributes attrs) {
@@ -681,12 +763,27 @@ bool Object::ordinary_set(const std::string& key, const Value& value) {
 
 void Object::remove_own_property(const std::string& key) {
     if (descriptors_) descriptors_->erase(key);
-    if (overflow_properties_) {
-        overflow_properties_->erase(key);
-        property_insertion_order_.erase(
-            std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
-            property_insertion_order_.end());
+
+    uint32_t index;
+    if (is_array_index(key, &index)) {
+        if (sparse_overflow_) {
+            sparse_overflow_->erase(key);
+            property_insertion_order_.erase(
+                std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
+                property_insertion_order_.end());
+        }
+        return;
     }
+
+    if (has_shape_slot(key)) {
+        // A shape's slot layout is shared across every object with that shape --
+        // a single object can't drop one slot without migrating to its own dictionary.
+        migrate_to_dictionary_mode();
+        descriptors_->erase(key);
+    }
+    property_insertion_order_.erase(
+        std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
+        property_insertion_order_.end());
 }
 
 bool Object::delete_property(const std::string& key) {
@@ -709,26 +806,21 @@ bool Object::delete_property(const std::string& key) {
         return deleted || had_descriptor;
     }
 
-    if (overflow_properties_) {
-        auto it = overflow_properties_->find(key);
-        if (it != overflow_properties_->end()) {
-            overflow_properties_->erase(it);
+    if (has_shape_slot(key)) {
+        // A shape's slot layout is shared across every object with that shape --
+        // a single object can't drop one slot without migrating to its own dictionary.
+        migrate_to_dictionary_mode();
+        descriptors_->erase(key);
 
-            // ES1: Also erase from descriptors to ensure property is fully deleted
-            if (descriptors_) {
-                descriptors_->erase(key);
-            }
+        // Mirrors the push in store_in_overflow -- without this, a set/delete/set
+        // cycle on the same key would grow property_insertion_order_ unboundedly.
+        property_insertion_order_.erase(
+            std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
+            property_insertion_order_.end());
 
-            // Mirrors the push in store_in_overflow -- without this, a set/delete/set
-            // cycle on the same key would grow property_insertion_order_ unboundedly.
-            property_insertion_order_.erase(
-                std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
-                property_insertion_order_.end());
-
-            header_.property_count--;
-            update_hash_code();
-            return true;
-        }
+        header_.property_count--;
+        update_hash_code();
+        return true;
     }
 
     // Fallback: property may only exist in descriptors (e.g. Function "prototype" intercepted
@@ -801,9 +893,9 @@ Value Object::get_element(uint32_t index) const {
             if (it != descriptors_->end() && it->second.is_data_descriptor())
                 return it->second.get_value();
         }
-        if (overflow_properties_) {
-            auto it = overflow_properties_->find(key);
-            if (it != overflow_properties_->end()) return it->second;
+        if (sparse_overflow_) {
+            auto it = sparse_overflow_->find(key);
+            if (it != sparse_overflow_->end()) return it->second;
         }
         Object* proto = get_prototype();
         return proto ? proto->get_property(key) : Value();
@@ -847,20 +939,11 @@ bool Object::set_element(uint32_t index, const Value& value) {
 
     if (__builtin_expect(index >= elements_.size(), 0)) {
         if (__builtin_expect(index > 10000000, 0)) {
-            // Too sparse to grow the dense elements_ vector -- store in overflow_properties_
+            // Too sparse to grow the dense elements_ vector -- store in sparse_overflow_
             // instead (get_element()/has_own_property() already fall back to it), still
             // bumping Array length per ArraySetLength side effect (15.4.5.1 step 4.e.ii).
-            if (header_.type == ObjectType::Array && overflow_properties_) {
-                auto len_it = overflow_properties_->find("length");
-                if (len_it != overflow_properties_->end() &&
-                    static_cast<double>(index) + 1 > len_it->second.to_number()) {
-                    Value new_len(static_cast<double>(index) + 1);
-                    len_it->second = new_len;
-                    if (descriptors_) {
-                        auto dit = descriptors_->find("length");
-                        if (dit != descriptors_->end()) dit->second.set_value(new_len);
-                    }
-                }
+            if (header_.type == ObjectType::Array) {
+                bump_array_length(static_cast<double>(index) + 1);
             }
             return store_in_overflow(std::to_string(index), value);
         }
@@ -881,18 +964,8 @@ bool Object::set_element(uint32_t index, const Value& value) {
         }
 
         if (__builtin_expect(header_.type == ObjectType::Array, 1)) {
-            if (overflow_properties_) {
-                auto it = overflow_properties_->find("length");
-                // never shrink length on a write within bounds
-                if (it != overflow_properties_->end() && it->second.to_number() < new_size) {
-                    Value new_len(static_cast<double>(new_size));
-                    it->second = new_len;
-                    if (descriptors_) {
-                        auto dit = descriptors_->find("length");
-                        if (dit != descriptors_->end()) dit->second.set_value(new_len);
-                    }
-                }
-            }
+            // never shrink length on a write within bounds
+            bump_array_length(static_cast<double>(new_size));
         }
     }
 
@@ -924,9 +997,10 @@ std::vector<std::string> Object::get_own_property_keys() const {
     std::vector<std::string> raw_keys;
 
     // Overflow and descriptor-only properties, in creation order via property_insertion_order_
-    // -- overflow_properties_ is an unordered_map and has no enumeration order of its own.
+    // -- sparse_overflow_ and shape_slots_ are unordered/positional and have no enumeration
+    // order of their own.
     for (const auto& key : property_insertion_order_) {
-        bool in_overflow = overflow_properties_ && overflow_properties_->count(key) > 0;
+        bool in_overflow = (sparse_overflow_ && sparse_overflow_->count(key) > 0) || has_shape_slot(key);
         bool in_descriptors = descriptors_ && descriptors_->count(key) > 0;
         if (!in_overflow && !in_descriptors) continue;
         bool already = false;
@@ -1184,32 +1258,14 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 if (deleted_elements_) deleted_elements_->erase(index);
                 // ArraySetLength side effect: defining index N on an Array bumps length to N+1
                 // if N >= current length (15.4.5.1 step 4.e.ii).
-                if (header_.type == ObjectType::Array && overflow_properties_) {
-                    auto len_it = overflow_properties_->find("length");
-                    if (len_it != overflow_properties_->end() &&
-                        static_cast<double>(index) + 1 > len_it->second.to_number()) {
-                        Value new_len(static_cast<double>(index) + 1);
-                        len_it->second = new_len;
-                        if (descriptors_) {
-                            auto desc_it = descriptors_->find("length");
-                            if (desc_it != descriptors_->end()) desc_it->second.set_value(new_len);
-                        }
-                    }
+                if (header_.type == ObjectType::Array) {
+                    bump_array_length(static_cast<double>(index) + 1);
                 }
             } else if (desc.has_value()) {
-                // Beyond the dense-array growth cap -- same overflow_properties_ fallback as set_element().
+                // Beyond the dense-array growth cap -- same sparse_overflow_ fallback as set_element().
                 store_in_overflow(key, desc.get_value());
-                if (header_.type == ObjectType::Array && overflow_properties_) {
-                    auto len_it = overflow_properties_->find("length");
-                    if (len_it != overflow_properties_->end() &&
-                        static_cast<double>(index) + 1 > len_it->second.to_number()) {
-                        Value new_len(static_cast<double>(index) + 1);
-                        len_it->second = new_len;
-                        if (descriptors_) {
-                            auto desc_it = descriptors_->find("length");
-                            if (desc_it != descriptors_->end()) desc_it->second.set_value(new_len);
-                        }
-                    }
+                if (header_.type == ObjectType::Array) {
+                    bump_array_length(static_cast<double>(index) + 1);
                 }
             }
         } else {
@@ -1278,10 +1334,12 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                     if (length_shrink_blocked) coerced_value = Value(static_cast<double>(actual_size));
                 }
             }
-            // Directly update overflow to bypass writable check on existing props
+            // Directly update the shape slot to bypass writable check on existing props.
+            // Descriptor-only keys must NOT take this branch: they go through the virtual
+            // set_property() below, which subclasses (Function "prototype"/"name") intercept.
             if (desc.has_value()) {
-                if (overflow_properties_ && overflow_properties_->count(key)) {
-                    (*overflow_properties_)[key] = coerced_value;
+                if (has_shape_slot(key)) {
+                    set_shape_slot(key, coerced_value);
                     // get_property_descriptor() checks descriptors_ first -- keep it in sync.
                     if (descriptors_) {
                         auto it = descriptors_->find(key);
@@ -1318,12 +1376,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         if (is_array_index(key, &index)) {
             uint32_t new_size = index + 1;
             if (header_.type == ObjectType::Array && new_size > get_length()) {
-                if (overflow_properties_) {
-                    auto it = overflow_properties_->find("length");
-                    if (it != overflow_properties_->end()) {
-                        it->second = Value(static_cast<double>(new_size));
-                    }
-                }
+                bump_array_length(static_cast<double>(new_size));
             }
         } else if (!has_own_property(key)) {
             store_in_overflow(key, Value());
@@ -1335,8 +1388,12 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     // {writable:false} alone must not overwrite the existing value).
     bool is_attr_only = desc.is_generic_descriptor() ||
                         (desc.is_data_descriptor() && !desc.has_value());
+    // A descriptor entry alone doesn't prove the property pre-existed: the
+    // placeholder store_in_overflow() above creates a Default-attrs entry on
+    // dictionary-mode objects. A brand-new property must still take the create
+    // path (WEC=false spec default), not inherit those placeholder attrs.
     if (is_attr_only) {
-        if (descriptors_->count(key)) {
+        if (existed_before_this_call && descriptors_->count(key)) {
             PropertyDescriptor& existing = (*descriptors_)[key];
             // Non-configurable property enforcement -- only when configurable was explicitly set to false
             // and only when called from a live JS context (not during engine initialization)
@@ -1396,7 +1453,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         // When replacing with a data/accessor descriptor that doesn't specify all attribute
         // flags, merge the unspecified ones from the existing descriptor so we don't silently
         // reset writable/enumerable/configurable to their defaults.
-        if (descriptors_->count(key)) {
+        if (existed_before_this_call && descriptors_->count(key)) {
             PropertyDescriptor& existing = (*descriptors_)[key];
             // Enforce non-configurable constraints (same as ObjectBuiltin.cpp user-space check,
             // but also catches C++ callers like JSON.parse's CreateDataProperty).
@@ -2071,34 +2128,61 @@ bool Object::is_array_index(const std::string& key, uint32_t* index) const {
 }
 
 bool Object::store_in_overflow(const std::string& key, const Value& value) {
-    if (!overflow_properties_) {
-        overflow_properties_ = std::make_unique<std::unordered_map<std::string, Value>>();
+    uint32_t index;
+    if (is_array_index(key, &index)) {
+        if (!sparse_overflow_) {
+            sparse_overflow_ = std::make_unique<std::unordered_map<std::string, Value>>();
+        }
+        bool is_new_property = sparse_overflow_->find(key) == sparse_overflow_->end();
+        (*sparse_overflow_)[key] = value;
+        if (is_new_property) {
+            header_.property_count++;
+            property_insertion_order_.push_back(key);
+        }
+        update_hash_code();
+        return true;
     }
-    
-    bool is_new_property = overflow_properties_->find(key) == overflow_properties_->end();
 
-    (*overflow_properties_)[key] = value;
+    // Callers must not seed descriptors_ for this key before calling (see
+    // set_property), or a brand-new key would look pre-existing here and skip
+    // insertion-order tracking.
+    bool is_new_property = !has_shape_slot(key) && !(descriptors_ && descriptors_->count(key) > 0);
+
+    if (!set_shape_slot(key, value)) {
+        // Either the transition cap was hit on a new key, or this object already
+        // migrated -- either way the value now belongs directly in descriptors_.
+        migrate_to_dictionary_mode();
+        if (!descriptors_) {
+            descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+        }
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end()) {
+            it->second.set_value(value);
+        } else {
+            (*descriptors_)[key] = PropertyDescriptor(value, PropertyAttributes::Default);
+        }
+    }
 
     if (is_new_property) {
         header_.property_count++;
-        // overflow_properties_ is an unordered_map (no enumeration order of its own) --
-        // property_insertion_order_ is what get_own_property_keys() relies on for spec
-        // creation-order enumeration. Mirrored back out in delete_property below.
+        // shape_slots_/descriptors_ are positional/unordered -- property_insertion_order_
+        // is what get_own_property_keys() relies on for spec creation-order enumeration.
+        // Mirrored back out in delete_property/remove_own_property above.
         property_insertion_order_.push_back(key);
     }
-    
+
     update_hash_code();
-    
-    
     return true;
 }
 
 void Object::clear_properties() {
     elements_.clear();
 
-    if (overflow_properties_) {
-        overflow_properties_->clear();
+    if (sparse_overflow_) {
+        sparse_overflow_->clear();
     }
+    shape_ = Shape::root();
+    shape_slots_.clear();
     if (descriptors_) {
         descriptors_->clear();
     }

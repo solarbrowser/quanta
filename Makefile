@@ -130,7 +130,7 @@ LIBQUANTA = $(BUILD_DIR)/libquanta.a
 CONSOLE_MAIN = console.cpp
 
 # Main targets
-.PHONY: all clean debug release setup-pcre2 heap-test
+.PHONY: all clean debug release setup-pcre2 heap-test shape-test
 
 setup-pcre2:
 	@if [ ! -f "$(PCRE2_DIR)/pcre2.h.generic" ]; then \
@@ -235,6 +235,17 @@ heap-test: $(HEAP_TEST_SRCS)
 	@$(CXX) -std=c++20 -Wall -g -O1 -fsanitize=address,undefined -Iinclude \
 		-o $(BIN_DIR)/heap-test $(HEAP_TEST_SRCS)
 	@ASAN_OPTIONS=detect_leaks=0 $(BIN_DIR)/heap-test  # the heap leaks chunks/snapshots at exit by design
+
+# Shape unit tests (standalone; no GC/Object dependency)
+SHAPE_TEST_SRCS = tests/runtime/shape_test.cpp \
+                  src/core/runtime/Shape.cpp
+
+shape-test: $(SHAPE_TEST_SRCS)
+	@mkdir -p $(BIN_DIR)
+	@echo "[TEST] Building shape-test..."
+	@$(CXX) -std=c++20 -Wall -g -O1 -fsanitize=address,undefined -Iinclude \
+		-o $(BIN_DIR)/shape-test $(SHAPE_TEST_SRCS)
+	@$(BIN_DIR)/shape-test
 
 # Clean
 clean:
