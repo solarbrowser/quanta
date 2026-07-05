@@ -77,6 +77,26 @@ public:
         }
     }
 
+    // fn(cell_base) for every allocated-but-unmarked (dead) cell -- sweep's
+    // only interest. Scans a word (64 slots) at a time and skips it outright
+    // when alloc & ~mark is zero (nothing dead there, the common case for a
+    // block that survived a cycle mostly or entirely intact), so a fully-live
+    // block costs one word-check each rather than one bit-check per slot.
+    template <typename Fn>
+    void for_each_dead_cell(Fn&& fn) {
+        uint32_t word_count = (h_.bump_cursor + 63) / 64;
+        for (uint32_t w = 0; w < word_count; w++) {
+            uint64_t dead_bits = h_.alloc_bitmap[w] & ~h_.mark_bitmap[w];
+            while (dead_bits) {
+                uint32_t bit = static_cast<uint32_t>(__builtin_ctzll(dead_bits));
+                dead_bits &= dead_bits - 1;
+                uint32_t i = w * 64 + bit;
+                if (i >= h_.bump_cursor) break;
+                fn(payload_start() + static_cast<size_t>(i) * h_.cell_size);
+            }
+        }
+    }
+
 private:
     struct FreeCell { FreeCell* next; };
 

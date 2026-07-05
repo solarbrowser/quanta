@@ -346,6 +346,22 @@ void Heap::for_each_cell(const std::function<void(void*, CellKind, bool)>& fn) {
     }
 }
 
+void Heap::for_each_dead_cell(const std::function<void(void*, CellKind)>& fn) {
+    for (Heap* heap : thread_heaps()) {
+        for (size_t k = 0; k < kNumCellKinds; k++) {
+            for (size_t c = 0; c < kNumSizeClasses; c++) {
+                for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
+                    CellKind kind = b->cell_kind();
+                    b->for_each_dead_cell([&](void* cell) { fn(cell, kind); });
+                }
+            }
+        }
+        for (LargeCell* lc = heap->large_cells_; lc; lc = lc->next) {
+            if (!lc->marked) fn(reinterpret_cast<char*>(lc) + kLargeHeaderSize, lc->kind);
+        }
+    }
+}
+
 Heap::Stats Heap::stats() const {
     Stats s;
     s.chunk_count = block_allocator_.chunk_count();
