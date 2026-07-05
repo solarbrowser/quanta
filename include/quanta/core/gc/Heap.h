@@ -114,7 +114,7 @@ private:
     static void free_large(void* p);
 
     static thread_local Heap* active_;
-    static bool gc_requested_;
+    static thread_local bool gc_requested_;
 
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into

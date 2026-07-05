@@ -15,10 +15,12 @@ namespace Quanta {
 class Context;
 class Value;
 
-// Process-wide mark(-sweep) collector. Runs only at interpreter safepoints,
+// Per-thread mark(-sweep) collector. Runs only at interpreter safepoints,
 // never inside allocation -- a half-constructed cell (vtable not yet
 // written) is therefore never traced, only kept alive conservatively.
-// Collection spans all heaps at once: cross-realm edges are ordinary edges.
+// A collection spans every heap the calling thread owns: cross-realm edges
+// within one thread are ordinary edges, but two threads never scan each
+// other's heaps, so no cross-thread coordination is needed.
 class Collector {
 public:
     // Environment knobs, read once:

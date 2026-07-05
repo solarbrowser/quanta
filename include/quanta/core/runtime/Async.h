@@ -193,9 +193,10 @@ public:
     static Value async_generator_throw(Context& ctx, const std::vector<Value>& args);
 
     static void setup_async_generator_prototype(Context& ctx);
-    static Object* s_async_generator_prototype_;
+    // Thread-local: each agent owns its own intrinsics.
+    static thread_local Object* s_async_generator_prototype_;
     // %AsyncGeneratorFunction.prototype% -- [[Prototype]] of all async generator functions
-    static Object* s_async_generator_function_prototype_;
+    static thread_local Object* s_async_generator_function_prototype_;
 
     static AsyncGenerator* get_current() { return current_; }
     static void set_current(AsyncGenerator* g) { current_ = g; }

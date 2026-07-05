@@ -24,7 +24,7 @@ namespace Quanta {
 
 thread_local Context* Object::current_context_ = nullptr;
 
-std::unordered_map<std::string, std::string> Object::interned_keys_;
+thread_local std::unordered_map<std::string, std::string> Object::interned_keys_;
 
 void* Object::operator new(size_t size) {
     return Heap::active().allocate(size, CellKind::Object);
@@ -2351,9 +2351,10 @@ void return_to_pool(std::unique_ptr<Object> obj) {
     (void)obj;
 }
 
-static Object* object_prototype_object = nullptr;
-static Object* array_prototype_object = nullptr;
-static Object* function_prototype_object = nullptr;
+// Thread-local: each agent builds and owns its own intrinsics.
+static thread_local Object* object_prototype_object = nullptr;
+static thread_local Object* array_prototype_object = nullptr;
+static thread_local Object* function_prototype_object = nullptr;
 
 void set_object_prototype(Object* prototype) {
     object_prototype_object = prototype;

@@ -11,14 +11,15 @@ namespace Quanta {
 
 namespace {
 
-// Single-threaded engine world: plain statics, no locking.
+// Thread-local: a fiber only ever runs on the thread that created it, so
+// each thread's registry is independent and needs no locking.
 std::vector<FiberRegistry::Record>& records() {
-    static std::vector<FiberRegistry::Record> r;
+    static thread_local std::vector<FiberRegistry::Record> r;
     return r;
 }
 
 std::vector<const void*>& enter_sps() {
-    static std::vector<const void*> s;
+    static thread_local std::vector<const void*> s;
     return s;
 }
 

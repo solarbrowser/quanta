@@ -14,16 +14,17 @@
 
 namespace Quanta {
 
-static Object* g_instant_prototype = nullptr;
-static Object* g_plainDate_prototype = nullptr;
-static Object* g_plainTime_prototype = nullptr;
-static Object* g_plainDateTime_prototype = nullptr;
-static Object* g_duration_prototype = nullptr;
-static Object* g_zonedDateTime_prototype = nullptr;
-static Object* g_plainYearMonth_prototype = nullptr;
-static Object* g_plainMonthDay_prototype = nullptr;
-static Object* g_calendar_prototype = nullptr;
-static Object* g_timeZone_prototype = nullptr;
+// Thread-local: each agent builds and owns its own intrinsics.
+static thread_local Object* g_instant_prototype = nullptr;
+static thread_local Object* g_plainDate_prototype = nullptr;
+static thread_local Object* g_plainTime_prototype = nullptr;
+static thread_local Object* g_plainDateTime_prototype = nullptr;
+static thread_local Object* g_duration_prototype = nullptr;
+static thread_local Object* g_zonedDateTime_prototype = nullptr;
+static thread_local Object* g_plainYearMonth_prototype = nullptr;
+static thread_local Object* g_plainMonthDay_prototype = nullptr;
+static thread_local Object* g_calendar_prototype = nullptr;
+static thread_local Object* g_timeZone_prototype = nullptr;
 
 namespace {
     bool isLeapYear(int year) {

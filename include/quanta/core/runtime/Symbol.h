@@ -20,15 +20,17 @@ class Symbol {
 private:
     std::string description_;
     bool has_description_ = false;
-    static uint64_t next_id_;
+    static thread_local uint64_t next_id_;
     uint64_t id_;
-    
-    static std::unordered_map<std::string, std::unique_ptr<Symbol>> well_known_symbols_;
-    
-    static std::unordered_map<std::string, std::unique_ptr<Symbol>> global_registry_;
+
+    // Thread-local: each agent has its own well-known/registered symbols,
+    // matching real engines' per-isolate Symbol.for() scoping.
+    static thread_local std::unordered_map<std::string, std::unique_ptr<Symbol>> well_known_symbols_;
+
+    static thread_local std::unordered_map<std::string, std::unique_ptr<Symbol>> global_registry_;
 
     // Registry of all user-created symbols by property key for getOwnPropertySymbols/Reflect.ownKeys
-    static std::unordered_map<std::string, Symbol*> user_symbol_registry_;
+    static thread_local std::unordered_map<std::string, Symbol*> user_symbol_registry_;
 
     Symbol(const std::string& description);
 

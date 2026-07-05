@@ -102,7 +102,8 @@ public:
     
     Context* get_global_context() const { return global_context_.get(); }
     const std::vector<Context*>& get_survivor_contexts() const { return survivor_contexts_; }
-    // Every live engine, for GC root enumeration (collection is process-wide).
+    // Every live engine on this thread, for GC root enumeration (a
+    // collection only ever scans the calling thread's own engines/heaps).
     static const std::vector<Engine*>& all_engines();
     Context* get_current_context() const;
 

@@ -83,10 +83,10 @@ static bool iterate_with_closing(Context& ctx, const Value& iterable_val, Object
     return true;
 }
 
-Object* Map::prototype_object = nullptr;
-Object* Set::prototype_object = nullptr;
-Object* WeakMap::prototype_object = nullptr;
-Object* WeakSet::prototype_object = nullptr;
+thread_local Object* Map::prototype_object = nullptr;
+thread_local Object* Set::prototype_object = nullptr;
+thread_local Object* WeakMap::prototype_object = nullptr;
+thread_local Object* WeakSet::prototype_object = nullptr;
 
 
 Map::Map() : Object(ObjectType::Map), size_(0) {

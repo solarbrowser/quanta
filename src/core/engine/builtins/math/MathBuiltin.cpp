@@ -13,6 +13,7 @@
 #include <limits>
 #include <cstring>
 #include <memory>
+#include <random>
 #include <vector>
 #include "quanta/parser/AST.h"
 
@@ -25,13 +26,6 @@ void register_math_builtins(Context& ctx) {
     math_object->set_property_descriptor("PI", pi_desc);
     PropertyDescriptor e_desc(Value(2.718281828459045), PropertyAttributes::None);
     math_object->set_property_descriptor("E", e_desc);
-
-    static std::vector<std::unique_ptr<Function>> s_math_owned_functions;
-    auto store_fn = [](std::unique_ptr<Function> func) -> Function* {
-        Function* ptr = func.get();
-        s_math_owned_functions.push_back(std::move(func));
-        return ptr;
-    };
 
     auto math_max_fn = ObjectFactory::create_native_function("max",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -52,7 +46,7 @@ void register_math_builtins(Context& ctx) {
             }
             return Value(result);
         }, 2);
-    math_object->set_property("max", Value(store_fn(std::move(math_max_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("max", Value(math_max_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_min_fn = ObjectFactory::create_native_function("min",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -72,7 +66,7 @@ void register_math_builtins(Context& ctx) {
             }
             return Value(result);
         }, 2);
-    math_object->set_property("min", Value(store_fn(std::move(math_min_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("min", Value(math_min_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_round_fn = ObjectFactory::create_native_function("round",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -90,15 +84,17 @@ void register_math_builtins(Context& ctx) {
             if (result == 0.0 && std::signbit(value)) return Value(-0.0);
             return Value(result);
         }, 1);
-    math_object->set_property("round", Value(store_fn(std::move(math_round_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("round", Value(math_round_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_random_fn = ObjectFactory::create_native_function("random",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             (void)args;
-            return Value(static_cast<double>(rand()) / RAND_MAX);
+            static thread_local std::mt19937 gen{std::random_device{}()};
+            static thread_local std::uniform_real_distribution<double> dis(0.0, 1.0);
+            return Value(dis(gen));
         }, 0);
-    math_object->set_property("random", Value(store_fn(std::move(math_random_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("random", Value(math_random_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_floor_fn = ObjectFactory::create_native_function("floor",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -106,7 +102,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::floor(args[0].to_number()));
         }, 1);
-    math_object->set_property("floor", Value(store_fn(std::move(math_floor_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("floor", Value(math_floor_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_ceil_fn = ObjectFactory::create_native_function("ceil",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -114,7 +110,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::ceil(args[0].to_number()));
         }, 1);
-    math_object->set_property("ceil", Value(store_fn(std::move(math_ceil_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("ceil", Value(math_ceil_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_abs_fn = ObjectFactory::create_native_function("abs",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -126,7 +122,7 @@ void register_math_builtins(Context& ctx) {
             }
             return Value(std::abs(value));
         }, 1);
-    math_object->set_property("abs", Value(store_fn(std::move(math_abs_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("abs", Value(math_abs_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_sqrt_fn = ObjectFactory::create_native_function("sqrt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -134,7 +130,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sqrt(args[0].to_number()));
         }, 1);
-    math_object->set_property("sqrt", Value(store_fn(std::move(math_sqrt_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("sqrt", Value(math_sqrt_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_pow_fn = ObjectFactory::create_native_function("pow",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -151,7 +147,7 @@ void register_math_builtins(Context& ctx) {
             }
             return Value(std::pow(base, exp));
         }, 2);
-    math_object->set_property("pow", Value(store_fn(std::move(math_pow_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("pow", Value(math_pow_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_sin_fn = ObjectFactory::create_native_function("sin",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -159,7 +155,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sin(args[0].to_number()));
         }, 1);
-    math_object->set_property("sin", Value(store_fn(std::move(math_sin_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("sin", Value(math_sin_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_cos_fn = ObjectFactory::create_native_function("cos",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -167,7 +163,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cos(args[0].to_number()));
         }, 1);
-    math_object->set_property("cos", Value(store_fn(std::move(math_cos_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("cos", Value(math_cos_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_tan_fn = ObjectFactory::create_native_function("tan",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -175,7 +171,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tan(args[0].to_number()));
         }, 1);
-    math_object->set_property("tan", Value(store_fn(std::move(math_tan_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("tan", Value(math_tan_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_log_fn = ObjectFactory::create_native_function("log",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -183,7 +179,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log(args[0].to_number()));
         }, 1);
-    math_object->set_property("log", Value(store_fn(std::move(math_log_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("log", Value(math_log_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_log10_fn = ObjectFactory::create_native_function("log10",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -191,7 +187,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log10(args[0].to_number()));
         }, 1);
-    math_object->set_property("log10", Value(store_fn(std::move(math_log10_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("log10", Value(math_log10_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_exp_fn = ObjectFactory::create_native_function("exp",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -199,7 +195,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::exp(args[0].to_number()));
         }, 1);
-    math_object->set_property("exp", Value(store_fn(std::move(math_exp_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("exp", Value(math_exp_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_trunc_fn = ObjectFactory::create_native_function("trunc",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -209,7 +205,7 @@ void register_math_builtins(Context& ctx) {
             if (std::isnan(val) || std::isinf(val)) return Value(val);
             return Value(std::trunc(val));
         }, 1);
-    math_object->set_property("trunc", Value(store_fn(std::move(math_trunc_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("trunc", Value(math_trunc_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_sign_fn = ObjectFactory::create_native_function("sign",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -221,7 +217,7 @@ void register_math_builtins(Context& ctx) {
             if (val < 0) return Value(-1.0);
             return Value(val);
         }, 1);
-    math_object->set_property("sign", Value(store_fn(std::move(math_sign_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("sign", Value(math_sign_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_acos_fn = ObjectFactory::create_native_function("acos",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -229,7 +225,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acos(args[0].to_number()));
         }, 1);
-    math_object->set_property("acos", Value(store_fn(std::move(math_acos_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("acos", Value(math_acos_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_acosh_fn = ObjectFactory::create_native_function("acosh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -237,7 +233,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acosh(args[0].to_number()));
         }, 1);
-    math_object->set_property("acosh", Value(store_fn(std::move(math_acosh_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("acosh", Value(math_acosh_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_asin_fn = ObjectFactory::create_native_function("asin",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -245,7 +241,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asin(args[0].to_number()));
         }, 1);
-    math_object->set_property("asin", Value(store_fn(std::move(math_asin_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("asin", Value(math_asin_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_asinh_fn = ObjectFactory::create_native_function("asinh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -253,7 +249,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asinh(args[0].to_number()));
         }, 1);
-    math_object->set_property("asinh", Value(store_fn(std::move(math_asinh_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("asinh", Value(math_asinh_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_atan_fn = ObjectFactory::create_native_function("atan",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -261,7 +257,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan(args[0].to_number()));
         }, 1);
-    math_object->set_property("atan", Value(store_fn(std::move(math_atan_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("atan", Value(math_atan_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_atan2_fn = ObjectFactory::create_native_function("atan2",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -269,7 +265,7 @@ void register_math_builtins(Context& ctx) {
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan2(args[0].to_number(), args[1].to_number()));
         }, 2);
-    math_object->set_property("atan2", Value(store_fn(std::move(math_atan2_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("atan2", Value(math_atan2_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_atanh_fn = ObjectFactory::create_native_function("atanh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -277,7 +273,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atanh(args[0].to_number()));
         }, 1);
-    math_object->set_property("atanh", Value(store_fn(std::move(math_atanh_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("atanh", Value(math_atanh_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_cbrt_fn = ObjectFactory::create_native_function("cbrt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -285,7 +281,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cbrt(args[0].to_number()));
         }, 1);
-    math_object->set_property("cbrt", Value(store_fn(std::move(math_cbrt_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("cbrt", Value(math_cbrt_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_clz32_fn = ObjectFactory::create_native_function("clz32",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -300,7 +296,7 @@ void register_math_builtins(Context& ctx) {
             }
             return Value(static_cast<double>(count));
         }, 1);
-    math_object->set_property("clz32", Value(store_fn(std::move(math_clz32_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("clz32", Value(math_clz32_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_cosh_fn = ObjectFactory::create_native_function("cosh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -308,7 +304,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cosh(args[0].to_number()));
         }, 1);
-    math_object->set_property("cosh", Value(store_fn(std::move(math_cosh_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("cosh", Value(math_cosh_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_expm1_fn = ObjectFactory::create_native_function("expm1",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -316,7 +312,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::expm1(args[0].to_number()));
         }, 1);
-    math_object->set_property("expm1", Value(store_fn(std::move(math_expm1_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("expm1", Value(math_expm1_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_fround_fn = ObjectFactory::create_native_function("fround",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -324,7 +320,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(static_cast<double>(static_cast<float>(args[0].to_number())));
         }, 1);
-    math_object->set_property("fround", Value(store_fn(std::move(math_fround_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("fround", Value(math_fround_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_hypot_fn = ObjectFactory::create_native_function("hypot",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -345,7 +341,7 @@ void register_math_builtins(Context& ctx) {
             for (double v : nums) sum += v * v;
             return Value(std::sqrt(sum));
         }, 2);
-    math_object->set_property("hypot", Value(store_fn(std::move(math_hypot_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("hypot", Value(math_hypot_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_imul_fn = ObjectFactory::create_native_function("imul",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -360,7 +356,7 @@ void register_math_builtins(Context& ctx) {
             uint32_t b = toU32(args[1].to_number());
             return Value(static_cast<double>(static_cast<int32_t>(a * b)));
         }, 2);
-    math_object->set_property("imul", Value(store_fn(std::move(math_imul_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("imul", Value(math_imul_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_log1p_fn = ObjectFactory::create_native_function("log1p",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -368,7 +364,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log1p(args[0].to_number()));
         }, 1);
-    math_object->set_property("log1p", Value(store_fn(std::move(math_log1p_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("log1p", Value(math_log1p_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_log2_fn = ObjectFactory::create_native_function("log2",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -376,7 +372,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log2(args[0].to_number()));
         }, 1);
-    math_object->set_property("log2", Value(store_fn(std::move(math_log2_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("log2", Value(math_log2_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_sinh_fn = ObjectFactory::create_native_function("sinh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -384,7 +380,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sinh(args[0].to_number()));
         }, 1);
-    math_object->set_property("sinh", Value(store_fn(std::move(math_sinh_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("sinh", Value(math_sinh_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto math_tanh_fn = ObjectFactory::create_native_function("tanh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -392,7 +388,7 @@ void register_math_builtins(Context& ctx) {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tanh(args[0].to_number()));
         }, 1);
-    math_object->set_property("tanh", Value(store_fn(std::move(math_tanh_fn))), PropertyAttributes::BuiltinFunction);
+    math_object->set_property("tanh", Value(math_tanh_fn.release()), PropertyAttributes::BuiltinFunction);
 
     PropertyDescriptor ln10_desc(Value(2.302585092994046), PropertyAttributes::None);
     math_object->set_property_descriptor("LN10", ln10_desc);

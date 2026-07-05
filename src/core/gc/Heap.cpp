@@ -10,11 +10,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 namespace Quanta {
 
 thread_local Heap* Heap::active_ = nullptr;
-bool Heap::gc_requested_ = false;
+thread_local bool Heap::gc_requested_ = false;
 
 Heap& Heap::active() {
     assert(active_ && "no active Heap -- Engine init must install a HeapScope "
@@ -24,17 +25,33 @@ Heap& Heap::active() {
 
 namespace {
 
-// QUANTA_HEAP_STATS=1: dump every heap at process exit. Heaps are immortal
-// for now, so the raw pointers stay valid until the atexit handler runs.
-std::vector<Heap*>& all_heaps() {
+// Heaps this thread owns. A collection only ever touches the calling
+// thread's own heaps -- agents never share GC-managed cells, so each
+// thread's collector runs independently with no cross-thread locking.
+std::vector<Heap*>& thread_heaps() {
+    static thread_local std::vector<Heap*> heaps;
+    return heaps;
+}
+
+// QUANTA_HEAP_STATS=1: dump every heap (any thread) at process exit. Heaps
+// are immortal for now, so the raw pointers stay valid until the atexit
+// handler runs. This list is process-wide by design (a diagnostic dump,
+// not a collection root set), so it is the one registry here that still
+// needs a lock.
+std::mutex& all_heaps_mutex() {
+    static std::mutex m;
+    return m;
+}
+std::vector<Heap*>& all_heaps_for_stats() {
     static std::vector<Heap*> heaps;
     return heaps;
 }
 
 void dump_all_heap_stats() {
     static const char* kind_names[kNumCellKinds] = {"Object", "String", "Symbol", "BigInt"};
+    std::lock_guard<std::mutex> lock(all_heaps_mutex());
     int i = 0;
-    for (Heap* heap : all_heaps()) {
+    for (Heap* heap : all_heaps_for_stats()) {
         Heap::Stats s = heap->stats();
         std::fprintf(stderr,
             "[heap %d] chunks=%zu blocks=%zu live_cells=%zu live_bytes=%zu large=%zu/%zuB\n",
@@ -50,7 +67,11 @@ void dump_all_heap_stats() {
 }
 
 Heap::Heap() {
-    all_heaps().push_back(this);
+    thread_heaps().push_back(this);
+    {
+        std::lock_guard<std::mutex> lock(all_heaps_mutex());
+        all_heaps_for_stats().push_back(this);
+    }
     static bool stats_hook = [] {
         if (std::getenv("QUANTA_HEAP_STATS")) std::atexit(dump_all_heap_stats);
         return true;
@@ -101,7 +122,7 @@ void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
     if (size == 0) size = 1;
     // ~8MB of new cells between collections; the interpreter safepoint
     // consumes the request (never collect mid-allocation).
-    static size_t bytes_since_gc = 0;
+    static thread_local size_t bytes_since_gc = 0;
     bytes_since_gc += size;
     if (bytes_since_gc >= 8 * 1024 * 1024) {
         bytes_since_gc = 0;
@@ -183,19 +204,30 @@ void* Heap::find_cell(const void* p) const {
 
 namespace {
 
-// Exact or interior pointer -> live cell of any heap.
+bool owned_by_this_thread(const Heap* heap) {
+    for (Heap* h : thread_heaps()) {
+        if (h == heap) return true;
+    }
+    return false;
+}
+
+// Exact or interior pointer -> live cell of a heap this thread owns.
+// owns_address() spans every thread's chunks, so a stale stack word aiming
+// into a foreign heap must be rejected here: marking or tracing it would
+// touch cells another thread is mutating.
 Heap::ProbeResult probe_pointer(void* p) {
     Heap::ProbeResult r;
     if (!p) return r;
     if (BlockAllocator::owns_address(p)) {
         HeapBlock* block = HeapBlock::from_cell(p);
+        if (!owned_by_this_thread(block->heap())) return r;
         if (void* base = block->cell_containing(p)) {
             r.cell = base;
             r.kind = block->cell_kind();
         }
         return r;
     }
-    for (Heap* heap : all_heaps()) {
+    for (Heap* heap : thread_heaps()) {
         for (auto* lc = heap->large_cells_head(); lc; lc = lc->next) {
             char* payload = reinterpret_cast<char*>(lc) + Heap::kLargeHeaderSize;
             if (p >= payload && p < payload + lc->size) {
@@ -242,7 +274,7 @@ void Heap::set_mark(const ProbeResult& p) {
 }
 
 void Heap::clear_all_marks() {
-    for (Heap* heap : all_heaps()) {
+    for (Heap* heap : thread_heaps()) {
         for (size_t k = 0; k < kNumCellKinds; k++) {
             for (size_t c = 0; c < kNumSizeClasses; c++) {
                 for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
@@ -255,7 +287,7 @@ void Heap::clear_all_marks() {
 }
 
 void Heap::for_each_cell(const std::function<void(void*, CellKind, bool)>& fn) {
-    for (Heap* heap : all_heaps()) {
+    for (Heap* heap : thread_heaps()) {
         for (size_t k = 0; k < kNumCellKinds; k++) {
             for (size_t c = 0; c < kNumSizeClasses; c++) {
                 for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {

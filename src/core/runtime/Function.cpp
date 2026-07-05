@@ -26,7 +26,7 @@ namespace Quanta {
 
 namespace Quanta {
 
-Object* Function::s_throw_type_error_ = nullptr;
+thread_local Object* Function::s_throw_type_error_ = nullptr;
 
 // Duplicate parameter names share one binding; only the last occurrence is live-mapped.
 // Shared by setup_mapped_arguments() and the pre-pass seeding raw element values.

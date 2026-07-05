@@ -34,7 +34,7 @@ namespace Quanta {
 
 namespace {
 std::vector<Engine*>& engine_registry() {
-    static std::vector<Engine*> engines;
+    static thread_local std::vector<Engine*> engines;
     return engines;
 }
 }

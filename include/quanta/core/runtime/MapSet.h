@@ -77,7 +77,7 @@ public:
     
     static void setup_map_prototype(Context& ctx);
     
-    static Object* prototype_object;
+    static thread_local Object* prototype_object;
     
 private:
     std::vector<MapEntry>::iterator find_entry(const Value& key);
@@ -130,7 +130,7 @@ public:
     
     static void setup_set_prototype(Context& ctx);
     
-    static Object* prototype_object;
+    static thread_local Object* prototype_object;
     
 private:
     std::vector<SetEntry>::iterator find_value(const Value& value);
@@ -169,7 +169,7 @@ public:
     
     static void setup_weakmap_prototype(Context& ctx);
     
-    static Object* prototype_object;
+    static thread_local Object* prototype_object;
 };
 
 /**
@@ -201,7 +201,7 @@ public:
     
     static void setup_weakset_prototype(Context& ctx);
     
-    static Object* prototype_object;
+    static thread_local Object* prototype_object;
 };
 
 }

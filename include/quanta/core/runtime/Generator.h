@@ -133,10 +133,10 @@ public:
     static size_t increment_yield_counter();
     static void reset_yield_counter();
 
-    // Shared generator prototype (%GeneratorPrototype%)
-    static Object* s_generator_prototype_;
-    // Shared GeneratorFunction.prototype (%GeneratorFunction.prototype%)
-    static Object* s_generator_function_prototype_;
+    // %GeneratorPrototype%. Thread-local: each agent owns its own intrinsics.
+    static thread_local Object* s_generator_prototype_;
+    // %GeneratorFunction.prototype%
+    static thread_local Object* s_generator_function_prototype_;
     
 private:
     GeneratorResult execute_until_yield(const Value& sent_value);

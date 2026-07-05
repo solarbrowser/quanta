@@ -35,8 +35,8 @@ void Generator::trace(Visitor& v) {
 
 thread_local Generator* Generator::current_generator_ = nullptr;
 thread_local size_t Generator::current_yield_counter_ = 0;
-Object* Generator::s_generator_prototype_ = nullptr;
-Object* Generator::s_generator_function_prototype_ = nullptr;
+thread_local Object* Generator::s_generator_prototype_ = nullptr;
+thread_local Object* Generator::s_generator_function_prototype_ = nullptr;
 
 void Generator::fiber_entry(uint32_t lo, uint32_t hi) {
     uintptr_t ptr = ((uintptr_t)hi << 32) | (uintptr_t)lo;

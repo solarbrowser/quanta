@@ -80,7 +80,7 @@ std::string CallStackFrame::to_string() const {
 
 CallStack& CallStack::instance() {
     if (!instance_) {
-        static CallStack default_instance;
+        static thread_local CallStack default_instance;
         instance_ = &default_instance;
     }
     return *instance_;

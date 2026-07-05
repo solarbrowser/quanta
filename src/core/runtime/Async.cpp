@@ -455,8 +455,8 @@ std::unique_ptr<Promise> AsyncAwaitExpression::to_promise(const Value& value, Co
 }
 
 
-Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
-Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
+thread_local Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
+thread_local Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
 thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 
 AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
@@ -1418,7 +1418,7 @@ bool EventLoop::run_pending_timers(Context& ctx) {
 }
 
 EventLoop& EventLoop::instance() {
-    static EventLoop instance;
+    static thread_local EventLoop instance;
     return instance;
 }
 
