@@ -8,6 +8,7 @@
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/parser/AST.h"
@@ -34,16 +35,12 @@ void Set::trace(Visitor& v) {
 
 void WeakMap::trace(Visitor& v) {
     Object::trace(v);
-    for (const auto& e : entries_) {
-        v.visit_object(e.first);
-        v.visit(e.second);
-    }
-    for (const auto& e : symbol_entries_) v.visit(e.second);
+    v.visit_weak_map(this);
 }
 
 void WeakSet::trace(Visitor& v) {
     Object::trace(v);
-    for (Object* o : values_) v.visit_object(o);
+    v.visit_weak_set(this);
 }
 
 
@@ -88,6 +85,8 @@ thread_local Object* Map::prototype_object = nullptr;
 thread_local Object* Set::prototype_object = nullptr;
 thread_local Object* WeakMap::prototype_object = nullptr;
 thread_local Object* WeakSet::prototype_object = nullptr;
+thread_local Object* WeakRef::prototype_object = nullptr;
+thread_local Object* FinalizationRegistry::prototype_object = nullptr;
 
 
 Map::Map() : Object(ObjectType::Map), size_(0) {
@@ -1355,17 +1354,17 @@ bool WeakMap::delete_key(Object* key) {
     return false;
 }
 
-bool WeakMap::has_symbol(Symbol* sym) const { return symbol_entries_.count(sym->get_id()) > 0; }
+bool WeakMap::has_symbol(Symbol* sym) const { return symbol_entries_.count(sym) > 0; }
 Value WeakMap::get_symbol(Symbol* sym) const {
-    auto it = symbol_entries_.find(sym->get_id());
+    auto it = symbol_entries_.find(sym);
     return it != symbol_entries_.end() ? it->second : Value();
 }
 void WeakMap::set_symbol(Symbol* sym, const Value& value) {
     Collector::write_barrier(this);
-    symbol_entries_[sym->get_id()] = value;
+    symbol_entries_[sym] = value;
 }
 bool WeakMap::delete_symbol(Symbol* sym) {
-    auto it = symbol_entries_.find(sym->get_id());
+    auto it = symbol_entries_.find(sym);
     if (it != symbol_entries_.end()) { symbol_entries_.erase(it); return true; }
     return false;
 }
@@ -1479,10 +1478,13 @@ bool WeakSet::delete_value(Object* value) {
     return false;
 }
 
-bool WeakSet::has_symbol(Symbol* sym) const { return symbol_values_.count(sym->get_id()) > 0; }
-void WeakSet::add_symbol(Symbol* sym) { symbol_values_.insert(sym->get_id()); }
+bool WeakSet::has_symbol(Symbol* sym) const { return symbol_values_.count(sym) > 0; }
+void WeakSet::add_symbol(Symbol* sym) {
+    Collector::write_barrier(this);
+    symbol_values_.insert(sym);
+}
 bool WeakSet::delete_symbol(Symbol* sym) {
-    auto it = symbol_values_.find(sym->get_id());
+    auto it = symbol_values_.find(sym);
     if (it != symbol_values_.end()) { symbol_values_.erase(it); return true; }
     return false;
 }
@@ -1801,8 +1803,254 @@ Value WeakSet::weakset_delete(Context& ctx, const std::vector<Value>& args) {
         return Value(weakset->delete_value(value));
     }
     if (args[0].is_symbol()) return Value(weakset->delete_symbol(args[0].as_symbol()));
-    
+
     return Value(false);
+}
+
+namespace {
+bool can_hold_weakly(const Value& v) {
+    if (v.is_object() || v.is_function()) return true;
+    if (v.is_symbol()) return Symbol::key_for(v.as_symbol()).empty();
+    return false;
+}
+}
+
+WeakRef::WeakRef(Object* target) : Object(ObjectType::WeakRef), target_object_(target) {}
+WeakRef::WeakRef(Symbol* target) : Object(ObjectType::WeakRef), target_symbol_(target) {}
+
+void WeakRef::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_weak_ref(this);
+}
+
+Value WeakRef::deref() const {
+    if (target_object_) return Value(target_object_);
+    if (target_symbol_) return Value(target_symbol_);
+    return Value();
+}
+
+Value WeakRef::weakref_constructor(Context& ctx, const std::vector<Value>& args) {
+    if (!ctx.is_in_constructor_call()) {
+        ctx.throw_type_error("Constructor WeakRef requires 'new'");
+        return Value();
+    }
+    Value target = args.empty() ? Value() : args[0];
+    if (!can_hold_weakly(target)) {
+        ctx.throw_type_error("WeakRef target must be an object, function, or unregistered symbol");
+        return Value();
+    }
+
+    std::unique_ptr<WeakRef> weakref = target.is_symbol()
+        ? std::make_unique<WeakRef>(target.as_symbol())
+        : std::make_unique<WeakRef>(target.is_function() ? static_cast<Object*>(target.as_function()) : target.as_object());
+
+    Object* proto = WeakRef::prototype_object;
+    Value nt = ctx.get_new_target();
+    if (nt.is_object() || nt.is_function()) {
+        Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
+        Value p = nt_obj->get_property("prototype");
+        if (ctx.has_exception()) return Value();
+        if (p.is_object()) proto = p.as_object();
+        else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
+    }
+    if (proto) weakref->set_prototype(proto);
+    return Value(weakref.release());
+}
+
+Value WeakRef::weakref_deref(Context& ctx, const std::vector<Value>& args) {
+    (void)args;
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || this_obj->get_type() != Object::ObjectType::WeakRef) {
+        ctx.throw_type_error("WeakRef.prototype.deref requires a WeakRef this");
+        return Value();
+    }
+    return static_cast<WeakRef*>(this_obj)->deref();
+}
+
+void WeakRef::setup_weakref_prototype(Context& ctx) {
+    auto weakref_constructor_fn = ObjectFactory::create_native_constructor("WeakRef", weakref_constructor, 1);
+
+    auto weakref_prototype = ObjectFactory::create_object();
+
+    auto deref_fn = ObjectFactory::create_native_function("deref", weakref_deref, 0);
+    weakref_prototype->set_property_descriptor("deref",
+        PropertyDescriptor(Value(deref_fn.release()), PropertyAttributes::BuiltinFunction));
+
+    weakref_prototype->set_property_descriptor("constructor",
+        PropertyDescriptor(Value(weakref_constructor_fn.get()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+    {
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            weakref_prototype->set_property_descriptor(tag_sym->to_property_key(),
+                PropertyDescriptor(Value(std::string("WeakRef")), PropertyAttributes::Configurable));
+        }
+    }
+
+    WeakRef::prototype_object = weakref_prototype.get();
+
+    weakref_constructor_fn->set_property("prototype", Value(weakref_prototype.release()), PropertyAttributes::None);
+    ctx.register_built_in_object("WeakRef", weakref_constructor_fn.release());
+}
+
+FinalizationRegistry::FinalizationRegistry(Function* cleanup_callback, Context* ctx)
+    : Object(ObjectType::FinalizationRegistry), cleanup_callback_(cleanup_callback), context_(ctx) {
+}
+
+void FinalizationRegistry::trace(Visitor& v) {
+    Object::trace(v);
+    v.visit_object(cleanup_callback_);
+    for (const auto& cell : cells_) v.visit(cell.held_value);
+    v.visit_context(context_);
+    v.visit_finalization_registry(this);
+}
+
+void FinalizationRegistry::register_target(Object* target_obj, Symbol* target_sym, const Value& held,
+                                           Object* token_obj, Symbol* token_sym) {
+    Collector::write_barrier(this);
+    cells_.push_back({target_obj, target_sym, held, token_obj, token_sym, false});
+}
+
+bool FinalizationRegistry::unregister(Object* token_obj, Symbol* token_sym) {
+    Collector::write_barrier(this);
+    bool removed = false;
+    for (auto it = cells_.begin(); it != cells_.end();) {
+        bool matches = (token_obj && it->token_object == token_obj) ||
+                       (token_sym && it->token_symbol == token_sym);
+        if (matches) { it = cells_.erase(it); removed = true; }
+        else ++it;
+    }
+    return removed;
+}
+
+void FinalizationRegistry::enqueue_cleanup_job() {
+    if (!context_) return;
+    FinalizationRegistry* self = this;
+    context_->queue_microtask([self]() {
+        auto& cells = self->cells_;
+        for (size_t i = 0; i < cells.size();) {
+            if (!cells[i].cleared) { i++; continue; }
+            Value held = cells[i].held_value;
+            Function* cb = self->cleanup_callback_;
+            cells.erase(cells.begin() + i);
+            if (!cb) continue;
+            cb->call(*self->context_, {held});
+            if (self->context_->has_exception()) {
+                Value exc = self->context_->get_exception();
+                self->context_->clear_exception();
+                std::cerr << "Uncaught (in FinalizationRegistry cleanup) " << exc.to_string() << std::endl;
+            }
+        }
+    }, {Value(self)});
+}
+
+Value FinalizationRegistry::fr_constructor(Context& ctx, const std::vector<Value>& args) {
+    if (!ctx.is_in_constructor_call()) {
+        ctx.throw_type_error("Constructor FinalizationRegistry requires 'new'");
+        return Value();
+    }
+    if (args.empty() || !args[0].is_function()) {
+        ctx.throw_type_error("FinalizationRegistry cleanup callback must be callable");
+        return Value();
+    }
+    Context* global_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
+    auto registry = std::make_unique<FinalizationRegistry>(args[0].as_function(), global_ctx);
+
+    Object* proto = FinalizationRegistry::prototype_object;
+    Value nt = ctx.get_new_target();
+    if (nt.is_object() || nt.is_function()) {
+        Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
+        Value p = nt_obj->get_property("prototype");
+        if (ctx.has_exception()) return Value();
+        if (p.is_object()) proto = p.as_object();
+        else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
+    }
+    if (proto) registry->set_prototype(proto);
+    return Value(registry.release());
+}
+
+Value FinalizationRegistry::fr_register(Context& ctx, const std::vector<Value>& args) {
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || this_obj->get_type() != Object::ObjectType::FinalizationRegistry) {
+        ctx.throw_type_error("FinalizationRegistry.prototype.register requires a FinalizationRegistry this");
+        return Value();
+    }
+    FinalizationRegistry* fr = static_cast<FinalizationRegistry*>(this_obj);
+
+    Value target = args.empty() ? Value() : args[0];
+    Value held = args.size() > 1 ? args[1] : Value();
+    Value token = args.size() > 2 ? args[2] : Value();
+    if (!can_hold_weakly(target)) {
+        ctx.throw_type_error("FinalizationRegistry target must be held weakly");
+        return Value();
+    }
+    if (target.same_value(held)) {
+        ctx.throw_type_error("heldValue cannot be the target itself");
+        return Value();
+    }
+    if (!token.is_undefined() && !can_hold_weakly(token)) {
+        ctx.throw_type_error("unregisterToken must be held weakly");
+        return Value();
+    }
+
+    Object* target_obj = target.is_function() ? static_cast<Object*>(target.as_function())
+                        : target.is_object() ? target.as_object() : nullptr;
+    Symbol* target_sym = target.is_symbol() ? target.as_symbol() : nullptr;
+    Object* token_obj = token.is_function() ? static_cast<Object*>(token.as_function())
+                       : token.is_object() ? token.as_object() : nullptr;
+    Symbol* token_sym = token.is_symbol() ? token.as_symbol() : nullptr;
+
+    fr->register_target(target_obj, target_sym, held, token_obj, token_sym);
+    return Value();
+}
+
+Value FinalizationRegistry::fr_unregister(Context& ctx, const std::vector<Value>& args) {
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || this_obj->get_type() != Object::ObjectType::FinalizationRegistry) {
+        ctx.throw_type_error("FinalizationRegistry.prototype.unregister requires a FinalizationRegistry this");
+        return Value();
+    }
+    FinalizationRegistry* fr = static_cast<FinalizationRegistry*>(this_obj);
+
+    Value token = args.empty() ? Value() : args[0];
+    if (!can_hold_weakly(token)) {
+        ctx.throw_type_error("unregisterToken must be held weakly");
+        return Value();
+    }
+    Object* token_obj = token.is_function() ? static_cast<Object*>(token.as_function())
+                       : token.is_object() ? token.as_object() : nullptr;
+    Symbol* token_sym = token.is_symbol() ? token.as_symbol() : nullptr;
+    return Value(fr->unregister(token_obj, token_sym));
+}
+
+void FinalizationRegistry::setup_finalization_registry_prototype(Context& ctx) {
+    auto fr_constructor_fn = ObjectFactory::create_native_constructor("FinalizationRegistry", fr_constructor, 1);
+
+    auto fr_prototype = ObjectFactory::create_object();
+
+    auto register_fn = ObjectFactory::create_native_function("register", fr_register, 2);
+    auto unregister_fn = ObjectFactory::create_native_function("unregister", fr_unregister, 1);
+
+    fr_prototype->set_property_descriptor("register",
+        PropertyDescriptor(Value(register_fn.release()), PropertyAttributes::BuiltinFunction));
+    fr_prototype->set_property_descriptor("unregister",
+        PropertyDescriptor(Value(unregister_fn.release()), PropertyAttributes::BuiltinFunction));
+
+    fr_prototype->set_property_descriptor("constructor",
+        PropertyDescriptor(Value(fr_constructor_fn.get()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+    {
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            fr_prototype->set_property_descriptor(tag_sym->to_property_key(),
+                PropertyDescriptor(Value(std::string("FinalizationRegistry")), PropertyAttributes::Configurable));
+        }
+    }
+
+    FinalizationRegistry::prototype_object = fr_prototype.get();
+
+    fr_constructor_fn->set_property("prototype", Value(fr_prototype.release()), PropertyAttributes::None);
+    ctx.register_built_in_object("FinalizationRegistry", fr_constructor_fn.release());
 }
 
 }

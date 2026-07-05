@@ -144,11 +144,13 @@ private:
 class WeakMap : public Object {
 private:
     std::unordered_map<Object*, Value> entries_;
-    std::unordered_map<int, Value> symbol_entries_; // Symbol ID -> Value (ES2023 symbol key support)
+    std::unordered_map<class Symbol*, Value> symbol_entries_; // unregistered symbol keys (ES2023)
 
 public:
     WeakMap();
-    // Strong until the collector grows ephemeron support.
+    // Keys are weakly held: trace() reports the map to the collector's
+    // ephemeron pass instead of visiting entries_/symbol_entries_ directly,
+    // so a value is only kept alive while its key is (see Collector.cpp).
     void trace(Visitor& v) override;
     virtual ~WeakMap() = default;
 
@@ -160,15 +162,19 @@ public:
     Value get_symbol(class Symbol* sym) const;
     void set_symbol(class Symbol* sym, const Value& value);
     bool delete_symbol(class Symbol* sym);
-    
+
+    // Ephemeron processing hooks: only the collector's mark/sweep touches these.
+    std::unordered_map<Object*, Value>& raw_entries() { return entries_; }
+    std::unordered_map<class Symbol*, Value>& raw_symbol_entries() { return symbol_entries_; }
+
     static Value weakmap_constructor(Context& ctx, const std::vector<Value>& args);
     static Value weakmap_set(Context& ctx, const std::vector<Value>& args);
     static Value weakmap_get(Context& ctx, const std::vector<Value>& args);
     static Value weakmap_has(Context& ctx, const std::vector<Value>& args);
     static Value weakmap_delete(Context& ctx, const std::vector<Value>& args);
-    
+
     static void setup_weakmap_prototype(Context& ctx);
-    
+
     static thread_local Object* prototype_object;
 };
 
@@ -179,11 +185,11 @@ public:
 class WeakSet : public Object {
 private:
     std::unordered_set<Object*> values_;
-    std::unordered_set<int> symbol_values_; // Symbol IDs (ES2023 symbol value support)
+    std::unordered_set<class Symbol*> symbol_values_; // unregistered symbol members (ES2023)
 
 public:
     WeakSet();
-    // Strong until the collector grows ephemeron support.
+    // Weakly held: see WeakMap::trace.
     void trace(Visitor& v) override;
     virtual ~WeakSet() = default;
 
@@ -193,14 +199,95 @@ public:
     bool has_symbol(class Symbol* sym) const;
     void add_symbol(class Symbol* sym);
     bool delete_symbol(class Symbol* sym);
-    
+
+    std::unordered_set<Object*>& raw_values() { return values_; }
+    std::unordered_set<class Symbol*>& raw_symbol_values() { return symbol_values_; }
+
     static Value weakset_constructor(Context& ctx, const std::vector<Value>& args);
     static Value weakset_add(Context& ctx, const std::vector<Value>& args);
     static Value weakset_has(Context& ctx, const std::vector<Value>& args);
     static Value weakset_delete(Context& ctx, const std::vector<Value>& args);
-    
+
     static void setup_weakset_prototype(Context& ctx);
-    
+
+    static thread_local Object* prototype_object;
+};
+
+/**
+ * WeakRef implementation (ES2021)
+ */
+class WeakRef : public Object {
+private:
+    Object* target_object_ = nullptr;
+    class Symbol* target_symbol_ = nullptr;
+
+public:
+    explicit WeakRef(Object* target);
+    explicit WeakRef(class Symbol* target);
+    // Does not visit the target: a live WeakRef pointing at a dead target is
+    // the normal, observable end state (deref() then returns undefined).
+    void trace(Visitor& v) override;
+    virtual ~WeakRef() = default;
+
+    Value deref() const;
+    Object* target_object() const { return target_object_; }
+    class Symbol* target_symbol() const { return target_symbol_; }
+    // Collector-only: called once the ephemeron pass proves the target dead,
+    // before its cell is swept.
+    void clear_target() { target_object_ = nullptr; target_symbol_ = nullptr; }
+
+    static Value weakref_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value weakref_deref(Context& ctx, const std::vector<Value>& args);
+
+    static void setup_weakref_prototype(Context& ctx);
+
+    static thread_local Object* prototype_object;
+};
+
+/**
+ * FinalizationRegistry implementation (ES2021)
+ */
+class FinalizationRegistry : public Object {
+public:
+    struct Cell {
+        Object* target_object = nullptr;
+        class Symbol* target_symbol = nullptr;
+        Value held_value;
+        Object* token_object = nullptr;
+        class Symbol* token_symbol = nullptr;
+        // Set by the collector once the target is proven dead; the queued
+        // cleanup job delivers the callback and erases the cell afterward.
+        bool cleared = false;
+    };
+
+private:
+    Function* cleanup_callback_ = nullptr;
+    std::vector<Cell> cells_;
+    Context* context_ = nullptr; // creating realm's global context, for job queueing
+
+public:
+    FinalizationRegistry(Function* cleanup_callback, Context* ctx);
+    // Strongly traces the callback and each cell's heldValue; targets/tokens
+    // are weak (see WeakMap::trace).
+    void trace(Visitor& v) override;
+    virtual ~FinalizationRegistry() = default;
+
+    void register_target(Object* target_obj, class Symbol* target_sym, const Value& held,
+                         Object* token_obj, class Symbol* token_sym);
+    bool unregister(Object* token_obj, class Symbol* token_sym);
+
+    std::vector<Cell>& raw_cells() { return cells_; }
+    Function* cleanup_callback() const { return cleanup_callback_; }
+    // Collector-only: queues a microtask that delivers every cell already
+    // marked cleared, removing each as its callback returns.
+    void enqueue_cleanup_job();
+
+    static Value fr_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value fr_register(Context& ctx, const std::vector<Value>& args);
+    static Value fr_unregister(Context& ctx, const std::vector<Value>& args);
+
+    static void setup_finalization_registry_prototype(Context& ctx);
+
     static thread_local Object* prototype_object;
 };
 
