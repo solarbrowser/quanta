@@ -135,6 +135,7 @@ build/errors.log
 
 - Improve **spec compliance** 
 - Implement **bytecode virtual machine (VM)**
+- Implement **incremental gc**
 
 More [here](https://quanta.js.org/roadmap.html)
 
