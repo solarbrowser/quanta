@@ -102,6 +102,10 @@ public:
     
     Context* get_global_context() const { return global_context_.get(); }
     const std::vector<Context*>& get_survivor_contexts() const { return survivor_contexts_; }
+    // Direct access for Collector::run_collection's reachability-based prune
+    // (a major cycle rewrites this in place once it knows which survivors
+    // are still actually reachable -- see its doc comment).
+    std::vector<Context*>& mutable_survivor_contexts() { return survivor_contexts_; }
     // Every live engine on this thread, for GC root enumeration (a
     // collection only ever scans the calling thread's own engines/heaps).
     static const std::vector<Engine*>& all_engines();
@@ -149,10 +153,6 @@ private:
     Result execute_internal(const std::string& source, const std::string& filename);
     
     void handle_exception(const Value& exception);
-    
-    bool is_simple_mathematical_loop(ASTNode* ast);
-    Result execute_optimized_mathematical_loop(ASTNode* ast);
-    
 };
 
 /**

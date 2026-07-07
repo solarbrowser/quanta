@@ -7,6 +7,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -346,7 +347,8 @@ Value ArrayLiteral::evaluate(Context& ctx) {
                         Value next_fn = iter_obj.as_object()->get_property("next");
                         if (next_fn.is_function()) {
                             used_iterator = true;
-                            for (uint32_t ii = 0; ii < 100000; ii++) {
+                            for (;;) {
+                                Collector::safepoint();
                                 Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
                                 if (ctx.has_exception()) return Value();
                                 if (!res.is_object()) break;

@@ -142,6 +142,7 @@ mkdir -p \
     "$OBJ_DIR/core/gc" \
     "$OBJ_DIR/core/modules" \
     "$OBJ_DIR/core/runtime" \
+    "$OBJ_DIR/core/vm" \
     "$OBJ_DIR/lexer" \
     "$OBJ_DIR/parser" \
     "$OBJ_DIR/parser/ast" \
@@ -231,6 +232,7 @@ mapfile -d '' BUILTIN_SOURCES < <(find src/core/engine/builtins -name '*.cpp' -p
 CORE_GC_SOURCES=(src/core/gc/*.cpp)
 CORE_MODULE_SOURCES=(src/core/modules/*.cpp)
 CORE_RUNTIME_SOURCES=(src/core/runtime/*.cpp)
+CORE_VM_SOURCES=(src/core/vm/*.cpp)
 LEXER_SOURCES=(src/lexer/*.cpp)
 PARSER_SOURCES=(src/parser/*.cpp)
 mapfile -d '' AST_SOURCES < <(find src/parser/ast -name '*.cpp' -print0 2>/dev/null)
@@ -244,6 +246,7 @@ TOTAL_FILES=$((
     ${#CORE_GC_SOURCES[@]} +
     ${#CORE_MODULE_SOURCES[@]} +
     ${#CORE_RUNTIME_SOURCES[@]} +
+    ${#CORE_VM_SOURCES[@]} +
     ${#LEXER_SOURCES[@]} +
     ${#PARSER_SOURCES[@]} +
     ${#AST_SOURCES[@]}
@@ -258,6 +261,7 @@ BUILTIN_OBJECTS=()
 CORE_GC_OBJECTS=()
 CORE_MODULE_OBJECTS=()
 CORE_RUNTIME_OBJECTS=()
+CORE_VM_OBJECTS=()
 LEXER_OBJECTS=()
 PARSER_OBJECTS=()
 AST_OBJECTS=()
@@ -265,7 +269,7 @@ AST_OBJECTS=()
 echo
 print_header "Compilation Phase"
 
-echo "[0/4] Compiling PCRE2..."
+echo "[0/5] Compiling PCRE2..."
 echo "[$(date '+%H:%M:%S')] === PCRE2 ===" >> "$LOG_FILE"
 for src in "${PCRE2_SOURCES[@]}"; do
     obj="$OBJ_DIR/pcre2/$(basename "${src%.c}").o"
@@ -281,7 +285,7 @@ done
 print_success "PCRE2 + JIT compiled"
 
 echo
-echo "[0/4] Compiling utf8proc..."
+echo "[0/5] Compiling utf8proc..."
 echo "[$(date '+%H:%M:%S')] === UTF8PROC ===" >> "$LOG_FILE"
 obj="$OBJ_DIR/utf8proc/utf8proc.o"
 if ! clang "${UTF8PROC_FLAGS[@]}" -c third_party/utf8proc/utf8proc.c -o "$obj" 2>>"$ERROR_LOG"; then
@@ -292,7 +296,7 @@ UTF8PROC_OBJECTS+=("$obj")
 print_success "utf8proc compiled"
 
 echo
-echo "[1/4] Compiling core engine modules..."
+echo "[1/5] Compiling core engine modules..."
 echo "[$(date '+%H:%M:%S')] === CORE ENGINE ===" >> "$LOG_FILE"
 for src in "${CORE_ENGINE_SOURCES[@]}"; do
     obj="$OBJ_DIR/core/engine/$(basename "${src%.cpp}").o"
@@ -307,7 +311,7 @@ for src in "${CORE_ENGINE_SOURCES[@]}"; do
 done
 
 echo
-echo "[1/4] Compiling builtin modules..."
+echo "[1/5] Compiling builtin modules..."
 echo "[$(date '+%H:%M:%S')] === BUILTINS ===" >> "$LOG_FILE"
 for src in "${BUILTIN_SOURCES[@]}"; do
     obj="$OBJ_DIR/core/engine/builtins/$(basename "${src%.cpp}").o"
@@ -322,7 +326,7 @@ for src in "${BUILTIN_SOURCES[@]}"; do
 done
 
 echo
-echo "[1/4] Compiling garbage collector..."
+echo "[1/5] Compiling garbage collector..."
 echo "[$(date '+%H:%M:%S')] === GARBAGE COLLECTOR ===" >> "$LOG_FILE"
 for src in "${CORE_GC_SOURCES[@]}"; do
     obj="$OBJ_DIR/core/gc/$(basename "${src%.cpp}").o"
@@ -337,7 +341,7 @@ for src in "${CORE_GC_SOURCES[@]}"; do
 done
 
 echo
-echo "[1/4] Compiling core modules..."
+echo "[1/5] Compiling core modules..."
 echo "[$(date '+%H:%M:%S')] === CORE MODULES ===" >> "$LOG_FILE"
 for src in "${CORE_MODULE_SOURCES[@]}"; do
     obj="$OBJ_DIR/core/modules/$(basename "${src%.cpp}").o"
@@ -352,7 +356,7 @@ for src in "${CORE_MODULE_SOURCES[@]}"; do
 done
 
 echo
-echo "[2/4] Compiling runtime library..."
+echo "[2/5] Compiling runtime library..."
 echo "[$(date '+%H:%M:%S')] === RUNTIME ===" >> "$LOG_FILE"
 for src in "${CORE_RUNTIME_SOURCES[@]}"; do
     obj="$OBJ_DIR/core/runtime/$(basename "${src%.cpp}").o"
@@ -367,7 +371,7 @@ for src in "${CORE_RUNTIME_SOURCES[@]}"; do
 done
 
 echo
-echo "[3/4] Compiling lexer..."
+echo "[3/5] Compiling lexer..."
 echo "[$(date '+%H:%M:%S')] === LEXER ===" >> "$LOG_FILE"
 for src in "${LEXER_SOURCES[@]}"; do
     obj="$OBJ_DIR/lexer/$(basename "${src%.cpp}").o"
@@ -382,7 +386,7 @@ for src in "${LEXER_SOURCES[@]}"; do
 done
 
 echo
-echo "[4/4] Compiling parser..."
+echo "[4/5] Compiling parser..."
 echo "[$(date '+%H:%M:%S')] === PARSER ===" >> "$LOG_FILE"
 for src in "${PARSER_SOURCES[@]}"; do
     obj="$OBJ_DIR/parser/$(basename "${src%.cpp}").o"
@@ -397,7 +401,7 @@ for src in "${PARSER_SOURCES[@]}"; do
 done
 
 echo
-echo "[4/4] Compiling parser/ast modules..."
+echo "[4/5] Compiling parser/ast modules..."
 echo "[$(date '+%H:%M:%S')] === PARSER AST ===" >> "$LOG_FILE"
 for src in "${AST_SOURCES[@]}"; do
     obj="$OBJ_DIR/parser/ast/$(basename "${src%.cpp}").o"
@@ -408,6 +412,21 @@ for src in "${AST_SOURCES[@]}"; do
         fail "Compilation failed at $src"
     fi
     AST_OBJECTS+=("$obj")
+    ((COMPILED_FILES++))
+done
+
+echo
+echo "[5/5] Compiling VM modules..."
+echo "[$(date '+%H:%M:%S')] === VM ===" >> "$LOG_FILE"
+for src in "${CORE_VM_SOURCES[@]}"; do
+    obj="$OBJ_DIR/core/vm/$(basename "${src%.cpp}").o"
+    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
+    if ! compile_cpp "$src" "$obj"; then
+        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
+        ((FAILED_FILES++))
+        fail "Compilation failed at $src"
+    fi
+    CORE_VM_OBJECTS+=("$obj")
     ((COMPILED_FILES++))
 done
 
@@ -424,6 +443,7 @@ if ! clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" "${LTO_FLAGS[@]}" -DMAIN_EXECUTAB
     "${CORE_GC_OBJECTS[@]}" \
     "${CORE_MODULE_OBJECTS[@]}" \
     "${CORE_RUNTIME_OBJECTS[@]}" \
+    "${CORE_VM_OBJECTS[@]}" \
     "${LEXER_OBJECTS[@]}" \
     "${PARSER_OBJECTS[@]}" \
     "${AST_OBJECTS[@]}" \

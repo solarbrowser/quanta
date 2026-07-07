@@ -68,6 +68,10 @@ bool Object::has_shape_slot(const std::string& key) const {
     return shape_ && shape_->find_slot(key) >= 0;
 }
 
+bool Object::has_descriptor_override(const std::string& key) const {
+    return descriptors_ && descriptors_->count(key) > 0;
+}
+
 bool Object::set_shape_slot(const std::string& key, const Value& value) {
     if (!shape_) return false;
     if (Value* existing = find_shape_slot(key)) { *existing = value; return true; }
@@ -131,6 +135,7 @@ void Function::trace(Visitor& v) {
     v.visit_context(closure_context_);
     v.visit_environment(closure_environment_);
     v.visit_object(prototype_);
+    if (bytecode_chunk_) bytecode_chunk_->trace(v);
 }
 
 static Value make_prop_key_value(const std::string& key) {
@@ -1555,9 +1560,6 @@ void Object::set_length(uint32_t length) {
 
 void Object::push(const Value& value) {
     uint32_t length = get_length();
-    if (length >= 1000000) {
-        return;
-    }
     set_element(length, value);
     set_length(length + 1);
 }
@@ -1576,11 +1578,7 @@ Value Object::pop() {
 
 void Object::unshift(const Value& value) {
     uint32_t length = get_length();
-    
-    if (length >= 1000000) {
-        return;
-    }
-    
+
     for (uint32_t i = length; i > 0; --i) {
         if (i < elements_.size()) {
             Value element = get_element(i - 1);
@@ -2731,11 +2729,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             if (!args.empty()) {
                 uint32_t length = array->get_length();
                 uint32_t argCount = args.size();
-                
-                if (length + argCount >= 1000000) {
-                    return Value(static_cast<double>(array->get_length()));
-                }
-                
+
                 for (uint32_t i = length; i > 0; --i) {
                     Value element = array->get_element(i - 1);
                     array->set_element(i + argCount - 1, element);

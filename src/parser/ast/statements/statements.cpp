@@ -338,13 +338,29 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         const std::string& name = declarator->get_id()->get_name();
 
         if (name.empty() && declarator->get_init()) {
-            Value result = declarator->get_init()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            ASTNode* id_node = declarator->get_id();
-            ASTNode::Type id_type = id_node ? id_node->get_type() : ASTNode::Type::IDENTIFIER;
+            ASTNode* init_node = declarator->get_init();
             VariableDeclarator::Kind destr_kind = declarator->get_kind();
             bool is_lex_decl = (destr_kind == VariableDeclarator::Kind::LET ||
                                 destr_kind == VariableDeclarator::Kind::CONST);
+            bool is_const_decl = destr_kind == VariableDeclarator::Kind::CONST;
+
+            // Evaluate the source and call evaluate_with_value directly
+            // (instead of init_node->evaluate(), which always takes the
+            // var-like default path) so let/const destructuring gets a
+            // fresh block-scoped binding instead of leaking to the function.
+            if (init_node->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                auto* da = static_cast<DestructuringAssignment*>(init_node);
+                Value src = da->get_source()->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                da->evaluate_with_value(ctx, src, is_lex_decl, is_const_decl);
+                if (ctx.has_exception()) return Value();
+                continue;
+            }
+
+            Value result = init_node->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            ASTNode* id_node = declarator->get_id();
+            ASTNode::Type id_type = id_node ? id_node->get_type() : ASTNode::Type::IDENTIFIER;
 
             // Pre-create lexical bindings so let/const destructuring lands in this block scope instead of leaking via set_binding's outer-scope walk.
             if (is_lex_decl) {
@@ -377,7 +393,7 @@ Value VariableDeclaration::evaluate(Context& ctx) {
                 if (ctx.has_exception()) return Value();
             } else if (id_type == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                 DestructuringAssignment* da = static_cast<DestructuringAssignment*>(id_node);
-                da->evaluate_with_value(ctx, result);
+                da->evaluate_with_value(ctx, result, is_lex_decl, is_const_decl);
                 if (ctx.has_exception()) return Value();
             }
             continue;
@@ -848,9 +864,6 @@ Value ForStatement::evaluate(Context& ctx) {
             }
         }
 
-    unsigned int safety_counter = 0;
-    const unsigned int max_iterations = 1000000000U;
-
     if (init_ && init_->get_type() == Type::VARIABLE_DECLARATION) {
         auto* var_decl = static_cast<VariableDeclaration*>(init_.get());
         // Spec 14.7.4.2: only let (not const) gets per-iteration environments.
@@ -880,13 +893,6 @@ Value ForStatement::evaluate(Context& ctx) {
 
     while (true) {
         Collector::safepoint();
-        if (UNLIKELY((safety_counter & 0xFFFFF) == 0)) {
-            if (safety_counter > max_iterations) {
-                ctx.throw_exception(Value(std::string("For loop exceeded iterations")));
-                break;
-            }
-        }
-        ++safety_counter;
 
         if (test_) {
             Value test_value = test_->evaluate(ctx);
@@ -992,81 +998,6 @@ std::string ForStatement::to_string() const {
     return oss.str();
 }
 
-bool ForStatement::is_nested_loop() const {
-    if (!body_) return false;
-
-    if (body_->get_type() == Type::FOR_STATEMENT) {
-        return true;
-    }
-
-    if (body_->get_type() == Type::BLOCK_STATEMENT) {
-        BlockStatement* block = static_cast<BlockStatement*>(body_.get());
-        const auto& statements = block->get_statements();
-        for (const auto& stmt : statements) {
-            if (stmt && stmt->get_type() == Type::FOR_STATEMENT) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-bool ForStatement::can_optimize_as_simple_loop() const {
-    if (!init_ || !test_ || !update_ || !body_) {
-        return false;
-    }
-    return true;
-}
-
-Value ForStatement::execute_optimized_loop(Context& ctx) const {
-    if (!init_ || !test_ || !update_ || !body_) {
-        return Value();
-    }
-
-    std::string body_str = body_ ? body_->to_string() : "";
-
-    if (body_str.find("sum") != std::string::npos && body_str.find("+=") != std::string::npos && body_str.find("i") != std::string::npos) {
-        double n = 40000000000.0;
-        if (body_str.find("400000000") != std::string::npos) n = 400000000.0;
-        if (body_str.find("200000000") != std::string::npos) n = 200000000.0;
-        if (body_str.find("10000000") != std::string::npos) n = 10000000.0;
-
-        double mathematical_result = (n - 1.0) * n / 2.0;
-
-        ctx.set_binding("sum", Value(mathematical_result));
-
-        return Value(true);
-    }
-    else if (body_str.find("result") != std::string::npos && body_str.find("add") != std::string::npos) {
-        double n = 30000000000.0;
-        if (body_str.find("300000000") != std::string::npos) n = 300000000.0;
-        if (body_str.find("150000000") != std::string::npos) n = 150000000.0;
-        if (body_str.find("5000000") != std::string::npos) n = 5000000.0;
-
-        double sum_i = (n - 1.0) * n / 2.0;
-        double mathematical_result = 2.0 * sum_i + n;
-
-        ctx.set_binding("result", Value(mathematical_result));
-
-        return Value(true);
-    }
-    else if (body_str.find("varTest") != std::string::npos && body_str.find("temp") != std::string::npos) {
-        double n = 30000000000.0;
-        if (body_str.find("300000000") != std::string::npos) n = 300000000.0;
-        if (body_str.find("150000000") != std::string::npos) n = 150000000.0;
-        if (body_str.find("5000000") != std::string::npos) n = 5000000.0;
-
-        double mathematical_result = (n - 1.0) * n;
-
-        ctx.set_binding("varTest", Value(mathematical_result));
-
-        return Value(true);
-    }
-
-    return Value();
-}
-
 std::unique_ptr<ASTNode> ForStatement::clone() const {
     std::unique_ptr<ASTNode> cloned_init = init_ ? init_->clone() : nullptr;
     std::unique_ptr<ASTNode> cloned_test = test_ ? test_->clone() : nullptr;
@@ -1078,6 +1009,41 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
     );
 }
 
+
+// ES5 12.6.4: enumerate own enumerable properties then inherited ones.
+// Non-enumerable own at a closer level blocks inherited enumerable at outer
+// level. Shared with evaluate() below (which calls this instead of the old
+// inline version) and with the VM's Op::CreateForInKeys.
+bool ForInStatement::collect_keys(Context& ctx, Object* obj, std::vector<std::string>& out_keys) {
+    std::unordered_set<std::string> blocked; // seen at any closer level (blocks inherited)
+    Object* cur = obj;
+    while (cur) {
+        std::vector<std::string> all_own;
+        if (cur->get_type() == Object::ObjectType::Proxy) {
+            try {
+                all_own = static_cast<Proxy*>(cur)->own_keys_trap();
+            } catch (const std::runtime_error&) {
+                if (!ctx.has_exception()) ctx.throw_type_error("'ownKeys' proxy invariant violated");
+            }
+            if (ctx.has_exception()) return false;
+        } else {
+            all_own = cur->get_own_property_keys();
+        }
+        // Yield enumerable own keys not already blocked by a closer object
+        for (const auto& k : all_own) {
+            if (k.size() >= 2 && k[0] == '_' && k[1] == '_') continue;
+            if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0 || k.find("Symbol(") == 0) continue;
+            if (blocked.count(k)) continue; // shadowed by closer level
+            // Check if this own key is enumerable
+            PropertyDescriptor d = cur->get_property_descriptor(k);
+            if (d.is_enumerable()) out_keys.push_back(k);
+            // Add to blocked regardless of enumerability (non-enum own blocks inherited enum)
+            blocked.insert(k);
+        }
+        cur = cur->get_prototype();
+    }
+    return true;
+}
 
 Value ForInStatement::evaluate(Context& ctx) {
     std::string this_loop_label = ctx.get_next_statement_label();
@@ -1176,42 +1142,11 @@ Value ForInStatement::evaluate(Context& ctx) {
             return Value();
         }
 
-        // ES5 12.6.4: enumerate own enumerable properties then inherited ones.
-        // Non-enumerable own at a closer level blocks inherited enumerable at outer level.
         std::vector<std::string> keys;
-        std::unordered_set<std::string> blocked; // seen at any closer level (blocks inherited)
-        Object* cur = obj;
-        while (cur) {
-            std::vector<std::string> all_own;
-            if (cur->get_type() == Object::ObjectType::Proxy) {
-                try {
-                    all_own = static_cast<Proxy*>(cur)->own_keys_trap();
-                } catch (const std::runtime_error&) {
-                    if (!ctx.has_exception()) ctx.throw_type_error("'ownKeys' proxy invariant violated");
-                }
-                if (ctx.has_exception()) {
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return Value();
-                }
-            } else {
-                all_own = cur->get_own_property_keys();
-            }
-            // Yield enumerable own keys not already blocked by a closer object
-            for (const auto& k : all_own) {
-                if (k.size() >= 2 && k[0] == '_' && k[1] == '_') continue;
-                if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0 || k.find("Symbol(") == 0) continue;
-                if (blocked.count(k)) continue; // shadowed by closer level
-                // Check if this own key is enumerable
-                PropertyDescriptor d = cur->get_property_descriptor(k);
-                if (d.is_enumerable()) keys.push_back(k);
-                // Add to blocked regardless of enumerability (non-enum own blocks inherited enum)
-                blocked.insert(k);
-            }
-            cur = cur->get_prototype();
+        if (!collect_keys(ctx, obj, keys)) {
+            ctx.set_current_loop_label(prev_loop_label);
+            return Value();
         }
-
-        uint32_t iteration_count = 0;
-        const uint32_t MAX_ITERATIONS = 1000000000;
 
         bool forin_per_iter = false;
         if (left_->get_type() == Type::VARIABLE_DECLARATION) {
@@ -1228,8 +1163,6 @@ Value ForInStatement::evaluate(Context& ctx) {
 
         for (const auto& key : keys) {
             Collector::safepoint();
-            if (iteration_count >= MAX_ITERATIONS) break;
-            iteration_count++;
 
             // Skip properties deleted during enumeration (spec allows this).
             {
@@ -1356,6 +1289,140 @@ std::string ForInStatement::to_string() const {
 
 std::unique_ptr<ASTNode> ForInStatement::clone() const {
     return std::make_unique<ForInStatement>(left_->clone(), right_->clone(), body_->clone(), start_, end_, left_decl_kind_);
+}
+
+// Mirrors this function's own sync (non-await), non-string-fallback GetIterator
+// steps below (see the `if (iterator_symbol && obj && ...)` block) -- the VM's
+// Op::GetIterator calls this directly instead of duplicating the logic.
+bool ForOfStatement::get_iterator(Context& ctx, const Value& iterable, Value& out_iterator, Value& out_next_fn) {
+    if (!iterable.is_object() && !iterable.is_string() && !iterable.is_function()) {
+        ctx.throw_type_error(iterable.to_string() + " is not iterable");
+        return false;
+    }
+    Object* obj = nullptr;
+    std::unique_ptr<Object> boxed_string;
+    if (iterable.is_string()) {
+        boxed_string = std::make_unique<Object>();
+        boxed_string->set_property("length", Value(static_cast<double>(utf16_length(iterable.to_string()))));
+        Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
+        if (iterator_symbol) {
+            std::string str_value = iterable.to_string();
+            auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
+                [str_value](Context&, const std::vector<Value>&) -> Value {
+                    auto iterator = std::make_unique<StringIterator>(str_value);
+                    return Value(iterator.release());
+                });
+            boxed_string->set_property(iterator_symbol->to_property_key(), Value(string_iterator_fn.release()));
+        }
+        obj = boxed_string.get();
+    } else {
+        obj = iterable.is_function() ? static_cast<Object*>(iterable.as_function()) : iterable.as_object();
+    }
+
+    Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
+    if (!iterator_symbol || !obj->has_property(iterator_symbol->to_property_key())) {
+        ctx.throw_type_error("value is not iterable");
+        return false;
+    }
+    Value iterator_method = obj->get_property(iterator_symbol->to_property_key());
+    if (ctx.has_exception()) return false;
+    if (!iterator_method.is_function()) {
+        ctx.throw_type_error("value is not iterable");
+        return false;
+    }
+    // obj (and boxed_string, if this is the string case) may be destroyed
+    // once this function returns -- iterator_method is called with the
+    // ORIGINAL iterable as receiver (matching the tree-walker: iter_fn->
+    // call(ctx, {}, iterable), never `obj`), so nothing below reads obj again.
+    Value iterator_val = iterator_method.as_function()->call(ctx, {}, iterable);
+    if (ctx.has_exception()) return false;
+    if (!iterator_val.is_object()) {
+        ctx.throw_type_error("Result of the Symbol.iterator method is not an object");
+        return false;
+    }
+    Value next_method = iterator_val.as_object()->get_property("next");
+    if (ctx.has_exception()) return false;
+    if (!next_method.is_function()) {
+        ctx.throw_type_error("next method is not a function");
+        return false;
+    }
+    out_iterator = iterator_val;
+    out_next_fn = next_method;
+    return true;
+}
+
+// Mirrors the tree-walker's per-iteration `next_fn->call` + done/value
+// extraction (including the Object::current_context_ getter-exception
+// rescue for a `done`/`value` accessor that throws through a different
+// Context, e.g. a Proxy trap) below in the sync for-of loop.
+bool ForOfStatement::iterator_step(Context& ctx, const Value& iterator, const Value& next_fn,
+                                    bool& out_done, Value& out_value) {
+    Value result = next_fn.as_function()->call(ctx, {}, iterator);
+    // Per spec: if next() throws abruptly, do NOT close the iterator.
+    if (ctx.has_exception()) return false;
+    if (!result.is_object()) {
+        ctx.throw_type_error("Iterator result is not an object");
+        return false;
+    }
+    Object* result_obj = result.as_object();
+    Value done = result_obj->get_property("done");
+    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+            && Object::current_context_->has_exception()) {
+        ctx.throw_exception(Object::current_context_->get_exception(), true);
+        Object::current_context_->clear_exception();
+    }
+    if (ctx.has_exception()) return false;
+    if (done.to_boolean()) {
+        out_done = true;
+        return true;
+    }
+    Value value = result_obj->get_property("value");
+    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+            && Object::current_context_->has_exception()) {
+        ctx.throw_exception(Object::current_context_->get_exception(), true);
+        Object::current_context_->clear_exception();
+    }
+    if (ctx.has_exception()) return false;
+    out_done = false;
+    out_value = value;
+    return true;
+}
+
+// Mirrors the tree-walker's close_iterator lambda below in the sync for-of
+// loop, except the tree-walker calls it while ctx's OWN exception is still
+// live (had_exception = ctx.has_exception()); the VM's CHECK_EXC already
+// cleared ctx's exception before jumping to any handler, so it passes the
+// pending value explicitly instead (is_pending/pending_exception) rather
+// than relying on ctx still carrying it.
+void ForOfStatement::iterator_close(Context& ctx, const Value& iterator, bool validate_result,
+                                     bool is_pending, const Value& pending_exception) {
+    if (!iterator.is_object()) {
+        if (is_pending) ctx.throw_exception(pending_exception, true);
+        return;
+    }
+    Value return_method = iterator.as_object()->get_property("return");
+    bool inner_threw = ctx.has_exception();
+    if (!inner_threw) {
+        if (!return_method.is_undefined() && !return_method.is_null() && !return_method.is_function()) {
+            ctx.throw_type_error("Iterator return method is not callable");
+            inner_threw = true;
+        } else if (return_method.is_function()) {
+            Value result = return_method.as_function()->call(ctx, {}, iterator);
+            inner_threw = ctx.has_exception();
+            if (!inner_threw && validate_result && !result.is_object()) {
+                ctx.throw_type_error("Iterator return() must return an Object");
+                inner_threw = true;
+            }
+        }
+    }
+    (void)inner_threw;  // only relevant to decide whether return()'s own throw survives below
+    if (is_pending) {
+        if (ctx.has_exception()) ctx.clear_exception();
+        ctx.throw_exception(pending_exception, true);
+    }
+    // else: any inner_threw exception (from a failed return()) is left as
+    // the live ctx exception -- exactly the desired "break, but return()
+    // itself failed" completion.
 }
 
 Value ForOfStatement::evaluate(Context& ctx) {
@@ -1495,8 +1562,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
             return_method.as_function()->call(ctx, {}, Value(iter_obj));
         };
 
-        const uint32_t MAX_ITER = 1000000;
-        for (uint32_t i = 0; i < MAX_ITER; i++) {
+        for (uint32_t i = 0;; i++) {
             Collector::safepoint();
             Value awaited;
             if (in_async_gen_fiber) {
@@ -2047,13 +2113,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         };
 
                         Context* loop_ctx = &ctx;
-                        uint32_t iteration_count = 0;
-                        const uint32_t MAX_ITERATIONS = 1000000000;
                         Value V_iter;
 
-                        while (iteration_count < MAX_ITERATIONS) {
-                            iteration_count++;
-
+                        while (true) {
+                            Collector::safepoint();
                             Value result = next_fn->call(ctx, {}, iterator_obj);
 
                             // Per spec: if next() throws abruptly, do NOT close the iterator.
@@ -2155,7 +2218,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         break;
                                     }
                                     if (loop_ctx->has_continue()) {
-                                        if (loop_ctx->get_continue_label().empty()) { continue; }
+                                        if (loop_ctx->get_continue_label().empty()) {
+                                            loop_ctx->clear_break_continue();
+                                            continue;
+                                        }
                                         close_iterator();
                                         g_empty_completion = false;
                                         return V_iter;
@@ -2222,7 +2288,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         break;
                                     }
                                     if (loop_ctx->has_continue()) {
-                                        if (loop_ctx->get_continue_label().empty()) { continue; }
+                                        if (loop_ctx->get_continue_label().empty()) {
+                                            loop_ctx->clear_break_continue();
+                                            continue;
+                                        }
                                         close_iterator();
                                         g_empty_completion = false;
                                         return V_iter;
@@ -2252,7 +2321,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     break;
                                 }
                                 if (loop_ctx->has_continue()) {
-                                    if (loop_ctx->get_continue_label().empty()) { continue; }
+                                    if (loop_ctx->get_continue_label().empty()) {
+                                        loop_ctx->clear_break_continue();
+                                        continue;
+                                    }
                                     close_iterator();
                                     g_empty_completion = false;
                                     return V_iter;
@@ -2262,11 +2334,6 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     return Value();
                                 }
                             }
-                        }
-
-                        if (iteration_count >= MAX_ITERATIONS) {
-                            ctx.throw_exception(Value(std::string("For...of loop exceeded iterations (50)")));
-                            return Value();
                         }
 
                         g_empty_completion = false;
@@ -2313,12 +2380,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
             Context* loop_ctx = &ctx;
 
-            uint32_t iteration_count = 0;
-            const uint32_t MAX_ITERATIONS = 1000000000;
             Value V_arr;
 
-            for (uint32_t i = 0; i < length && iteration_count < MAX_ITERATIONS; i++) {
-                iteration_count++;
+            for (uint32_t i = 0; i < length; i++) {
+                Collector::safepoint();
 
                 Value element = obj->get_element(i);
 
@@ -2455,10 +2520,6 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 }
             }
 
-            if (iteration_count >= MAX_ITERATIONS) {
-                ctx.throw_exception(Value(std::string("For...of loop exceeded iterations (50)")));
-                return Value();
-            }
             g_empty_completion = false;
             return V_arr;
         } else {
@@ -2497,22 +2558,11 @@ Value WhileStatement::evaluate(Context& ctx) {
     std::string prev_loop_label = ctx.get_current_loop_label();
     ctx.set_current_loop_label(this_loop_label);
 
-    int safety_counter = 0;
-    const int max_iterations = 1000000000;
     Value V;
 
     try {
         while (true) {
             Collector::safepoint();
-            if (++safety_counter > max_iterations) {
-                static bool warned = false;
-                if (!warned) {
-                    std::cout << " optimized: Loop exceeded " << max_iterations
-                             << " iterations, continuing..." << std::endl;
-                    warned = true;
-                }
-                safety_counter = 0;
-            }
 
             Value test_value;
             try {
@@ -2605,22 +2655,11 @@ Value DoWhileStatement::evaluate(Context& ctx) {
     std::string prev_loop_label = ctx.get_current_loop_label();
     ctx.set_current_loop_label(this_loop_label);
 
-    int safety_counter = 0;
-    const int max_iterations = 1000000000;
     Value V;
 
     try {
         do {
             Collector::safepoint();
-            if (++safety_counter > max_iterations) {
-                static bool warned = false;
-                if (!warned) {
-                    std::cout << " optimized: Loop exceeded " << max_iterations
-                             << " iterations, continuing..." << std::endl;
-                    warned = true;
-                }
-                safety_counter = 0;
-            }
 
             try {
                 Value body_result = body_->evaluate(ctx);

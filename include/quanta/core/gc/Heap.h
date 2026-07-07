@@ -94,6 +94,14 @@ public:
     static bool gc_requested() { return gc_requested_; }
     static void request_gc()   { gc_requested_ = true; }
     static void clear_gc_request() { gc_requested_ = false; }
+    // A request that specifically needs a major collection (see note_extra_bytes).
+    static bool major_gc_requested() { return major_gc_requested_; }
+    static void request_major_gc() { major_gc_requested_ = true; }
+    static void clear_major_gc_request() { major_gc_requested_ = false; }
+    // Charges `bytes` toward gc_requested()'s budget for memory the cell
+    // heap doesn't see directly (pinned survivor Contexts). Requests a
+    // major specifically since only one can reclaim a survivor Context.
+    static void note_extra_bytes(size_t bytes);
     // Explicit-free path for `delete` (unique_ptr interop). Static: the
     // owning heap is recovered from the memory itself, so a cell created in
     // one realm and deleted while another realm's heap is active stays safe.
@@ -132,6 +140,7 @@ private:
 
     static thread_local Heap* active_;
     static thread_local bool gc_requested_;
+    static thread_local bool major_gc_requested_;
 
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into

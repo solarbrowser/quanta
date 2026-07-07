@@ -9,6 +9,8 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/CallStack.h"
+#include "quanta/core/vm/BytecodeCompiler.h"
+#include "quanta/core/vm/Interpreter.h"
 #include "quanta/parser/AST.h"
 #include <sstream>
 #include <iostream>
@@ -367,8 +369,15 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         function_context.set_strict_mode(true);
     }
     if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        BlockStatement* block = static_cast<BlockStatement*>(body_.get());
-        block->check_use_strict_directive(function_context);
+        if (strict_directive_state_ < 0) {
+            bool was_strict = function_context.is_strict_mode();
+            BlockStatement* block = static_cast<BlockStatement*>(body_.get());
+            block->check_use_strict_directive(function_context);
+            strict_directive_state_ =
+                (!was_strict && function_context.is_strict_mode()) ? 1 : 0;
+        } else if (strict_directive_state_ == 1) {
+            function_context.set_strict_mode(true);
+        }
     }
 
     Value actual_this = this_value;
@@ -410,25 +419,83 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         function_context.set_binding("this", actual_this);
     }
 
-    auto prop_keys = this->get_internal_property_keys();
-
     // A named class's own name is bound as an immutable self-reference inside its
     // methods (__closure_const_<name>) since the class's name binding doesn't exist
     // in scope yet when its methods are created -- see ClassDeclaration::evaluate.
     // Everything else resolves through closure_environment_, no materialization needed.
-    for (const auto& key : prop_keys) {
-        if (key.length() > 10 && key.substr(0, 10) == "__closure_" && key.substr(0, 16) != "__closure_const_") {
-            std::string var_name = key.substr(10);
-            if (this->has_property("__closure_const_" + var_name)) {
-                Value closure_value = this->get_property(key);
-                Environment* fn_lex = function_context.get_lexical_environment();
-                if (!fn_lex || !fn_lex->has_own_binding(var_name)) {
-                    function_context.create_lexical_binding(var_name, closure_value, false);
+    if (closure_props_state_ != 0) {
+        auto prop_keys = this->get_internal_property_keys();
+        bool found_any = false;
+        for (const auto& key : prop_keys) {
+            if (key.length() > 10 && key.substr(0, 10) == "__closure_" && key.substr(0, 16) != "__closure_const_") {
+                found_any = true;
+                std::string var_name = key.substr(10);
+                if (this->has_property("__closure_const_" + var_name)) {
+                    Value closure_value = this->get_property(key);
+                    Environment* fn_lex = function_context.get_lexical_environment();
+                    if (!fn_lex || !fn_lex->has_own_binding(var_name)) {
+                        function_context.create_lexical_binding(var_name, closure_value, false);
+                    }
                 }
             }
         }
+        if (closure_props_state_ < 0) closure_props_state_ = found_any ? 1 : 0;
     }
 
+
+    // VM execution branches off BEFORE parameter/arguments materialization:
+    // compiled functions read parameters from registers and reject any use of
+    // `arguments`/`this`/`eval`, so the whole binding ceremony below is dead
+    // weight for them (it dominated call-heavy benchmarks, e.g. fib).
+    if (VM::enabled() && !vm_incompatible_ && body_ &&
+        body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        if (!bytecode_chunk_) {
+            bool simple_params = true;
+            for (const auto& p : parameter_objects_) {
+                if (p->has_default() || p->has_destructuring() || p->is_rest()) {
+                    simple_params = false;
+                    break;
+                }
+            }
+            if (simple_params) {
+                bytecode_chunk_ = BytecodeCompiler::compile(body_.get(), parameters_);
+            }
+            if (bytecode_chunk_) {
+                // The chunk's constants (new, unmarked cells) are only reachable
+                // through this Function's trace(). If this Function already
+                // survived an earlier GC cycle (sticky mark bit = "old"), a
+                // minor collection won't re-trace it without this barrier,
+                // leaving the constants permanently unmarked -- a real
+                // dangling-pointer bug once sweep runs, not just a diagnostic.
+                Collector::write_barrier(this);
+                static const bool disasm = [] {
+                    const char* env = std::getenv("QUANTA_VM_DISASM");
+                    return env && env[0] == '1';
+                }();
+                if (disasm) {
+                    std::fprintf(stderr, "%s", disassemble_chunk(*bytecode_chunk_, name_).c_str());
+                }
+            } else {
+                vm_incompatible_ = true;
+            }
+        }
+        if (bytecode_chunk_) {
+            // Named function expressions still need their self-reference
+            // binding for recursion through LdaLookup.
+            if (!name_.empty() && name_ != "<anonymous>" && !function_context.has_binding(name_)) {
+                function_context.create_binding(name_, Value(this), false);
+            }
+            Context* prev_context = Object::current_context_;
+            Object::current_context_ = &function_context;
+            Value vm_result = VM::run(*bytecode_chunk_, function_context, args);
+            Object::current_context_ = prev_context;
+            if (function_context.has_exception()) {
+                ctx.throw_exception(function_context.get_exception(), true);
+                return Value();
+            }
+            return vm_result;
+        }
+    }
 
     // For non-simple params (defaults/rest/destructuring), create arguments early
     // so default expressions can reference it (spec: unmapped arguments for non-simple).

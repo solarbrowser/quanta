@@ -6,6 +6,7 @@
 
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
+#include "quanta/core/gc/Heap.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/JSON.h"
@@ -331,7 +332,11 @@ Context* Engine::get_current_context() const {
 }
 
 void Engine::add_survivor_context(Context* ctx) {
-    if (ctx) survivor_contexts_.push_back(ctx);
+    if (!ctx) return;
+    survivor_contexts_.push_back(ctx);
+    // Real memory the cell-based heap doesn't see -- charge it toward the
+    // same GC budget as ordinary cells (see Heap::note_extra_bytes).
+    Heap::note_extra_bytes(sizeof(Context));
 }
 
 void Engine::clear_survivor_contexts() {
@@ -528,10 +533,6 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             return Result("Parse error in " + filename);
         }
         
-        if (is_simple_mathematical_loop(program.get())) {
-            return execute_optimized_mathematical_loop(program.get());
-        }
-        
         if (global_context_) {
             global_context_->set_current_filename(filename);
 
@@ -572,38 +573,6 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
     }
 }
 
-
-bool Engine::is_simple_mathematical_loop(ASTNode* ast) {
-    return false;
-}
-
-Engine::Result Engine::execute_optimized_mathematical_loop(ASTNode* ast) {
-    
-    std::cout << "C++ CALCULATION: Executing mathematical loop directly" << std::endl;
-    
-    
-    
-    int64_t n = 100000000;
-    int64_t result = 0;
-    
-    auto start = std::chrono::high_resolution_clock::now();
-    
-    result = ((int64_t)n * ((int64_t)n + 1)) / 2;
-    
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    
-    std::cout << "MATHEMATICAL OPTIMIZATION: Completed " << n << " operations in " 
-              << duration.count() << "ms" << std::endl;
-    std::cout << "PERFORMANCE: " << (n / (duration.count() + 1) * 1000) << " ops/sec" << std::endl;
-    
-    if (global_context_) {
-        global_context_->set_binding("result", Value(static_cast<double>(result)));
-        global_context_->set_binding("i", Value(static_cast<double>(n)));
-    }
-    
-    return Engine::Result(Value(static_cast<double>(result)));
-}
 
 void Engine::setup_minimal_globals() {
     

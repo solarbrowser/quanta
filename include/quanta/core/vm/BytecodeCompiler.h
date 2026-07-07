@@ -1,0 +1,86 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+#ifndef QUANTA_VM_BYTECODE_COMPILER_H
+#define QUANTA_VM_BYTECODE_COMPILER_H
+
+#include "quanta/core/vm/Bytecode.h"
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace Quanta {
+
+class ASTNode;
+
+// Single-pass AST -> bytecode compiler. Returns nullptr for any function it
+// cannot fully compile -- that function then permanently runs on the
+// tree-walker (no mixed execution).
+class BytecodeCompiler {
+public:
+    static std::unique_ptr<BytecodeChunk> compile(
+        const ASTNode* body, const std::vector<std::string>& param_names);
+
+private:
+    BytecodeCompiler(const std::vector<std::string>& param_names, bool env_mode);
+
+    bool compile_statement(const ASTNode* node);
+    bool compile_expression(const ASTNode* node);  // result in accumulator
+
+    bool compile_for_each_loop(const ASTNode* left, const ASTNode* body);
+
+    bool is_local(const std::string& name) const;
+    int lookup_local(const std::string& name) const;
+    bool declare_local(const std::string& name);
+    int alloc_temp();
+    void free_temp(int reg);
+
+    void emit_read_local(const std::string& name);
+    void emit_write_local(const std::string& name, bool is_declaration);
+
+    void emit(Op op);
+    void emit_u8(uint8_t v);
+    void emit_u16(uint16_t v);
+    uint16_t add_constant(const Value& v);
+    uint16_t add_name(const std::string& name);
+    uint16_t alloc_feedback_slot();
+
+    bool member_is_supported(const class MemberExpression* mem) const;
+
+    int setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body);
+
+    size_t emit_jump(Op op);
+    bool patch_jump(size_t operand_pos);
+    bool emit_jump_back(Op op, size_t target_pc);
+
+    struct LoopScope {
+        size_t continue_target;
+        std::vector<size_t> break_patches;
+        std::vector<size_t> continue_patches;
+        bool continue_is_forward;
+        int base_env_depth;  // env_depth_ at loop entry, see BREAK/CONTINUE_STATEMENT
+        int base_try_depth;  // try_env_depth_ at loop entry
+    };
+
+    std::unique_ptr<BytecodeChunk> chunk_;
+    std::unordered_map<std::string, int> locals_;
+    std::unordered_set<int> lexical_registers_;
+    std::unordered_set<std::string> env_names_;
+    bool env_mode_ = false;
+    int next_register_ = 0;
+    int temp_watermark_ = 0;
+    std::vector<LoopScope> loop_stack_;
+    int try_env_depth_ = 0;
+    int env_depth_ = 0;
+    std::vector<size_t>* chain_shortcircuit_jumps_ = nullptr;
+    bool failed_ = false;
+};
+
+}
+
+#endif

@@ -243,16 +243,23 @@ Value MemberExpression::evaluate(Context& ctx) {
         return Value();
     }
 
+    // See g_optional_chain_shortcircuit's doc comment (ast_internal.h).
+    if (!is_chain_link_type(object_->get_type())) g_optional_chain_shortcircuit = false;
+
     Value object_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
-    
+
     if (object_value.is_null() || object_value.is_undefined()) {
-        if (object_->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
+        bool short_circuited = g_optional_chain_shortcircuit;
+        g_optional_chain_shortcircuit = false;
+        if (short_circuited) {
+            g_optional_chain_shortcircuit = true;
             return Value();
         }
         ctx.throw_type_error("Cannot read property of null or undefined");
         return Value();
     }
+    g_optional_chain_shortcircuit = false;
 
     // ES6: Property access on symbols - look up Symbol.prototype
     if (object_value.is_symbol()) {

@@ -1029,7 +1029,8 @@ void Set::setup_set_prototype(Context& ctx) {
         Object* it = iter.as_object();
         Value next_fn = it->get_property("next");
         if (ctx.has_exception() || !next_fn.is_function()) return result;
-        for (int i = 0; i < 1000000; i++) {
+        for (;;) {
+            Collector::safepoint();
             Value res = next_fn.as_function()->call(ctx, {}, iter);
             if (ctx.has_exception() || !res.is_object()) break;
             if (res.as_object()->get_property("done").to_boolean()) break;
@@ -1051,7 +1052,8 @@ void Set::setup_set_prototype(Context& ctx) {
         Object* it = iter.as_object();
         Value next_fn = it->get_property("next");
         if (ctx.has_exception() || !next_fn.is_function()) return;
-        for (int i = 0; i < 1000000; i++) {
+        for (;;) {
+            Collector::safepoint();
             Value res = next_fn.as_function()->call(ctx, {}, iter);
             if (ctx.has_exception() || !res.is_object()) return;
             if (res.as_object()->get_property("done").to_boolean()) return;

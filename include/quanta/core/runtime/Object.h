@@ -9,6 +9,7 @@
 
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Shape.h"
+#include "quanta/core/vm/Bytecode.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -229,6 +230,22 @@ public:
     
     const std::unordered_map<std::string, PropertyDescriptor>* get_descriptors() const { return descriptors_.get(); }
 
+    // VM inline-cache fast path. A shape match alone doesn't prove "plain
+    // data slot, no override" -- defineProperty can attach non-default
+    // attributes to an existing shape-mode key without changing the shape.
+    // Callers must also check has_descriptor_override(key) before trusting
+    // the slot value.
+    Shape* get_shape() const { return shape_; }
+    const Value* get_shape_slot_unchecked(uint32_t index) const {
+        return index < shape_slots_.size() ? &shape_slots_[index] : nullptr;
+    }
+    Value* get_shape_slot_unchecked(uint32_t index) {
+        return index < shape_slots_.size() ? &shape_slots_[index] : nullptr;
+    }
+    // Out-of-line: descriptors_'s value type (PropertyDescriptor) is only
+    // forward-declared this early in the header.
+    bool has_descriptor_override(const std::string& key) const;
+
     Value get_internal_property(const std::string& key) const;
     void set_internal_property(const std::string& key, const Value& value);
 
@@ -373,12 +390,23 @@ private:
     bool is_strict_;       // Function runs in strict mode (e.g. class methods)
     bool is_param_default_;  // Created as a default param expression; uses param scope as outer env
     uint32_t construct_slot_hint_ = 0;  // Class field count: pre-sizes new instances' shape slots
+    // Lazy AST->bytecode result, shared by every call. vm_incompatible_ is the
+    // negative cache: one failed compile routes this function through the
+    // tree-walker forever (function-level fallback, see vm-architecture.md).
+    std::unique_ptr<BytecodeChunk> bytecode_chunk_;
+    bool vm_incompatible_ = false;
     std::string source_text_;
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
     mutable uint32_t execution_count_;
     mutable bool is_hot_;
     mutable std::chrono::high_resolution_clock::time_point last_call_time_;
+    // Once-per-function facts cached on first call: the 'use strict' directive
+    // is static per body, and __closure_ self-reference props are installed at
+    // class-evaluation time -- re-deriving either on every call showed up hard
+    // in call-heavy profiles. -1 unknown, 0 no, 1 yes.
+    mutable int8_t strict_directive_state_ = -1;
+    mutable int8_t closure_props_state_ = -1;
 
 public:
     Function(const std::string& name, 

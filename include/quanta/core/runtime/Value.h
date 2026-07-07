@@ -110,6 +110,9 @@ private:
     static constexpr uint64_t TAG_NAN       = 0x0008000000000000ULL;
     static constexpr uint64_t TAG_NEG_INF   = 0x000A000000000000ULL;
     static constexpr uint64_t TAG_POS_INF   = 0x000B000000000000ULL;
+    // VM-internal only: marks a let/const register still in TDZ. Never
+    // returned to JS -- Op::LdarChecked converts it to a ReferenceError.
+    static constexpr uint64_t TAG_VM_TDZ    = 0x000C000000000000ULL;
 
     uint64_t bits_;
 
@@ -162,7 +165,16 @@ public:
         v.bits_ = QUIET_NAN | TAG_NEG_INF;
         return v;
     }
-    
+
+    static Value vm_tdz_sentinel() {
+        Value v;
+        v.bits_ = QUIET_NAN | TAG_VM_TDZ;
+        return v;
+    }
+    [[nodiscard]] inline bool is_vm_tdz_sentinel() const noexcept {
+        return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_VM_TDZ);
+    }
+
     explicit Value(bool b) : bits_(QUIET_NAN | (b ? TAG_TRUE : TAG_FALSE)) {}
 
     // Prevent const char* from being implicitly converted to bool

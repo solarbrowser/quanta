@@ -11,6 +11,7 @@
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/builtins/AtomicsBuiltin.h"
+#include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/FiberState.h"
 #include "quanta/core/runtime/MapSet.h"
@@ -58,6 +59,11 @@ public:
     void visit_environment(Environment* env) override {
         if (env && seen_.insert(env).second) environment_work_.push_back(env);
     }
+
+    // True once `ctx` has been visited this cycle, as a root or via tracing
+    // (e.g. a live Function's closure_context_) -- see run_collection's
+    // survivor-pruning step.
+    bool context_seen(Context* ctx) const { return seen_.count(ctx) > 0; }
 
     void visit_weak_map(WeakMap* w) override { if (w) pending_weak_maps_.push_back(w); }
     void visit_weak_set(WeakSet* w) override { if (w) pending_weak_sets_.push_back(w); }
@@ -395,7 +401,14 @@ void run_collection(bool minor) {
 
     for (Engine* engine : Engine::all_engines()) {
         v.visit_context(engine->get_global_context());
-        for (Context* c : engine->get_survivor_contexts()) v.visit_context(c);
+        // A minor cycle doesn't retrace old, unmutated cells, so a survivor
+        // only reachable through one wouldn't be rediscovered this cycle --
+        // keep rooting all of them here unconditionally. Majors clear all
+        // marks and retrace everything, so "not reached" there is precise
+        // (see the reachability-based prune below instead).
+        if (minor) {
+            for (Context* c : engine->get_survivor_contexts()) v.visit_context(c);
+        }
     }
     v.visit_context(Object::current_context_);
     for (Context* c : exec_context_stack()) v.visit_context(c);
@@ -406,6 +419,35 @@ void run_collection(bool minor) {
     auto t2 = std::chrono::steady_clock::now();
 
     v.drain();
+
+    // Reachability-based survivor prune (major cycles only -- see above).
+    // Function::call hands every call's Context to the survivor pool
+    // unconditionally on the chance a closure captured it; most don't. A
+    // survivor already reached above is genuinely still needed; one
+    // EventLoop still has a pending timer/Promise/fiber against gets force-
+    // traced (nothing else would mark its subgraph) and kept; anything else
+    // is unreachable and deleted.
+    if (!minor) {
+        bool any_forced = false;
+        for (Engine* engine : Engine::all_engines()) {
+            std::vector<Context*>& survivors = engine->mutable_survivor_contexts();
+            std::vector<Context*> still_alive;
+            still_alive.reserve(survivors.size());
+            for (Context* ctx : survivors) {
+                if (v.context_seen(ctx)) {
+                    still_alive.push_back(ctx);
+                } else if (EventLoop::instance().is_context_in_use(ctx)) {
+                    v.visit_context(ctx);
+                    still_alive.push_back(ctx);
+                    any_forced = true;
+                } else {
+                    delete ctx;
+                }
+            }
+            survivors = std::move(still_alive);
+        }
+        if (any_forced) v.drain();  // trace the force-kept ones' own subgraph
+    }
     auto t3 = std::chrono::steady_clock::now();
     v.drain_ephemerons();
     v.finalize_ephemerons();
@@ -416,6 +458,15 @@ void run_collection(bool minor) {
     g_last_cycle.marked_cells = v.marked_cells;
     if (verify) run_verify(g_last_cycle);
     auto t5 = std::chrono::steady_clock::now();
+
+    // Must run before sweep/decommit below: a fully-dead block can be
+    // decommitted (madvise'd, pages zeroed) once swept, and a stale entry
+    // here pointing into it would then read cell_size back as 0 --
+    // slot_index's offset/cell_size divides by that and traps (SIGFPE).
+    for (const Heap::ProbeResult& p : remembered_cells()) Heap::clear_remembered(p);
+    remembered_cells().clear();
+    for (Environment* e : remembered_envs()) e->gc_remembered_ = false;
+    remembered_envs().clear();
 
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {
@@ -431,11 +482,6 @@ void run_collection(bool minor) {
         std::fprintf(stderr, "[gc-prof] %s scan_stacks=%ldus roots=%ldus drain=%ldus ephemeron=%ldus verify=%ldus sweep+rebuild=%ldus marked=%zu\n",
                      minor ? "minor" : "major", us(t0,t1), us(t1,t2), us(t2,t3), us(t3,t4), us(t4,t5), us(t5,t6), v.marked_cells);
     }
-
-    for (const Heap::ProbeResult& p : remembered_cells()) Heap::clear_remembered(p);
-    remembered_cells().clear();
-    for (Environment* e : remembered_envs()) e->gc_remembered_ = false;
-    remembered_envs().clear();
 
     if (log) {
         std::fprintf(stderr, "[gc] %s marked=%zu swept=%zu verify_violations=%zu\n",
@@ -491,6 +537,17 @@ void Collector::safepoint() {
         return *v == '2' ? 2 : 1;
     }();
     static thread_local uint32_t cycle_count = 0;
+
+    // Survivor contexts can only be pruned by a major (see run_collection).
+    // Their growth feeds gc_requested()'s budget directly (see
+    // Engine::add_survivor_context/Heap::note_extra_bytes), so a call-heavy
+    // workload earns proportionally more frequent majors, no fixed threshold.
+    if (Heap::major_gc_requested()) {
+        Heap::clear_major_gc_request();
+        Heap::clear_gc_request();  // consumed together, run_collection clears it too
+        run_collection(false);
+        return;
+    }
 
     if (stress == 1) {
         run_collection(false);

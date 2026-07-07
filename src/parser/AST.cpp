@@ -159,39 +159,38 @@ std::unique_ptr<ASTNode> UndefinedLiteral::clone() const {
 }
 
 
+std::string TemplateLiteral::stringify_element(Context& ctx, const Value& v) {
+    // ES6: Template literals use ToString which calls toString() on objects
+    if (v.is_object() || v.is_function()) {
+        Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+        Value toString_fn = obj->get_property("toString");
+        if (toString_fn.is_function()) {
+            std::vector<Value> no_args;
+            Value str_result = toString_fn.as_function()->call(ctx, no_args, v);
+            if (!ctx.has_exception() && str_result.is_string()) {
+                return str_result.to_string();
+            }
+            ctx.clear_exception();
+            return v.to_string();
+        }
+        return v.to_string();
+    }
+    return v.to_string();
+}
+
 Value TemplateLiteral::evaluate(Context& ctx) {
     std::string result;
-    
+
     for (const auto& element : elements_) {
         if (element.type == Element::Type::TEXT) {
             result += element.text;
         } else if (element.type == Element::Type::EXPRESSION) {
             Value expr_value = element.expression->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            // ES6: Template literals use ToString which calls toString() on objects
-            if (expr_value.is_object() || expr_value.is_function()) {
-                Object* obj = expr_value.is_function() ?
-                    static_cast<Object*>(expr_value.as_function()) :
-                    expr_value.as_object();
-                Value toString_fn = obj->get_property("toString");
-                if (toString_fn.is_function()) {
-                    std::vector<Value> no_args;
-                    Value str_result = toString_fn.as_function()->call(ctx, no_args, expr_value);
-                    if (!ctx.has_exception() && str_result.is_string()) {
-                        result += str_result.to_string();
-                    } else {
-                        ctx.clear_exception();
-                        result += expr_value.to_string();
-                    }
-                } else {
-                    result += expr_value.to_string();
-                }
-            } else {
-                result += expr_value.to_string();
-            }
+            result += stringify_element(ctx, expr_value);
         }
     }
-    
+
     return Value(result);
 }
 

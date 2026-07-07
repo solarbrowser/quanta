@@ -16,6 +16,8 @@
 
 namespace Quanta {
 
+thread_local bool g_optional_chain_shortcircuit = false;
+
 Value ConditionalExpression::evaluate(Context& ctx) {
     Value test_value = test_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
@@ -182,12 +184,19 @@ static Value box_primitive_and_get_property(Context& ctx, const Value& object_va
 }
 
 Value OptionalChainingExpression::evaluate(Context& ctx) {
+    // See g_optional_chain_shortcircuit's doc comment (ast_internal.h): if my
+    // own base isn't itself a chain link, an unrelated earlier chain's stale
+    // short-circuit flag must not leak into this (possibly new) one.
+    if (!is_chain_link_type(object_->get_type())) g_optional_chain_shortcircuit = false;
+
     Value object_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
 
     if (object_value.is_null() || object_value.is_undefined()) {
+        g_optional_chain_shortcircuit = true;
         return Value();
     }
+    g_optional_chain_shortcircuit = false;
 
     if (computed_) {
         Value property_value = property_->evaluate(ctx);

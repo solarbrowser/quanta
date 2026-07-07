@@ -99,6 +99,10 @@ static Value postfix_to_numeric(Context& ctx, const Value& val) {
     return Value(val.to_number());
 }
 
+Value UnaryExpression::to_numeric(Context& ctx, const Value& v) {
+    return postfix_to_numeric(ctx, v);
+}
+
 Value BinaryExpression::evaluate(Context& ctx) {
     if (operator_ == Operator::ASSIGN ||
         operator_ == Operator::PLUS_ASSIGN ||
@@ -462,11 +466,15 @@ Value BinaryExpression::evaluate(Context& ctx) {
     Value right_value = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
+    return apply_operator(ctx, operator_, left_value, right_value);
+}
+
+Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& left_value, const Value& right_value) {
     if (LIKELY(left_value.is_number() && right_value.is_number())) {
         double left_num = left_value.as_number();
         double right_num = right_value.as_number();
         
-        switch (operator_) {
+        switch (op) {
             case Operator::ADD: {
                 double result = left_num + right_num;
                 if (std::isinf(result)) {
@@ -574,7 +582,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
         return Value();
     };
 
-    switch (operator_) {
+    switch (op) {
         case Operator::ADD: {
             Value left_coerced = toPrimitive(left_value);
             if (ctx.has_exception()) return Value();
@@ -607,7 +615,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
             Value right_coerced = toPrimitive(right_value, "number");
             if (ctx.has_exception()) return Value();
             try {
-                if (operator_ == Operator::SUBTRACT) {
+                if (op == Operator::SUBTRACT) {
                     return left_coerced.subtract(right_coerced);
                 } else {
                     return left_coerced.multiply(right_coerced);
@@ -629,8 +637,8 @@ Value BinaryExpression::evaluate(Context& ctx) {
             if (rv.is_object()) rv = toPrimitive(rv);
             if (ctx.has_exception()) return Value();
             try {
-                if (operator_ == Operator::DIVIDE) return lv.divide(rv);
-                if (operator_ == Operator::MODULO) return lv.modulo(rv);
+                if (op == Operator::DIVIDE) return lv.divide(rv);
+                if (op == Operator::MODULO) return lv.modulo(rv);
                 return lv.power(rv);
             } catch (const BigIntRangeError& e) { ctx.throw_range_error(e.what()); return Value(); }
               catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
@@ -715,13 +723,13 @@ Value BinaryExpression::evaluate(Context& ctx) {
 
             // Spec 13.10: < uses ARC(lp,rp); > uses ARC(rp,lp);
             // <= uses ARC(rp,lp)==0 (false result); >= uses ARC(lp,rp)==0.
-            if (operator_ == Operator::LESS_THAN) {
+            if (op == Operator::LESS_THAN) {
                 return Value(abstract_less(lp, rp) == -1);
             }
-            if (operator_ == Operator::GREATER_THAN) {
+            if (op == Operator::GREATER_THAN) {
                 return Value(abstract_less(rp, lp) == -1);
             }
-            if (operator_ == Operator::LESS_EQUAL) {
+            if (op == Operator::LESS_EQUAL) {
                 int r = abstract_less(rp, lp);
                 return Value(r == 0);
             }
@@ -813,11 +821,11 @@ Value BinaryExpression::evaluate(Context& ctx) {
             else if (rv.is_bigint() && lv.is_object()) lv = toBigIntCoerce(ctx, lv);
             if (ctx.has_exception()) return Value();
             try {
-                if (operator_ == Operator::BITWISE_AND) return lv.bitwise_and(rv);
-                if (operator_ == Operator::BITWISE_OR)  return lv.bitwise_or(rv);
-                if (operator_ == Operator::BITWISE_XOR) return lv.bitwise_xor(rv);
-                if (operator_ == Operator::LEFT_SHIFT)  return lv.left_shift(rv);
-                if (operator_ == Operator::RIGHT_SHIFT) return lv.right_shift(rv);
+                if (op == Operator::BITWISE_AND) return lv.bitwise_and(rv);
+                if (op == Operator::BITWISE_OR)  return lv.bitwise_or(rv);
+                if (op == Operator::BITWISE_XOR) return lv.bitwise_xor(rv);
+                if (op == Operator::LEFT_SHIFT)  return lv.left_shift(rv);
+                if (op == Operator::RIGHT_SHIFT) return lv.right_shift(rv);
                 return lv.unsigned_right_shift(rv);
             } catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
         }

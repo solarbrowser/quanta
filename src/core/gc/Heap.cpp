@@ -19,6 +19,7 @@ namespace Quanta {
 
 thread_local Heap* Heap::active_ = nullptr;
 thread_local bool Heap::gc_requested_ = false;
+thread_local bool Heap::major_gc_requested_ = false;
 
 Heap& Heap::active() {
     assert(active_ && "no active Heap -- Engine init must install a HeapScope "
@@ -121,16 +122,32 @@ HeapBlock* Heap::fresh_block(CellKind kind, HeapSegment segment, size_t cls) {
     return block;
 }
 
+namespace {
+// ~8MB of accounted bytes between collections; the interpreter safepoint
+// consumes the request (never collect mid-allocation). Shared between
+// allocate() (ordinary cells) and note_extra_bytes() (memory the cell
+// heap can't see directly, e.g. a pinned survivor Context -- see its own
+// doc comment) so both contribute to the same, already-tuned cadence
+// instead of survivor growth needing its own separate threshold.
+thread_local size_t g_bytes_since_gc = 0;
+
+void account_bytes(size_t size, bool needs_major) {
+    g_bytes_since_gc += size;
+    if (g_bytes_since_gc >= 8 * 1024 * 1024) {
+        g_bytes_since_gc = 0;
+        Heap::request_gc();
+        if (needs_major) Heap::request_major_gc();
+    }
+}
+}
+
+void Heap::note_extra_bytes(size_t bytes) {
+    account_bytes(bytes, /*needs_major=*/true);
+}
+
 void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
     if (size == 0) size = 1;
-    // ~8MB of new cells between collections; the interpreter safepoint
-    // consumes the request (never collect mid-allocation).
-    static thread_local size_t bytes_since_gc = 0;
-    bytes_since_gc += size;
-    if (bytes_since_gc >= 8 * 1024 * 1024) {
-        bytes_since_gc = 0;
-        gc_requested_ = true;
-    }
+    account_bytes(size, /*needs_major=*/false);
     size_t cls = size_class_index(size);
     if (cls == kNumSizeClasses) return allocate_large(size, kind);
 

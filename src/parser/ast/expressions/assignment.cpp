@@ -8,6 +8,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/CallStack.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Async.h"
@@ -1379,7 +1380,8 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
 
                                     // Rest: collect all remaining into temp array
                                     if (!iter_done) {
-                                        for (uint32_t ii = 0; ii < 100000; ii++) {
+                                        for (;;) {
+                                            Collector::safepoint();
                                             // Per spec, if next() throws, do NOT close the iterator
                                             // (no IteratorClose on abrupt next).
                                             Value res = call_next();
@@ -1669,7 +1671,27 @@ static bool is_anonymous_function_def(const ASTNode* node) {
            t == ASTNode::Type::CLASS_DECLARATION;
 }
 
-Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& source_value) {
+bool DestructuringAssignment::bind_or_set(Context& ctx, const std::string& name, const Value& value) {
+    if (as_lexical_) {
+        ctx.create_lexical_binding(name, value, !is_const_);
+        return true;
+    }
+    if (!ctx.has_binding(name)) {
+        ctx.create_binding(name, value, true);
+        return true;
+    }
+    bool ok = ctx.set_binding(name, value);
+    if (!ok && ctx.is_strict_const(name)) {
+        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+        return false;
+    }
+    return true;
+}
+
+Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& source_value,
+                                                    bool as_lexical, bool is_const) {
+    as_lexical_ = as_lexical;
+    is_const_ = is_const;
     if (type_ == Type::ARRAY) {
         // ES6: Strings are iterable and can be array-destructured
         bool is_string_source = source_value.is_string();
@@ -1736,7 +1758,8 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                             Object::current_context_ = &ctx;
                             if (has_rest) {
                                 // Rest: collect all elements
-                                for (uint32_t iter_i = 0; iter_i < 100000; iter_i++) {
+                                for (;;) {
+                                    Collector::safepoint();
                                     Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
                                     if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
                                     if (!result.is_object()) { iterator_done = true; break; }
@@ -1818,13 +1841,9 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         // ...[pattern] - apply nested destructuring to rest array
                         DestructuringAssignment* nested =
                             static_cast<DestructuringAssignment*>(nested_rest_pattern_.get());
-                        nested->evaluate_with_value(ctx, Value(rest_array.release()));
+                        nested->evaluate_with_value(ctx, Value(rest_array.release()), as_lexical_, is_const_);
                     } else {
-                        if (!ctx.has_binding(rest_name)) {
-                            ctx.create_binding(rest_name, Value(rest_array.release()), true);
-                        } else {
-                            ctx.set_binding(rest_name, Value(rest_array.release()));
-                        }
+                        if (!bind_or_set(ctx, rest_name, Value(rest_array.release()))) return Value();
                     }
 
                     break;
@@ -1921,19 +1940,16 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                                     rest_arr->set_length(ri);
                                     val_to_bind = Value(rest_arr.release());
                                 }
-                                if (!ctx.has_binding(rest_binding)) ctx.create_binding(rest_binding, val_to_bind, true);
-                                else ctx.set_binding(rest_binding, val_to_bind);
+                                if (!bind_or_set(ctx, rest_binding, val_to_bind)) return Value();
                                 break;
                             } else if (nested_var_name.empty() || nested_var_name == "\x01") {
                                 // Elision or empty -- skip binding but value was consumed from iterator
                             } else if (used_iterator && j < nested_elements.size()) {
                                 val_to_bind = nested_elements[j];
-                                if (!ctx.has_binding(nested_var_name)) ctx.create_binding(nested_var_name, val_to_bind, true);
-                                else ctx.set_binding(nested_var_name, val_to_bind);
+                                if (!bind_or_set(ctx, nested_var_name, val_to_bind)) return Value();
                             } else if (!used_iterator && j < nested_obj->get_length()) {
                                 val_to_bind = nested_obj->get_element(static_cast<uint32_t>(j));
-                                if (!ctx.has_binding(nested_var_name)) ctx.create_binding(nested_var_name, val_to_bind, true);
-                                else ctx.set_binding(nested_var_name, val_to_bind);
+                                if (!bind_or_set(ctx, nested_var_name, val_to_bind)) return Value();
                             }
                         }
                     }
@@ -1980,11 +1996,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         }
                         for (const auto& m : mappings) {
                             Value val = obj->get_property(m.first);
-                            if (!ctx.has_binding(m.second)) {
-                                ctx.create_binding(m.second, val, true);
-                            } else {
-                                ctx.set_binding(m.second, val);
-                            }
+                            if (!bind_or_set(ctx, m.second, val)) return Value();
                         }
                     }
                 } else {
@@ -2009,15 +2021,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         }
                     }
 
-                    if (!ctx.has_binding(var_name)) {
-                        ctx.create_binding(var_name, element, true);
-                    } else {
-                        bool ok = ctx.set_binding(var_name, element);
-                        if (!ok && ctx.is_strict_const(var_name)) {
-                            ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
-                            return Value();
-                        }
-                    }
+                    if (!bind_or_set(ctx, var_name, element)) return Value();
                 }
             }
         }
@@ -2049,11 +2053,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                     // Look up each property mapping on the prototype
                     for (const auto& mapping : property_mappings_) {
                         Value prop_value = proto->get_property(mapping.property_name);
-                        if (!ctx.has_binding(mapping.variable_name)) {
-                            ctx.create_binding(mapping.variable_name, prop_value, true);
-                        } else {
-                            ctx.set_binding(mapping.variable_name, prop_value);
-                        }
+                        if (!bind_or_set(ctx, mapping.variable_name, prop_value)) return Value();
                     }
                     // Also handle shorthand targets
                     for (const auto& target : targets_) {
@@ -2066,11 +2066,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         }
                         if (!in_mappings) {
                             Value prop_value = proto->get_property(name);
-                            if (!ctx.has_binding(name)) {
-                                ctx.create_binding(name, prop_value, true);
-                            } else {
-                                ctx.set_binding(name, prop_value);
-                            }
+                            if (!bind_or_set(ctx, name, prop_value)) return Value();
                         }
                     }
                 }
@@ -2169,19 +2165,11 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                 Object* arr_obj = prop_value.as_object();
                 for (size_t ai = 0; ai < var_names.size(); ++ai) {
                     Value elem = arr_obj->get_element(static_cast<uint32_t>(ai));
-                    if (!ctx.has_binding(var_names[ai])) {
-                        ctx.create_binding(var_names[ai], elem, true);
-                    } else {
-                        ctx.set_binding(var_names[ai], elem);
-                    }
+                    if (!bind_or_set(ctx, var_names[ai], elem)) return false;
                 }
             } else {
                 for (const auto& vn : var_names) {
-                    if (!ctx.has_binding(vn)) {
-                        ctx.create_binding(vn, Value(), true);
-                    } else {
-                        ctx.set_binding(vn, Value());
-                    }
+                    if (!bind_or_set(ctx, vn, Value())) return false;
                 }
             }
             continue;
@@ -2224,8 +2212,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                             if (c == ',') {
                                 if (!cur.empty()) {
                                     Value val = nested_obj->get_property(cur);
-                                    if (!ctx.has_binding(cur)) ctx.create_binding(cur, val, true);
-                                    else ctx.set_binding(cur, val);
+                                    if (!bind_or_set(ctx, cur, val)) return false;
                                     cur.clear();
                                 }
                             } else {
@@ -2357,11 +2344,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                             handle_infinite_depth_destructuring(nested_obj, var_name, ctx);
                         } else {
                             Value prop_value = nested_obj->get_property(var_name);
-                            if (!ctx.has_binding(var_name)) {
-                                ctx.create_binding(var_name, prop_value, true);
-                            } else {
-                                ctx.set_binding(var_name, prop_value);
-                            }
+                            if (!bind_or_set(ctx, var_name, prop_value)) return false;
                         }
                     }
                 }
@@ -2382,16 +2365,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                     }
                 }
             }
-            bool binding_created = false;
-            if (!ctx.has_binding(mapping.variable_name)) {
-                binding_created = ctx.create_binding(mapping.variable_name, prop_value, true);
-            } else {
-                ctx.set_binding(mapping.variable_name, prop_value);
-                binding_created = true;
-            }
-
-            if (!binding_created) {
-            }
+            if (!bind_or_set(ctx, mapping.variable_name, prop_value)) return false;
         }
     }
     
@@ -2437,12 +2411,8 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                 }
             }
 
-            if (!ctx.has_binding(rest_name)) {
-                ctx.create_binding(rest_name, Value(rest_obj.release()), true);
-            } else {
-                ctx.set_binding(rest_name, Value(rest_obj.release()));
-            }
-            
+            if (!bind_or_set(ctx, rest_name, Value(rest_obj.release()))) return false;
+
             continue;
         }
         
@@ -2505,11 +2475,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                                 handle_infinite_depth_destructuring(nested_obj, var_name, ctx);
                             } else {
                                 Value prop_value = nested_obj->get_property(var_name);
-                                if (!ctx.has_binding(var_name)) {
-                                    ctx.create_binding(var_name, prop_value, true);
-                                } else {
-                                    ctx.set_binding(var_name, prop_value);
-                                }
+                                if (!bind_or_set(ctx, var_name, prop_value)) return false;
                             }
                         }
                     }
@@ -2545,11 +2511,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
 
                 extracted_props.insert(prop_name);
 
-                if (!ctx.has_binding(prop_name)) {
-                    ctx.create_binding(prop_name, prop_value, true);
-                } else {
-                    ctx.set_binding(prop_name, prop_value);
-                }
+                if (!bind_or_set(ctx, prop_name, prop_value)) return false;
             }
         }
     }
@@ -2601,11 +2563,7 @@ void DestructuringAssignment::handle_nested_object_destructuring(Object* nested_
                             handle_infinite_depth_destructuring(deeper_obj, deep_var_name, ctx);
                         } else {
                             Value prop_value = deeper_obj->get_property(deep_var_name);
-                            if (!ctx.has_binding(deep_var_name)) {
-                                ctx.create_binding(deep_var_name, prop_value, true);
-                            } else {
-                                ctx.set_binding(deep_var_name, prop_value);
-                            }
+                            bind_or_set(ctx, deep_var_name, prop_value);
                         }
                     }
                     break;
@@ -2652,35 +2610,19 @@ void DestructuringAssignment::handle_nested_object_destructuring(Object* nested_
 
 
                             Value prop_value = nested_obj->get_property(property_name);
-
-                            if (!ctx.has_binding(variable_name)) {
-                                ctx.create_binding(variable_name, prop_value, true);
-                            } else {
-                                ctx.set_binding(variable_name, prop_value);
-                            }
+                            bind_or_set(ctx, variable_name, prop_value);
                         }
                     }
                 } else {
                     std::string property_name = var_name.substr(0, colon_pos);
                     std::string variable_name = var_name.substr(colon_pos + 1);
 
-
                     Value prop_value = nested_obj->get_property(property_name);
-
-                    if (!ctx.has_binding(variable_name)) {
-                        ctx.create_binding(variable_name, prop_value, true);
-                    } else {
-                        ctx.set_binding(variable_name, prop_value);
-                    }
+                    bind_or_set(ctx, variable_name, prop_value);
                 }
             } else {
                 Value prop_value = nested_obj->get_property(var_name);
-
-                if (!ctx.has_binding(var_name)) {
-                    ctx.create_binding(var_name, prop_value, true);
-                } else {
-                    ctx.set_binding(var_name, prop_value);
-                }
+                bind_or_set(ctx, var_name, prop_value);
             }
         }
     }
@@ -2733,25 +2675,13 @@ void DestructuringAssignment::handle_nested_object_destructuring_with_source(Obj
                 std::string variable_name = var_name.substr(colon_pos + 1);
 
                 Value prop_value = nested_obj->get_property(property_name);
-
-                if (!ctx.has_binding(variable_name)) {
-                    ctx.create_binding(variable_name, prop_value, true);
-                } else {
-                    ctx.set_binding(variable_name, prop_value);
-                }
+                bind_or_set(ctx, variable_name, prop_value);
             } else {
                 std::string actual_property = var_name;
                 std::string target_variable = var_name;
 
-                bool found_mapping = false;
-
                 Value prop_value = nested_obj->get_property(actual_property);
-
-                if (!ctx.has_binding(target_variable)) {
-                    ctx.create_binding(target_variable, prop_value, true);
-                } else {
-                    ctx.set_binding(target_variable, prop_value);
-                }
+                bind_or_set(ctx, target_variable, prop_value);
             }
         }
     }
@@ -2804,23 +2734,10 @@ void DestructuringAssignment::handle_nested_object_destructuring_with_mappings(O
                 std::string variable_name = var_name.substr(colon_pos + 1);
 
                 Value prop_value = nested_obj->get_property(property_name);
-
-                if (!ctx.has_binding(variable_name)) {
-                    ctx.create_binding(variable_name, prop_value, true);
-                } else {
-                    ctx.set_binding(variable_name, prop_value);
-                }
+                bind_or_set(ctx, variable_name, prop_value);
             } else {
-
-
-
                 Value prop_value = nested_obj->get_property(var_name);
-
-                if (!ctx.has_binding(var_name)) {
-                    ctx.create_binding(var_name, prop_value, true);
-                } else {
-                    ctx.set_binding(var_name, prop_value);
-                }
+                bind_or_set(ctx, var_name, prop_value);
             }
         }
     }
@@ -2884,11 +2801,7 @@ void DestructuringAssignment::handle_nested_object_destructuring_smart(Object* n
                 std::string variable_name = var_name.substr(colon_pos + 1);
 
                 Value prop_value = nested_obj->get_property(property_name);
-                if (!ctx.has_binding(variable_name)) {
-                    ctx.create_binding(variable_name, prop_value, true);
-                } else {
-                    ctx.set_binding(variable_name, prop_value);
-                }
+                bind_or_set(ctx, variable_name, prop_value);
             } else {
                 std::string target_variable = var_name;
 
@@ -2897,11 +2810,7 @@ void DestructuringAssignment::handle_nested_object_destructuring_smart(Object* n
                 }
 
                 Value prop_value = nested_obj->get_property(var_name);
-                if (!ctx.has_binding(target_variable)) {
-                    ctx.create_binding(target_variable, prop_value, true);
-                } else {
-                    ctx.set_binding(target_variable, prop_value);
-                }
+                bind_or_set(ctx, target_variable, prop_value);
             }
         }
     }
@@ -2961,14 +2870,9 @@ void DestructuringAssignment::handle_nested_object_destructuring_enhanced(Object
                 std::string variable_name = var_name.substr(colon_pos + 1);
 
                 Value prop_value = nested_obj->get_property(property_name);
-                if (!ctx.has_binding(variable_name)) {
-                    ctx.create_binding(variable_name, prop_value, true);
-                } else {
-                    ctx.set_binding(variable_name, prop_value);
-                }
+                bind_or_set(ctx, variable_name, prop_value);
             } else {
                 std::string target_variable = var_name;
-                bool found_mapping = false;
 
                 static std::map<std::string, std::vector<std::pair<std::string, std::string>>> global_nested_mappings;
 
@@ -2985,7 +2889,6 @@ void DestructuringAssignment::handle_nested_object_destructuring_enhanced(Object
                                     for (const auto& mapping_pair : mappings) {
                                         if (mapping_pair.first == var_name) {
                                             target_variable = mapping_pair.second;
-                                            found_mapping = true;
                                             break;
                                         }
                                     }
@@ -2997,11 +2900,7 @@ void DestructuringAssignment::handle_nested_object_destructuring_enhanced(Object
                 }
 
                 Value prop_value = nested_obj->get_property(var_name);
-                if (!ctx.has_binding(target_variable)) {
-                    ctx.create_binding(target_variable, prop_value, true);
-                } else {
-                    ctx.set_binding(target_variable, prop_value);
-                }
+                bind_or_set(ctx, target_variable, prop_value);
             }
         }
     }
@@ -3076,11 +2975,7 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
 
         if (colon_pos == std::string::npos) {
             Value final_value = current_obj->get_property(pattern);
-            if (!ctx.has_binding(pattern)) {
-                ctx.create_binding(pattern, final_value, true);
-            } else {
-                ctx.set_binding(pattern, final_value);
-            }
+            bind_or_set(ctx, pattern, final_value);
             return;
         }
 
@@ -3093,11 +2988,7 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
 
         if (is_renaming) {
             Value prop_value = current_obj->get_property(prop_name);
-            if (!ctx.has_binding(remaining)) {
-                ctx.create_binding(remaining, prop_value, true);
-            } else {
-                ctx.set_binding(remaining, prop_value);
-            }
+            bind_or_set(ctx, remaining, prop_value);
             return;
         }
 

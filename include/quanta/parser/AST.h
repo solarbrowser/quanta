@@ -16,6 +16,7 @@
 namespace Quanta {
 
 class Context;
+class Object;
 class FunctionExpression;
 
 
@@ -221,7 +222,13 @@ public:
         : ASTNode(Type::TEMPLATE_LITERAL, start, end), elements_(std::move(elements)) {}
     
     const std::vector<Element>& get_elements() const { return elements_; }
-    
+
+    // Shared with BytecodeCompiler/VM (Op::ToTemplateString) so both engines
+    // stringify an interpolated value identically: an own/inherited toString
+    // is preferred over ToPrimitive/valueOf, matching this class's existing
+    // (non-ToPrimitive) conversion rather than the general `+` coercion.
+    static std::string stringify_element(Context& ctx, const Value& v);
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -336,6 +343,11 @@ public:
     static Operator token_type_to_operator(TokenType type);
     static int get_precedence(Operator op);
     static bool is_right_associative(Operator op);
+    // Full-semantics binary op on already-evaluated operands (number fast path,
+    // ToPrimitive, BigInt, string concat, relational). Shared by the tree-walker
+    // and the bytecode VM so the two never drift. Short-circuit forms
+    // (&&, ||, comma) and assignment forms are NOT handled here.
+    static Value apply_operator(Context& ctx, Operator op, const Value& left, const Value& right);
 };
 
 class UnaryExpression : public ASTNode {
@@ -368,6 +380,10 @@ public:
     ASTNode* get_operand() const { return operand_.get(); }
     Operator get_operator() const { return operator_; }
     bool is_prefix() const { return prefix_; }
+
+    // ToNumeric with full valueOf/toString side effects; shared with the
+    // bytecode VM's Inc/Dec/ToNumber so ++/-- semantics never drift.
+    static Value to_numeric(Context& ctx, const Value& v);
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -507,7 +523,12 @@ public:
     ASTNode* get_nested_rest_pattern() const { return nested_rest_pattern_.get(); }
     
     Value evaluate(Context& ctx) override;
-    Value evaluate_with_value(Context& ctx, const Value& source_value);
+    // as_lexical: bind each target as a fresh `let`/`const` in the current
+    // scope instead of the default has_binding()-then-create-or-set walk
+    // (correct for `var`/plain assignment, but would leak `let`/`const`
+    // past its block). Only VariableDeclaration's let/const case passes true.
+    Value evaluate_with_value(Context& ctx, const Value& source_value,
+                               bool as_lexical = false, bool is_const = false);
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 
@@ -519,6 +540,17 @@ private:
     void handle_nested_object_destructuring_smart(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, DestructuringAssignment* source);
     void handle_nested_object_destructuring_enhanced(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, const std::string& property_key);
     void handle_infinite_depth_destructuring(Object* obj, const std::string& nested_pattern, Context& ctx);
+
+    // Set once at the top of evaluate_with_value; every handle_* helper
+    // above reads these instead of taking its own parameter (they recurse
+    // into each other for nested patterns).
+    bool as_lexical_ = false;
+    bool is_const_ = false;
+    // Single bind point every handle_* method (and evaluate_with_value)
+    // uses: as_lexical_ creates a fresh let/const in the current scope,
+    // otherwise the default has_binding()-then-create-or-set walk. Returns
+    // false (TypeError already set) only for a failed set on a known const.
+    bool bind_or_set(Context& ctx, const std::string& name, const Value& value);
 };
 
 
@@ -805,10 +837,6 @@ public:
     ASTNode* get_body() const { return body_.get(); }
     int get_init_decl_kind() const { return init_decl_kind_; }
 
-    bool is_nested_loop() const;
-    bool can_optimize_as_simple_loop() const;
-    Value execute_optimized_loop(Context& ctx) const;
-    
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -836,6 +864,11 @@ public:
     ASTNode* get_body() const { return body_.get(); }
     int get_left_decl_kind() const { return left_decl_kind_; }
 
+    // Shared with the VM (Op::CreateForInKeys): own enumerable keys, then
+    // the prototype chain's, skipping anything already seen at a closer
+    // level. False only for a Proxy ownKeys trap violation.
+    static bool collect_keys(Context& ctx, Object* obj, std::vector<std::string>& out_keys);
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -861,6 +894,19 @@ public:
     ASTNode* get_body() const { return body_.get(); }
     bool is_await() const { return is_await_; }
     int get_left_decl_kind() const { return left_decl_kind_; }
+
+    // Shared with the VM (Op::GetIterator/IteratorNextOrJump/IteratorClose),
+    // sync/non-destructuring/non-await path only. False (exception set)
+    // leaves the caller not calling iterator_close (matching spec: don't
+    // close if GetIterator/next itself threw).
+    static bool get_iterator(Context& ctx, const Value& iterable, Value& out_iterator, Value& out_next_fn);
+    static bool iterator_step(Context& ctx, const Value& iterator, const Value& next_fn,
+                               bool& out_done, Value& out_value);
+    // validate_result: check return()'s result is an Object (IteratorClose-
+    // after-break rule). is_pending/pending_exception: an in-flight
+    // exception that return() must not clobber.
+    static void iterator_close(Context& ctx, const Value& iterator, bool validate_result,
+                                bool is_pending, const Value& pending_exception);
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

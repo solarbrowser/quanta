@@ -83,7 +83,8 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
                         Value next_fn = iter_obj.as_object()->get_property("next");
                         if (next_fn.is_function()) {
                             used_iterator = true;
-                            for (uint32_t ii = 0; ii < 100000; ii++) {
+                            for (;;) {
+                                Collector::safepoint();
                                 Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
                                 if (ctx.has_exception()) return arg_values;
                                 if (!res.is_object()) break;
@@ -135,11 +136,17 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
 Value CallExpression::evaluate(Context& ctx) {
     if (callee_->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
         OptionalChainingExpression* opt = static_cast<OptionalChainingExpression*>(callee_.get());
+        // See g_optional_chain_shortcircuit's doc comment (ast_internal.h).
+        // This reimplements the base evaluation inline (rather than calling
+        // opt->evaluate()) since `base` is also needed as `this` below.
+        if (!is_chain_link_type(opt->get_object()->get_type())) g_optional_chain_shortcircuit = false;
         Value base = opt->get_object()->evaluate(ctx);
         if (ctx.has_exception()) return Value();
         if (base.is_null() || base.is_undefined()) {
+            g_optional_chain_shortcircuit = true;
             return Value();
         }
+        g_optional_chain_shortcircuit = false;
         // base is non-null: get property and call with base as this
         std::string prop_name;
         if (opt->is_computed()) {
@@ -165,11 +172,16 @@ Value CallExpression::evaluate(Context& ctx) {
     }
 
     if (is_optional_) {
+        // See g_optional_chain_shortcircuit's doc comment (ast_internal.h).
+        // `a?.()`'s own null-check is always a fresh short-circuit decision.
+        if (!is_chain_link_type(callee_->get_type())) g_optional_chain_shortcircuit = false;
         Value callee_val = callee_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
         if (callee_val.is_null() || callee_val.is_undefined()) {
+            g_optional_chain_shortcircuit = true;
             return Value();
         }
+        g_optional_chain_shortcircuit = false;
         if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
             return handle_member_expression_call(ctx);
         }
@@ -1709,15 +1721,28 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     }
     
     
+    // See g_optional_chain_shortcircuit's doc comment (ast_internal.h). This
+    // handles e.g. `a?.b.c()`: callee_ (`a?.b.c`) is a MemberExpression, not
+    // itself an OptionalChainingExpression, so the earlier checks in
+    // evaluate() don't catch it -- it lands here instead.
+    if (!is_chain_link_type(member->get_object()->get_type())) g_optional_chain_shortcircuit = false;
+
     Value object_value = member->get_object()->evaluate(ctx);
     if (ctx.has_exception()) {
         return Value();
     }
 
     if (object_value.is_null() || object_value.is_undefined()) {
+        bool short_circuited = g_optional_chain_shortcircuit;
+        g_optional_chain_shortcircuit = false;
+        if (short_circuited) {
+            g_optional_chain_shortcircuit = true;
+            return Value();
+        }
         ctx.throw_type_error("Cannot read property of null or undefined");
         return Value();
     }
+    g_optional_chain_shortcircuit = false;
 
     if (object_value.is_string()) {
         std::string str_value = object_value.to_string();
