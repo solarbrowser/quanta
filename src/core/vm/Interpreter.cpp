@@ -8,8 +8,10 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/BigInt.h"
+#include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/String.h"
+#include "quanta/core/runtime/TypedArray.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
 #include <cstdlib>
@@ -165,6 +167,22 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name, Fe
             Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
             return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
         }
+        // A prototype-only accessor (e.g. byteOffset) isn't own, but a
+        // TypedArray's own numeric index (9.4.5.4) never checks the prototype.
+        double numeric_index;
+        bool is_integer_indexed_key = obj->is_typed_array() &&
+            TypedArrayBase::canonical_numeric_index(name, numeric_index);
+        if (!is_integer_indexed_key && !obj->has_own_property(name)) {
+            for (Object* proto = obj->get_prototype(); proto; proto = proto->get_prototype()) {
+                PropertyDescriptor proto_desc = proto->get_property_descriptor(name);
+                if (proto_desc.is_accessor_descriptor()) {
+                    if (!proto_desc.has_getter()) return Value();
+                    Function* getter_fn = dynamic_cast<Function*>(proto_desc.get_getter());
+                    return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+                }
+                if (proto_desc.has_value()) break;
+            }
+        }
     }
     Value result = obj->get_property(name);
     if (ctx.has_exception()) return Value();
@@ -282,6 +300,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     for (;;) {
         instr_pc = pc;
         Op op = static_cast<Op>(code[pc++]);
+        try {
         switch (op) {
             case Op::LdaConst:
                 acc = constants[read_u16(code, pc)];
@@ -530,6 +549,29 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
+            case Op::LdaLookupTypeof: {
+                // `typeof x` suppresses only the unresolved-binding case, not TDZ.
+                const std::string& name = chunk.names[read_u16(code, pc)];
+                pc += 2;
+                if (ctx.is_in_tdz(name)) {
+                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    CHECK_EXC();
+                    break;
+                }
+                Environment* env = ctx.find_binding_env(name);
+                CHECK_EXC();
+                if (env) {
+                    acc = env->get_binding_direct(name, &ctx);
+                    CHECK_EXC();
+                } else if (ctx.has_binding(name)) {
+                    acc = ctx.get_binding(name);
+                    CHECK_EXC();
+                } else {
+                    acc = Value();
+                }
+                break;
+            }
+
             case Op::LdaEnv: {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
@@ -538,9 +580,13 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     CHECK_EXC();
                     break;
                 }
-                {
-                    Environment* env = ctx.find_binding_env(name);
-                    acc = env ? env->get_binding_direct(name, &ctx) : Value();
+                // `is_local` doesn't mean the scope is still active --
+                // "not found" here is the same as never-declared.
+                Environment* env = ctx.find_binding_env(name);
+                if (env) {
+                    acc = env->get_binding_direct(name, &ctx);
+                } else {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
                 }
                 CHECK_EXC();
                 break;
@@ -553,9 +599,11 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     CHECK_EXC();
                     break;
                 }
-                {
-                    Environment* env = ctx.find_binding_env(name);
-                    if (env) env->set_binding_direct(name, acc, &ctx);
+                Environment* env = ctx.find_binding_env(name);
+                if (env) {
+                    env->set_binding_direct(name, acc, &ctx);
+                } else {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
                 }
                 CHECK_EXC();
                 break;
@@ -728,17 +776,17 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
-            case Op::CallMethod: {
-                uint8_t obj_reg = code[pc];
-                uint8_t args_start = code[pc + 1];
-                uint8_t argc = code[pc + 2];
-                uint16_t name_idx = read_u16(code, pc + 3);
-                uint16_t fb_idx = read_u16(code, pc + 5);
-                pc += 7;
-                const Value& receiver = regs[obj_reg];
-                const std::string& name = chunk.names[name_idx];
-                Value callee = get_named(ctx, receiver, name, &chunk.feedback[fb_idx]);
-                CHECK_EXC();
+            case Op::CallResolved: {
+                // Callee already resolved+validated by GetNamed before args
+                // were compiled (spec order); this just invokes it.
+                uint8_t func_reg = code[pc];
+                uint8_t this_reg = code[pc + 1];
+                uint8_t args_start = code[pc + 2];
+                uint8_t argc = code[pc + 3];
+                uint16_t name_idx = read_u16(code, pc + 4);
+                pc += 6;
+                const Value& callee = regs[func_reg];
+                const Value& receiver = regs[this_reg];
                 std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
                 if (callee.is_function()) {
                     acc = callee.as_function()->call(ctx, call_args, receiver);
@@ -746,7 +794,33 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     acc = static_cast<Proxy*>(callee.as_object())->apply_trap(call_args, receiver);
                 } else {
-                    ctx.throw_type_error(name + " is not a function");
+                    ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
+                }
+                CHECK_EXC();
+                Collector::safepoint();
+                break;
+            }
+
+            case Op::Construct: {
+                uint8_t callee_reg = code[pc];
+                uint8_t args_start = code[pc + 1];
+                uint8_t argc = code[pc + 2];
+                uint16_t name_idx = read_u16(code, pc + 3);
+                pc += 5;
+                const Value& callee = regs[callee_reg];
+                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
+                if (callee.is_function()) {
+                    // A literal `new X()` targets X regardless of any ambient
+                    // new.target from an enclosing constructor call.
+                    Value old_new_target = ctx.get_new_target();
+                    ctx.set_new_target(callee);
+                    acc = callee.as_function()->construct(ctx, call_args);
+                    ctx.set_new_target(old_new_target);
+                } else if (callee.is_object() &&
+                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
+                    acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
+                } else {
+                    ctx.throw_type_error(chunk.names[name_idx] + " is not a constructor");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -857,6 +931,18 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 ctx.throw_exception(Value(std::string("VM: invalid opcode")));
                 return Value();
         }
+        } catch (const YieldException&) {
+            throw;
+        } catch (const GeneratorReturnException&) {
+            throw;
+        } catch (const std::exception& e) {
+            // A native call (e.g. Proxy invariant violation) threw a raw C++
+            // exception; CHECK_EXC below routes it like a normal JS throw.
+            if (!ctx.has_exception()) ctx.throw_exception(Value(std::string(e.what())));
+        } catch (...) {
+            if (!ctx.has_exception()) ctx.throw_exception(Value(std::string("Error: Unknown error")));
+        }
+        CHECK_EXC();
     }
 
 #undef BINARY_OP

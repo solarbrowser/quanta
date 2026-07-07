@@ -32,7 +32,8 @@ private:
     bool compile_statement(const ASTNode* node);
     bool compile_expression(const ASTNode* node);  // result in accumulator
 
-    bool compile_for_each_loop(const ASTNode* left, const ASTNode* body);
+    bool compile_for_each_loop(const ASTNode* left, const ASTNode* right,
+                               const ASTNode* body, bool is_for_in);
 
     bool is_local(const std::string& name) const;
     int lookup_local(const std::string& name) const;

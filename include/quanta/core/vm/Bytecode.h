@@ -53,6 +53,7 @@ enum class Op : uint8_t {
     Dec,
 
     LdaLookup,    // n -- chain walk (globals/closures, non-env_mode)
+    LdaLookupTypeof, // n -- like LdaLookup, but an unresolved name yields undefined instead of throwing
     LdaEnv,       // n -- env_mode chain walk
     StaEnv,       // n
     StaEnvInit,   // n -- current environment only, no chain walk
@@ -77,7 +78,8 @@ enum class Op : uint8_t {
     DestructureBind, // k
 
     Call,         // r_callee r_args_start argc n
-    CallMethod,   // r_obj r_args_start argc n fb
+    CallResolved, // r_func r_this r_args_start argc n -- func already resolved (spec: before args)
+    Construct,    // r_callee r_args_start argc n -- new.target = callee, calls Function::construct
 
     GetNamed,     // r_obj n fb
     SetNamed,     // r_obj n fb
@@ -102,7 +104,7 @@ struct SourceEntry {
     uint32_t column;
 };
 
-// Inline-cache slot for one GetNamed/SetNamed/CallMethod site (monomorphic only).
+// Inline-cache slot for one GetNamed/SetNamed site (monomorphic only).
 struct FeedbackSlot {
     Shape* shape = nullptr;
     uint32_t slot_index = 0;

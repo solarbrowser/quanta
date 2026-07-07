@@ -20,10 +20,11 @@ struct DeclInfo {
     std::string name;
     bool is_lexical;  // let/const: needs a TDZ-seeded register
     bool is_const;
+    bool is_catch_param = false;  // gets its own per-catch env; never a function-level local
 };
 
-// Collects every declared name up front (var hoisting). Returns false on a
-// duplicate: a flat register map can't represent block-scoped shadowing.
+// Collects every declared name up front (var hoisting), including repeats --
+// see contains_nested_lexical_decl for why duplicates are fine here.
 bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
     if (!node) return true;
     switch (node->get_type()) {
@@ -35,9 +36,6 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
                 if (!d->get_id()) return false;
                 const std::string& name = d->get_id()->get_name();
                 if (name.empty()) continue;  // destructuring: no named slot here
-                for (const auto& seen : out) {
-                    if (seen.name == name) return false;
-                }
                 out.push_back({name, is_lexical, is_const});
             }
             return true;
@@ -75,9 +73,6 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
                 const auto& d = vd->get_declarations()[0];
                 if (!d->get_id()) return false;
                 const std::string& name = d->get_id()->get_name();
-                for (const auto& seen : out) {
-                    if (seen.name == name) return false;
-                }
                 out.push_back({name, vd->get_kind() != VariableDeclarator::Kind::VAR,
                                 vd->get_kind() == VariableDeclarator::Kind::CONST});
             }
@@ -91,9 +86,6 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
                 const auto& d = vd->get_declarations()[0];
                 if (!d->get_id()) return false;
                 const std::string& name = d->get_id()->get_name();
-                for (const auto& seen : out) {
-                    if (seen.name == name) return false;
-                }
                 out.push_back({name, vd->get_kind() != VariableDeclarator::Kind::VAR,
                                 vd->get_kind() == VariableDeclarator::Kind::CONST});
             }
@@ -107,10 +99,7 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
                 if (clause->get_destructuring_pattern()) return false;
                 const std::string& pname = clause->get_parameter_name();
                 if (!pname.empty()) {
-                    for (const auto& seen : out) {
-                        if (seen.name == pname) return false;
-                    }
-                    out.push_back({pname, false, false}); // bound immediately, no TDZ needed
+                    out.push_back({pname, false, false, true});  // its own per-catch env
                 }
                 if (!prescan_declarations(clause->get_body(), out)) return false;
             }
@@ -425,6 +414,98 @@ bool contains_destructuring(const ASTNode* node) {
     }
 }
 
+// True if `node` contains a let/const anywhere within it, including a named
+// catch parameter (also a fresh per-catch binding).
+bool contains_lexical_decl(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::VARIABLE_DECLARATION:
+            return static_cast<const VariableDeclaration*>(node)->get_kind() !=
+                   VariableDeclarator::Kind::VAR;
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements()) {
+                if (contains_lexical_decl(stmt.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return contains_lexical_decl(n->get_consequent()) ||
+                   contains_lexical_decl(n->get_alternate());
+        }
+        case ASTNode::Type::WHILE_STATEMENT:
+            return contains_lexical_decl(static_cast<const WhileStatement*>(node)->get_body());
+        case ASTNode::Type::DO_WHILE_STATEMENT:
+            return contains_lexical_decl(static_cast<const DoWhileStatement*>(node)->get_body());
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            return contains_lexical_decl(n->get_init()) || contains_lexical_decl(n->get_body());
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            return contains_lexical_decl(n->get_left()) || contains_lexical_decl(n->get_body());
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            return contains_lexical_decl(n->get_left()) || contains_lexical_decl(n->get_body());
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (contains_lexical_decl(n->get_try_block())) return true;
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                const auto* clause = static_cast<const CatchClause*>(cc);
+                if (!clause->get_parameter_name().empty()) return true;
+                if (contains_lexical_decl(clause->get_body())) return true;
+            }
+            return contains_lexical_decl(n->get_finally_block());
+        }
+        default:
+            return false;
+    }
+}
+
+// True if a let/const sits outside the function's own flat top-level
+// statements -- register mode has no runtime scope to pop there.
+bool contains_nested_lexical_decl(const BlockStatement* top_level_body) {
+    for (const auto& stmt : top_level_body->get_statements()) {
+        if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) continue;
+        if (contains_lexical_decl(stmt.get())) return true;
+    }
+    return false;
+}
+
+// Direct (non-recursive) let/const declarations of `node`'s own top-level
+// statements -- a nested block/if/loop's own names get their own environment.
+bool collect_direct_lexical_decls(const ASTNode* node,
+                                   std::vector<BytecodeChunk::LoopEnvVar>& vars,
+                                   bool& has_destructuring) {
+    auto scan_one = [&](const ASTNode* stmt) -> bool {
+        if (stmt->get_type() != ASTNode::Type::VARIABLE_DECLARATION) return true;
+        const auto* decl = static_cast<const VariableDeclaration*>(stmt);
+        if (decl->get_kind() == VariableDeclarator::Kind::VAR) return true;
+        bool is_const = decl->get_kind() == VariableDeclarator::Kind::CONST;
+        for (const auto& d : decl->get_declarations()) {
+            if (d->get_init() && d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                has_destructuring = true;
+                continue;
+            }
+            if (!d->get_id()) return false;
+            const std::string& name = d->get_id()->get_name();
+            if (name.empty()) continue;
+            vars.push_back({name, true, is_const, false});
+        }
+        return true;
+    };
+    if (node->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        for (const auto& stmt : static_cast<const BlockStatement*>(node)->get_statements()) {
+            if (!scan_one(stmt.get())) return false;
+        }
+        return true;
+    }
+    return scan_one(node);
+}
+
 // True if a return/break/continue could escape `node` (keeps `finally`
 // "always runs" simple; conservative-true just costs a tree-walker fallback).
 bool contains_control_escape(const ASTNode* node) {
@@ -534,15 +615,27 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     if (!body || body->get_type() != ASTNode::Type::BLOCK_STATEMENT) return nullptr;
     if (param_names.size() > 64) return nullptr;
 
-    // A nested closure or destructuring forces every local into a real
-    // Environment instead of a register.
-    bool env_mode = contains_closure(body) || contains_destructuring(body);
+    std::vector<DeclInfo> declared;
+    if (!prescan_declarations(body, declared)) return nullptr;
+
+    // Shadowing is covered too: a true duplicate name always has a nested
+    // occurrence (a top-level dup is already a parser SyntaxError).
+    bool env_mode = contains_closure(body) || contains_destructuring(body) ||
+                     contains_nested_lexical_decl(static_cast<const BlockStatement*>(body));
 
     BytecodeCompiler compiler(param_names, env_mode);
     if (compiler.failed_) return nullptr;
 
-    std::vector<DeclInfo> declared;
-    if (!prescan_declarations(body, declared)) return nullptr;
+    // Nested lexical names and catch parameters get their own environment
+    // elsewhere -- only direct top-level names get a function-entry binding.
+    std::unordered_set<std::string> direct_lexical_names;
+    if (env_mode) {
+        std::vector<BytecodeChunk::LoopEnvVar> direct_vars;
+        bool unused_destructuring = false;
+        collect_direct_lexical_decls(body, direct_vars, unused_destructuring);
+        for (const auto& v : direct_vars) direct_lexical_names.insert(v.name);
+    }
+
     for (const auto& info : declared) {
         // A local named "arguments" needs the implicit arguments-object
         // hoisting semantics neither storage mode replicates.
@@ -555,8 +648,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (info.is_const && assigns_to_identifier(body, info.name)) return nullptr;
 
         if (env_mode) {
-            if (!compiler.declare_local(info.name)) return nullptr;
-            compiler.chunk_->env_locals.push_back({info.name, info.is_lexical, info.is_const});
+            // A repeat declare_local (shadowed name) is fine -- the Environment
+            // chain resolves each occurrence to its own scope at runtime.
+            compiler.declare_local(info.name);
+            if (!info.is_catch_param &&
+                (!info.is_lexical || direct_lexical_names.count(info.name))) {
+                compiler.chunk_->env_locals.push_back({info.name, info.is_lexical, info.is_const});
+            }
         } else {
             if (!compiler.declare_local(info.name)) return nullptr;
             if (info.is_lexical) {
@@ -611,23 +709,19 @@ BytecodeCompiler::BytecodeCompiler(const std::vector<std::string>& param_names, 
 int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body) {
     if (!env_mode_) return -1;
     std::vector<BytecodeChunk::LoopEnvVar> vars = std::move(extra_vars);
-    std::vector<DeclInfo> body_decls;
-    if (!prescan_declarations(body, body_decls)) return -1;  // already validated once; stay safe
-    for (const auto& info : body_decls) {
-        // `var` is function-scoped, not per-iteration -- already handled by
-        // compile()'s top-level env_locals.
-        if (!info.is_lexical) continue;
-        vars.push_back({info.name, info.is_lexical, info.is_const, false});
-    }
-    if (vars.empty()) return -1;
+    bool has_destructuring = false;
+    if (!collect_direct_lexical_decls(body, vars, has_destructuring)) return -1;
+    if (vars.empty() && !has_destructuring) return -1;
     chunk_->loop_envs.push_back(std::move(vars));
     return static_cast<int>(chunk_->loop_envs.size() - 1);
 }
 
-bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode* body) {
+bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode* right,
+                                              const ASTNode* body, bool is_for_in) {
     // Only a simple identifier target (declared here, or a bare identifier).
     std::string var_name;
     bool declare_fresh = false;
+    bool is_const = false;
     if (left->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
         const auto* vd = static_cast<const VariableDeclaration*>(left);
         if (vd->declaration_count() != 1) return false;
@@ -635,6 +729,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         if (!d->get_id()) return false;
         var_name = d->get_id()->get_name();
         declare_fresh = true;
+        is_const = vd->get_kind() == VariableDeclarator::Kind::CONST;
     } else if (left->get_type() == ASTNode::Type::IDENTIFIER) {
         var_name = static_cast<const Identifier*>(left)->get_name();
     } else {
@@ -646,23 +741,10 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     // (not implemented) -- break IS supported, via Op::IteratorClose.
     if (contains_return_statement(body)) return false;
 
-    // acc already holds the iterable (for-of: the object expression's own
-    // value; for-in: the Array Op::CreateForInKeys built from it).
-    int next_fn_reg = alloc_temp();
-    if (failed_) return false;
-    emit(Op::GetIterator);
-    emit_u8(static_cast<uint8_t>(next_fn_reg));
-    int iterator_reg = alloc_temp();
-    if (failed_) return false;
-    emit(Op::Star);
-    emit_u8(static_cast<uint8_t>(iterator_reg));
-
-    // Fresh every iteration, no carry-forward -- its value always comes from
-    // the just-fetched iterator result.
+    // Entered before compiling `right`: a lexical ForDeclaration's bound name
+    // is in TDZ even during the head's own iterable/object expression (spec).
     std::vector<BytecodeChunk::LoopEnvVar> extra_vars;
     if (declare_fresh && env_mode_) {
-        bool is_const = static_cast<const VariableDeclaration*>(left)->get_kind() ==
-                         VariableDeclarator::Kind::CONST;
         extra_vars.push_back({var_name, true, is_const, false});
     }
     int loop_env_idx = setup_loop_env(std::move(extra_vars), body);
@@ -671,6 +753,18 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         emit_u16(static_cast<uint16_t>(loop_env_idx));
         env_depth_++;
     }
+
+    if (!compile_expression(right)) return false;  // acc = iterable/object
+    if (is_for_in) emit(Op::CreateForInKeys);  // acc = Array of enumerable key strings
+
+    int next_fn_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::GetIterator);
+    emit_u8(static_cast<uint8_t>(next_fn_reg));
+    int iterator_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(iterator_reg));
 
     size_t loop_start = chunk_->code.size();
     emit(Op::IteratorNextOrJump);
@@ -864,18 +958,14 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* block = static_cast<const BlockStatement*>(node);
-            // A block with its own let/const gets its own env_mode
-            // Environment, else it'd leak into the flat function-level one.
+            // A block with its own direct let/const gets its own Environment
+            // -- a nested block's own names are its own scope's concern.
             int block_env_idx = -1;
             if (env_mode_) {
-                std::vector<DeclInfo> decls;
-                if (!prescan_declarations(block, decls)) return false;  // already validated once; stay safe
                 std::vector<BytecodeChunk::LoopEnvVar> vars;
-                for (const auto& info : decls) {
-                    if (!info.is_lexical) continue;
-                    vars.push_back({info.name, info.is_lexical, info.is_const, false});
-                }
-                if (!vars.empty() || contains_destructuring(block)) {
+                bool has_destructuring = false;
+                if (!collect_direct_lexical_decls(block, vars, has_destructuring)) return false;
+                if (!vars.empty() || has_destructuring) {
                     chunk_->loop_envs.push_back(std::move(vars));
                     block_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
@@ -1078,15 +1168,12 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // for-await-of: fiber/async machinery, permanent fallback (same
             // reasoning as generators -- see vm-architecture.md 2.9).
             if (stmt->is_await()) return false;
-            if (!compile_expression(stmt->get_right())) return false;  // acc = iterable
-            return compile_for_each_loop(stmt->get_left(), stmt->get_body());
+            return compile_for_each_loop(stmt->get_left(), stmt->get_right(), stmt->get_body(), false);
         }
 
         case ASTNode::Type::FOR_IN_STATEMENT: {
             const auto* stmt = static_cast<const ForInStatement*>(node);
-            if (!compile_expression(stmt->get_right())) return false;  // acc = object
-            emit(Op::CreateForInKeys);  // acc = Array of enumerable key strings
-            return compile_for_each_loop(stmt->get_left(), stmt->get_body());
+            return compile_for_each_loop(stmt->get_left(), stmt->get_right(), stmt->get_body(), true);
         }
 
         case ASTNode::Type::BREAK_STATEMENT: {
@@ -1176,8 +1263,27 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 const auto* clause = static_cast<const CatchClause*>(catch_node);
                 size_t catch_pc = chunk_->code.size();
                 if (save_env) emit(Op::RestoreEnv);
+                // A catch-body throw still reaches finally's own RestoreEnv --
+                // give it its own save slot or that underflows env_saves.
+                bool save_env_for_catch_body = save_env && finally_node;
+                if (save_env_for_catch_body) {
+                    if (++try_env_depth_ > 64) return false;
+                    emit(Op::SaveEnv);
+                }
+                int catch_env_idx = -1;
                 if (!clause->get_parameter_name().empty()) {
                     if (!is_local(clause->get_parameter_name())) return false;
+                    // Spec: a fresh Environment per catch, else it would
+                    // overwrite an outer same-named binding instead of shadowing it.
+                    if (env_mode_) {
+                        std::vector<BytecodeChunk::LoopEnvVar> vars;
+                        vars.push_back({clause->get_parameter_name(), false, false, false});
+                        chunk_->loop_envs.push_back(std::move(vars));
+                        catch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
+                        emit(Op::EnterLoopEnv);
+                        emit_u16(static_cast<uint16_t>(catch_env_idx));
+                        env_depth_++;
+                    }
                     emit_write_local(clause->get_parameter_name(), /*is_declaration=*/true);
                 }
                 // else: optional catch binding (`catch {}`) -- exception in
@@ -1185,6 +1291,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 catch_body_start = chunk_->code.size();
                 if (!compile_statement(clause->get_body())) return false;
                 catch_body_end = chunk_->code.size();
+                if (catch_env_idx >= 0) { emit(Op::ExitLoopEnv); env_depth_--; }
+                if (save_env_for_catch_body) {
+                    emit(Op::PopEnvSave);
+                    try_env_depth_--;
+                }
                 jump_catch_ok = emit_jump(Op::Jump);
 
                 chunk_->handlers.push_back({static_cast<uint32_t>(try_start),
@@ -1324,8 +1435,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 emit_read_local(name);
                 return !failed_;
             }
-            // Names with binding magic beyond a plain lookup stay on the tree-walker.
-            if (name == "this" || name == "arguments" || name == "eval" ||
+            // Binding magic beyond a plain lookup stays on the tree-walker.
+            // ("this" isn't here -- Function::call already resolves it.)
+            if (name == "arguments" || name == "eval" ||
                 name == "super" || name == "new") {
                 return false;
             }
@@ -1486,10 +1598,27 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     if (!compile_expression(expr->get_operand())) return false;
                     emit(Op::BitNot);
                     return true;
-                case UnOp::TYPEOF:
-                    if (!compile_expression(expr->get_operand())) return false;
+                case UnOp::TYPEOF: {
+                    // `typeof x` must not throw for an unresolved global
+                    // (TDZ still throws) -- LdaLookupTypeof handles that.
+                    const ASTNode* operand = expr->get_operand();
+                    if (operand->get_type() == ASTNode::Type::IDENTIFIER) {
+                        const std::string& name = static_cast<const Identifier*>(operand)->get_name();
+                        if (is_local(name)) {
+                            emit_read_local(name);
+                        } else if (name == "arguments" || name == "eval" ||
+                                   name == "super" || name == "new") {
+                            return false;
+                        } else {
+                            emit(Op::LdaLookupTypeof);
+                            emit_u16(add_name(name));
+                        }
+                    } else if (!compile_expression(operand)) {
+                        return false;
+                    }
                     emit(Op::TypeOf);
                     return true;
+                }
                 case UnOp::VOID:
                     if (!compile_expression(expr->get_operand())) return false;
                     emit(Op::LdaUndefined);
@@ -1650,7 +1779,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             }
 
             // obj.method(...): the receiver must be `obj`, not undefined --
-            // needs CallMethod, not a plain Call of the loaded function value.
+            // needs CallResolved, not a plain Call of the loaded function value.
             if (callee->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 const auto* mem = static_cast<const MemberExpression*>(callee);
                 if (mem->is_computed() || !member_is_supported(mem)) return false;
@@ -1664,6 +1793,17 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(obj_reg));
 
+                // Resolve the method before compiling arguments (spec order):
+                // this throws on a null/undefined receiver, args must not run first.
+                emit(Op::GetNamed);
+                emit_u8(static_cast<uint8_t>(obj_reg));
+                emit_u16(add_name(method_name));
+                emit_u16(alloc_feedback_slot());
+                int func_reg = alloc_temp();
+                if (failed_) return false;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(func_reg));
+
                 int args_start = next_register_;
                 for (const auto& arg : call_args) {
                     int arg_reg = alloc_temp();
@@ -1673,12 +1813,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     emit_u8(static_cast<uint8_t>(arg_reg));
                 }
 
-                emit(Op::CallMethod);
+                emit(Op::CallResolved);
+                emit_u8(static_cast<uint8_t>(func_reg));
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u8(static_cast<uint8_t>(args_start));
                 emit_u8(static_cast<uint8_t>(call_args.size()));
                 emit_u16(add_name(method_name));
-                emit_u16(alloc_feedback_slot());
                 free_temp(obj_reg);
                 return !failed_;
             }
@@ -1712,6 +1852,38 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             emit_u8(static_cast<uint8_t>(args_start));
             emit_u8(static_cast<uint8_t>(call_args.size()));
             emit_u16(add_name(callee_name));
+            free_temp(callee_reg);
+            return !failed_;
+        }
+
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* expr = static_cast<const NewExpression*>(node);
+            const auto& new_args = expr->get_arguments();
+            if (new_args.size() > 200) return false;
+            for (const auto& arg : new_args) {
+                if (arg->get_type() == ASTNode::Type::SPREAD_ELEMENT) return false;
+            }
+
+            if (!compile_expression(expr->get_constructor())) return false;
+            int callee_reg = alloc_temp();
+            if (failed_) return false;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(callee_reg));
+
+            int args_start = next_register_;
+            for (const auto& arg : new_args) {
+                int arg_reg = alloc_temp();
+                if (failed_) return false;
+                if (!compile_expression(arg.get())) return false;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(arg_reg));
+            }
+
+            emit(Op::Construct);
+            emit_u8(static_cast<uint8_t>(callee_reg));
+            emit_u8(static_cast<uint8_t>(args_start));
+            emit_u8(static_cast<uint8_t>(new_args.size()));
+            emit_u16(add_name(expr->get_constructor()->to_string()));
             free_temp(callee_reg);
             return !failed_;
         }

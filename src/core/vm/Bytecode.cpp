@@ -39,7 +39,7 @@ const OpInfo& op_info(Op op) {
         {"TestInstanceOf", 1, 'r'}, {"TestIn", 1, 'r'},
         {"Neg", 0, '-'}, {"LogicalNot", 0, '-'}, {"BitNot", 0, '-'}, {"TypeOf", 0, '-'},
         {"ToNumber", 0, '-'}, {"ToNumeric", 0, '-'}, {"Inc", 0, '-'}, {"ToTemplateString", 0, '-'}, {"Dec", 0, '-'},
-        {"LdaLookup", 2, 'n'},
+        {"LdaLookup", 2, 'n'}, {"LdaLookupTypeof", 2, 'n'},
         {"LdaEnv", 2, 'n'}, {"StaEnv", 2, 'n'}, {"StaEnvInit", 2, 'n'},
         {"EnterLoopEnv", 2, 'z'}, {"AdvanceLoopEnv", 2, 'z'}, {"ExitLoopEnv", 0, '-'},
         {"SaveEnv", 0, '-'}, {"RestoreEnv", 0, '-'}, {"PopEnvSave", 0, '-'},
@@ -48,7 +48,7 @@ const OpInfo& op_info(Op op) {
         {"JumpIfNotNullish", 2, 'o'}, {"JumpIfNullish", 2, 'o'},
         {"CreateClosure", 2, 'z'},
         {"DestructureBind", 2, 'z'},
-        {"Call", 5, 'c'}, {"CallMethod", 7, 'm'},
+        {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
         {"GetNamed", 5, 'g'}, {"SetNamed", 5, 'g'},
         {"GetKeyed", 1, 'r'}, {"SetKeyed", 2, 'r'},
         {"CreateObject", 2, 'h'}, {"CreateArray", 2, 'h'},
@@ -116,16 +116,14 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " '" << chunk.names[idx] << "'";
                 break;
             }
-            case 'm': {
-                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
-                                    (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
-                uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 5]) |
-                                  (static_cast<uint16_t>(chunk.code[operand_pc + 6]) << 8);
-                out << " r" << static_cast<int>(chunk.code[operand_pc])
-                    << " args=r" << static_cast<int>(chunk.code[operand_pc + 1])
-                    << " argc=" << static_cast<int>(chunk.code[operand_pc + 2])
-                    << " '" << chunk.names[name_idx] << "'"
-                    << " fb=" << fb_idx;
+            case 'v': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 4]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 5]) << 8);
+                out << " func=r" << static_cast<int>(chunk.code[operand_pc])
+                    << " this=r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " args=r" << static_cast<int>(chunk.code[operand_pc + 2])
+                    << " argc=" << static_cast<int>(chunk.code[operand_pc + 3])
+                    << " '" << chunk.names[name_idx] << "'";
                 break;
             }
             case 'g': {

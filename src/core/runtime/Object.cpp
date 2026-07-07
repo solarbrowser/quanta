@@ -753,6 +753,15 @@ bool Object::ordinary_set(const std::string& key, const Value& value) {
             if (cur->get_type() == ObjectType::Proxy) {
                 return static_cast<Proxy*>(cur)->set_trap(Value(key), Value(value), Value(this));
             }
+            // Integer-Indexed exotic [[Set]] (10.4.5.5): an invalid numeric
+            // key on a TypedArray prototype is a no-op success, not a create.
+            if (cur->is_typed_array()) {
+                double num_idx;
+                if (TypedArrayBase::canonical_numeric_index(key, num_idx) &&
+                    !static_cast<TypedArrayBase*>(cur)->is_valid_integer_index(num_idx)) {
+                    return true;
+                }
+            }
             if (cur->has_own_property(key)) {
                 PropertyDescriptor desc = cur->get_property_descriptor(key);
                 if (desc.is_data_descriptor() && !desc.is_writable()) {

@@ -168,8 +168,17 @@ void Program::hoist_lexical_declarations(Context& ctx) {
     ctx.set_lexical_environment(script_env_ptr);
 
     for (const auto& statement : statements_) {
-        if (statement->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
-            auto* vd = static_cast<VariableDeclaration*>(statement.get());
+        // `export let x`, `export const x`, `export class X {}` wrap the
+        // real declaration -- the binding TDZ applies to it either way.
+        const ASTNode* effective = statement.get();
+        if (effective->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+            const auto* ex = static_cast<const ExportStatement*>(effective);
+            if (!ex->is_declaration_export()) continue;
+            effective = ex->get_declaration();
+            if (!effective) continue;
+        }
+        if (effective->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<const VariableDeclaration*>(effective);
             if (vd->get_kind() == VariableDeclarator::Kind::LET ||
                     vd->get_kind() == VariableDeclarator::Kind::CONST) {
                 for (const auto& decl : vd->get_declarations()) {
@@ -183,6 +192,14 @@ void Program::hoist_lexical_declarations(Context& ctx) {
                         }
                     }
                 }
+            }
+        } else if (effective->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+            // Lexical (TDZ until it runs) but always mutable, same as `let`.
+            auto* cd = static_cast<const ClassDeclaration*>(effective);
+            if (cd->get_id() && !cd->get_id()->get_name().empty()) {
+                const std::string& bname = cd->get_id()->get_name();
+                script_env_ptr->create_uninitialized_binding(bname, true);
+                script_env_ptr->mark_lexical_declaration(bname);
             }
         }
     }
