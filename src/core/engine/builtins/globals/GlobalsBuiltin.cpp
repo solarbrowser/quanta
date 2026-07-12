@@ -1360,6 +1360,47 @@ void register_global_builtins(Context& ctx) {
         }, 2);
     ctx.get_global_object()->set_property("__pfadd__", Value(pfadd_fn.release()));
 
+    // __setfnname__(value, name): SetFunctionName -- used by class field initializers
+    // (DefineField step 7) to name an otherwise-anonymous function/class expression
+    // after the field it initializes. Only static/instance field values get this
+    // treatment (not generic member assignment), so it's applied explicitly here
+    // rather than folded into AssignmentExpression's identifier-only naming check.
+    auto setfnname_fn = ObjectFactory::create_native_function("__setfnname__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.empty()) return Value();
+            if (args.size() >= 2 && args[0].is_function()) {
+                Function* fn = args[0].as_function();
+                if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                    fn->set_name(args[1].to_string());
+                }
+            }
+            return args[0];
+        }, 2);
+    ctx.get_global_object()->set_property("__setfnname__", Value(setfnname_fn.release()));
+
+    // __deffield__(obj, name, value): DefineField step 9 for a PUBLIC (non-private) field --
+    // CreateDataPropertyOrThrow defines an OWN data property directly and must NOT walk the
+    // prototype chain for an inherited setter (unlike a normal `this.x = value` assignment).
+    auto deffield_fn = ObjectFactory::create_native_function("__deffield__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 3 || !args[0].is_object()) return Value();
+            Object* obj = args[0].as_object();
+            std::string key = args[1].to_string();
+            PropertyDescriptor fdesc(args[2], static_cast<PropertyAttributes>(
+                PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+            if (!obj->set_property_descriptor(key, fdesc)) {
+                // A Proxy's defineProperty trap may have already thrown (e.g. invariant
+                // violation, or the handler itself threw) -- don't clobber that with a
+                // generic error if so.
+                if (!ctx.has_exception()) {
+                    ctx.throw_type_error("Cannot define field '" + key + "'");
+                }
+            }
+            return Value();
+        }, 3);
+    ctx.get_global_object()->set_property("__deffield__", Value(deffield_fn.release()));
+
     // print()
     auto print_fn = ObjectFactory::create_native_function("print",
         [](Context& ctx, const std::vector<Value>& args) -> Value {

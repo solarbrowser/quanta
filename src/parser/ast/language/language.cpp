@@ -59,6 +59,7 @@ static std::string computed_key_to_property_key(Context& ctx, const Value& val) 
                 ctx.throw_type_error("Cannot convert object to primitive value");
                 return "";
             }
+            if (result.is_symbol()) return result.as_symbol()->to_property_key();
             return result.to_string();
         }
     }
@@ -69,6 +70,7 @@ static std::string computed_key_to_property_key(Context& ctx, const Value& val) 
     if (ts.is_function()) {
         Value r = ts.as_function()->call(ctx, {}, val);
         if (ctx.has_exception()) return "";
+        if (r.is_symbol()) return r.as_symbol()->to_property_key();
         if (!r.is_object() && !r.is_function()) return r.to_string();
     }
 
@@ -77,6 +79,7 @@ static std::string computed_key_to_property_key(Context& ctx, const Value& val) 
     if (vof.is_function()) {
         Value r = vof.as_function()->call(ctx, {}, val);
         if (ctx.has_exception()) return "";
+        if (r.is_symbol()) return r.as_symbol()->to_property_key();
         if (!r.is_object() && !r.is_function()) return r.to_string();
     }
 
@@ -409,6 +412,47 @@ std::unique_ptr<ASTNode> FunctionDeclaration::clone() const {
 }
 
 
+// True if `stmt` is a direct `super(...)` call statement -- used to find where a
+// derived class's field initializers must be spliced in an explicit constructor
+// (immediately after super() returns, never before -- fields may read state the
+// parent constructor just set, and `this` isn't initialized until super() runs).
+// SetFunctionName (DefineField step 7): true for the node shapes whose evaluated
+// value can be an otherwise-anonymous function/class -- named ones are skipped at
+// runtime instead (fn->get_name() already non-empty), matching the identical check
+// used for variable declarations (statements.cpp) and plain assignment (assignment.cpp).
+static bool is_anonymous_function_like(const ASTNode* node) {
+    if (!node) return false;
+    auto t = node->get_type();
+    return t == ASTNode::Type::FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::CLASS_DECLARATION;
+}
+
+// Wraps an instance field's cloned value expression with __setfnname__(value, name)
+// when the ORIGINAL (unresolved) value node is anonymous-function-shaped. Field
+// values are deferred to construction time (unlike static fields, evaluated once
+// here in ClassDeclaration::evaluate), so the naming has to happen at runtime too.
+static std::unique_ptr<ASTNode> wrap_field_value_with_name(
+    std::unique_ptr<ASTNode> value_clone, const ASTNode* original_value, const std::string& name,
+    const Position& pos) {
+    if (!is_anonymous_function_like(original_value)) return value_clone;
+    auto setfnname_id = std::make_unique<Identifier>("__setfnname__", pos, pos);
+    std::vector<std::unique_ptr<ASTNode>> args;
+    args.push_back(std::move(value_clone));
+    args.push_back(std::make_unique<StringLiteral>(name, pos, pos));
+    return std::make_unique<CallExpression>(std::move(setfnname_id), std::move(args), pos, pos, false);
+}
+
+static bool is_direct_super_call_statement(const ASTNode* stmt) {
+    if (!stmt || stmt->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) return false;
+    const ASTNode* expr = static_cast<const ExpressionStatement*>(stmt)->get_expression();
+    if (!expr || expr->get_type() != ASTNode::Type::CALL_EXPRESSION) return false;
+    const auto* call = static_cast<const CallExpression*>(expr);
+    return call->get_callee()->get_type() == ASTNode::Type::IDENTIFIER &&
+           static_cast<const Identifier*>(call->get_callee())->get_name() == "super";
+}
+
 Value ClassDeclaration::evaluate(Context& ctx) {
     std::string class_name = id_->get_name();
 
@@ -436,8 +480,26 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         for (const auto& stmt : body_->get_statements()) {
             if (stmt->get_type() == Type::CLASS_FIELD) {
                 ClassField* cf = static_cast<ClassField*>(stmt.get());
+                std::unique_ptr<ASTNode> resolved_stmt = stmt->clone();
+                if (cf->is_computed()) {
+                    // Computed field keys are evaluated exactly once, right here, in strict
+                    // declaration order (interleaved with methods and static/instance fields
+                    // alike) -- per spec, only the field's VALUE is deferred (instance: to
+                    // each construction; static: to right after the class object is built).
+                    // Bake the resolved key into a literal so it's never re-evaluated later.
+                    Value key_val = cf->get_key()->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    std::string resolved_key = computed_key_to_property_key(ctx, key_val);
+                    if (ctx.has_exception()) return Value();
+                    const Position& kpos = cf->get_key()->get_start();
+                    auto literal_key = std::make_unique<StringLiteral>(resolved_key, kpos, kpos);
+                    auto value_clone = cf->get_value() ? cf->get_value()->clone() : nullptr;
+                    resolved_stmt = std::make_unique<ClassField>(
+                        std::move(literal_key), std::move(value_clone), cf->is_static(),
+                        /*computed=*/false, cf->get_start(), cf->get_end());
+                }
                 if (cf->is_static()) {
-                    static_field_initializers.push_back(stmt->clone());
+                    static_field_initializers.push_back(std::move(resolved_stmt));
                     if (!cf->is_computed()) {
                         if (Identifier* kid = dynamic_cast<Identifier*>(cf->get_key())) {
                             if (!kid->get_name().empty() && kid->get_name()[0] == '#')
@@ -445,7 +507,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                     }
                 } else {
-                    field_initializers.push_back(stmt->clone());
+                    field_initializers.push_back(std::move(resolved_stmt));
                     if (!cf->is_computed()) {
                         if (Identifier* kid = dynamic_cast<Identifier*>(cf->get_key())) {
                             if (!kid->get_name().empty() && kid->get_name()[0] == '#')
@@ -645,29 +707,41 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         auto key_clone = cf->get_key()->clone();
                         auto member_expr = std::make_unique<MemberExpression>(
                             std::move(this_id2), std::move(key_clone), false, fstart, fstart);
+                        auto value_clone = wrap_field_value_with_name(
+                            cf->get_value()->clone(), cf->get_value(), pname, fstart);
                         auto assign = std::make_unique<AssignmentExpression>(
                             std::move(member_expr), AssignmentExpression::Operator::ASSIGN,
-                            cf->get_value()->clone(), fstart, fstart);
+                            std::move(value_clone), fstart, fstart);
                         new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(assign), fstart, fstart));
                     }
                 } else {
-                    auto this_id = std::make_unique<Identifier>("this", fstart, fstart);
-                    // String/number literal keys must be computed (this["a"] not this.a)
-                    bool field_computed = cf->is_computed() ||
-                        cf->get_key()->get_type() == ASTNode::Type::STRING_LITERAL ||
-                        cf->get_key()->get_type() == ASTNode::Type::NUMBER_LITERAL;
-                    auto member_expr = std::make_unique<MemberExpression>(
-                        std::move(this_id), cf->get_key()->clone(), field_computed, fstart, fstart);
+                    std::string field_name;
+                    if (cf->get_key()->get_type() == ASTNode::Type::IDENTIFIER) {
+                        field_name = static_cast<Identifier*>(cf->get_key())->get_name();
+                    } else if (cf->get_key()->get_type() == ASTNode::Type::STRING_LITERAL) {
+                        field_name = static_cast<StringLiteral*>(cf->get_key())->get_value();
+                    } else if (cf->get_key()->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                        field_name = static_cast<NumberLiteral*>(cf->get_key())->evaluate(ctx).to_property_key();
+                    }
                     std::unique_ptr<ASTNode> init_val;
                     if (cf->get_value()) {
-                        init_val = cf->get_value()->clone();
+                        init_val = wrap_field_value_with_name(cf->get_value()->clone(), cf->get_value(), field_name, fstart);
                     } else {
                         init_val = std::make_unique<Identifier>("undefined", fstart, fstart);
                     }
-                    auto assign = std::make_unique<AssignmentExpression>(
-                        std::move(member_expr), AssignmentExpression::Operator::ASSIGN,
-                        std::move(init_val), fstart, fstart);
-                    new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(assign), fstart, fstart));
+                    // DefineField step 9: CreateDataPropertyOrThrow defines an own data
+                    // property directly -- it must NOT walk the prototype chain for an
+                    // inherited setter the way a normal `this.x = value` assignment would.
+                    auto deffield_id = std::make_unique<Identifier>("__deffield__", fstart, fstart);
+                    auto this_id = std::make_unique<Identifier>("this", fstart, fstart);
+                    auto key_lit = std::make_unique<StringLiteral>(field_name, fstart, fstart);
+                    std::vector<std::unique_ptr<ASTNode>> deffield_args;
+                    deffield_args.push_back(std::move(this_id));
+                    deffield_args.push_back(std::move(key_lit));
+                    deffield_args.push_back(std::move(init_val));
+                    auto deffield_call = std::make_unique<CallExpression>(
+                        std::move(deffield_id), std::move(deffield_args), fstart, fstart, false);
+                    new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(deffield_call), fstart, fstart));
                 }
             } else {
                 new_statements.push_back(std::move(field_init));
@@ -683,8 +757,44 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
         } // end if (!field_initializers.empty())
 
-        for (auto& stmt : body_block->get_statements()) {
-            new_statements.push_back(stmt->clone());
+        const auto& orig_statements = body_block->get_statements();
+        if (has_superclass()) {
+            // Derived class with an explicit constructor: field initializers must run
+            // right after super() returns, not before it (this isn't bound yet, and a
+            // field's initializer may read state the parent constructor just set).
+            // Find the top-level `super(...)` call and splice the field-init code
+            // (currently sitting in new_statements) in right after it.
+            bool found_super = false;
+            size_t super_stmt_index = 0;
+            for (size_t i = 0; i < orig_statements.size(); i++) {
+                if (is_direct_super_call_statement(orig_statements[i].get())) {
+                    super_stmt_index = i;
+                    found_super = true;
+                    break;
+                }
+            }
+            std::vector<std::unique_ptr<ASTNode>> field_init_stmts = std::move(new_statements);
+            new_statements.clear();
+            if (found_super) {
+                size_t i = 0;
+                for (; i <= super_stmt_index; i++) {
+                    new_statements.push_back(orig_statements[i]->clone());
+                }
+                for (auto& s : field_init_stmts) new_statements.push_back(std::move(s));
+                for (; i < orig_statements.size(); i++) {
+                    new_statements.push_back(orig_statements[i]->clone());
+                }
+            } else {
+                // No top-level super(...) call found (e.g. called indirectly through
+                // a nested closure) -- fall back to the historical prepend-at-start
+                // placement rather than guessing a splice point.
+                for (auto& s : field_init_stmts) new_statements.push_back(std::move(s));
+                for (auto& stmt : orig_statements) new_statements.push_back(stmt->clone());
+            }
+        } else {
+            for (auto& stmt : orig_statements) {
+                new_statements.push_back(stmt->clone());
+            }
         }
 
         constructor_body = std::make_unique<BlockStatement>(
@@ -884,9 +994,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 ctx.throw_type_error("Class extends value is not a constructor or null");
                 return Value();
             }
-            // super.prototype must be null or an object (if present)
+            // super.prototype must be null or an object -- spec: Get(superclass, "prototype")
+            // result must be Object or Null; undefined (e.g. a getter-less accessor) also throws.
             Value super_proto_check = super_obj->get_property("prototype");
-            if (!super_proto_check.is_undefined() && !super_proto_check.is_null() &&
+            if (!super_proto_check.is_null() &&
                 !super_proto_check.is_object() && !super_proto_check.is_function()) {
                 ctx.throw_type_error("Class extends value has invalid prototype property");
                 return Value();
@@ -944,7 +1055,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     }
                 }
 
-                Value super_proto_val = super_obj->get_property("prototype");
+                // Reuse the value already fetched above (super_proto_check) -- Get(superclass,
+                // "prototype") must run exactly once per ClassDefinitionEvaluation, not twice.
+                Value super_proto_val = super_proto_check;
                 if (proto_ptr) {
                     Object* super_proto_obj = nullptr;
                     if (super_proto_val.is_object()) super_proto_obj = super_proto_val.as_object();
@@ -971,10 +1084,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         for (const auto& key : proto_keys) {
             if (key == "constructor") continue;
             PropertyDescriptor desc = proto_ptr->get_property_descriptor(key);
-            if (desc.has_getter() && desc.get_getter()) {
-                mark_class_name_closure(static_cast<Function*>(desc.get_getter()));
-            } else if (desc.has_setter() && desc.get_setter()) {
-                mark_class_name_closure(static_cast<Function*>(desc.get_setter()));
+            if (desc.is_accessor_descriptor()) {
+                if (desc.has_getter() && desc.get_getter()) {
+                    mark_class_name_closure(static_cast<Function*>(desc.get_getter()));
+                }
+                if (desc.has_setter() && desc.get_setter()) {
+                    mark_class_name_closure(static_cast<Function*>(desc.get_setter()));
+                }
             } else {
                 Value method_val = proto_ptr->get_property(key);
                 if (method_val.is_function()) {
@@ -1048,6 +1164,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 ContextSurvivorGuard survivor_guard(static_ctx, ctx.get_engine());
                 static_ctx->create_binding("this", Value(constructor_fn.get()), true);
                 if (blk->get_body()) blk->get_body()->evaluate(*static_ctx);
+                // An abrupt completion inside a static block halts all further static
+                // element evaluation (spec step 34d) -- propagate it to the outer ctx
+                // instead of silently discarding it with static_ctx.
+                if (static_ctx->has_exception()) {
+                    ctx.throw_exception(static_ctx->get_exception(), true);
+                    return Value();
+                }
             } else if (sfi->get_type() == Type::CLASS_FIELD) {
                 ClassField* cf = static_cast<ClassField*>(sfi.get());
                 std::string key_name;
@@ -1056,15 +1179,18 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     if (ctx.has_exception()) break;
                     key_name = computed_key_to_property_key(ctx, kv);
                     if (ctx.has_exception()) break;
-                    // Static computed field named "prototype" or "constructor" -> TypeError
-                    if (key_name == "prototype" || key_name == "constructor") {
-                        ctx.throw_type_error("Class static field cannot be named '" + key_name + "'");
-                        break;
-                    }
+                    // The "prototype"/"constructor" restriction (spec 15.7.14) is a syntax-level
+                    // early error for a literal FieldDefinition name only -- a *computed* key that
+                    // happens to evaluate to either string is an ordinary property definition.
+                    // "prototype" still fails at the set_property_descriptor call below (it's
+                    // already non-configurable from the earlier MakeConstructor-equivalent call),
+                    // which is handled generically there via CreateDataPropertyOrThrow semantics.
                 } else if (Identifier* kid = dynamic_cast<Identifier*>(cf->get_key())) {
                     key_name = kid->get_name();
                 } else if (StringLiteral* ks = dynamic_cast<StringLiteral*>(cf->get_key())) {
                     key_name = ks->get_value();
+                } else if (NumberLiteral* kn = dynamic_cast<NumberLiteral*>(cf->get_key())) {
+                    key_name = kn->evaluate(ctx).to_property_key();
                 }
                 Value val;
                 if (cf->get_value()) {
@@ -1082,9 +1208,23 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     ctx.set_this_binding(saved_this_binding);
                     ctx.create_binding_force("this", saved_this_val);
                     if (ctx.has_exception()) break;
+                    // SetFunctionName (DefineField step 7): an otherwise-anonymous
+                    // function/class initializer is named after the static field.
+                    if (val.is_function() && is_anonymous_function_like(cf->get_value())) {
+                        Function* vfn = val.as_function();
+                        if (vfn->get_name().empty() || vfn->get_name() == "<arrow>") {
+                            vfn->set_name(key_name);
+                        }
+                    }
                 }
                 PropertyDescriptor fdesc(val, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable | PropertyAttributes::Enumerable));
-                constructor_fn->set_property_descriptor(key_name, fdesc);
+                // CreateDataPropertyOrThrow: a computed key equal to "prototype" fails here
+                // (that property is already non-configurable, set by MakeConstructor above)
+                // and must throw, not silently no-op.
+                if (!constructor_fn->set_property_descriptor(key_name, fdesc)) {
+                    ctx.throw_type_error("Cannot define class static field '" + key_name + "'");
+                    break;
+                }
             }
         }
     }

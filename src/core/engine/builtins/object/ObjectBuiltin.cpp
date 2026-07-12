@@ -1925,6 +1925,7 @@ void register_object_builtins(Context& ctx) {
             if (args.empty()) return Value();
             std::string key = args[0].to_property_key();
             if (ctx.has_exception()) return Value();
+            if (!key.empty() && key[0] == '#') return Value();  // private names: never observable via Annex B lookup
             Object* cur = obj;
             while (cur) {
                 PropertyDescriptor d = (cur->get_type() == Object::ObjectType::Proxy)
@@ -1948,6 +1949,7 @@ void register_object_builtins(Context& ctx) {
             if (args.empty()) return Value();
             std::string key = args[0].to_property_key();
             if (ctx.has_exception()) return Value();
+            if (!key.empty() && key[0] == '#') return Value();  // private names: never observable via Annex B lookup
             Object* cur = obj;
             while (cur) {
                 PropertyDescriptor d = (cur->get_type() == Object::ObjectType::Proxy)

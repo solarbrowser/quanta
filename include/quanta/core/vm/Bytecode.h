@@ -73,9 +73,11 @@ enum class Op : uint8_t {
 
     JumpIfNotNullish, // o
     JumpIfNullish,    // o
+    JumpIfNotUndefined, // o -- default-parameter check (spec: explicit undefined too, not just omitted)
 
     CreateClosure,   // k -- runs the closure's own tree-walker evaluate()
     DestructureBind, // k
+    CreateRestArray, // r -- acc = Array of args[r..argc), for a `...rest` parameter
 
     Call,         // r_callee r_args_start argc n
     CallResolved, // r_func r_this r_args_start argc n -- func already resolved (spec: before args)
@@ -133,6 +135,10 @@ struct BytecodeChunk {
     std::vector<std::string> env_params;
     struct EnvLocal { std::string name; bool is_lexical; bool is_const; };
     std::vector<EnvLocal> env_locals;
+
+    // Function::call materializes the real arguments object before VM::run
+    // (skipped otherwise -- it dominated call-heavy benchmarks).
+    bool needs_arguments = false;
 
     std::vector<const ASTNode*> closures; // raw pointers into the owning Function's own body_
 

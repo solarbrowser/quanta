@@ -486,6 +486,9 @@ protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx);
     // ES2015 9.4.4.7: wires live getter/setter accessors so arguments[i] aliases parameter i.
     void setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>& args, class Object* arguments_obj);
+    // Builds the full arguments object (mapped/unmapped, callee, iterator)
+    // and binds it as "arguments" in fn_ctx.
+    void create_arguments_object(Context& fn_ctx, const std::vector<Value>& args);
 };
 
 namespace ObjectFactory {

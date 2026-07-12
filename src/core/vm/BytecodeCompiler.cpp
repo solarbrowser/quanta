@@ -105,6 +105,17 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
             }
             return prescan_declarations(n->get_finally_block(), out);
         }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            for (const auto& c : n->get_cases()) {
+                for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                    if (!prescan_declarations(s.get(), out)) return false;
+                }
+            }
+            return true;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return prescan_declarations(static_cast<const LabeledStatement*>(node)->get_statement(), out);
         default:
             return true;
     }
@@ -163,6 +174,21 @@ bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
             }
             return assigns_to_identifier(n->get_finally_block(), name);
         }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (assigns_to_identifier(n->get_discriminant(), name)) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (cc->get_test() && assigns_to_identifier(cc->get_test(), name)) return true;
+                for (const auto& s : cc->get_consequent()) {
+                    if (assigns_to_identifier(s.get(), name)) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return assigns_to_identifier(
+                static_cast<const LabeledStatement*>(node)->get_statement(), name);
         case ASTNode::Type::EXPRESSION_STATEMENT:
             return assigns_to_identifier(
                 static_cast<const ExpressionStatement*>(node)->get_expression(), name);
@@ -248,6 +274,23 @@ bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
             const auto* n = static_cast<const FunctionDeclaration*>(node);
             return assigns_to_identifier(n->get_body(), name);
         }
+        case ASTNode::Type::CLASS_DECLARATION: {
+            const auto* n = static_cast<const ClassDeclaration*>(node);
+            return assigns_to_identifier(n->get_superclass(), name) ||
+                   assigns_to_identifier(n->get_body(), name);
+        }
+        case ASTNode::Type::METHOD_DEFINITION: {
+            const auto* n = static_cast<const MethodDefinition*>(node);
+            return (n->is_computed() && assigns_to_identifier(n->get_key(), name)) ||
+                   assigns_to_identifier(n->get_value(), name);
+        }
+        case ASTNode::Type::CLASS_FIELD: {
+            const auto* n = static_cast<const ClassField*>(node);
+            return (n->is_computed() && assigns_to_identifier(n->get_key(), name)) ||
+                   assigns_to_identifier(n->get_value(), name);
+        }
+        case ASTNode::Type::CLASS_STATIC_BLOCK:
+            return assigns_to_identifier(static_cast<const ClassStaticBlock*>(node)->get_body(), name);
         default:
             return false;
     }
@@ -261,6 +304,7 @@ bool contains_closure(const ASTNode* node) {
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
         case ASTNode::Type::FUNCTION_DECLARATION:
+        case ASTNode::Type::CLASS_DECLARATION:  // methods capture the environment
             return true;
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
@@ -303,6 +347,20 @@ bool contains_closure(const ASTNode* node) {
             }
             return contains_closure(n->get_finally_block());
         }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (contains_closure(n->get_discriminant())) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (cc->get_test() && contains_closure(cc->get_test())) return true;
+                for (const auto& s : cc->get_consequent()) {
+                    if (contains_closure(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_closure(static_cast<const LabeledStatement*>(node)->get_statement());
         case ASTNode::Type::EXPRESSION_STATEMENT:
             return contains_closure(static_cast<const ExpressionStatement*>(node)->get_expression());
         case ASTNode::Type::RETURN_STATEMENT: {
@@ -363,6 +421,385 @@ bool contains_closure(const ASTNode* node) {
     }
 }
 
+// True if `node` references the enclosing function's `arguments`: descends
+// into arrow bodies (arrows share it) but not into nested regular functions
+// (they get their own).
+bool uses_arguments(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::IDENTIFIER:
+            return static_cast<const Identifier*>(node)->get_name() == "arguments";
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+        case ASTNode::Type::FUNCTION_DECLARATION:
+            return false;
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+            return uses_arguments(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+        case ASTNode::Type::CLASS_DECLARATION: {
+            // Superclass expressions and computed keys evaluate in the
+            // enclosing scope; method bodies get their own arguments.
+            const auto* n = static_cast<const ClassDeclaration*>(node);
+            return uses_arguments(n->get_superclass()) || uses_arguments(n->get_body());
+        }
+        case ASTNode::Type::METHOD_DEFINITION: {
+            const auto* n = static_cast<const MethodDefinition*>(node);
+            return n->is_computed() && uses_arguments(n->get_key());
+        }
+        case ASTNode::Type::CLASS_FIELD: {
+            const auto* n = static_cast<const ClassField*>(node);
+            return n->is_computed() && uses_arguments(n->get_key());
+        }
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements()) {
+                if (uses_arguments(stmt.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return uses_arguments(n->get_test()) || uses_arguments(n->get_consequent()) ||
+                   uses_arguments(n->get_alternate());
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            return uses_arguments(n->get_test()) || uses_arguments(n->get_body());
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            return uses_arguments(n->get_body()) || uses_arguments(n->get_test());
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            return uses_arguments(n->get_init()) || uses_arguments(n->get_test()) ||
+                   uses_arguments(n->get_update()) || uses_arguments(n->get_body());
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            return uses_arguments(n->get_right()) || uses_arguments(n->get_body());
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            return uses_arguments(n->get_right()) || uses_arguments(n->get_body());
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (uses_arguments(n->get_try_block())) return true;
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                if (uses_arguments(static_cast<const CatchClause*>(cc)->get_body())) return true;
+            }
+            return uses_arguments(n->get_finally_block());
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (uses_arguments(n->get_discriminant())) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (cc->get_test() && uses_arguments(cc->get_test())) return true;
+                for (const auto& s : cc->get_consequent()) {
+                    if (uses_arguments(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return uses_arguments(static_cast<const LabeledStatement*>(node)->get_statement());
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return uses_arguments(static_cast<const ExpressionStatement*>(node)->get_expression());
+        case ASTNode::Type::RETURN_STATEMENT: {
+            const auto* n = static_cast<const ReturnStatement*>(node);
+            return n->get_argument() && uses_arguments(n->get_argument());
+        }
+        case ASTNode::Type::THROW_STATEMENT:
+            return uses_arguments(static_cast<const ThrowStatement*>(node)->get_expression());
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations()) {
+                if (d->get_init() && uses_arguments(d->get_init())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            if (n->get_source() && uses_arguments(n->get_source())) return true;
+            for (const auto& dv : n->get_default_values()) {
+                if (uses_arguments(dv.expr.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return uses_arguments(n->get_left()) || uses_arguments(n->get_right());
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return uses_arguments(static_cast<const UnaryExpression*>(node)->get_operand());
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            return uses_arguments(n->get_left()) || uses_arguments(n->get_right());
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            return uses_arguments(n->get_left()) || uses_arguments(n->get_right());
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            return uses_arguments(n->get_test()) || uses_arguments(n->get_consequent()) ||
+                   uses_arguments(n->get_alternate());
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            if (uses_arguments(n->get_callee())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (uses_arguments(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (uses_arguments(n->get_constructor())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (uses_arguments(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            // `x.arguments` is a property NAME, not a use -- only the object
+            // side (and a computed key) counts.
+            const auto* n = static_cast<const MemberExpression*>(node);
+            return uses_arguments(n->get_object()) ||
+                   (n->is_computed() && uses_arguments(n->get_property()));
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            return uses_arguments(n->get_object()) ||
+                   (n->is_computed() && uses_arguments(n->get_property()));
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return uses_arguments(static_cast<const SpreadElement*>(node)->get_argument());
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION &&
+                    uses_arguments(el.expression.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& prop : n->get_properties()) {
+                if (prop->value && uses_arguments(prop->value.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el && uses_arguments(el.get())) return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
+// True if `node` references `super` (property or call) or a private name
+// (#x) anywhere within it. Forces env_mode: these forms are delegated whole
+// to the tree-walker's own evaluate() (see the MEMBER_EXPRESSION/CALL_EXPRESSION/
+// BINARY_EXPRESSION cases in compile_expression), which needs `this`,
+// `__super__`/`__home_object__`/`__eval_private_names__` and any locals the
+// delegated subtree captures to be resolvable through a real Environment.
+// Same descend-into-arrows-not-nested-functions rule as uses_arguments,
+// since arrows share the enclosing `this`/super/private context.
+bool uses_super_or_private(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+        case ASTNode::Type::FUNCTION_DECLARATION:
+            return false;
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+            return uses_super_or_private(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+        case ASTNode::Type::CLASS_DECLARATION: {
+            const auto* n = static_cast<const ClassDeclaration*>(node);
+            return uses_super_or_private(n->get_superclass()) || uses_super_or_private(n->get_body());
+        }
+        case ASTNode::Type::METHOD_DEFINITION: {
+            const auto* n = static_cast<const MethodDefinition*>(node);
+            return n->is_computed() && uses_super_or_private(n->get_key());
+        }
+        case ASTNode::Type::CLASS_FIELD: {
+            const auto* n = static_cast<const ClassField*>(node);
+            return n->is_computed() && uses_super_or_private(n->get_key());
+        }
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements()) {
+                if (uses_super_or_private(stmt.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return uses_super_or_private(n->get_test()) || uses_super_or_private(n->get_consequent()) ||
+                   uses_super_or_private(n->get_alternate());
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            return uses_super_or_private(n->get_test()) || uses_super_or_private(n->get_body());
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            return uses_super_or_private(n->get_body()) || uses_super_or_private(n->get_test());
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            return uses_super_or_private(n->get_init()) || uses_super_or_private(n->get_test()) ||
+                   uses_super_or_private(n->get_update()) || uses_super_or_private(n->get_body());
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            return uses_super_or_private(n->get_right()) || uses_super_or_private(n->get_body());
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            return uses_super_or_private(n->get_right()) || uses_super_or_private(n->get_body());
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (uses_super_or_private(n->get_try_block())) return true;
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                if (uses_super_or_private(static_cast<const CatchClause*>(cc)->get_body())) return true;
+            }
+            return uses_super_or_private(n->get_finally_block());
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (uses_super_or_private(n->get_discriminant())) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (cc->get_test() && uses_super_or_private(cc->get_test())) return true;
+                for (const auto& s : cc->get_consequent()) {
+                    if (uses_super_or_private(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return uses_super_or_private(static_cast<const LabeledStatement*>(node)->get_statement());
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return uses_super_or_private(static_cast<const ExpressionStatement*>(node)->get_expression());
+        case ASTNode::Type::RETURN_STATEMENT: {
+            const auto* n = static_cast<const ReturnStatement*>(node);
+            return n->get_argument() && uses_super_or_private(n->get_argument());
+        }
+        case ASTNode::Type::THROW_STATEMENT:
+            return uses_super_or_private(static_cast<const ThrowStatement*>(node)->get_expression());
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations()) {
+                if (d->get_init() && uses_super_or_private(d->get_init())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            if (n->get_source() && uses_super_or_private(n->get_source())) return true;
+            for (const auto& dv : n->get_default_values()) {
+                if (uses_super_or_private(dv.expr.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return uses_super_or_private(n->get_left()) || uses_super_or_private(n->get_right());
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return uses_super_or_private(static_cast<const UnaryExpression*>(node)->get_operand());
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            if (n->get_operator() == BinaryExpression::Operator::IN &&
+                n->get_left()->get_type() == ASTNode::Type::IDENTIFIER &&
+                !static_cast<const Identifier*>(n->get_left())->get_name().empty() &&
+                static_cast<const Identifier*>(n->get_left())->get_name()[0] == '#') {
+                return true;
+            }
+            return uses_super_or_private(n->get_left()) || uses_super_or_private(n->get_right());
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            return uses_super_or_private(n->get_left()) || uses_super_or_private(n->get_right());
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            return uses_super_or_private(n->get_test()) || uses_super_or_private(n->get_consequent()) ||
+                   uses_super_or_private(n->get_alternate());
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            if (n->get_callee()->get_type() == ASTNode::Type::IDENTIFIER &&
+                static_cast<const Identifier*>(n->get_callee())->get_name() == "super") {
+                return true;
+            }
+            if (uses_super_or_private(n->get_callee())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (uses_super_or_private(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (uses_super_or_private(n->get_constructor())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (uses_super_or_private(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* n = static_cast<const MemberExpression*>(node);
+            if (n->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+                static_cast<const Identifier*>(n->get_object())->get_name() == "super") {
+                return true;
+            }
+            if (!n->is_computed() && n->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& pname = static_cast<const Identifier*>(n->get_property())->get_name();
+                if (!pname.empty() && pname[0] == '#') return true;
+            }
+            return uses_super_or_private(n->get_object()) ||
+                   (n->is_computed() && uses_super_or_private(n->get_property()));
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            return uses_super_or_private(n->get_object()) ||
+                   (n->is_computed() && uses_super_or_private(n->get_property()));
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return uses_super_or_private(static_cast<const SpreadElement*>(node)->get_argument());
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION &&
+                    uses_super_or_private(el.expression.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& prop : n->get_properties()) {
+                if (prop->value && uses_super_or_private(prop->value.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el && uses_super_or_private(el.get())) return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
 // True if `node` contains a `let/const/var [a,b]=...` declaration anywhere.
 // Forces env_mode: Op::DestructureBind binds through a real Environment.
 bool contains_destructuring(const ASTNode* node) {
@@ -400,6 +837,17 @@ bool contains_destructuring(const ASTNode* node) {
             }
             return contains_destructuring(n->get_finally_block());
         }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            for (const auto& c : n->get_cases()) {
+                for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                    if (contains_destructuring(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_destructuring(static_cast<const LabeledStatement*>(node)->get_statement());
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations()) {
@@ -422,6 +870,8 @@ bool contains_lexical_decl(const ASTNode* node) {
         case ASTNode::Type::VARIABLE_DECLARATION:
             return static_cast<const VariableDeclaration*>(node)->get_kind() !=
                    VariableDeclarator::Kind::VAR;
+        case ASTNode::Type::CLASS_DECLARATION:
+            return true;  // the class name is a lexical binding
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
             for (const auto& stmt : n->get_statements()) {
@@ -460,6 +910,17 @@ bool contains_lexical_decl(const ASTNode* node) {
             }
             return contains_lexical_decl(n->get_finally_block());
         }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            for (const auto& c : n->get_cases()) {
+                for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                    if (contains_lexical_decl(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_lexical_decl(static_cast<const LabeledStatement*>(node)->get_statement());
         default:
             return false;
     }
@@ -477,17 +938,23 @@ bool contains_nested_lexical_decl(const BlockStatement* top_level_body) {
 
 // Direct (non-recursive) let/const declarations of `node`'s own top-level
 // statements -- a nested block/if/loop's own names get their own environment.
+// `needs_own_env`: the scope needs its own Environment even without a named
+// var here (destructuring and class declarations create bindings themselves).
 bool collect_direct_lexical_decls(const ASTNode* node,
                                    std::vector<BytecodeChunk::LoopEnvVar>& vars,
-                                   bool& has_destructuring) {
+                                   bool& needs_own_env) {
     auto scan_one = [&](const ASTNode* stmt) -> bool {
+        if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+            needs_own_env = true;
+            return true;
+        }
         if (stmt->get_type() != ASTNode::Type::VARIABLE_DECLARATION) return true;
         const auto* decl = static_cast<const VariableDeclaration*>(stmt);
         if (decl->get_kind() == VariableDeclarator::Kind::VAR) return true;
         bool is_const = decl->get_kind() == VariableDeclarator::Kind::CONST;
         for (const auto& d : decl->get_declarations()) {
             if (d->get_init() && d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-                has_destructuring = true;
+                needs_own_env = true;
                 continue;
             }
             if (!d->get_id()) return false;
@@ -545,6 +1012,17 @@ bool contains_control_escape(const ASTNode* node) {
             }
             return contains_control_escape(n->get_finally_block());
         }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            for (const auto& c : n->get_cases()) {
+                for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                    if (contains_control_escape(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_control_escape(static_cast<const LabeledStatement*>(node)->get_statement());
         default:
             return false;
     }
@@ -587,6 +1065,17 @@ bool contains_return_statement(const ASTNode* node) {
             }
             return contains_return_statement(n->get_finally_block());
         }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            for (const auto& c : n->get_cases()) {
+                for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                    if (contains_return_statement(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_return_statement(static_cast<const LabeledStatement*>(node)->get_statement());
         default:
             return false;
     }
@@ -611,28 +1100,79 @@ bool chain_contains_optional(const ASTNode* node) {
 }
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
-    const ASTNode* body, const std::vector<std::string>& param_names) {
+    const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params) {
     if (!body || body->get_type() != ASTNode::Type::BLOCK_STATEMENT) return nullptr;
-    if (param_names.size() > 64) return nullptr;
+    if (params.size() > 64) return nullptr;
+
+    // Default/destructured/rest parameters force env_mode: rest needs a
+    // fresh (not run()-auto-bound) slot, and destructuring only knows how
+    // to bind through a real Environment (see Op::DestructureBind).
+    bool has_complex_params = false;
+    for (const auto& p : params) {
+        if (p->has_default() || p->has_destructuring() || p->is_rest()) {
+            has_complex_params = true;
+            break;
+        }
+    }
+    // Rest is always the last parameter (grammar); everything before it
+    // occupies a fixed position that run() auto-binds by index.
+    bool has_rest = !params.empty() && params.back()->is_rest();
+    size_t fixed_param_count = has_rest ? params.size() - 1 : params.size();
+
+    std::vector<std::string> param_names;  // excludes rest -- see CreateRestArray below
+    std::string rest_name;
+    for (const auto& p : params) {
+        const std::string& pname = p->get_name()->get_name();
+        if (pname == "arguments") return nullptr;
+        if (p->is_rest()) {
+            rest_name = pname;
+        } else {
+            param_names.push_back(pname);
+        }
+    }
+    if (has_complex_params) {
+        // Duplicate simple parameter names are only valid for an all-simple
+        // list (spec); reject up front instead of relying on declare_local's
+        // own duplicate check, which exists for a different reason.
+        std::unordered_set<std::string> seen;
+        for (const auto& n : param_names) {
+            if (!seen.insert(n).second) return nullptr;
+        }
+        if (has_rest && !seen.insert(rest_name).second) return nullptr;
+    }
 
     std::vector<DeclInfo> declared;
     if (!prescan_declarations(body, declared)) return nullptr;
 
+    // `arguments` forces env_mode too: its mapped accessors (sloppy mode,
+    // simple params) read/write the parameter bindings through the context,
+    // which register-mode parameters don't have.
+    bool needs_arguments = uses_arguments(body);
+
     // Shadowing is covered too: a true duplicate name always has a nested
     // occurrence (a top-level dup is already a parser SyntaxError).
-    bool env_mode = contains_closure(body) || contains_destructuring(body) ||
-                     contains_nested_lexical_decl(static_cast<const BlockStatement*>(body));
+    // super/private-name access also forces env_mode: those forms delegate
+    // to the tree-walker's own evaluate() and need `this`/`__super__`/brand
+    // bindings and any captured locals resolvable through a real Environment.
+    bool env_mode = has_complex_params || needs_arguments ||
+                     contains_closure(body) || contains_destructuring(body) ||
+                     contains_nested_lexical_decl(static_cast<const BlockStatement*>(body)) ||
+                     uses_super_or_private(body);
 
     BytecodeCompiler compiler(param_names, env_mode);
     if (compiler.failed_) return nullptr;
+    compiler.allow_arguments_ = needs_arguments;
+    if (has_rest) {
+        if (!env_mode || !compiler.env_names_.insert(rest_name).second) return nullptr;
+    }
 
     // Nested lexical names and catch parameters get their own environment
     // elsewhere -- only direct top-level names get a function-entry binding.
     std::unordered_set<std::string> direct_lexical_names;
     if (env_mode) {
         std::vector<BytecodeChunk::LoopEnvVar> direct_vars;
-        bool unused_destructuring = false;
-        collect_direct_lexical_decls(body, direct_vars, unused_destructuring);
+        bool unused_needs_env = false;
+        collect_direct_lexical_decls(body, direct_vars, unused_needs_env);
         for (const auto& v : direct_vars) direct_lexical_names.insert(v.name);
     }
 
@@ -643,6 +1183,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         for (const auto& p : param_names) {
             if (p == info.name) return nullptr;  // param/local aliasing: stay on tree-walker
         }
+        if (has_rest && rest_name == info.name) return nullptr;
         // Runtime const-immutability isn't implemented for the register path;
         // refuse rather than compile an incorrectly-mutable const.
         if (info.is_const && assigns_to_identifier(body, info.name)) return nullptr;
@@ -674,8 +1215,48 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             compiler.emit_u8(static_cast<uint8_t>(compiler.lookup_local(info.name)));
         }
     }
-    // env_mode's function-entry bindings are data-driven from the chunk,
-    // set up once by VM::run -- no bytecode needed for it.
+    // Non-rest parameters' function-entry bindings are data-driven from the
+    // chunk (env_params), set up once by VM::run -- no bytecode needed for
+    // those. Rest gets its own immediately-initialized slot here instead,
+    // since CreateRestArray/DestructureBind below fills it, not run().
+    if (has_rest) {
+        compiler.chunk_->env_locals.push_back({rest_name, false, false});
+    }
+
+    // Defaults and destructuring resolve once at entry, before the body --
+    // by now every parameter's raw argument value is already bound (plain
+    // parameters need nothing further).
+    for (const auto& p : params) {
+        if (p->is_rest()) {
+            compiler.emit(Op::CreateRestArray);
+            compiler.emit_u8(static_cast<uint8_t>(fixed_param_count));
+            if (p->has_destructuring()) {
+                auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
+                compiler.chunk_->destructuring_patterns.push_back({destr, true, false});
+                compiler.emit(Op::DestructureBind);
+                compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->destructuring_patterns.size() - 1));
+            } else {
+                compiler.emit_write_local(rest_name, false);
+            }
+            continue;
+        }
+        if (!p->has_default() && !p->has_destructuring()) continue;
+        const std::string& pname = p->get_name()->get_name();
+        compiler.emit_read_local(pname);
+        if (p->has_default()) {
+            size_t skip = compiler.emit_jump(Op::JumpIfNotUndefined);
+            if (!compiler.compile_expression(p->get_default_value())) return nullptr;
+            if (!compiler.patch_jump(skip)) return nullptr;
+        }
+        if (p->has_destructuring()) {
+            auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
+            compiler.chunk_->destructuring_patterns.push_back({destr, true, false});
+            compiler.emit(Op::DestructureBind);
+            compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->destructuring_patterns.size() - 1));
+        } else {
+            compiler.emit_write_local(pname, false);
+        }
+    }
 
     const auto* block = static_cast<const BlockStatement*>(body);
     for (const auto& stmt : block->get_statements()) {
@@ -689,6 +1270,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->register_count = static_cast<uint16_t>(compiler.temp_watermark_);
     compiler.chunk_->parameter_count = static_cast<uint8_t>(param_names.size());
     compiler.chunk_->env_mode = env_mode;
+    compiler.chunk_->needs_arguments = needs_arguments;
     if (env_mode) compiler.chunk_->env_params = param_names;
     return std::move(compiler.chunk_);
 }
@@ -709,11 +1291,17 @@ BytecodeCompiler::BytecodeCompiler(const std::vector<std::string>& param_names, 
 int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body) {
     if (!env_mode_) return -1;
     std::vector<BytecodeChunk::LoopEnvVar> vars = std::move(extra_vars);
-    bool has_destructuring = false;
-    if (!collect_direct_lexical_decls(body, vars, has_destructuring)) return -1;
-    if (vars.empty() && !has_destructuring) return -1;
+    bool needs_own_env = false;
+    if (!collect_direct_lexical_decls(body, vars, needs_own_env)) return -1;
+    if (vars.empty() && !needs_own_env) return -1;
     chunk_->loop_envs.push_back(std::move(vars));
     return static_cast<int>(chunk_->loop_envs.size() - 1);
+}
+
+std::vector<std::string> BytecodeCompiler::take_pending_labels() {
+    std::vector<std::string> labels = std::move(pending_labels_);
+    pending_labels_.clear();
+    return labels;
 }
 
 bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode* right,
@@ -776,7 +1364,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     emit_write_local(var_name, /*is_declaration=*/declare_fresh);
 
     size_t body_start = chunk_->code.size();
-    loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_});
+    loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels()});
     if (!compile_statement(body)) return false;
     LoopScope scope = std::move(loop_stack_.back());
     loop_stack_.pop_back();
@@ -923,6 +1511,21 @@ bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
     return true;
 }
 
+// Hands `node`'s entire evaluation to the tree-walker's own evaluate() --
+// same mechanism as Op::CreateClosure, reused here for super/private-name
+// forms the register compiler doesn't implement directly. Only valid in
+// env_mode, which guarantees `this`/`__super__`/`__eval_private_names__`
+// and any locals the delegated subtree captures resolve through a real
+// Environment (env_mode is forced whenever uses_super_or_private matches).
+bool BytecodeCompiler::emit_treewalker_delegate(const ASTNode* node) {
+    if (!env_mode_) return false;
+    if (chunk_->closures.size() >= 0xFFFF) return false;
+    chunk_->closures.push_back(node);
+    emit(Op::CreateClosure);
+    emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+    return !failed_;
+}
+
 size_t BytecodeCompiler::emit_jump(Op op) {
     emit(op);
     size_t pos = chunk_->code.size();
@@ -963,9 +1566,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             int block_env_idx = -1;
             if (env_mode_) {
                 std::vector<BytecodeChunk::LoopEnvVar> vars;
-                bool has_destructuring = false;
-                if (!collect_direct_lexical_decls(block, vars, has_destructuring)) return false;
-                if (!vars.empty() || has_destructuring) {
+                bool needs_own_env = false;
+                if (!collect_direct_lexical_decls(block, vars, needs_own_env)) return false;
+                if (!vars.empty() || needs_own_env) {
                     chunk_->loop_envs.push_back(std::move(vars));
                     block_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
@@ -1053,7 +1656,8 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // it can't be an immediate backward jump when this loop owns
             // per-iteration bindings -- defer it.
             bool deferred_continue = loop_env_idx >= 0;
-            loop_stack_.push_back({loop_start, {}, {}, deferred_continue, env_depth_, try_env_depth_});
+            loop_stack_.push_back({loop_start, {}, {}, deferred_continue, env_depth_, try_env_depth_,
+                                    false, take_pending_labels()});
             if (!compile_statement(stmt->get_body())) return false;
             LoopScope scope = std::move(loop_stack_.back());
             loop_stack_.pop_back();
@@ -1084,7 +1688,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             }
             size_t body_start = chunk_->code.size();
 
-            loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_});
+            loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels()});
             if (!compile_statement(stmt->get_body())) return false;
             LoopScope scope = std::move(loop_stack_.back());
             loop_stack_.pop_back();
@@ -1139,7 +1743,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 exit_jump = emit_jump(Op::JumpIfFalse);
             }
 
-            loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_});
+            loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels()});
             if (!compile_statement(stmt->get_body())) return false;
             LoopScope scope = std::move(loop_stack_.back());
             loop_stack_.pop_back();
@@ -1178,22 +1782,49 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::BREAK_STATEMENT: {
             const auto* stmt = static_cast<const BreakStatement*>(node);
-            if (!stmt->get_label().empty() || loop_stack_.empty()) return false;
+            if (loop_stack_.empty()) return false;
+            int target = static_cast<int>(loop_stack_.size()) - 1;
+            if (!stmt->get_label().empty()) {
+                target = -1;
+                for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= 0; i--) {
+                    for (const auto& l : loop_stack_[i].labels) {
+                        if (l == stmt->get_label()) { target = i; break; }
+                    }
+                    if (target >= 0) break;
+                }
+                if (target < 0) return false;
+            }
             // Unwind Environments/SaveEnv entries between here and the target loop.
-            for (int i = env_depth_ - loop_stack_.back().base_env_depth; i > 0; i--) {
+            LoopScope& scope = loop_stack_[target];
+            for (int i = env_depth_ - scope.base_env_depth; i > 0; i--) {
                 emit(Op::ExitLoopEnv);
             }
-            for (int i = try_env_depth_ - loop_stack_.back().base_try_depth; i > 0; i--) {
+            for (int i = try_env_depth_ - scope.base_try_depth; i > 0; i--) {
                 emit(Op::PopEnvSave);
             }
-            loop_stack_.back().break_patches.push_back(emit_jump(Op::Jump));
+            scope.break_patches.push_back(emit_jump(Op::Jump));
             return true;
         }
 
         case ASTNode::Type::CONTINUE_STATEMENT: {
             const auto* stmt = static_cast<const ContinueStatement*>(node);
-            if (!stmt->get_label().empty() || loop_stack_.empty()) return false;
-            LoopScope& scope = loop_stack_.back();
+            if (loop_stack_.empty()) return false;
+            int target = -1;
+            if (stmt->get_label().empty()) {
+                // A switch isn't a loop -- continue skips past it to the loop below.
+                for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= 0; i--) {
+                    if (!loop_stack_[i].is_switch) { target = i; break; }
+                }
+            } else {
+                for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= 0 && target < 0; i--) {
+                    for (const auto& l : loop_stack_[i].labels) {
+                        if (l == stmt->get_label()) { target = i; break; }
+                    }
+                }
+                if (target >= 0 && loop_stack_[target].is_switch) return false;  // not a loop
+            }
+            if (target < 0) return false;
+            LoopScope& scope = loop_stack_[target];
             for (int i = env_depth_ - scope.base_env_depth; i > 0; i--) {
                 emit(Op::ExitLoopEnv);
             }
@@ -1339,6 +1970,119 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             return true;
         }
 
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* stmt = static_cast<const SwitchStatement*>(node);
+            const auto& cases = stmt->get_cases();
+
+            if (!compile_expression(stmt->get_discriminant())) return false;
+            int disc_reg = alloc_temp();
+            if (failed_) return false;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(disc_reg));
+
+            // Spec: every case shares ONE lexical scope, not one each --
+            // entered after the discriminant, before any case test runs.
+            int switch_env_idx = -1;
+            if (env_mode_) {
+                std::vector<BytecodeChunk::LoopEnvVar> vars;
+                bool needs_own_env = false;
+                for (const auto& c : cases) {
+                    for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                        if (!collect_direct_lexical_decls(s.get(), vars, needs_own_env)) return false;
+                    }
+                }
+                if (!vars.empty() || needs_own_env) {
+                    chunk_->loop_envs.push_back(std::move(vars));
+                    switch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
+                    emit(Op::EnterLoopEnv);
+                    emit_u16(static_cast<uint16_t>(switch_env_idx));
+                    env_depth_++;
+                }
+            }
+
+            std::vector<size_t> test_jumps(cases.size(), 0);
+            int default_index = -1;
+            for (size_t i = 0; i < cases.size(); i++) {
+                const auto* cc = static_cast<const CaseClause*>(cases[i].get());
+                if (cc->is_default()) { default_index = static_cast<int>(i); continue; }
+                if (!compile_expression(cc->get_test())) return false;
+                emit(Op::TestStrictEq);
+                emit_u8(static_cast<uint8_t>(disc_reg));
+                test_jumps[i] = emit_jump(Op::JumpIfTrue);
+            }
+            size_t jump_to_default_or_end = emit_jump(Op::Jump);
+            free_temp(disc_reg);
+
+            loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_,
+                                    /*is_switch=*/true, take_pending_labels()});
+
+            for (size_t i = 0; i < cases.size(); i++) {
+                const auto* cc = static_cast<const CaseClause*>(cases[i].get());
+                if (cc->is_default()) {
+                    if (!patch_jump(jump_to_default_or_end)) return false;
+                } else if (!patch_jump(test_jumps[i])) {
+                    return false;
+                }
+                for (const auto& s : cc->get_consequent()) {
+                    if (!compile_statement(s.get())) return false;
+                }
+            }
+            if (default_index < 0 && !patch_jump(jump_to_default_or_end)) return false;
+
+            LoopScope scope = std::move(loop_stack_.back());
+            loop_stack_.pop_back();
+            for (size_t pos : scope.break_patches) {
+                if (!patch_jump(pos)) return false;
+            }
+            if (switch_env_idx >= 0) { emit(Op::ExitLoopEnv); env_depth_--; }
+            return true;
+        }
+
+        case ASTNode::Type::LABELED_STATEMENT: {
+            const auto* stmt = static_cast<const LabeledStatement*>(node);
+            const std::string& label = stmt->get_label();
+            for (const auto& l : pending_labels_) if (l == label) return false;
+            for (const auto& s : loop_stack_) {
+                for (const auto& l : s.labels) if (l == label) return false;
+            }
+
+            switch (stmt->get_statement()->get_type()) {
+                case ASTNode::Type::FOR_STATEMENT:
+                case ASTNode::Type::WHILE_STATEMENT:
+                case ASTNode::Type::DO_WHILE_STATEMENT:
+                case ASTNode::Type::FOR_OF_STATEMENT:
+                case ASTNode::Type::FOR_IN_STATEMENT:
+                case ASTNode::Type::SWITCH_STATEMENT:
+                case ASTNode::Type::LABELED_STATEMENT:
+                    // The loop/switch (or next label) below takes this from pending_labels_.
+                    pending_labels_.push_back(label);
+                    return compile_statement(stmt->get_statement());
+                default: {
+                    // Not a loop: break-only wrapper, no continue target.
+                    loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_,
+                                            /*is_switch=*/true, {label}});
+                    if (!compile_statement(stmt->get_statement())) return false;
+                    LoopScope scope = std::move(loop_stack_.back());
+                    loop_stack_.pop_back();
+                    for (size_t pos : scope.break_patches) {
+                        if (!patch_jump(pos)) return false;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        case ASTNode::Type::CLASS_DECLARATION: {
+            // Same delegation as closures: ClassDeclaration::evaluate builds
+            // the whole class AND binds its name in the current environment.
+            if (!env_mode_) return false;
+            if (chunk_->closures.size() >= 0xFFFF) return false;
+            chunk_->closures.push_back(node);
+            emit(Op::CreateClosure);
+            emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+            return true;
+        }
+
         default:
             return false;
     }
@@ -1436,8 +2180,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 return !failed_;
             }
             // Binding magic beyond a plain lookup stays on the tree-walker.
-            // ("this" isn't here -- Function::call already resolves it.)
-            if (name == "arguments" || name == "eval" ||
+            // ("this" isn't here -- Function::call already resolves it;
+            // "arguments" is a plain lookup too once needs_arguments made
+            // Function::call materialize the binding.)
+            if ((name == "arguments" && !allow_arguments_) || name == "eval" ||
                 name == "super" || name == "new") {
                 return false;
             }
@@ -1448,7 +2194,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
         case ASTNode::Type::MEMBER_EXPRESSION: {
             const auto* mem = static_cast<const MemberExpression*>(node);
-            if (!member_is_supported(mem)) return false;
+            if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
             if (!compile_expression(mem->get_object())) return false;
             int obj_reg = alloc_temp();
             if (failed_) return false;
@@ -1536,7 +2282,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             if (op == BinOp::IN && expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER &&
                 !static_cast<const Identifier*>(expr->get_left())->get_name().empty() &&
                 static_cast<const Identifier*>(expr->get_left())->get_name()[0] == '#') {
-                return false;  // `#name in obj`: special-cased in BinaryExpression::evaluate, not apply_operator
+                // `#name in obj`: special-cased in BinaryExpression::evaluate, not apply_operator.
+                return emit_treewalker_delegate(node);
             }
 
             Op vm_op;
@@ -1606,7 +2353,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         const std::string& name = static_cast<const Identifier*>(operand)->get_name();
                         if (is_local(name)) {
                             emit_read_local(name);
-                        } else if (name == "arguments" || name == "eval" ||
+                        } else if ((name == "arguments" && !allow_arguments_) || name == "eval" ||
                                    name == "super" || name == "new") {
                             return false;
                         } else {
@@ -1709,7 +2456,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
             if (expr->get_left()->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return false;
             const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
-            if (!member_is_supported(mem)) return false;
+            if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
 
             if (!compile_expression(mem->get_object())) return false;
             int obj_reg = alloc_temp();
@@ -1782,7 +2529,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             // needs CallResolved, not a plain Call of the loaded function value.
             if (callee->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 const auto* mem = static_cast<const MemberExpression*>(callee);
-                if (mem->is_computed() || !member_is_supported(mem)) return false;
+                if (mem->is_computed()) return false;
+                // super.method(...) / obj.#method(...) / this.#method(...): delegate
+                // the whole call to the tree-walker instead of bailing the function.
+                if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
                 if (chain_contains_optional(mem)) return false;  // `a?.b.c()`: call short-circuiting not implemented
                 const std::string& method_name =
                     static_cast<const Identifier*>(mem->get_property())->get_name();
@@ -1826,7 +2576,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             // Plain-identifier callees only: direct eval never compiles.
             if (callee->get_type() != ASTNode::Type::IDENTIFIER) return false;
             const std::string& callee_name = static_cast<const Identifier*>(callee)->get_name();
-            if (callee_name == "eval" || callee_name == "super" || callee_name == "import") {
+            if (callee_name == "super") {
+                // super(...) constructor call: delegate to the tree-walker, which
+                // handles the derived-constructor `this`-binding ceremony.
+                return emit_treewalker_delegate(node);
+            }
+            if (callee_name == "eval" || callee_name == "import") {
                 return false;
             }
 
@@ -1901,9 +2656,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
         // Delegates to the tree-walker's own evaluate() (Op::CreateClosure) --
         // correct since env_mode guarantees every local this closure could
-        // reference lives in ctx.get_lexical_environment().
+        // reference lives in ctx.get_lexical_environment(). CLASS_DECLARATION
+        // here is the expression form (`const C = class {}`): evaluate()
+        // returns the class without binding a name.
         case ASTNode::Type::FUNCTION_EXPRESSION:
-        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+        case ASTNode::Type::CLASS_DECLARATION: {
             if (!env_mode_) return false;
             if (chunk_->closures.size() >= 0xFFFF) return false;
             chunk_->closures.push_back(node);

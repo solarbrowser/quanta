@@ -17,6 +17,7 @@
 namespace Quanta {
 
 class ASTNode;
+class Parameter;
 
 // Single-pass AST -> bytecode compiler. Returns nullptr for any function it
 // cannot fully compile -- that function then permanently runs on the
@@ -24,7 +25,7 @@ class ASTNode;
 class BytecodeCompiler {
 public:
     static std::unique_ptr<BytecodeChunk> compile(
-        const ASTNode* body, const std::vector<std::string>& param_names);
+        const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params);
 
 private:
     BytecodeCompiler(const std::vector<std::string>& param_names, bool env_mode);
@@ -52,6 +53,7 @@ private:
     uint16_t alloc_feedback_slot();
 
     bool member_is_supported(const class MemberExpression* mem) const;
+    bool emit_treewalker_delegate(const ASTNode* node);
 
     int setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body);
 
@@ -66,7 +68,11 @@ private:
         bool continue_is_forward;
         int base_env_depth;  // env_depth_ at loop entry, see BREAK/CONTINUE_STATEMENT
         int base_try_depth;  // try_env_depth_ at loop entry
+        bool is_switch = false;  // break-only: continue skips past this to the enclosing loop
+        std::vector<std::string> labels;  // labels a labeled break/continue can target this by
     };
+
+    std::vector<std::string> take_pending_labels();
 
     std::unique_ptr<BytecodeChunk> chunk_;
     std::unordered_map<std::string, int> locals_;
@@ -76,6 +82,8 @@ private:
     int next_register_ = 0;
     int temp_watermark_ = 0;
     std::vector<LoopScope> loop_stack_;
+    std::vector<std::string> pending_labels_;  // set by LABELED_STATEMENT, taken by the next loop/switch
+    bool allow_arguments_ = false;  // `arguments` reads compile to LdaLookup (chunk needs_arguments set)
     int try_env_depth_ = 0;
     int env_depth_ = 0;
     std::vector<size_t>* chain_shortcircuit_jumps_ = nullptr;

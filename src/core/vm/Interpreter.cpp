@@ -735,6 +735,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 if (acc.is_null() || acc.is_undefined()) pc += off;
                 break;
             }
+            case Op::JumpIfNotUndefined: {
+                int16_t off = read_i16(code, pc);
+                pc += 2;
+                if (!acc.is_undefined()) pc += off;
+                break;
+            }
 
             case Op::CreateClosure: {
                 uint16_t idx = read_u16(code, pc);
@@ -889,6 +895,16 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             case Op::CreateArray: {
                 pc += 2;
                 acc = Value(ObjectFactory::create_array(0).release());
+                break;
+            }
+            case Op::CreateRestArray: {
+                uint8_t start_index = code[pc];
+                pc += 1;
+                auto rest_array = ObjectFactory::create_array(0);
+                for (size_t j = start_index; j < args.size(); j++) {
+                    rest_array->push(args[j]);
+                }
+                acc = Value(rest_array.release());
                 break;
             }
 

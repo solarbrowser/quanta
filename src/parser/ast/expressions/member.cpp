@@ -261,6 +261,18 @@ Value MemberExpression::evaluate(Context& ctx) {
     }
     g_optional_chain_shortcircuit = false;
 
+    // PrivateFieldGet/PrivateMethodGet step 2: the receiver must be an object --
+    // unlike ordinary property access, private references never auto-box a
+    // primitive (symbol/string/number/boolean/bigint) via its wrapper prototype.
+    if (!computed_ && !object_value.is_object() && !object_value.is_function() &&
+        property_->get_type() == ASTNode::Type::IDENTIFIER) {
+        const std::string& pname = static_cast<Identifier*>(property_.get())->get_name();
+        if (!pname.empty() && pname[0] == '#') {
+            ctx.throw_type_error("Cannot read private member " + pname + " from an object whose class did not declare it");
+            return Value();
+        }
+    }
+
     // ES6: Property access on symbols - look up Symbol.prototype
     if (object_value.is_symbol()) {
         std::string prop_name;

@@ -203,6 +203,97 @@ void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>&
     }
 }
 
+void Function::create_arguments_object(Context& fn_ctx, const std::vector<Value>& args) {
+    auto arguments_obj = ObjectFactory::create_array(args.size());
+    // Elements for non-mapped indices; mapped ones get accessor descriptors below.
+    // Only skip elements for simple param lists (no defaults/rest/destructuring).
+    bool pre_simple = !fn_ctx.is_strict_mode() && !parameter_objects_.empty();
+    if (pre_simple) {
+        for (const auto& p : parameter_objects_) {
+            if (p->has_default() || p->is_rest() || p->has_destructuring()) { pre_simple = false; break; }
+        }
+    }
+    size_t map_count_pre = pre_simple ? std::min(args.size(), parameter_objects_.size()) : 0;
+    for (size_t i = 0; i < args.size(); i++) {
+        if (i < map_count_pre && param_gets_mapped_accessor(parameter_objects_, i)) continue; // will be set via accessor
+        arguments_obj->set_element(i, args[i]);
+    }
+    {
+        // create_array's set_length() already established "length" as non-configurable
+        // (real Array semantics); Arguments needs it configurable, so clear that internal
+        // bookkeeping entry first instead of letting the non-configurable guard see a
+        // (spurious, construction-time-only) attempt to relax it.
+        arguments_obj->remove_own_property("length");
+        PropertyDescriptor len_desc(Value(static_cast<double>(args.size())),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        arguments_obj->set_property_descriptor("length", len_desc);
+    }
+    // ES5: Arguments object [[Class]] is "Arguments"
+    arguments_obj->set_type(Object::ObjectType::Arguments);
+    // Arguments should inherit from Object.prototype, not Array.prototype
+    Object* obj_proto = ObjectFactory::get_object_prototype();
+    if (obj_proto) {
+        arguments_obj->set_prototype(obj_proto);
+    }
+
+    // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] must be %ArrayPrototype%.values.
+    // get_element now routes through descriptors_ for Arguments so the aliasing works.
+    {
+        Value arr_iter_fn;
+        Object* global = fn_ctx.get_global_object();
+        if (global) {
+            Value arr_val = global->get_property("Array");
+            if (arr_val.is_function()) {
+                Value arr_proto = arr_val.as_function()->get_property("prototype");
+                if (arr_proto.is_object()) {
+                    arr_iter_fn = arr_proto.as_object()->get_property("Symbol.iterator");
+                }
+            }
+        }
+        PropertyDescriptor iter_desc(arr_iter_fn,
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        iter_desc.set_enumerable(false);
+        arguments_obj->set_property_descriptor("Symbol.iterator", iter_desc);
+    }
+
+    // In strict mode, arguments has no 'caller' own property (ES2017+).
+    // 'callee' is a poison-pill accessor using the shared %ThrowTypeError% intrinsic.
+    if (fn_ctx.is_strict_mode()) {
+        if (!Function::s_throw_type_error_) {
+            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
+                    return Value();
+                });
+            // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
+            PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
+            len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
+            thrower->set_property_descriptor("length", len_desc);
+            PropertyDescriptor name_desc(Value(std::string("")), PropertyAttributes::None);
+            name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
+            thrower->set_property_descriptor("name", name_desc);
+            thrower->prevent_extensions();
+            Function::s_throw_type_error_ = thrower.release();
+        }
+
+        PropertyDescriptor callee_desc;
+        callee_desc.set_getter(Function::s_throw_type_error_);
+        callee_desc.set_setter(Function::s_throw_type_error_);
+        callee_desc.set_configurable(false);
+        callee_desc.set_enumerable(false);
+        arguments_obj->set_property_descriptor("callee", callee_desc);
+        // 'caller' is NOT added as own property in strict mode (ES2017 spec)
+    } else {
+        // ES5 10.6 step 13.a: callee is {writable:true, enumerable:false, configurable:true}
+        PropertyDescriptor callee_desc(Value(this), PropertyAttributes::BuiltinFunction);
+        arguments_obj->set_property_descriptor("callee", callee_desc);
+    }
+
+    setup_mapped_arguments(fn_ctx, args, arguments_obj.get());
+    fn_ctx.create_binding("arguments", Value(arguments_obj.release()), true, false);
+}
+
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     // Roots args across the whole call (native path included): these Values
     // live in the caller's malloc'd vector storage, invisible to the stack scan.
@@ -442,6 +533,29 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         if (closure_props_state_ < 0) closure_props_state_ = found_any ? 1 : 0;
     }
 
+    // Super/private-brand bindings must exist before the VM branch too --
+    // super.x and #private access delegate to the tree-walker's own evaluate()
+    // (BytecodeCompiler::emit_treewalker_delegate) and resolve these via
+    // normal environment lookup, same as the tree-walker path below.
+    if (this->has_property("__super_constructor__")) {
+        Value super_constructor = this->get_property("__super_constructor__");
+        if (!super_constructor.is_undefined() && !super_constructor.is_null()) {
+            function_context.create_binding("__super__", super_constructor, false);
+            // member.cpp's super lookup needs to know if this is a static method (resolves on the parent constructor itself) or an instance method (resolves on its .prototype).
+            if (this->has_property("__is_static_method__")) {
+                function_context.create_binding("__super_is_static__", Value(true), false);
+            }
+        }
+    }
+    if (this->has_property("__super_is_null__")) {
+        function_context.create_binding("__super_is_null__", Value(true), false);
+    }
+    if (this->has_property("__private_brands__")) {
+        Value brands = this->get_property("__private_brands__");
+        if (!brands.is_undefined() && !brands.is_null()) {
+            function_context.create_binding("__eval_private_names__", brands, false);
+        }
+    }
 
     // VM execution branches off BEFORE parameter/arguments materialization:
     // compiled functions read parameters from registers and reject any use of
@@ -450,16 +564,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     if (VM::enabled() && !vm_incompatible_ && body_ &&
         body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         if (!bytecode_chunk_) {
-            bool simple_params = true;
-            for (const auto& p : parameter_objects_) {
-                if (p->has_default() || p->has_destructuring() || p->is_rest()) {
-                    simple_params = false;
-                    break;
-                }
-            }
-            if (simple_params) {
-                bytecode_chunk_ = BytecodeCompiler::compile(body_.get(), parameters_);
-            }
+            bytecode_chunk_ = BytecodeCompiler::compile(body_.get(), parameter_objects_);
             if (bytecode_chunk_) {
                 // The chunk's constants (new, unmarked cells) are only reachable
                 // through this Function's trace(). If this Function already
@@ -485,13 +590,42 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             if (!name_.empty() && name_ != "<anonymous>" && !function_context.has_binding(name_)) {
                 function_context.create_binding(name_, Value(this), false);
             }
+            // Arrows resolve `arguments` lexically -- only a real function
+            // materializes its own. The mapped accessors read the parameter
+            // bindings lazily, so creating this before run() binds them is fine.
+            if (bytecode_chunk_->needs_arguments && !is_arrow_) {
+                create_arguments_object(function_context, args);
+            }
             Context* prev_context = Object::current_context_;
             Object::current_context_ = &function_context;
             Value vm_result = VM::run(*bytecode_chunk_, function_context, args);
             Object::current_context_ = prev_context;
+
+            // Propagate super_called flag to parent context (mirrors the
+            // tree-walker path below) -- Function::construct() checks this
+            // on its own ctx after call() returns.
+            if (function_context.was_super_called()) {
+                ctx.set_super_called(true);
+            }
+
             if (function_context.has_exception()) {
                 ctx.throw_exception(function_context.get_exception(), true);
                 return Value();
+            }
+
+            // For class constructors: if super() updated this to a new object,
+            // return it so Function::construct() can use the correct object
+            // (mirrors the tree-walker path below). Only an undefined completion
+            // (implicit fallthrough, or explicit `return;`/`return undefined;`)
+            // falls back to this -- any other explicit return (including a bare
+            // primitive like `return 0;`) must reach Function::construct() as-is
+            // so its own "derived constructors may only return object or
+            // undefined" TypeError check still fires.
+            if (is_class_constructor_ && vm_result.is_undefined()) {
+                Object* final_this = function_context.get_this_binding();
+                if (final_this && actual_this.is_object() && final_this != actual_this.as_object()) {
+                    return Value(final_this);
+                }
             }
             return vm_result;
         }
@@ -625,119 +759,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // Arrow functions don't have their own arguments object -- they resolve
     // `arguments` lexically through closure_environment_ to the enclosing scope.
     if (!is_arrow_) {
-        auto arguments_obj = ObjectFactory::create_array(args.size());
-        // Elements for non-mapped indices; mapped ones get accessor descriptors below.
-        // Only skip elements for simple param lists (no defaults/rest/destructuring).
-        bool pre_simple = !function_context.is_strict_mode() && !parameter_objects_.empty();
-        if (pre_simple) {
-            for (const auto& p : parameter_objects_) {
-                if (p->has_default() || p->is_rest() || p->has_destructuring()) { pre_simple = false; break; }
-            }
-        }
-        size_t map_count_pre = pre_simple ? std::min(args.size(), parameter_objects_.size()) : 0;
-        for (size_t i = 0; i < args.size(); i++) {
-            if (i < map_count_pre && param_gets_mapped_accessor(parameter_objects_, i)) continue; // will be set via accessor
-            arguments_obj->set_element(i, args[i]);
-        }
-        {
-            // create_array's set_length() already established "length" as non-configurable
-            // (real Array semantics); Arguments needs it configurable, so clear that internal
-            // bookkeeping entry first instead of letting the non-configurable guard see a
-            // (spurious, construction-time-only) attempt to relax it.
-            arguments_obj->remove_own_property("length");
-            PropertyDescriptor len_desc(Value(static_cast<double>(args.size())),
-                static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-            arguments_obj->set_property_descriptor("length", len_desc);
-        }
-        // ES5: Arguments object [[Class]] is "Arguments"
-        arguments_obj->set_type(Object::ObjectType::Arguments);
-        // Arguments should inherit from Object.prototype, not Array.prototype
-        Object* obj_proto = ObjectFactory::get_object_prototype();
-        if (obj_proto) {
-            arguments_obj->set_prototype(obj_proto);
-        }
-
-        // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] must be %ArrayPrototype%.values.
-        // get_element now routes through descriptors_ for Arguments so the aliasing works.
-        {
-            Value arr_iter_fn;
-            Object* global = function_context.get_global_object();
-            if (global) {
-                Value arr_val = global->get_property("Array");
-                if (arr_val.is_function()) {
-                    Value arr_proto = arr_val.as_function()->get_property("prototype");
-                    if (arr_proto.is_object()) {
-                        arr_iter_fn = arr_proto.as_object()->get_property("Symbol.iterator");
-                    }
-                }
-            }
-            PropertyDescriptor iter_desc(arr_iter_fn,
-                static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-            iter_desc.set_enumerable(false);
-            arguments_obj->set_property_descriptor("Symbol.iterator", iter_desc);
-        }
-
-        // In strict mode, arguments has no 'caller' own property (ES2017+).
-        // 'callee' is a poison-pill accessor using the shared %ThrowTypeError% intrinsic.
-        if (function_context.is_strict_mode()) {
-            if (!Function::s_throw_type_error_) {
-                auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                    [](Context& ctx, const std::vector<Value>& args) -> Value {
-                        (void)args;
-                        ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
-                        return Value();
-                    });
-                // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
-                PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
-                len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
-                thrower->set_property_descriptor("length", len_desc);
-                PropertyDescriptor name_desc(Value(std::string("")), PropertyAttributes::None);
-                name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
-                thrower->set_property_descriptor("name", name_desc);
-                thrower->prevent_extensions();
-                Function::s_throw_type_error_ = thrower.release();
-            }
-
-            PropertyDescriptor callee_desc;
-            callee_desc.set_getter(Function::s_throw_type_error_);
-            callee_desc.set_setter(Function::s_throw_type_error_);
-            callee_desc.set_configurable(false);
-            callee_desc.set_enumerable(false);
-            arguments_obj->set_property_descriptor("callee", callee_desc);
-            // 'caller' is NOT added as own property in strict mode (ES2017 spec)
-        } else {
-            // ES5 10.6 step 13.a: callee is {writable:true, enumerable:false, configurable:true}
-            PropertyDescriptor callee_desc(Value(this), PropertyAttributes::BuiltinFunction);
-            arguments_obj->set_property_descriptor("callee", callee_desc);
-        }
-
-        setup_mapped_arguments(function_context, args, arguments_obj.get());
-        function_context.create_binding("arguments", Value(arguments_obj.release()), true, false);
+        create_arguments_object(function_context, args);
     }
 
     // Use actual_this which respects strict mode (can be undefined in strict mode)
     function_context.create_binding("this", actual_this, false);
-    
-    if (this->has_property("__super_constructor__")) {
-        Value super_constructor = this->get_property("__super_constructor__");
-        if (!super_constructor.is_undefined() && !super_constructor.is_null()) {
-            function_context.create_binding("__super__", super_constructor, false);
-            // member.cpp's super lookup needs to know if this is a static method (resolves on the parent constructor itself) or an instance method (resolves on its .prototype).
-            if (this->has_property("__is_static_method__")) {
-                function_context.create_binding("__super_is_static__", Value(true), false);
-            }
-        }
-    }
-    if (this->has_property("__super_is_null__")) {
-        function_context.create_binding("__super_is_null__", Value(true), false);
-    }
-
-    if (this->has_property("__private_brands__")) {
-        Value brands = this->get_property("__private_brands__");
-        if (!brands.is_undefined() && !brands.is_null()) {
-            function_context.create_binding("__eval_private_names__", brands, false);
-        }
-    }
 
     if (body_) {
         // ES5: Named function expressions have their name as an immutable binding
@@ -856,7 +882,7 @@ Value Function::get_property(const std::string& key) const {
     }
 
     Value result = get_own_property(key);
-    if (!result.is_undefined()) {
+    if (!result.is_undefined() || has_own_property(key)) {
         return result;
     }
     // A setter-only own accessor must return undefined here, not fall through to an
@@ -932,18 +958,29 @@ std::vector<std::string> Function::get_internal_property_keys() const {
 }
 
 std::vector<std::string> Function::get_own_property_keys() const {
+    // Object::get_own_property_keys() already sorts array-index keys first (ascending),
+    // then strings in creation order, then symbols -- that ordering must be preserved
+    // even when the function also has integer-named static members (e.g. `static [1](){}`).
+    // Only the STRING portion gets length/name/prototype pulled to its front here.
     auto all = Object::get_own_property_keys();
     std::vector<std::string> result;
     result.reserve(all.size());
 
-    // Spec-mandated order for function own properties: length, name, prototype, then others.
+    size_t i = 0;
+    for (; i < all.size(); i++) {
+        uint32_t idx;
+        if (!is_array_index(all[i], &idx)) break;
+        result.push_back(all[i]);
+    }
+
     static const char* const kPriority[] = { "length", "name", "prototype" };
     for (const char* pkey : kPriority) {
-        for (const auto& k : all) {
-            if (k == pkey) { result.push_back(k); break; }
+        for (size_t j = i; j < all.size(); j++) {
+            if (all[j] == pkey) { result.push_back(all[j]); break; }
         }
     }
-    for (const auto& k : all) {
+    for (; i < all.size(); i++) {
+        const auto& k = all[i];
         if (k.size() >= 2 && k[0] == '_' && k[1] == '_') continue;
         if (k == "length" || k == "name" || k == "prototype") continue;
         result.push_back(k);

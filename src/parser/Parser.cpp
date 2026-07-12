@@ -7057,8 +7057,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     // function parameters (spec: ContainsAwait early error for FormalParameters).
     bool saved_gen_for_params_afe = options_.in_generator_body;
     bool saved_async_for_params_afe = options_.in_async_body;
+    // `arguments` is only restricted directly inside a static block's own body --
+    // this function gets its own `arguments`, so the restriction must not leak in.
+    bool saved_csb_for_params_afe = options_.in_class_static_block;
     options_.in_generator_body = is_generator;
     options_.in_async_body = true;
+    options_.in_class_static_block = false;
 
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
@@ -7185,6 +7189,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 
     options_.in_generator_body = saved_gen_for_params_afe;
     options_.in_async_body = saved_async_for_params_afe;
+    options_.in_class_static_block = saved_csb_for_params_afe;
 
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");

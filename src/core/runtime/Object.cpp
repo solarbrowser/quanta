@@ -216,10 +216,16 @@ void Object::add_private_field(const std::string& key, const Value& value) {
     if (!sparse_overflow_) {
         sparse_overflow_ = std::make_unique<std::unordered_map<std::string, Value>>();
     }
-    if (sparse_overflow_->find(key) == sparse_overflow_->end()) {
-        (*sparse_overflow_)[key] = value;
-        property_insertion_order_.push_back(key);
+    if (sparse_overflow_->find(key) != sparse_overflow_->end()) {
+        // PrivateFieldAdd/PrivateMethodOrAccessorAdd: an existing entry is a TypeError
+        // (e.g. the same instance re-entering construction via a return-override trick).
+        if (current_context_) {
+            current_context_->throw_type_error("Cannot initialize the same private element twice on an object");
+        }
+        return;
     }
+    (*sparse_overflow_)[key] = value;
+    property_insertion_order_.push_back(key);
 }
 
 bool Object::has_private_slot(const std::string& key) const {

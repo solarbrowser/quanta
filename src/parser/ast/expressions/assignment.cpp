@@ -1626,6 +1626,15 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
             }
             // Fields are stored under a qualified key (see resolve_private_storage_key); fall back to the bare key for methods/getters/setters, which live unqualified on the prototype.
             if (!prop_name.empty() && prop_name[0] == '#') {
+                // require_exists=true: unlike the normal assignment path (binary.cpp/
+                // assignment.cpp's identifier-LHS branch), this destructuring target
+                // has no separate follow-up "does the slot actually exist" check of
+                // its own, so private_brand_check must do that check itself here --
+                // for fields specifically that's the *only* real check (no brand).
+                if (!private_brand_check(ctx, obj, prop_name, true)) {
+                    ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
+                    return;
+                }
                 std::string qualified = resolve_private_storage_key(prop_name, obj);
                 if (obj->has_private_slot(qualified)) prop_name = qualified;
             }
@@ -2053,11 +2062,28 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                     // Look up each property mapping on the prototype
                     for (const auto& mapping : property_mappings_) {
                         Value prop_value = proto->get_property(mapping.property_name);
+                        // Apply default if property is undefined (mirrors handle_complex_object_destructuring).
+                        if (prop_value.is_undefined()) {
+                            for (const auto& dv : default_values_) {
+                                if (dv.index < targets_.size()) {
+                                    const std::string& tname = targets_[dv.index]->get_name();
+                                    if (tname == mapping.property_name || tname == mapping.variable_name) {
+                                        prop_value = dv.expr->evaluate(ctx);
+                                        if (ctx.has_exception()) return Value();
+                                        if (prop_value.is_function() && is_anonymous_function_def(dv.expr.get()) &&
+                                            (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
+                                            prop_value.as_function()->set_name(mapping.variable_name);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         if (!bind_or_set(ctx, mapping.variable_name, prop_value)) return Value();
                     }
                     // Also handle shorthand targets
-                    for (const auto& target : targets_) {
-                        const std::string& name = target->get_name();
+                    for (size_t ti = 0; ti < targets_.size(); ti++) {
+                        const std::string& name = targets_[ti]->get_name();
                         if (name.empty() || name.find("...") == 0 || name.find("__") == 0) continue;
                         // Only if not already handled by property_mappings_
                         bool in_mappings = false;
@@ -2066,6 +2092,19 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         }
                         if (!in_mappings) {
                             Value prop_value = proto->get_property(name);
+                            if (prop_value.is_undefined()) {
+                                for (const auto& dv : default_values_) {
+                                    if (dv.index == ti) {
+                                        prop_value = dv.expr->evaluate(ctx);
+                                        if (ctx.has_exception()) return Value();
+                                        if (prop_value.is_function() && is_anonymous_function_def(dv.expr.get()) &&
+                                            (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
+                                            prop_value.as_function()->set_name(name);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
                             if (!bind_or_set(ctx, name, prop_value)) return Value();
                         }
                     }

@@ -1443,6 +1443,12 @@ void ForOfStatement::iterator_close(Context& ctx, const Value& iterator, bool va
 }
 
 Value ForOfStatement::evaluate(Context& ctx) {
+    // A continue targeting an outer construct must keep propagating past
+    // this loop -- only one that's unlabeled or matches this loop's own
+    // label (via a wrapping LabeledStatement) is ours to consume.
+    std::string this_loop_label = ctx.get_next_statement_label();
+    ctx.set_next_statement_label("");
+
     // ES6 13.7.5.6: ForDeclaration bound names are in TDZ when the iterable is evaluated.
     // Create a block scope with TDZ bindings before evaluating the iterable so that
     // `for (const x of [x])` sees x as TDZ, not any outer x.
@@ -2235,7 +2241,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         break;
                                     }
                                     if (loop_ctx->has_continue()) {
-                                        if (loop_ctx->get_continue_label().empty()) {
+                                        if (loop_ctx->get_continue_label().empty() ||
+                                            loop_ctx->get_continue_label() == this_loop_label) {
                                             loop_ctx->clear_break_continue();
                                             continue;
                                         }
@@ -2305,7 +2312,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         break;
                                     }
                                     if (loop_ctx->has_continue()) {
-                                        if (loop_ctx->get_continue_label().empty()) {
+                                        if (loop_ctx->get_continue_label().empty() ||
+                                            loop_ctx->get_continue_label() == this_loop_label) {
                                             loop_ctx->clear_break_continue();
                                             continue;
                                         }
@@ -2338,7 +2346,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     break;
                                 }
                                 if (loop_ctx->has_continue()) {
-                                    if (loop_ctx->get_continue_label().empty()) {
+                                    if (loop_ctx->get_continue_label().empty() ||
+                                        loop_ctx->get_continue_label() == this_loop_label) {
                                         loop_ctx->clear_break_continue();
                                         continue;
                                     }
@@ -2465,8 +2474,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             break;
                         }
                         if (loop_ctx->has_continue()) {
-                            if (loop_ctx->get_continue_label().empty()) loop_ctx->clear_break_continue();
-                            else break;
+                            if (loop_ctx->get_continue_label().empty() ||
+                                loop_ctx->get_continue_label() == this_loop_label) {
+                                loop_ctx->clear_break_continue();
+                            } else {
+                                break;
+                            }
                         }
                         continue;
                     }
@@ -2525,7 +2538,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             break;
                         }
                         if (loop_ctx->has_continue()) {
-                            if (loop_ctx->get_continue_label().empty()) {
+                            if (loop_ctx->get_continue_label().empty() ||
+                                loop_ctx->get_continue_label() == this_loop_label) {
                                 loop_ctx->clear_break_continue();
                             } else {
                                 break; // labelled continue -- propagate up
@@ -2884,11 +2898,11 @@ Value ContinueStatement::evaluate(Context& ctx) {
 }
 
 std::string ContinueStatement::to_string() const {
-    return "continue;";
+    return label_.empty() ? "continue;" : "continue " + label_ + ";";
 }
 
 std::unique_ptr<ASTNode> ContinueStatement::clone() const {
-    return std::make_unique<ContinueStatement>(start_, end_);
+    return std::make_unique<ContinueStatement>(start_, end_, label_);
 }
 
 
@@ -3145,6 +3159,9 @@ std::unique_ptr<ASTNode> ThrowStatement::clone() const {
 }
 
 Value SwitchStatement::evaluate(Context& ctx) {
+    std::string this_switch_label = ctx.get_next_statement_label();
+    ctx.set_next_statement_label("");
+
     Value discriminant_value = discriminant_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
 
@@ -3196,7 +3213,12 @@ Value SwitchStatement::evaluate(Context& ctx) {
             if (ctx.has_exception()) { ctx.set_lexical_environment(old_env); return Value(); }
 
             if (ctx.has_break()) {
-                ctx.clear_break_continue();
+                // Only a break targeting this switch itself (unlabeled, or
+                // matching its own label) is ours to consume -- one aimed at
+                // an outer construct must keep propagating.
+                if (ctx.get_break_label().empty() || ctx.get_break_label() == this_switch_label) {
+                    ctx.clear_break_continue();
+                }
                 g_empty_completion = false;
                 ctx.set_lexical_environment(old_env);
                 return V;

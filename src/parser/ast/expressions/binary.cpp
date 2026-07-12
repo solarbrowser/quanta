@@ -1012,11 +1012,11 @@ static bool write_member_update_result(Context& ctx, MemberExpression* member, c
     } else {
         Value obj = member->get_object()->evaluate(ctx);
         if (ctx.has_exception()) return false;
-        if (!obj.is_object()) {
+        if (!obj.is_object() && !obj.is_function()) {
             ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
             return false;
         }
-        write_obj = obj.as_object();
+        write_obj = obj.is_function() ? static_cast<Object*>(obj.as_function()) : obj.as_object();
     }
 
     std::string prop_name;
