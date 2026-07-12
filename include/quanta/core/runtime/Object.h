@@ -149,6 +149,10 @@ public:
     virtual bool has_property(const std::string& key) const;
     virtual bool has_own_property(const std::string& key) const;
     bool has_private_slot(const std::string& key) const;
+    std::string find_private_slot_key(const std::string& prefix) const;
+    Value get_private_slot_value(const std::string& key) const;
+    bool get_private_slot_descriptor(const std::string& key, PropertyDescriptor& out) const;
+    void set_private_slot_value(const std::string& key, const Value& value);
     void add_private_field(const std::string& key, const Value& value = Value());
 
     virtual Value get_property(const std::string& key) const;
@@ -174,6 +178,7 @@ public:
     virtual std::vector<std::string> get_own_property_keys() const;
     virtual std::vector<std::string> get_enumerable_keys() const;
     virtual std::vector<std::string> get_internal_property_keys() const;
+    std::vector<std::string> get_own_property_keys_unfiltered() const;
     std::vector<uint32_t> get_element_indices() const;
     
     virtual PropertyDescriptor get_property_descriptor(const std::string& key) const;
@@ -181,6 +186,7 @@ public:
     
     bool is_extensible() const;
     void prevent_extensions();
+    void reopen_extensible();
     void seal();
     void freeze();
     bool is_sealed() const;

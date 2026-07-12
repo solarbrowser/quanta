@@ -456,6 +456,24 @@ static bool is_direct_super_call_statement(const ASTNode* stmt) {
 Value ClassDeclaration::evaluate(Context& ctx) {
     std::string class_name = id_->get_name();
 
+    // classScope (spec step 2-4): the class name is an inner IMMUTABLE binding,
+    // independent from any outer one, visible to the heritage expression (TDZ
+    // until the constructor exists), methods and static initializers. Every
+    // closure created below captures this environment.
+    struct ClassScopeGuard {
+        Context& c;
+        bool active = false;
+        ~ClassScopeGuard() { if (active) c.pop_block_scope(); }
+    } class_scope_guard{ctx};
+    if (!class_name.empty()) {
+        ctx.push_block_scope();
+        class_scope_guard.active = true;
+        if (Environment* env = ctx.get_lexical_environment()) {
+            env->create_uninitialized_binding(class_name, /*is_mutable=*/false);
+            env->mark_const_binding(class_name);
+        }
+    }
+
     CallStack& outer_cs_ = CallStack::instance();
     Object* outer_brands_ptr = nullptr;
     if (!outer_cs_.is_empty() && outer_cs_.top().function_ptr) {
@@ -605,13 +623,21 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     }
                     instance_method->set_property("__private_class_brand__", Value(prototype.get()));
 
+                    // Private methods/accessors are stored on the prototype under the
+                    // qualified key ("#m@<protoPtr>", the same key resolve_private_storage_key
+                    // derives from the brand map) so a computed ["#m"] ordinary property
+                    // can never collide with them.
+                    std::string storage_name = method_name;
+                    if (!method_name.empty() && method_name[0] == '#') {
+                        storage_name = method_name + "@" + std::to_string(reinterpret_cast<uintptr_t>(prototype.get()));
+                    }
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         bool is_getter = method->get_kind() == MethodDefinition::GETTER;
                         instance_method->set_name(accessor_function_name(method_name, is_getter ? "get " : "set "));
                         // Find existing deferred entry or create new one
                         PropertyDescriptor* existing_deferred = nullptr;
                         for (auto& dp : deferred_instance_methods) {
-                            if (dp.first == method_name) { existing_deferred = &dp.second; break; }
+                            if (dp.first == storage_name) { existing_deferred = &dp.second; break; }
                         }
                         PropertyDescriptor desc;
                         if (existing_deferred && existing_deferred->is_accessor_descriptor()) desc = *existing_deferred;
@@ -620,14 +646,14 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         desc.set_enumerable(false);
                         desc.set_configurable(true);
                         if (existing_deferred) *existing_deferred = desc;
-                        else deferred_instance_methods.push_back({method_name, desc});
+                        else deferred_instance_methods.push_back({storage_name, desc});
                     } else {
                         if (method_name.find("@@sym:") == 0 || method_name.find("Symbol.") == 0) {
                             instance_method->set_name(accessor_function_name(method_name, ""));
                         }
                         PropertyDescriptor method_desc(Value(instance_method.release()),
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-                        deferred_instance_methods.push_back({method_name, method_desc});
+                        deferred_instance_methods.push_back({storage_name, method_desc});
                     }
                 }
             }
@@ -688,8 +714,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     static_cast<Identifier*>(cf->get_key())->get_name()[0] == '#';
 
                 if (is_private) {
-                    // Private field: use __pfadd__(this, "#name") to create the slot first
-                    // (PrivateFieldAdd semantics), then assign the value if there is one.
+                    // Private field: __pfadd__(this, "#name", value?) -- PrivateFieldAdd.
+                    // The initializer is the third ARGUMENT so it evaluates before the
+                    // slot is added (spec DefineField order: a side effect like
+                    // Object.preventExtensions(this) inside it must make the add throw,
+                    // and self-reads of the field during it must not see a slot yet).
                     const std::string& pname = static_cast<Identifier*>(cf->get_key())->get_name();
                     auto pfadd_id = std::make_unique<Identifier>("__pfadd__", fstart, fstart);
                     auto this_id0 = std::make_unique<Identifier>("this", fstart, fstart);
@@ -697,23 +726,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     std::vector<std::unique_ptr<ASTNode>> pfadd_args;
                     pfadd_args.push_back(std::move(this_id0));
                     pfadd_args.push_back(std::move(pname_lit));
+                    if (cf->get_value()) {
+                        pfadd_args.push_back(wrap_field_value_with_name(
+                            cf->get_value()->clone(), cf->get_value(), pname, fstart));
+                    }
                     auto pfadd_call = std::make_unique<CallExpression>(
                         std::move(pfadd_id), std::move(pfadd_args), fstart, fstart, false);
                     new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(pfadd_call), fstart, fstart));
-
-                    if (cf->get_value()) {
-                        // Now assign the initializer value via regular assignment (slot exists)
-                        auto this_id2 = std::make_unique<Identifier>("this", fstart, fstart);
-                        auto key_clone = cf->get_key()->clone();
-                        auto member_expr = std::make_unique<MemberExpression>(
-                            std::move(this_id2), std::move(key_clone), false, fstart, fstart);
-                        auto value_clone = wrap_field_value_with_name(
-                            cf->get_value()->clone(), cf->get_value(), pname, fstart);
-                        auto assign = std::make_unique<AssignmentExpression>(
-                            std::move(member_expr), AssignmentExpression::Operator::ASSIGN,
-                            std::move(value_clone), fstart, fstart);
-                        new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(assign), fstart, fstart));
-                    }
                 } else {
                     std::string field_name;
                     if (cf->get_key()->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -804,8 +823,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         );
     }
 
+    // Anonymous class expressions take their binding site's inferred name for
+    // SetFunctionName only -- class_name itself stays empty so no inner
+    // self-reference binding is created for it.
     auto constructor_fn = ObjectFactory::create_js_function(
-        class_name,
+        (class_name.empty() && !inferred_name_.empty()) ? inferred_name_ : class_name,
         std::move(constructor_params),
         std::move(constructor_body),
         &ctx
@@ -939,10 +961,16 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     // member.cpp's super lookup needs to know this resolves on the constructor itself, not its .prototype.
                     static_method->set_property("__is_static_method__", Value(true));
 
+                    // Same qualified-key scheme as instance private methods; the
+                    // static brand is the constructor itself.
+                    std::string static_storage_name = method_name;
+                    if (!method_name.empty() && method_name[0] == '#') {
+                        static_storage_name = method_name + "@" + std::to_string(reinterpret_cast<uintptr_t>(constructor_fn.get()));
+                    }
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         bool is_getter = method->get_kind() == MethodDefinition::GETTER;
                         static_method->set_name(accessor_function_name(method_name, is_getter ? "get " : "set "));
-                        PropertyDescriptor existing = constructor_fn->get_property_descriptor(method_name);
+                        PropertyDescriptor existing = constructor_fn->get_property_descriptor(static_storage_name);
                         PropertyDescriptor desc;
                         if (existing.is_accessor_descriptor() || existing.has_getter() || existing.has_setter()) {
                             desc = existing;
@@ -954,14 +982,14 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                         desc.set_enumerable(false);
                         desc.set_configurable(true);
-                        constructor_fn->set_property_descriptor(method_name, desc);
+                        constructor_fn->set_property_descriptor(static_storage_name, desc);
                     } else {
                         if (method_name.find("@@sym:") == 0 || method_name.find("Symbol.") == 0) {
                             static_method->set_name(accessor_function_name(method_name, ""));
                         }
                         PropertyDescriptor method_desc(Value(static_method.release()),
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-                        constructor_fn->set_property_descriptor(method_name, method_desc);
+                        constructor_fn->set_property_descriptor(static_storage_name, method_desc);
                     }
                 }
             }
@@ -969,7 +997,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     }
 
     if (has_superclass()) {
+        // ClassHeritage is class code: always strict (functions defined in it
+        // must come out strict even when the class appears in sloppy code).
+        bool saved_strict = ctx.is_strict_mode();
+        ctx.set_strict_mode(true);
         Value super_constructor = superclass_->evaluate(ctx);
+        ctx.set_strict_mode(saved_strict);
         if (ctx.has_exception()) return Value();
 
         if (super_constructor.is_null()) {
@@ -1017,7 +1050,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 constructor_fn->set_property("__super_constructor__", Value(super_fn));
 
                 if (proto_ptr) {
-                    auto method_keys = proto_ptr->get_own_property_keys();
+                    auto method_keys = proto_ptr->get_own_property_keys_unfiltered();
                     for (const auto& mkey : method_keys) {
                         if (mkey == "constructor") continue;
                         // get_property/get_own_property invoke the getter for accessor properties, which would spuriously execute "get m() { return super.x(); }" right now and throw.
@@ -1037,7 +1070,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
                 // Static methods/getters/setters need __super_constructor__ too, or "static get foo() { return super.bar(); }" falls back to this's [[Prototype]] instead of the real binding.
                 {
-                    auto static_method_keys = constructor_fn->get_own_property_keys();
+                    auto static_method_keys = constructor_fn->get_own_property_keys_unfiltered();
                     for (const auto& skey : static_method_keys) {
                         if (skey == "prototype" || skey == "name" || skey == "length" ||
                             skey == "__super_constructor__") continue;
@@ -1080,7 +1113,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         mark_class_name_closure(constructor_fn.get());
     }
     if (proto_ptr) {
-        auto proto_keys = proto_ptr->get_own_property_keys();
+        auto proto_keys = proto_ptr->get_own_property_keys_unfiltered();
         for (const auto& key : proto_keys) {
             if (key == "constructor") continue;
             PropertyDescriptor desc = proto_ptr->get_property_descriptor(key);
@@ -1099,7 +1132,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             }
         }
     }
-    auto static_keys = constructor_fn->get_own_property_keys();
+    auto static_keys = constructor_fn->get_own_property_keys_unfiltered();
     for (const auto& key : static_keys) {
         if (key == "prototype" || key == "name" || key == "length" || key == "__super_constructor__") continue;
         // get_property invokes the getter for accessor properties (e.g. "static get foo() { ... }"), which we must not do here.
@@ -1131,7 +1164,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (pm_names_for_methods.is_object())
                 fn->set_property("__private_method_names__", pm_names_for_methods);
         };
-        for (const auto& key : proto_ptr->get_own_property_keys()) {
+        for (const auto& key : proto_ptr->get_own_property_keys_unfiltered()) {
             if (key == "constructor") continue;
             PropertyDescriptor bdesc = proto_ptr->get_property_descriptor(key);
             if (bdesc.has_getter() && bdesc.get_getter())
@@ -1146,10 +1179,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
     }
 
-    // A named class expression binds its name only inside the class, not in the outer scope.
-    if (!is_expression_) {
-        if (!ctx.create_lexical_binding(class_name, Value(constructor_fn.get()), true)) {
-            ctx.create_lexical_binding_force(class_name, Value(constructor_fn.get()));
+    // The inner classScope binding becomes initialized once the constructor
+    // exists -- heritage closures created above start resolving to it now.
+    // The outer binding (statement form) happens after the scope pops, below.
+    if (class_scope_guard.active) {
+        if (Environment* env = ctx.get_lexical_environment()) {
+            env->initialize_binding(class_name, Value(constructor_fn.get()));
         }
     }
 
@@ -1217,13 +1252,23 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                     }
                 }
-                PropertyDescriptor fdesc(val, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable | PropertyAttributes::Enumerable));
-                // CreateDataPropertyOrThrow: a computed key equal to "prototype" fails here
-                // (that property is already non-configurable, set by MakeConstructor above)
-                // and must throw, not silently no-op.
-                if (!constructor_fn->set_property_descriptor(key_name, fdesc)) {
-                    ctx.throw_type_error("Cannot define class static field '" + key_name + "'");
-                    break;
+                bool is_private_static = !cf->is_computed() && !key_name.empty() && key_name[0] == '#';
+                if (is_private_static) {
+                    // PrivateFieldAdd on the constructor: qualified slot (same shape
+                    // resolve_private_storage_key produces via the brand map), with
+                    // its extensibility/duplicate TypeErrors.
+                    constructor_fn->add_private_field(
+                        key_name + "@" + std::to_string(reinterpret_cast<uintptr_t>(constructor_fn.get())), val);
+                    if (ctx.has_exception()) break;
+                } else {
+                    PropertyDescriptor fdesc(val, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable | PropertyAttributes::Enumerable));
+                    // CreateDataPropertyOrThrow: a computed key equal to "prototype" fails here
+                    // (that property is already non-configurable, set by MakeConstructor above)
+                    // and must throw, not silently no-op.
+                    if (!constructor_fn->set_property_descriptor(key_name, fdesc)) {
+                        ctx.throw_type_error("Cannot define class static field '" + key_name + "'");
+                        break;
+                    }
                 }
             }
         }
@@ -1232,6 +1277,18 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     Function* constructor_ptr = constructor_fn.get();
 
     constructor_fn.release();
+
+    // Leave classScope FIRST, then bind the statement form's name in the outer
+    // scope (a named class expression binds its name only inside the class).
+    if (class_scope_guard.active) {
+        ctx.pop_block_scope();
+        class_scope_guard.active = false;
+    }
+    if (!is_expression_) {
+        if (!ctx.create_lexical_binding(class_name, Value(constructor_ptr), true)) {
+            ctx.create_lexical_binding_force(class_name, Value(constructor_ptr));
+        }
+    }
 
     // Class declarations have empty completion (spec 15.7.14 step 2: NormalCompletion(empty)).
     g_empty_completion = true;
@@ -1491,6 +1548,12 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         if (ctx.has_binding("this")) {
             async_fn->set_property("__arrow_this__", ctx.get_binding("this"));
         }
+        // ContainsArguments is lexical: an arrow born inside a class field
+        // initializer keeps the direct-eval `arguments` ban for its whole life,
+        // however late it's called (marker read back in Function::call).
+        if (ctx.is_in_class_field_init()) {
+            async_fn->set_property("__in_cfi__", Value(true));
+        }
 
         if (ctx.has_binding("@@AsyncFunction")) {
             Value async_ctor = ctx.get_binding("@@AsyncFunction");
@@ -1536,6 +1599,11 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     if (ctx.has_binding("this")) {
         Value this_value = ctx.get_binding("this");
         arrow_function->set_property("__arrow_this__", this_value);
+    }
+    // See the async-arrow branch above: field-initializer arrows keep the
+    // direct-eval `arguments` ban for their whole life.
+    if (ctx.is_in_class_field_init()) {
+        arrow_function->set_property("__in_cfi__", Value(true));
     }
 
     Value enclosing_new_target = ctx.get_new_target();
@@ -2959,8 +3027,12 @@ class DeferredNamespaceObject : public Object {
         evaluated_ = true;
         Module* mod = loader_->load_module(module_source_, from_path_);
         if (!mod) return;
+        // The namespace is observably non-extensible; re-open it only for this
+        // internal export copy.
+        reopen_extensible();
         for (const auto& name : mod->get_export_names())
             Object::set_property(name, mod->get_export(name));
+        prevent_extensions();
     }
 
     static bool is_symbol_like(const std::string& key) {
@@ -2974,7 +3046,11 @@ class DeferredNamespaceObject : public Object {
 
 public:
     DeferredNamespaceObject(ModuleLoader* loader, const std::string& src, const std::string& from)
-        : loader_(loader), module_source_(src), from_path_(from) {}
+        : loader_(loader), module_source_(src), from_path_(from) {
+        // Namespace objects are never extensible (spec 10.4.6): PrivateFieldAdd
+        // on one throws TypeError without triggering deferred evaluation.
+        prevent_extensions();
+    }
 
     Value get_property(const std::string& key) const override {
         if (!is_symbol_like(key))
@@ -3214,6 +3290,9 @@ Value ExportStatement::evaluate(Context& ctx) {
             case Type::CLASS_DECLARATION: {
                 auto* cd = static_cast<ClassDeclaration*>(default_export_.get());
                 if (cd->get_id()) default_local_name = cd->get_id()->get_name();
+                // NamedEvaluation: static initializers observe this.name during
+                // evaluation, so the "default" name must be inferred beforehand.
+                if (default_local_name.empty()) cd->set_inferred_name("default");
                 break;
             }
             default:

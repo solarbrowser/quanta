@@ -76,6 +76,7 @@ private:
     bool is_in_constructor_call_;
     bool super_called_;
     bool this_needs_super_;  // derived class ctor: accessing 'this' before super() throws
+    Object* last_super_override_ = nullptr;  // comparison-only, see last_super_override()
     Value new_target_;
     bool original_this_was_nullish_;
     bool original_this_was_primitive_; // set when native call had a non-null/undefined primitive thisArg
@@ -243,6 +244,11 @@ public:
     void set_super_called(bool value) { super_called_ = value; }
     bool this_needs_super() const { return this_needs_super_; }
     void set_this_needs_super(bool v) { this_needs_super_ = v; }
+    // Identity of the object super() swapped `this` to (return-override), used
+    // only for pointer comparison in Function::construct -- never dereferenced,
+    // so it needs no GC trace.
+    Object* last_super_override() const { return last_super_override_; }
+    void set_last_super_override(Object* o) { last_super_override_ = o; }
 
     Value get_new_target() const { return new_target_; }
     void set_new_target(const Value& val) { new_target_ = val; }

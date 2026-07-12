@@ -28,13 +28,17 @@ std::string resolve_private_storage_key(const std::string& bare_name, Object* ob
             : name_brand.as_object();
         return bare_name + "@" + std::to_string(reinterpret_cast<uintptr_t>(expected));
     }
-    // No frame declares this name -- typical after resuming an async function or generator past an await/yield, where the continuation doesn't re-enter through Function::call. Fall back to whatever qualified slot already exists on the object.
+    // No frame declares this name -- typical after resuming an async function or
+    // generator past an await/yield, where the continuation doesn't re-enter
+    // through Function::call. Fall back to whatever qualified slot already exists
+    // on the object or its prototype chain (methods/accessors live on the
+    // declaring prototype/constructor). Raw scan: get_own_property_keys hides
+    // qualified slots from observable enumeration.
     if (obj) {
         std::string prefix = bare_name + "@";
-        for (const auto& key : obj->get_own_property_keys()) {
-            if (key.size() > prefix.size() && key.compare(0, prefix.size(), prefix) == 0) {
-                return key;
-            }
+        for (Object* o = obj; o; o = o->get_prototype()) {
+            std::string k = o->find_private_slot_key(prefix);
+            if (!k.empty()) return k;
         }
     }
     return bare_name;

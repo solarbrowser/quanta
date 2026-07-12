@@ -59,6 +59,16 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             return Value();
         }
 
+        // NamedEvaluation: static initializers observe the class name via
+        // this.name during evaluation, so it must be inferred beforehand.
+        if (operator_ == Operator::ASSIGN && !lhs_is_paren_ &&
+            right_->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+            auto* cd = static_cast<ClassDeclaration*>(right_.get());
+            if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
+                cd->set_inferred_name(name);
+            }
+        }
+
         // For compound assignments, capture left value BEFORE evaluating right side.
         // Capture ref_env BEFORE get_binding because a getter may delete the property (object environment record: PutValue must write to the original env's binding object).
         Value left_value;
@@ -382,12 +392,43 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                      : object_value.is_function() ? static_cast<Object*>(object_value.as_function())
                      : nullptr;
             }
-            // Fields are stored under a qualified key (see resolve_private_storage_key); fall back to the bare key for methods/getters/setters, which live unqualified on the prototype.
-            if (lobj && !lprop.empty() && lprop[0] == '#') {
+            // Private references: fields live under the qualified key on the
+            // instance; methods/accessors live (qualified) on the declaring
+            // prototype/constructor and read/write through getter/setter.
+            Object* priv_owner = nullptr;
+            PropertyDescriptor priv_desc;
+            if (lobj && !member->is_computed() && !lprop.empty() && lprop[0] == '#') {
                 std::string qualified = resolve_private_storage_key(lprop, lobj);
-                if (lobj->has_private_slot(qualified)) lprop = qualified;
+                if (lobj->has_private_slot(qualified)) {
+                    lprop = qualified;
+                } else {
+                    priv_owner = resolve_private_accessor_owner(lprop);
+                    if (!priv_owner) {
+                        for (Object* p = lobj->get_prototype(); p; p = p->get_prototype()) {
+                            if (p->has_private_slot(qualified)) { priv_owner = p; break; }
+                        }
+                    }
+                    if (priv_owner) {
+                        priv_desc = priv_owner->get_property_descriptor(qualified);
+                        if (!priv_desc.is_accessor_descriptor() && !priv_desc.has_value()) {
+                            priv_desc = priv_owner->get_property_descriptor(lprop);
+                        }
+                    }
+                }
             }
-            Value cur = lobj ? lobj->get_property(lprop) : Value();
+            Value cur;
+            if (priv_owner && priv_desc.is_accessor_descriptor()) {
+                if (!priv_desc.has_getter()) {
+                    ctx.throw_type_error("'" + lprop + "' accessor has no getter");
+                    return Value();
+                }
+                Function* getter_fn = dynamic_cast<Function*>(priv_desc.get_getter());
+                cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
+            } else if (priv_owner && priv_desc.has_value()) {
+                cur = priv_desc.get_value();
+            } else {
+                cur = lobj ? lobj->get_property(lprop) : Value();
+            }
             if (ctx.has_exception()) return Value();
             bool skip =
                 (operator_ == Operator::LOGICAL_AND_ASSIGN && !cur.to_boolean()) ||
@@ -396,6 +437,25 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (skip) return cur;
             right_value = right_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
+            if (priv_owner) {
+                if (priv_desc.is_accessor_descriptor()) {
+                    if (!priv_desc.has_setter()) {
+                        ctx.throw_type_error("'" + lprop + "' was defined without a setter");
+                        return Value();
+                    }
+                    Function* setter_fn = dynamic_cast<Function*>(priv_desc.get_setter());
+                    if (setter_fn) setter_fn->call(ctx, {right_value}, object_value);
+                    if (ctx.has_exception()) return Value();
+                    return right_value;
+                }
+                ctx.throw_type_error("'" + lprop + "' is a private method and cannot be assigned to");
+                return Value();
+            }
+            // Private field slot: raw write (see the compound path below).
+            if (lobj && !lprop.empty() && lprop[0] == '#' && lobj->has_private_slot(lprop)) {
+                lobj->set_private_slot_value(lprop, right_value);
+                return right_value;
+            }
             // The write target for super.x (op)= val is always 'this', never the super base.
             Object* wobj = is_super_assignment
                 ? (write_target.is_function() ? static_cast<Object*>(write_target.as_function())
@@ -661,42 +721,109 @@ Value AssignmentExpression::evaluate(Context& ctx) {
 
         // For a private accessor/method, the descriptor lives on the declaring class's own
         // prototype, not necessarily the closest "#name" in obj's actual chain.
+        // Only the literal `.#name` syntax is a private reference -- a computed
+        // key that happens to spell "#name" is an ordinary property.
         Object* private_owner = nullptr;
-        if (obj && !is_string_object && !prop_name.empty() && prop_name[0] == '#') {
+        if (obj && !is_string_object && !member->is_computed() &&
+            !prop_name.empty() && prop_name[0] == '#') {
             if (!private_brand_check(ctx, obj, prop_name, false)) {
                 ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
                 return Value();
             }
             // Fields are stored under a qualified key (see resolve_private_storage_key); left untouched for methods/getters/setters, which aren't found directly on the instance.
+            // A bare "#x" own property can only be an ordinary computed-key
+            // property -- it never counts as the private slot here.
+            bool on_own_slot = false;
             {
                 std::string qualified = resolve_private_storage_key(prop_name, obj);
-                if (obj->has_private_slot(qualified)) prop_name = qualified;
+                if (obj->has_private_slot(qualified)) {
+                    prop_name = qualified;
+                    on_own_slot = true;
+                }
             }
             // For any assignment (including =), check if target is a private method or uninitialized field
-            if (obj->has_private_slot(prop_name)) {
-                // Slot is directly on obj (e.g. static private members on the class constructor).
-                PropertyDescriptor own_pd = obj->get_property_descriptor(prop_name);
-                if (own_pd.is_accessor_descriptor()) {
-                    if (!own_pd.has_setter()) {
-                        ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
-                        return Value();
-                    }
-                } else if (own_pd.has_value() && own_pd.get_value().is_function()) {
+            if (on_own_slot) {
+                // Slot is directly on obj (fields; static private members on the
+                // class constructor). Fully raw access -- never through Proxy
+                // traps or exotic overrides (spec: private state bypasses
+                // [[Get]]/[[Set]]) -- including the compound read-modify-write.
+                PropertyDescriptor own_pd;
+                bool is_own_accessor = obj->get_private_slot_descriptor(prop_name, own_pd) &&
+                                       own_pd.is_accessor_descriptor();
+                if (!is_own_accessor && own_pd.has_value() && own_pd.get_value().is_function()) {
                     Function* mfn = own_pd.get_value().as_function();
                     if (mfn && mfn->has_property("__private_class_brand__")) {
                         ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
                         return Value();
                     }
                 }
+                Value final_value = right_value;
+                if (operator_ != Operator::ASSIGN) {
+                    Value cur;
+                    if (is_own_accessor) {
+                        if (!own_pd.has_getter()) {
+                            ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                            return Value();
+                        }
+                        Function* getter_fn = dynamic_cast<Function*>(own_pd.get_getter());
+                        cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
+                        if (ctx.has_exception()) return Value();
+                    } else {
+                        cur = obj->get_private_slot_value(prop_name);
+                    }
+                    switch (operator_) {
+                        case Operator::PLUS_ASSIGN:        final_value = cur.add(right_value); break;
+                        case Operator::MINUS_ASSIGN:       final_value = cur.subtract(right_value); break;
+                        case Operator::MUL_ASSIGN:         final_value = cur.multiply(right_value); break;
+                        case Operator::DIV_ASSIGN:         final_value = cur.divide(right_value); break;
+                        case Operator::MOD_ASSIGN:         final_value = cur.modulo(right_value); break;
+                        case Operator::BITWISE_AND_ASSIGN: final_value = cur.bitwise_and(right_value); break;
+                        case Operator::BITWISE_OR_ASSIGN:  final_value = cur.bitwise_or(right_value); break;
+                        case Operator::BITWISE_XOR_ASSIGN: final_value = cur.bitwise_xor(right_value); break;
+                        case Operator::LEFT_SHIFT_ASSIGN:  final_value = cur.left_shift(right_value); break;
+                        case Operator::RIGHT_SHIFT_ASSIGN: final_value = cur.right_shift(right_value); break;
+                        case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: final_value = cur.unsigned_right_shift(right_value); break;
+                        default: break;
+                    }
+                    if (ctx.has_exception()) return Value();
+                }
+                if (is_own_accessor) {
+                    if (!own_pd.has_setter()) {
+                        ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
+                        return Value();
+                    }
+                    Function* setter_fn = dynamic_cast<Function*>(own_pd.get_setter());
+                    if (setter_fn) setter_fn->call(ctx, {final_value}, object_value);
+                    if (ctx.has_exception()) return Value();
+                    return final_value;
+                }
+                obj->set_private_slot_value(prop_name, final_value);
+                return final_value;
             } else {
+                // Methods/accessors live under the qualified key on the declaring
+                // prototype/constructor (bare fallback for older paths).
+                std::string owner_qualified = resolve_private_storage_key(prop_name, obj);
                 private_owner = resolve_private_accessor_owner(prop_name);
-                PropertyDescriptor pd = private_owner ? private_owner->get_property_descriptor(prop_name) : PropertyDescriptor();
+                PropertyDescriptor pd;
+                if (private_owner) {
+                    pd = private_owner->get_property_descriptor(owner_qualified);
+                    if (pd.has_value() || pd.is_accessor_descriptor()) {
+                        prop_name = owner_qualified;
+                    } else {
+                        pd = private_owner->get_property_descriptor(prop_name);
+                    }
+                }
                 bool found_on_proto = pd.has_value() || pd.is_accessor_descriptor();
                 if (!found_on_proto) {
                     // Fallback: no frame declared this name (e.g. resumed after await/yield).
                     private_owner = nullptr;
                     Object* proto = obj->get_prototype();
                     while (proto) {
+                        pd = proto->get_property_descriptor(owner_qualified);
+                        if (pd.has_value() || pd.is_accessor_descriptor()) {
+                            prop_name = owner_qualified;
+                            found_on_proto = true; private_owner = proto; break;
+                        }
                         pd = proto->get_property_descriptor(prop_name);
                         if (pd.has_value() || pd.is_accessor_descriptor()) { found_on_proto = true; private_owner = proto; break; }
                         proto = proto->get_prototype();
@@ -1625,7 +1752,8 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
                 prop_name = static_cast<Identifier*>(member->get_property())->get_name();
             }
             // Fields are stored under a qualified key (see resolve_private_storage_key); fall back to the bare key for methods/getters/setters, which live unqualified on the prototype.
-            if (!prop_name.empty() && prop_name[0] == '#') {
+            // Only the literal `.#name` syntax is a private reference.
+            if (!member->is_computed() && !prop_name.empty() && prop_name[0] == '#') {
                 // require_exists=true: unlike the normal assignment path (binary.cpp/
                 // assignment.cpp's identifier-LHS branch), this destructuring target
                 // has no separate follow-up "does the slot actually exist" check of
@@ -1636,7 +1764,12 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
                     return;
                 }
                 std::string qualified = resolve_private_storage_key(prop_name, obj);
-                if (obj->has_private_slot(qualified)) prop_name = qualified;
+                if (obj->has_private_slot(qualified)) {
+                    // Raw write: private state bypasses [[Set]] (Proxy traps,
+                    // exotic overrides) entirely.
+                    obj->set_private_slot_value(qualified, value);
+                    return;
+                }
             }
             obj->ordinary_set(prop_name, value);
         }

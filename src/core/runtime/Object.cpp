@@ -228,6 +228,61 @@ void Object::add_private_field(const std::string& key, const Value& value) {
     property_insertion_order_.push_back(key);
 }
 
+std::string Object::find_private_slot_key(const std::string& prefix) const {
+    // Raw prefix scan over private storage -- get_own_property_keys hides
+    // qualified slots, so resumed-async private resolution can't use it.
+    if (sparse_overflow_) {
+        for (const auto& p : *sparse_overflow_) {
+            if (p.first.compare(0, prefix.size(), prefix) == 0) return p.first;
+        }
+    }
+    if (descriptors_) {
+        for (const auto& p : *descriptors_) {
+            if (p.first.compare(0, prefix.size(), prefix) == 0) return p.first;
+        }
+    }
+    return std::string();
+}
+
+bool Object::get_private_slot_descriptor(const std::string& key, PropertyDescriptor& out) const {
+    // Raw descriptor read for a private slot (accessors included); never fires
+    // Proxy traps or exotic overrides (e.g. deferred namespace evaluation).
+    if (descriptors_) {
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end()) { out = it->second; return true; }
+    }
+    return false;
+}
+
+Value Object::get_private_slot_value(const std::string& key) const {
+    // Raw read of a private slot (mirrors has_private_slot's storage order);
+    // never fires Proxy traps or accessors.
+    if (sparse_overflow_) {
+        auto it = sparse_overflow_->find(key);
+        if (it != sparse_overflow_->end()) return it->second;
+    }
+    if (descriptors_) {
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end() && it->second.is_data_descriptor()) return it->second.get_value();
+    }
+    return Value();
+}
+
+void Object::set_private_slot_value(const std::string& key, const Value& value) {
+    // Raw write of an EXISTING private slot; never fires Proxy traps.
+    Collector::write_barrier(this);
+    if (sparse_overflow_) {
+        auto it = sparse_overflow_->find(key);
+        if (it != sparse_overflow_->end()) { it->second = value; return; }
+    }
+    if (descriptors_) {
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end() && it->second.is_data_descriptor()) {
+            it->second.set_value(value);
+        }
+    }
+}
+
 bool Object::has_private_slot(const std::string& key) const {
     // Check if object has a private field/method without the # filter
     if (descriptors_) {
@@ -241,8 +296,14 @@ bool Object::has_private_slot(const std::string& key) const {
 }
 
 bool Object::has_own_property(const std::string& key) const {
-    // Private fields (#name) are not exposed as own properties (spec: private slot semantics)
-    if (!key.empty() && key[0] == '#') return false;
+    // Private storage is never exposed as an own property (spec: private slot
+    // semantics). All of it is internally shaped: qualified slots ("#x@ptr")
+    // or brand slots ("#[[pm:ptr]]"). A bare "#x" own property can only come
+    // from an ordinary computed key (e.g. `["#x"] = 1`) and stays observable.
+    if (!key.empty() && key[0] == '#' &&
+        (key.find('@') != std::string::npos || (key.size() > 2 && key[1] == '[' && key[2] == '['))) {
+        return false;
+    }
 
     if (this->get_type() == ObjectType::Proxy) {
         // with-statement scope lookups deliberately rely on this calling the "has" trap, not getOwnPropertyDescriptor.
@@ -516,6 +577,13 @@ Value Object::get_own_property(const std::string& key) const {
         if (desc_it != descriptors_->end() && desc_it->second.is_data_descriptor()) {
             return desc_it->second.get_value();
         }
+    }
+
+    // Overflow-stored own properties (has_own_property already reports them;
+    // the array-index path above checks sparse_overflow_ too).
+    if (sparse_overflow_) {
+        auto it = sparse_overflow_->find(key);
+        if (it != sparse_overflow_->end()) return it->second;
     }
 
     return Value();
@@ -1076,6 +1144,11 @@ std::vector<std::string> Object::get_own_property_keys() const {
         // "[[...]]" names simulate spec internal slots via regular properties
         // (see box_primitive, WeakRef) -- they must never surface as observable own keys.
         if (sk.size() >= 4 && sk[0] == '[' && sk[1] == '[') continue;
+        // Private storage: qualified field slots ("#x@ptr") and brand slots
+        // ("#[[pm:ptr]]") are internal. A bare "#x" (ordinary computed-key
+        // property) stays observable.
+        if (!sk.empty() && sk[0] == '#' &&
+            (sk.find('@') != std::string::npos || (sk.size() > 2 && sk[1] == '[' && sk[2] == '['))) continue;
         keys.push_back(sk);
     }
     for (const auto& sym_key : symbol_keys) {
@@ -1087,6 +1160,21 @@ std::vector<std::string> Object::get_own_property_keys() const {
 
 std::vector<std::string> Object::get_internal_property_keys() const {
     return get_own_property_keys();
+}
+
+std::vector<std::string> Object::get_own_property_keys_unfiltered() const {
+    // Like get_own_property_keys but WITHOUT the observable-enumeration filters
+    // ("[[...]]" internal slots, qualified/brand private storage). For engine
+    // bookkeeping walks (class setup metadata propagation) only.
+    std::vector<std::string> keys;
+    for (const auto& key : property_insertion_order_) {
+        bool present = (sparse_overflow_ && sparse_overflow_->count(key) > 0) ||
+                       has_shape_slot(key) ||
+                       (descriptors_ && descriptors_->count(key) > 0);
+        if (!present) continue;
+        if (std::find(keys.begin(), keys.end(), key) == keys.end()) keys.push_back(key);
+    }
+    return keys;
 }
 
 std::vector<std::string> Object::get_enumerable_keys() const {
@@ -2064,6 +2152,12 @@ bool Object::is_extensible() const {
 
 void Object::prevent_extensions() {
     header_.flags |= 0x01;
+}
+
+void Object::reopen_extensible() {
+    // Engine-internal only (e.g. a deferred namespace filling its own exports);
+    // user-visible extensibility is one-way.
+    header_.flags &= ~uint32_t(0x01);
 }
 
 void Object::seal() {

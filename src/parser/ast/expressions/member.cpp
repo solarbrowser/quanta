@@ -122,32 +122,37 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
                 Object* expected = name_brand.is_function()
                     ? static_cast<Object*>(name_brand.as_function())
                     : name_brand.as_object();
-                if (!do_brand_check(obj, expected)) return false;
-                // Check pm_brand_slot for derived-class private methods/getters/setters
-                // regardless of require_exists -- this enforces "not accessible before super() returns".
-                // The slot is only propagated to methods of derived classes, so base class
-                // methods won't have it and will pass through without the extra check.
-                {
-                    Value pm_names_val = fn->get_property("__private_method_names__");
-                    if (pm_names_val.is_object()) {
-                        Value is_method = pm_names_val.as_object()->get_property(prop_name);
-                        if (is_method.to_boolean()) {
-                            Value pm_slot_val = fn->get_property("__pm_brand_slot__");
-                            if (pm_slot_val.is_string()) {
-                                return obj->has_private_slot(pm_slot_val.to_string());
-                            }
-                        }
+
+                // Methods/getters/setters: PrivateBrandCheck. Derived classes get a
+                // per-instance marker slot after super() (also correct under a
+                // constructor return-override, where `this` has no prototype link
+                // to the declaring class); base classes fall back to the
+                // prototype-chain check.
+                Value pm_names_val = fn->get_property("__private_method_names__");
+                if (pm_names_val.is_object() &&
+                    pm_names_val.as_object()->get_property(prop_name).to_boolean()) {
+                    Value pm_slot_val = fn->get_property("__pm_brand_slot__");
+                    if (pm_slot_val.is_string()) {
+                        return obj->has_private_slot(pm_slot_val.to_string());
                     }
+                    return do_brand_check(obj, expected);
                 }
-                if (!require_exists) return true;
-                // Fields are stored under the qualified key (see resolve_private_storage_key); fall back to the bare key for methods/getters/setters, which live on the prototype.
-                std::string qualified = resolve_private_storage_key(prop_name, obj);
-                bool found = obj->has_private_slot(qualified) || obj->has_private_slot(prop_name);
-                if (!found) {
+
+                // Fields (and members without pm metadata): presence check via the
+                // qualified key, which already encodes the declaring brand. Fields
+                // sit on the receiver itself; base-class instance methods/accessors
+                // sit on the declaring prototype, so instance brands also walk the
+                // chain. Static brands (a constructor) never walk -- a subclass
+                // constructor inheriting through it must fail the check.
+                std::string qualified = prop_name + "@" + std::to_string(reinterpret_cast<uintptr_t>(expected));
+                if (obj->has_private_slot(qualified)) return true;
+                bool static_brand = expected->is_function() &&
+                                    static_cast<Function*>(expected)->is_class_constructor();
+                if (!static_brand) {
                     Object* p = obj->get_prototype();
-                    while (p && !found) { if (p->has_private_slot(qualified) || p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
+                    while (p) { if (p->has_private_slot(qualified)) return true; p = p->get_prototype(); }
                 }
-                return found;
+                return false;
             }
         }
 
@@ -364,11 +369,32 @@ Value MemberExpression::evaluate(Context& ctx) {
                 // class's own prototype (not necessarily the closest "#name" in obj's chain).
                 std::string qualified = resolve_private_storage_key(prop_name, obj);
                 if (obj->has_private_slot(qualified)) {
-                    prop_name = qualified;
+                    // Private slot access is fully raw: it never fires Proxy traps
+                    // or exotic overrides (e.g. a deferred namespace's evaluating
+                    // [[Get]]) -- spec: private state bypasses [[Get]] entirely.
+                    PropertyDescriptor own_d;
+                    if (obj->get_private_slot_descriptor(qualified, own_d) && own_d.is_accessor_descriptor()) {
+                        if (!own_d.has_getter()) {
+                            ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                            return Value();
+                        }
+                        Function* getter_fn = dynamic_cast<Function*>(own_d.get_getter());
+                        if (getter_fn) return getter_fn->call(ctx, {}, object_value);
+                        return Value();
+                    }
+                    return obj->get_private_slot_value(qualified);
                 } else {
                     Object* owner = resolve_private_accessor_owner(prop_name);
                     if (owner) {
-                        PropertyDescriptor d = owner->get_property_descriptor(prop_name);
+                        // Methods/accessors are stored under the qualified key on
+                        // the declaring prototype/constructor (bare fallback for
+                        // paths resumed without a declaring frame).
+                        PropertyDescriptor d = owner->get_property_descriptor(qualified);
+                        if (!d.is_accessor_descriptor() && !d.has_value()) {
+                            d = owner->get_property_descriptor(prop_name);
+                        } else {
+                            prop_name = qualified;
+                        }
                         if (d.is_accessor_descriptor()) {
                             if (!d.has_getter()) {
                                 ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
@@ -385,7 +411,12 @@ Value MemberExpression::evaluate(Context& ctx) {
                     // Fallback: no frame declared this name (e.g. resumed after await/yield).
                     Object* lookup = obj;
                     while (lookup) {
-                        PropertyDescriptor d = lookup->get_property_descriptor(prop_name);
+                        PropertyDescriptor d = lookup->get_property_descriptor(qualified);
+                        if (!d.is_accessor_descriptor() && !d.has_value()) {
+                            d = lookup->get_property_descriptor(prop_name);
+                        } else {
+                            prop_name = qualified;
+                        }
                         if (d.is_accessor_descriptor()) {
                             if (!d.has_getter()) {
                                 ctx.throw_type_error("'" + prop_name + "' accessor has no getter");

@@ -455,6 +455,20 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
     function_context.set_arrow_function_context(is_arrow_);
 
+    // Arrows share the enclosing derived constructor's this-TDZ state: `this`
+    // (and a second super()) inside an arrow must throw while the creating
+    // constructor hasn't finished super() yet. Copied back after the body runs.
+    if (is_arrow_ && closure_context_) {
+        function_context.set_this_needs_super(closure_context_->this_needs_super());
+        function_context.set_super_called(closure_context_->was_super_called());
+    }
+    // Field-initializer arrows re-arm the direct-eval `arguments` ban (see
+    // ArrowFunctionExpression::evaluate); nested arrows re-mark themselves
+    // from this flag at their own creation.
+    if (is_arrow_ && this->has_property("__in_cfi__")) {
+        function_context.set_in_class_field_init(true);
+    }
+
     // Check for strict mode BEFORE setting up 'this' binding
     if (is_strict_) {
         function_context.set_strict_mode(true);
@@ -496,10 +510,13 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         function_context.set_this_binding(this_obj);
     }
 
-    // Track uninitialized this for derived constructors (for super[expr] check)
+    // Track uninitialized this for derived constructors (for super[expr] check).
+    // `extends null` is still ConstructorKind "derived": this stays uninitialized
+    // (its super() always throws TypeError, so it can never become initialized).
     {
         Value scp = get_property("__super_constructor__");
-        if (is_class_constructor_ && scp.is_function() && !has_own_property("__default_ctor__")) {
+        if (is_class_constructor_ && !has_own_property("__default_ctor__") &&
+            (scp.is_function() || has_property("__super_is_null__"))) {
             function_context.set_this_needs_super(true);
             function_context.set_super_called(false);
         }
@@ -561,7 +578,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // compiled functions read parameters from registers and reject any use of
     // `arguments`/`this`/`eval`, so the whole binding ceremony below is dead
     // weight for them (it dominated call-heavy benchmarks, e.g. fib).
-    if (VM::enabled() && !vm_incompatible_ && body_ &&
+    // Derived-class constructors always tree-walk: their `this` reads need the
+    // this-TDZ check in Identifier::evaluate, which LdaLookup bypasses.
+    if (VM::enabled() && !vm_incompatible_ && !function_context.this_needs_super() && body_ &&
         body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         if (!bytecode_chunk_) {
             bytecode_chunk_ = BytecodeCompiler::compile(body_.get(), parameter_objects_);
@@ -606,6 +625,13 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             // on its own ctx after call() returns.
             if (function_context.was_super_called()) {
                 ctx.set_super_called(true);
+                if (function_context.last_super_override()) {
+                    ctx.set_last_super_override(function_context.last_super_override());
+                }
+                if (is_arrow_ && closure_context_) {
+                    closure_context_->set_super_called(true);
+                    closure_context_->set_this_needs_super(false);
+                }
             }
 
             if (function_context.has_exception()) {
@@ -797,6 +823,13 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         // Propagate super_called flag to parent context
         if (function_context.was_super_called()) {
             ctx.set_super_called(true);
+            if (function_context.last_super_override()) {
+                ctx.set_last_super_override(function_context.last_super_override());
+            }
+            if (is_arrow_ && closure_context_) {
+                closure_context_->set_super_called(true);
+                closure_context_->set_this_needs_super(false);
+            }
         }
 
         // Outer-variable writes during body execution went straight through
@@ -805,7 +838,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
         
         if (function_context.has_return_value()) {
-            return function_context.get_return_value();
+            Value rv = function_context.get_return_value();
+            // A derived ctor's bare `return;` still resolves to the current
+            // `this` -- which super() may have swapped to an override object.
+            if (!(is_class_constructor_ && rv.is_undefined())) {
+                return rv;
+            }
         }
 
         if (function_context.has_exception()) {
@@ -834,6 +872,17 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 }
 
 Value Function::get_property(const std::string& key) const {
+    // Strict functions poison-pill their own `arguments`/`caller` properties
+    // (spec: %ThrowTypeError% accessors); sloppy functions keep returning
+    // undefined for compatibility.
+    if ((key == "arguments" || key == "caller") &&
+        is_strict_ && !is_native_ && !has_own_property(key)) {
+        if (current_context_) {
+            current_context_->throw_type_error(
+                "'caller' and 'arguments' may not be accessed on strict mode functions");
+        }
+        return Value();
+    }
     if (key == "name") {
         if (descriptors_) {
             auto it = descriptors_->find("name");
@@ -1091,6 +1140,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         ctx.set_new_target(old_new_target);
     }
 
+    ctx.set_last_super_override(nullptr);
     ctx.set_pending_construct_call(true);
     Value result = call(ctx, args, this_value);
     bool super_was_called = ctx.was_super_called();
@@ -1100,7 +1150,9 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     // Propagate any exception from the constructor body before checking super state
     if (ctx.has_exception()) return Value();
 
-    bool is_derived = !super_constructor_prop.is_undefined();
+    // `extends null` is also derived: super() can never succeed there, so a
+    // completed constructor still has an uninitialized this -> ReferenceError below.
+    bool is_derived = !super_constructor_prop.is_undefined() || has_own_property("__super_is_null__");
 
     // TypeError for explicit non-object return must come before ReferenceError for missing super (spec 13c)
     if (is_derived && !result.is_undefined() && !result.is_object() && !result.is_function()) {
@@ -1108,23 +1160,33 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
 
-    if (!result.is_object() && !result.is_function() &&
-        !super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+    if (!result.is_object() && !result.is_function() && !super_was_called && is_derived) {
         ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
         return Value();
     }
 
     // An explicit return from the constructor body wins; otherwise fall back to this_value, which the auto-super override above may have replaced.
-    Value final_result = (result.is_object() || result.is_function()) ? result : this_value;
+    bool explicit_return = result.is_object() || result.is_function();
+    Value final_result = explicit_return ? result : this_value;
+
+    Object* super_override_obj = ctx.last_super_override();
+    ctx.set_last_super_override(nullptr);
 
     // If construction resolved to an object or function other than the pre-allocated this, use that
     if ((final_result.is_object() || final_result.is_function()) && final_result.as_object() != new_object.get()) {
         Object* ret_obj = final_result.as_object();
-        // For derived classes: always set prototype to this class's prototype
-        // so `new Derived() instanceof Derived` works even when super is a built-in
-        if (is_derived && constructor_prototype.is_object()) {
+        // A super-swapped `this` (auto-super this_value replacement, or the
+        // identity recorded by call.cpp's super() handling) gets the subclass
+        // prototype so `new Derived() instanceof Derived` works even when super
+        // is a built-in that ignored new.target. An explicit `return obj` from
+        // the constructor body is returned untouched (spec: NormalCompletion of
+        // the returned object as-is).
+        bool from_super_swap = !explicit_return || ret_obj == super_override_obj;
+        if (from_super_swap && is_derived && constructor_prototype.is_object() &&
+            ret_obj->get_type() != Object::ObjectType::Proxy) {
             ret_obj->set_prototype(constructor_prototype.as_object());
-        } else if (!ret_obj->get_prototype_raw() && constructor_prototype.is_object()) {
+        }
+        if (!ret_obj->get_prototype_raw() && constructor_prototype.is_object()) {
             ret_obj->set_prototype(constructor_prototype.as_object());
         }
         // A base-class constructor may have captured a raw pointer to new_object before returning this override (e.g. `new Proxy(this, ...)`), so release rather than let the unique_ptr delete it out from under them.

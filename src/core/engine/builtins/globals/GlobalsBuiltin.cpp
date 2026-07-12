@@ -646,6 +646,15 @@ void register_global_builtins(Context& ctx) {
                     eval_ctx.set_variable_environment(var_env_base);
                     Object* this_binding = is_direct ? ctx.get_this_binding() : (engine && engine->get_global_context() ? engine->get_global_context()->get_this_binding() : ctx.get_this_binding());
                     eval_ctx.set_this_binding(this_binding);
+                    // Native call machinery temporarily overwrites "this" in the calling env;
+                    // recover the caller's real "this" from the backup (mirrors the strict path).
+                    if (is_direct && ctx.has_binding("__eval_caller_this__")) {
+                        Value caller_this_val = ctx.get_binding("__eval_caller_this__");
+                        eval_lex_env->create_binding("this", caller_this_val, true, false);
+                        Object* cto = caller_this_val.is_object() ? caller_this_val.as_object()
+                                    : caller_this_val.is_function() ? static_cast<Object*>(caller_this_val.as_function()) : nullptr;
+                        if (cto) eval_ctx.set_this_binding(cto);
+                    }
                     eval_ctx.set_strict_mode(false);
 
                     Value result = program->evaluate(eval_ctx);

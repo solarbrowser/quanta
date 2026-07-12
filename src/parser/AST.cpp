@@ -264,6 +264,13 @@ Value Identifier::evaluate(Context& ctx) {
         Value super_constructor = ctx.get_binding("__super__");
         return super_constructor;
     }
+    // Derived-ctor this-TDZ (spec 9.1.1.3.4 GetThisBinding): `this` is uninitialized
+    // until super() returns. Only user-level reads route through here -- internal
+    // engine reads use ctx.get_binding("this") directly and stay exempt.
+    if (name_ == "this" && ctx.this_needs_super()) {
+        ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+        return Value();
+    }
 
     static const std::set<std::string> cacheable_globals = {
         "console", "Math", "JSON", "Array", "Object", "String", "Number",

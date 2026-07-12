@@ -223,6 +223,28 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     // Errors during param evaluation must reject the promise, not propagate synchronously.
     const auto& param_objs = get_parameter_objects();
     bool param_named_arguments = false;
+    for (const auto& p : param_objs) {
+        if (p->get_name() && p->get_name()->get_name() == "arguments") param_named_arguments = true;
+    }
+    for (const auto& p : get_parameters()) {
+        if (p == "arguments") param_named_arguments = true;
+    }
+
+    // Created BEFORE parameter binding: default expressions may reference it
+    // (spec: unmapped arguments exists during non-simple parameter evaluation).
+    // Arrow functions inherit arguments from the enclosing scope; a parameter
+    // literally named "arguments" takes precedence over the object.
+    if (!is_arrow() && !param_named_arguments) {
+        auto arguments_obj = ObjectFactory::create_array(args.size());
+        for (size_t i = 0; i < args.size(); ++i) {
+            arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
+        }
+        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+        arguments_obj->set_type(Object::ObjectType::Arguments);
+        setup_mapped_arguments(*exec_ctx, args, arguments_obj.get());
+        exec_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+    }
+
     if (!param_objs.empty()) {
         size_t regular_count = 0;
         for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
@@ -256,7 +278,6 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
                 }
             } else {
                 std::string pname = param->get_name() ? param->get_name()->get_name() : "";
-                if (pname == "arguments") param_named_arguments = true;
                 // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
                 if (!pname.empty() && pname != "arguments" && !param->has_destructuring()) {
                     if (exec_ctx->get_lexical_environment())
@@ -296,23 +317,9 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     } else {
         const auto& params = get_parameters();
         for (size_t i = 0; i < params.size(); ++i) {
-            if (params[i] == "arguments") param_named_arguments = true;
             Value arg = i < args.size() ? args[i] : Value();
             exec_ctx->create_binding(params[i], arg);
         }
-    }
-
-    // Arrow functions inherit arguments from the enclosing scope; regular async functions get their own.
-    // Skip if a parameter was already named "arguments" (it takes precedence).
-    if (!is_arrow() && !param_named_arguments) {
-        auto arguments_obj = ObjectFactory::create_array(args.size());
-        for (size_t i = 0; i < args.size(); ++i) {
-            arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
-        }
-        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
-        arguments_obj->set_type(Object::ObjectType::Arguments);
-        setup_mapped_arguments(*exec_ctx, args, arguments_obj.get());
-        exec_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
     }
 
     // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.

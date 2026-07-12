@@ -1056,6 +1056,16 @@ static bool write_member_update_result(Context& ctx, MemberExpression* member, c
             write_obj->ordinary_set(prop_name, new_value);
         }
     } else if (write_obj) {
+        // ++obj.#x: fields live under the qualified key and are written raw --
+        // never through Proxy traps or exotic overrides (spec: private state
+        // bypasses [[Set]]).
+        if (!member->is_computed() && !prop_name.empty() && prop_name[0] == '#') {
+            std::string qualified = resolve_private_storage_key(prop_name, write_obj);
+            if (write_obj->has_private_slot(qualified)) {
+                write_obj->set_private_slot_value(qualified, new_value);
+                return true;
+            }
+        }
         write_obj->set_property(prop_name, new_value);
     }
     return true;

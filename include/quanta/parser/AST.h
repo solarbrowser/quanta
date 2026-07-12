@@ -1034,11 +1034,17 @@ private:
     std::unique_ptr<ASTNode> superclass_;
     std::unique_ptr<BlockStatement> body_;
     std::string source_text_;
+    std::string inferred_name_;
     bool is_expression_ = false;
 
 public:
     void set_is_expression(bool v) { is_expression_ = v; }
     bool is_expression() const { return is_expression_; }
+    // NamedEvaluation: an anonymous class expression's name from its binding site,
+    // set BEFORE evaluation so static initializers already see it via this.name
+    // (spec: SetFunctionName runs before static fields). Creates no name binding.
+    void set_inferred_name(const std::string& n) { inferred_name_ = n; }
+    const std::string& get_inferred_name() const { return inferred_name_; }
 
     ClassDeclaration(std::unique_ptr<Identifier> id,
                     std::unique_ptr<ASTNode> superclass,

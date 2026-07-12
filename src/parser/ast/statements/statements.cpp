@@ -441,6 +441,14 @@ Value VariableDeclaration::evaluate(Context& ctx) {
 
         Value init_value;
         if (declarator->get_init()) {
+            // NamedEvaluation: static initializers observe the class name via
+            // this.name during evaluation, so it must be inferred beforehand.
+            if (declarator->get_init()->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                auto* cd = static_cast<ClassDeclaration*>(declarator->get_init());
+                if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
+                    cd->set_inferred_name(name);
+                }
+            }
             init_value = declarator->get_init()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             if (init_value.is_function() && is_anon_func_def(declarator->get_init())) {
@@ -2132,6 +2140,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 // Suppress inner error; restore original throw completion
                                 if (ctx.has_exception()) ctx.clear_exception();
                                 ctx.throw_exception(saved_exception, true);
+                            } else if (ctx.has_exception() && ctx.has_return_value()) {
+                                // Closing on a `return` completion and return() threw:
+                                // the throw replaces the return (spec IteratorClose step 5,
+                                // innerResult abrupt wins) -- otherwise Function::call would
+                                // see the pending return value first and swallow the throw.
+                                ctx.clear_return_value();
                             }
                         };
 

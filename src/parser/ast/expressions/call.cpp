@@ -207,11 +207,9 @@ Value CallExpression::evaluate(Context& ctx) {
     if (callee_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* identifier = static_cast<Identifier*>(callee_.get());
         if (identifier->get_name() == "super") {
-            // Second super() call: this is already initialized -> ReferenceError
-            if (ctx.was_super_called()) {
-                ctx.throw_reference_error("Super constructor called twice");
-                return Value();
-            }
+            // Note: NO already-called check here -- spec order for a second super()
+            // is args evaluated, parent [[Construct]] runs again, and only then
+            // BindThisValue throws (checked below, after the parent returns).
 
             // Check for class extends null -- super() always throws TypeError
             Value super_is_null = ctx.get_binding("__super_is_null__");
@@ -233,8 +231,11 @@ Value CallExpression::evaluate(Context& ctx) {
             }
 
             if (parent_constructor.is_function()) {
+                bool super_already_called = ctx.was_super_called();
                 std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
                 if (ctx.has_exception()) return Value();
+                // `super(super())`: the inner super() just ran as an argument.
+                super_already_called = super_already_called || ctx.was_super_called();
 
                 try {
                     Function* parent_func = parent_constructor.as_function();
@@ -273,6 +274,15 @@ Value CallExpression::evaluate(Context& ctx) {
 
                     ctx.set_in_constructor_call(was_in_ctor);
                     ctx.set_new_target(old_new_target);
+
+                    // BindThisValue on an already-initialized binding: a second
+                    // super() throws here, AFTER the parent ran -- `this` keeps
+                    // its first value and field initializers don't re-run.
+                    if (super_already_called) {
+                        ctx.throw_reference_error("Super constructor called twice");
+                        return Value();
+                    }
+
                     ctx.set_super_called(true);
                     ctx.set_this_needs_super(false);
 
@@ -288,6 +298,13 @@ Value CallExpression::evaluate(Context& ctx) {
                             ctx.set_this_binding(new_this);
                             ctx.set_binding("this", result);
                             final_this_obj = new_this;
+                            // Lets Function::construct tell a super-swapped `this`
+                            // (needs the subclass prototype stomped for built-in
+                            // supers) apart from an explicit `return obj` (returned
+                            // untouched). Context-side identity only: a property
+                            // marker would be observable through Proxy traps or a
+                            // deferred module namespace's [[Get]].
+                            ctx.set_last_super_override(new_this);
                         }
                         returned_override = true;
                     }
@@ -1987,21 +2004,35 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         }
 
         Object* private_method_owner = nullptr;
-        if (!method_name.empty() && method_name[0] == '#') {
+        std::string private_qualified;
+        if (!member->is_computed() && !method_name.empty() && method_name[0] == '#') {
             if (!private_brand_check(ctx, obj, method_name)) {
                 ctx.throw_type_error("Cannot read private member " + method_name + " from an object whose class did not declare it");
                 return Value();
             }
-            std::string qualified = resolve_private_storage_key(method_name, obj);
-            if (obj->has_private_slot(qualified)) {
-                method_name = qualified;
+            private_qualified = resolve_private_storage_key(method_name, obj);
+            if (obj->has_private_slot(private_qualified)) {
+                method_name = private_qualified;
             } else {
-                // Private method: lives on the declaring class's own prototype.
+                // Private method: lives on the declaring class's own prototype,
+                // under the qualified key (bare-name fallback for older paths).
                 private_method_owner = resolve_private_accessor_owner(method_name);
             }
         }
 
-        Value method_value = private_method_owner ? private_method_owner->get_property(method_name) : obj->get_property(method_name);
+        Value method_value;
+        if (private_method_owner) {
+            method_value = private_method_owner->get_private_slot_value(private_qualified);
+            if (method_value.is_undefined()) method_value = private_method_owner->get_property(method_name);
+        } else {
+            // Resumed-async paths have no declaring frame: the qualified key
+            // (recovered by resolve_private_storage_key's prototype scan) still
+            // finds the method through the normal prototype-chain lookup.
+            if (!private_qualified.empty() && private_qualified != method_name) {
+                method_value = obj->get_property(private_qualified);
+            }
+            if (method_value.is_undefined()) method_value = obj->get_property(method_name);
+        }
         if (ctx.has_exception()) return Value();
 
         std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
