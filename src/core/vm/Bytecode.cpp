@@ -28,6 +28,7 @@ const OpInfo& op_info(Op op) {
     static const OpInfo table[] = {
         {"LdaConst", 2, 'k'}, {"LdaZero", 0, '-'}, {"LdaSmi", 1, 'i'},
         {"LdaUndefined", 0, '-'}, {"LdaNull", 0, '-'}, {"LdaTrue", 0, '-'}, {"LdaFalse", 0, '-'},
+        {"LdaThis", 0, '-'},
         {"Ldar", 1, 'r'}, {"Star", 1, 'r'}, {"Mov", 2, 'r'},
         {"LdaTdz", 0, '-'}, {"LdarChecked", 3, 'l'}, {"StarChecked", 3, 'l'},
         {"Add", 1, 'r'}, {"Sub", 1, 'r'}, {"Mul", 1, 'r'}, {"Div", 1, 'r'},

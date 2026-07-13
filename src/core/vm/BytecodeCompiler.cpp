@@ -2946,6 +2946,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
         case ASTNode::Type::IDENTIFIER: {
             const std::string& name = static_cast<const Identifier*>(node)->get_name();
+            if (name == "this") {
+                // this_needs_super never enters the VM, so no TDZ check here.
+                emit(Op::LdaThis);
+                return true;
+            }
             if (is_local(name)) {
                 emit_read_local(name);
                 return !failed_;

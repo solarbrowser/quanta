@@ -428,6 +428,11 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
         }
     }
 
+    // Op::LdaThis cache: `this` is immutable for the whole frame (derived
+    // constructors never enter the VM), so resolve the binding at most once.
+    bool this_resolved = false;
+    Value this_value;
+
     const uint8_t* code = chunk.code.data();
     const Value* constants = chunk.constants.data();
     uint32_t pc = 0;
@@ -501,6 +506,23 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 acc = Value(false);
                 break;
 
+            case Op::LdaThis: {
+                if (!this_resolved) {
+                    // Same resolution as LdaLookup 'this': the binding is
+                    // created by Function::call (arrows find the outer one
+                    // through the chain).
+                    Environment* env = ctx.find_binding_env("this");
+                    if (env) {
+                        this_value = env->get_binding_direct("this", &ctx);
+                    } else if (ctx.has_binding("this")) {
+                        this_value = ctx.get_binding("this");
+                    }
+                    CHECK_EXC();
+                    this_resolved = true;
+                }
+                acc = this_value;
+                break;
+            }
             case Op::Ldar:
                 acc = regs[code[pc]];
                 pc += 1;

@@ -30,6 +30,7 @@ enum class Op : uint8_t {
     LdaTrue,
     LdaFalse,
 
+    LdaThis,      // acc = this (resolved once per frame, cached)
     Ldar,         // r
     Star,         // r
     Mov,          // r r (dst, src)

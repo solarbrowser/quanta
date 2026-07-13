@@ -56,6 +56,7 @@ private:
     static const int max_execution_depth_ = 500;
     
     Object* global_object_;
+    Context* builtins_root_ = nullptr;  // the global context owning the builtin maps (always outlives children)
     std::unordered_map<std::string, Object*> built_in_objects_;
     std::unordered_map<std::string, Function*> built_in_functions_;
     

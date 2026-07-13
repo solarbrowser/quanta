@@ -114,10 +114,12 @@ Context::Context(Engine* engine, Context* parent, Type type)
 
 
 
-    if (parent) {
-        built_in_objects_ = parent->built_in_objects_;
-        built_in_functions_ = parent->built_in_functions_;
-    }
+    // Builtins are registered once on the global context; children resolve
+    // through that root instead of copying both maps on every call (the
+    // copies dominated call-heavy profiles). The root is the engine's
+    // global context, which outlives every child -- a parent pointer would
+    // dangle for contexts that outlive their creator (generators/fibers).
+    builtins_root_ = parent ? (parent->builtins_root_ ? parent->builtins_root_ : parent) : nullptr;
 }
 
 Context::~Context() {
@@ -571,12 +573,22 @@ void Context::register_built_in_function(const std::string& name, Function* func
 
 Object* Context::get_built_in_object(const std::string& name) const {
     auto it = built_in_objects_.find(name);
-    return (it != built_in_objects_.end()) ? it->second : nullptr;
+    if (it != built_in_objects_.end()) return it->second;
+    if (builtins_root_) {
+        auto rit = builtins_root_->built_in_objects_.find(name);
+        if (rit != builtins_root_->built_in_objects_.end()) return rit->second;
+    }
+    return nullptr;
 }
 
 Function* Context::get_built_in_function(const std::string& name) const {
     auto it = built_in_functions_.find(name);
-    return (it != built_in_functions_.end()) ? it->second : nullptr;
+    if (it != built_in_functions_.end()) return it->second;
+    if (builtins_root_) {
+        auto rit = builtins_root_->built_in_functions_.find(name);
+        if (rit != builtins_root_->built_in_functions_.end()) return rit->second;
+    }
+    return nullptr;
 }
 
 std::string Context::get_stack_trace() const {
