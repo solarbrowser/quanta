@@ -40,6 +40,7 @@ private:
 
     bool compile_for_each_loop(const ASTNode* left, const ASTNode* right,
                                const ASTNode* body, bool is_for_in);
+    bool compile_logical_assignment(const class AssignmentExpression* expr);
 
     bool is_local(const std::string& name) const;
     int lookup_local(const std::string& name) const;

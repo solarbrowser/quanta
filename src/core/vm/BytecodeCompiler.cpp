@@ -1322,6 +1322,19 @@ bool contains_return_statement(const ASTNode* node) {
     }
 }
 
+// NamedEvaluation candidates: AssignmentExpression::evaluate infers the
+// function/class name from the LHS identifier, so those assignments stay
+// on the tree-walker. (Named function expressions delegate too -- the
+// runtime empty-name check can't run here, so be conservative.)
+bool is_named_evaluation_rhs(const ASTNode* node) {
+    if (!node) return false;
+    auto t = node->get_type();
+    return t == ASTNode::Type::FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::CLASS_DECLARATION;
+}
+
 // True if `node`'s object/callee spine contains an optional-chaining link
 // (a?.b, a?.b.c(), ...).
 bool chain_contains_optional(const ASTNode* node) {
@@ -1331,8 +1344,10 @@ bool chain_contains_optional(const ASTNode* node) {
             return true;
         case ASTNode::Type::MEMBER_EXPRESSION:
             return chain_contains_optional(static_cast<const MemberExpression*>(node)->get_object());
-        case ASTNode::Type::CALL_EXPRESSION:
-            return chain_contains_optional(static_cast<const CallExpression*>(node)->get_callee());
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* call = static_cast<const CallExpression*>(node);
+            return call->is_optional() || chain_contains_optional(call->get_callee());
+        }
         default:
             return false;
     }
@@ -1469,38 +1484,76 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         compiler.chunk_->env_locals.push_back({rest_name, false, false});
     }
 
-    // Defaults and destructuring resolve once at entry, before the body --
-    // by now every parameter's raw argument value is already bound (plain
-    // parameters need nothing further).
+    // Parameter lists with initializers follow spec FDI ordering (see
+    // BytecodeChunk::env_params_tdz): params seed uninitialized, and each
+    // one initializes left to right from its register-held raw argument.
+    // A default whose value closes over the environment would capture the
+    // body's (deferred) bindings through the flat function env -- the spec
+    // gives parameter expressions their own scope, so those stay on the
+    // tree-walker.
+    bool params_tdz = false;
     for (const auto& p : params) {
-        if (p->is_rest()) {
-            compiler.emit(Op::CreateRestArray);
-            compiler.emit_u8(static_cast<uint8_t>(fixed_param_count));
+        if (p->is_rest()) continue;
+        if (p->has_default() || p->has_destructuring()) params_tdz = true;
+    }
+    if (params_tdz) {
+        for (const auto& p : params) {
+            if ((p->has_default() && contains_closure(p->get_default_value())) ||
+                (p->has_destructuring() && contains_closure(p->get_destructuring_pattern()))) {
+                return nullptr;
+            }
+        }
+    }
+
+    // Defaults and destructuring resolve once at entry, before the body --
+    // in TDZ mode the raw values come from registers (the env binding is
+    // still uninitialized); otherwise run() already bound plain parameters.
+    {
+        uint8_t param_index = 0;
+        for (const auto& p : params) {
+            if (p->is_rest()) continue;  // handled below, after BindEnvLocals
+            if (!params_tdz && !p->has_default() && !p->has_destructuring()) {
+                param_index++;
+                continue;
+            }
+            const std::string& pname = p->get_name()->get_name();
+            if (params_tdz) {
+                compiler.emit(Op::Ldar);
+                compiler.emit_u8(param_index);
+            } else {
+                compiler.emit_read_local(pname);
+            }
+            if (p->has_default()) {
+                size_t skip = compiler.emit_jump(Op::JumpIfNotUndefined);
+                if (!compiler.compile_expression(p->get_default_value())) return nullptr;
+                if (!compiler.patch_jump(skip)) return nullptr;
+            }
             if (p->has_destructuring()) {
                 auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
                 compiler.chunk_->destructuring_patterns.push_back({destr, true, false});
                 compiler.emit(Op::DestructureBind);
                 compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->destructuring_patterns.size() - 1));
+            } else if (params_tdz) {
+                compiler.emit(Op::StaEnvInit);
+                compiler.emit_u16(compiler.add_name(pname));
             } else {
-                compiler.emit_write_local(rest_name, false);
+                compiler.emit_write_local(pname, false);
             }
-            continue;
+            param_index++;
         }
-        if (!p->has_default() && !p->has_destructuring()) continue;
-        const std::string& pname = p->get_name()->get_name();
-        compiler.emit_read_local(pname);
-        if (p->has_default()) {
-            size_t skip = compiler.emit_jump(Op::JumpIfNotUndefined);
-            if (!compiler.compile_expression(p->get_default_value())) return nullptr;
-            if (!compiler.patch_jump(skip)) return nullptr;
-        }
+    }
+    if (params_tdz) compiler.emit(Op::BindEnvLocals);
+    if (has_rest) {
+        const auto& p = params.back();
+        compiler.emit(Op::CreateRestArray);
+        compiler.emit_u8(static_cast<uint8_t>(fixed_param_count));
         if (p->has_destructuring()) {
             auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
             compiler.chunk_->destructuring_patterns.push_back({destr, true, false});
             compiler.emit(Op::DestructureBind);
             compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->destructuring_patterns.size() - 1));
         } else {
-            compiler.emit_write_local(pname, false);
+            compiler.emit_write_local(rest_name, false);
         }
     }
 
@@ -1532,6 +1585,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->register_count = static_cast<uint16_t>(compiler.temp_watermark_);
     compiler.chunk_->parameter_count = static_cast<uint8_t>(param_names.size());
     compiler.chunk_->env_mode = env_mode;
+    compiler.chunk_->env_params_tdz = params_tdz;
     compiler.chunk_->needs_arguments = needs_arguments;
     if (env_mode) compiler.chunk_->env_params = param_names;
     return std::move(compiler.chunk_);
@@ -1785,6 +1839,84 @@ bool BytecodeCompiler::emit_treewalker_delegate(const ASTNode* node) {
     chunk_->closures.push_back(node);
     emit(Op::CreateClosure);
     emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+    return !failed_;
+}
+
+// &&= / ||= / ??=. The RHS (and the write) only runs when the old value
+// fails the operator's test; the skip jump leaves the old value in the
+// accumulator as the expression result, matching the tree-walker.
+bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* expr) {
+    using AsOp = AssignmentExpression::Operator;
+    Op skip_op = expr->get_operator() == AsOp::LOGICAL_AND_ASSIGN ? Op::JumpIfFalse
+               : expr->get_operator() == AsOp::LOGICAL_OR_ASSIGN  ? Op::JumpIfTrue
+               : Op::JumpIfNotNullish;
+
+    if (expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER) {
+        const std::string& name = static_cast<const Identifier*>(expr->get_left())->get_name();
+        if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
+        if (is_named_evaluation_rhs(expr->get_right())) {
+            return emit_treewalker_delegate(expr);
+        }
+        if (is_local(name)) {
+            emit_read_local(name);
+            size_t skip = emit_jump(skip_op);
+            if (!compile_expression(expr->get_right())) return false;
+            emit_write_local(name, /*is_declaration=*/false);
+            return patch_jump(skip) && !failed_;
+        }
+        emit(Op::LdaLookup);
+        emit_u16(add_name(name));
+        size_t skip = emit_jump(skip_op);
+        if (!compile_expression(expr->get_right())) return false;
+        emit(Op::StaLookup);
+        emit_u16(add_name(name));
+        return patch_jump(skip) && !failed_;
+    }
+
+    if (expr->get_left()->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return false;
+    const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
+    if (!member_is_supported(mem)) return emit_treewalker_delegate(expr);
+    if (chain_contains_optional(mem)) return false;
+
+    if (!compile_expression(mem->get_object())) return false;
+    int obj_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(obj_reg));
+
+    if (!mem->is_computed()) {
+        uint16_t name_idx = add_name(
+            static_cast<const Identifier*>(mem->get_property())->get_name());
+        emit(Op::GetNamed);
+        emit_u8(static_cast<uint8_t>(obj_reg));
+        emit_u16(name_idx);
+        emit_u16(alloc_feedback_slot());
+        size_t skip = emit_jump(skip_op);
+        if (!compile_expression(expr->get_right())) return false;
+        emit(Op::SetNamed);
+        emit_u8(static_cast<uint8_t>(obj_reg));
+        emit_u16(name_idx);
+        emit_u16(alloc_feedback_slot());
+        if (!patch_jump(skip)) return false;
+        free_temp(obj_reg);
+        return !failed_;
+    }
+
+    if (!compile_expression(mem->get_property())) return false;
+    int key_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(key_reg));
+    emit(Op::GetKeyed);  // key still in the accumulator after Star
+    emit_u8(static_cast<uint8_t>(obj_reg));
+    size_t skip = emit_jump(skip_op);
+    if (!compile_expression(expr->get_right())) return false;
+    emit(Op::SetKeyed);
+    emit_u8(static_cast<uint8_t>(obj_reg));
+    emit_u8(static_cast<uint8_t>(key_reg));
+    if (!patch_jump(skip)) return false;
+    free_temp(key_reg);
+    free_temp(obj_reg);
     return !failed_;
 }
 
@@ -2371,7 +2503,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
     // re-enters here with chain_shortcircuit_jumps_ already set).
     if (!chain_shortcircuit_jumps_ &&
         (node->get_type() == ASTNode::Type::MEMBER_EXPRESSION ||
-         node->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) &&
+         node->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION ||
+         node->get_type() == ASTNode::Type::CALL_EXPRESSION) &&
         chain_contains_optional(node)) {
         std::vector<size_t> local_jumps;
         chain_shortcircuit_jumps_ = &local_jumps;
@@ -2650,13 +2783,95 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 case UnOp::POST_INCREMENT:
                 case UnOp::POST_DECREMENT: {
                     const ASTNode* operand = expr->get_operand();
-                    if (operand->get_type() != ASTNode::Type::IDENTIFIER) return false;
-                    const std::string& name = static_cast<const Identifier*>(operand)->get_name();
-                    if (!is_local(name)) return false;
                     bool is_inc = expr->get_operator() == UnOp::PRE_INCREMENT ||
                                   expr->get_operator() == UnOp::POST_INCREMENT;
                     bool is_post = expr->get_operator() == UnOp::POST_INCREMENT ||
                                    expr->get_operator() == UnOp::POST_DECREMENT;
+
+                    if (operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                        const auto* mem = static_cast<const MemberExpression*>(operand);
+                        if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
+                        if (chain_contains_optional(mem)) return false;
+
+                        if (!compile_expression(mem->get_object())) return false;
+                        int obj_reg = alloc_temp();
+                        if (failed_) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+
+                        uint16_t name_idx = 0;
+                        int key_reg = -1;
+                        if (!mem->is_computed()) {
+                            name_idx = add_name(
+                                static_cast<const Identifier*>(mem->get_property())->get_name());
+                            emit(Op::GetNamed);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                            emit_u16(name_idx);
+                            emit_u16(alloc_feedback_slot());
+                        } else {
+                            if (!compile_expression(mem->get_property())) return false;
+                            key_reg = alloc_temp();
+                            if (failed_) return false;
+                            emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(key_reg));
+                            emit(Op::GetKeyed);  // key still in the accumulator
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                        }
+
+                        int old_temp = -1;
+                        if (is_post) {
+                            emit(Op::ToNumeric);
+                            old_temp = alloc_temp();
+                            if (failed_) return false;
+                            emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(old_temp));
+                        }
+                        emit(is_inc ? Op::Inc : Op::Dec);
+                        if (!mem->is_computed()) {
+                            emit(Op::SetNamed);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                            emit_u16(name_idx);
+                            emit_u16(alloc_feedback_slot());
+                        } else {
+                            emit(Op::SetKeyed);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                            emit_u8(static_cast<uint8_t>(key_reg));
+                        }
+                        if (is_post) {
+                            emit(Op::Ldar);
+                            emit_u8(static_cast<uint8_t>(old_temp));
+                            free_temp(old_temp);
+                        }
+                        if (key_reg >= 0) free_temp(key_reg);
+                        free_temp(obj_reg);
+                        return !failed_;
+                    }
+
+                    if (operand->get_type() != ASTNode::Type::IDENTIFIER) return false;
+                    const std::string& name = static_cast<const Identifier*>(operand)->get_name();
+                    if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
+                    if (!is_local(name)) {
+                        emit(Op::LdaLookup);
+                        emit_u16(add_name(name));
+                        if (is_post) {
+                            emit(Op::ToNumeric);
+                            int temp = alloc_temp();
+                            if (failed_) return false;
+                            emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(temp));
+                            emit(is_inc ? Op::Inc : Op::Dec);
+                            emit(Op::StaLookup);
+                            emit_u16(add_name(name));
+                            emit(Op::Ldar);
+                            emit_u8(static_cast<uint8_t>(temp));
+                            free_temp(temp);
+                        } else {
+                            emit(is_inc ? Op::Inc : Op::Dec);
+                            emit(Op::StaLookup);
+                            emit_u16(add_name(name));
+                        }
+                        return !failed_;
+                    }
                     emit_read_local(name);
                     if (is_post) {
                         // Postfix result is the OLD value (as a numeric):
@@ -2677,14 +2892,56 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     }
                     return !failed_;
                 }
+                case UnOp::DELETE: {
+                    const ASTNode* operand = expr->get_operand();
+                    if (operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                        const auto* mem = static_cast<const MemberExpression*>(operand);
+                        // super/private forms (ReferenceError / brand ceremony)
+                        // stay on the tree-walker.
+                        if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
+                        if (chain_contains_optional(mem)) return false;
+                        if (!compile_expression(mem->get_object())) return false;
+                        int obj_reg = alloc_temp();
+                        if (failed_) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        if (!mem->is_computed()) {
+                            emit(Op::DeleteNamed);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                            emit_u16(add_name(
+                                static_cast<const Identifier*>(mem->get_property())->get_name()));
+                        } else {
+                            if (!compile_expression(mem->get_property())) return false;
+                            emit(Op::DeleteKeyed);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                        }
+                        free_temp(obj_reg);
+                        return !failed_;
+                    }
+                    // Identifier deletes (sloppy binding removal, strict
+                    // SyntaxError) bail; any other operand is `true` without
+                    // evaluation, same as the tree-walker.
+                    if (operand->get_type() == ASTNode::Type::IDENTIFIER) return false;
+                    emit(Op::LdaTrue);
+                    return true;
+                }
                 default:
-                    return false;  // delete: V2+
+                    return false;
             }
         }
 
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* expr = static_cast<const AssignmentExpression*>(node);
             using AsOp = AssignmentExpression::Operator;
+
+            switch (expr->get_operator()) {
+                case AsOp::LOGICAL_AND_ASSIGN:
+                case AsOp::LOGICAL_OR_ASSIGN:
+                case AsOp::NULLISH_ASSIGN:
+                    return compile_logical_assignment(expr);
+                default:
+                    break;
+            }
 
             Op vm_op;
             bool compound = true;
@@ -2702,12 +2959,39 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 case AsOp::RIGHT_SHIFT_ASSIGN: vm_op = Op::Sar; break;
                 case AsOp::UNSIGNED_RIGHT_SHIFT_ASSIGN: vm_op = Op::Shr; break;
                 default:
-                    return false;  // &&= / ||= / ??=: V1+
+                    return false;  // destructuring assignment operators, etc.
             }
 
             if (expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER) {
                 const std::string& name = static_cast<const Identifier*>(expr->get_left())->get_name();
-                if (!is_local(name)) return false;
+                if (!is_local(name)) {
+                    // Outer/global write via chain lookup.
+                    if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
+                    if (!compound && is_named_evaluation_rhs(expr->get_right())) {
+                        return emit_treewalker_delegate(node);
+                    }
+                    if (!compound) {
+                        if (!compile_expression(expr->get_right())) return false;
+                        emit(Op::StaLookup);
+                        emit_u16(add_name(name));
+                        return !failed_;
+                    }
+                    // Spec order: the old value is read (and an unresolvable
+                    // reference throws) BEFORE the rhs runs.
+                    emit(Op::LdaLookup);
+                    emit_u16(add_name(name));
+                    int temp = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(temp));
+                    if (!compile_expression(expr->get_right())) return false;
+                    emit(vm_op);
+                    emit_u8(static_cast<uint8_t>(temp));
+                    free_temp(temp);
+                    emit(Op::StaLookup);
+                    emit_u16(add_name(name));
+                    return !failed_;
+                }
 
                 if (!compound) {
                     if (!compile_expression(expr->get_right())) return false;
@@ -2792,7 +3076,13 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* call = static_cast<const CallExpression*>(node);
-            if (call->is_optional() || call->is_tagged_template()) return false;
+            if (call->is_tagged_template()) return false;
+            // Optional forms need the chain wrapper's short-circuit collector;
+            // without it (non-expression contexts) bail like before.
+            if ((call->is_optional() || chain_contains_optional(call)) &&
+                !chain_shortcircuit_jumps_) {
+                return false;
+            }
             const ASTNode* callee = call->get_callee();
             const auto& call_args = call->get_arguments();
             if (call_args.size() > 200) return false;
@@ -2802,32 +3092,70 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
             // obj.method(...): the receiver must be `obj`, not undefined --
             // needs CallResolved, not a plain Call of the loaded function value.
-            if (callee->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
-                const auto* mem = static_cast<const MemberExpression*>(callee);
-                if (mem->is_computed()) return false;
-                // super.method(...) / obj.#method(...) / this.#method(...): delegate
-                // the whole call to the tree-walker instead of bailing the function.
-                if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
-                if (chain_contains_optional(mem)) return false;  // `a?.b.c()`: call short-circuiting not implemented
-                const std::string& method_name =
-                    static_cast<const Identifier*>(mem->get_property())->get_name();
+            if (callee->get_type() == ASTNode::Type::MEMBER_EXPRESSION ||
+                callee->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
+                const ASTNode* mem_obj;
+                const ASTNode* mem_prop;
+                bool mem_computed;
+                bool mem_optional = callee->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION;
+                if (!mem_optional) {
+                    const auto* mem = static_cast<const MemberExpression*>(callee);
+                    // super.method(...) / obj.#method(...) / this.#method(...): delegate
+                    // the whole call to the tree-walker instead of bailing the function.
+                    if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
+                    mem_obj = mem->get_object();
+                    mem_prop = mem->get_property();
+                    mem_computed = mem->is_computed();
+                } else {
+                    const auto* opt = static_cast<const OptionalChainingExpression*>(callee);
+                    if (opt->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+                        static_cast<const Identifier*>(opt->get_object())->get_name() == "super") {
+                        return false;
+                    }
+                    if (!opt->is_computed()) {
+                        if (opt->get_property()->get_type() != ASTNode::Type::IDENTIFIER) return false;
+                        const std::string& pname =
+                            static_cast<const Identifier*>(opt->get_property())->get_name();
+                        if (!pname.empty() && pname[0] == '#') return emit_treewalker_delegate(node);
+                    }
+                    mem_obj = opt->get_object();
+                    mem_prop = opt->get_property();
+                    mem_computed = opt->is_computed();
+                }
 
-                if (!compile_expression(mem->get_object())) return false;
+                if (!compile_expression(mem_obj)) return false;
                 int obj_reg = alloc_temp();
                 if (failed_) return false;
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(obj_reg));
+                if (mem_optional) {
+                    // a?.b(...): receiver still in the accumulator after Star.
+                    chain_shortcircuit_jumps_->push_back(emit_jump(Op::JumpIfNullish));
+                }
 
                 // Resolve the method before compiling arguments (spec order):
                 // this throws on a null/undefined receiver, args must not run first.
-                emit(Op::GetNamed);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u16(add_name(method_name));
-                emit_u16(alloc_feedback_slot());
+                std::string method_name;
+                if (!mem_computed) {
+                    method_name = static_cast<const Identifier*>(mem_prop)->get_name();
+                    emit(Op::GetNamed);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    emit_u16(add_name(method_name));
+                    emit_u16(alloc_feedback_slot());
+                } else {
+                    method_name = "<computed>";  // CallResolved diagnostics only
+                    if (!compile_expression(mem_prop)) return false;
+                    emit(Op::GetKeyed);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                }
                 int func_reg = alloc_temp();
                 if (failed_) return false;
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(func_reg));
+                if (call->is_optional()) {
+                    // a.b?.(...): the resolved method is still in the accumulator.
+                    chain_shortcircuit_jumps_->push_back(emit_jump(Op::JumpIfNullish));
+                }
 
                 int args_start = next_register_;
                 for (const auto& arg : call_args) {
@@ -2865,6 +3193,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             if (failed_) return false;
             emit(Op::Star);
             emit_u8(static_cast<uint8_t>(callee_reg));
+            if (call->is_optional()) {
+                // f?.(...): callee still in the accumulator after Star.
+                chain_shortcircuit_jumps_->push_back(emit_jump(Op::JumpIfNullish));
+            }
 
             // Arguments occupy consecutive temps: each argument expression
             // balances its own temps, so alloc_temp stays contiguous here.

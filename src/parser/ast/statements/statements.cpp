@@ -687,12 +687,15 @@ Value BlockStatement::evaluate(Context& ctx) {
             auto* vd = static_cast<VariableDeclaration*>(stmt.get());
             if (vd->get_kind() == VariableDeclarator::Kind::LET ||
                     vd->get_kind() == VariableDeclarator::Kind::CONST) {
+                bool is_const_decl = vd->get_kind() == VariableDeclarator::Kind::CONST;
                 for (const auto& decl : vd->get_declarations()) {
                     if (decl->get_id() && !decl->get_id()->get_name().empty()) {
                         const std::string& bname = decl->get_id()->get_name();
-                        block_env_ptr->create_uninitialized_binding(bname);
+                        // Immutability must be set here: initialize_binding
+                        // fills the value without touching the mutable flag.
+                        block_env_ptr->create_uninitialized_binding(bname, !is_const_decl);
                         block_env_ptr->mark_lexical_declaration(bname);
-                        if (vd->get_kind() == VariableDeclarator::Kind::CONST) {
+                        if (is_const_decl) {
                             block_env_ptr->mark_const_binding(bname);
                         }
                     }

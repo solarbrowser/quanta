@@ -54,9 +54,13 @@ enum class Op : uint8_t {
 
     LdaLookup,    // n -- chain walk (globals/closures, non-env_mode)
     LdaLookupTypeof, // n -- like LdaLookup, but an unresolved name yields undefined instead of throwing
+    StaLookup,    // n -- chain-walk write: TDZ/const checks, sloppy-mode global fallback
     LdaEnv,       // n -- env_mode chain walk
     StaEnv,       // n
     StaEnvInit,   // n -- current environment only, no chain walk
+
+    BindEnvLocals,  // create env_locals bindings (deferred past parameter
+                    // resolution when env_params_tdz -- see BytecodeChunk)
 
     EnterLoopEnv,   // k -- push a per-iteration Environment
     AdvanceLoopEnv, // k -- fresh sibling; copy_forward names carried over
@@ -87,6 +91,8 @@ enum class Op : uint8_t {
     SetNamed,     // r_obj n fb
     GetKeyed,     // r_obj
     SetKeyed,     // r_obj r_key
+    DeleteNamed,  // r_obj n -- acc = delete r_obj.name
+    DeleteKeyed,  // r_obj -- key in acc; acc = delete r_obj[key]
 
     CreateObject, // n
     CreateArray,  // n
@@ -132,6 +138,11 @@ struct BytecodeChunk {
     // env_mode: every local lives in ctx.get_lexical_environment() instead of
     // a register. env_params/env_locals seed function entry, via VM::run.
     bool env_mode = false;
+    // Parameter lists with initializers get spec FunctionDeclarationInstantiation
+    // ordering: params seeded uninitialized (TDZ), initialized left-to-right by
+    // bytecode, and env_locals bound only afterwards (Op::BindEnvLocals), so a
+    // default expression can't see a later parameter or a body-level binding.
+    bool env_params_tdz = false;
     std::vector<std::string> env_params;
     struct EnvLocal { std::string name; bool is_lexical; bool is_const; };
     std::vector<EnvLocal> env_locals;

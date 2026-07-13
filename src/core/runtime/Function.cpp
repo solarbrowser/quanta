@@ -592,6 +592,16 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     if (VM::enabled() && !vm_incompatible_ && !function_context.this_needs_super() && body_ &&
         body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         if (!bytecode_chunk_) {
+            // A `with` environment in the captured scope chain makes write-
+            // reference resolution order observable: the tree-walker resolves
+            // (and SetMutableBinding HasProperty-checks) the target BEFORE the
+            // RHS runs, while Op::StaLookup resolves at write time. The chain
+            // is fixed at closure creation, so one check decides for good.
+            for (Environment* e = function_context.get_lexical_environment(); e; e = e->get_outer()) {
+                if (e->is_with_environment()) { vm_incompatible_ = true; break; }
+            }
+        }
+        if (!bytecode_chunk_ && !vm_incompatible_) {
             bytecode_chunk_ = BytecodeCompiler::compile(body_.get(), parameter_objects_);
             if (bytecode_chunk_) {
                 // The chunk's constants (new, unmarked cells) are only reachable

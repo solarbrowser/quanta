@@ -244,13 +244,23 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 
     if (chunk.env_mode) {
         Environment* env = ctx.get_lexical_environment();
-        for (size_t i = 0; i < chunk.env_params.size(); i++) {
-            Value v = i < args.size() ? args[i] : Value();
-            env->create_binding(chunk.env_params[i], v, true);
-        }
-        for (const auto& loc : chunk.env_locals) {
-            if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
-            else env->create_binding(loc.name, Value(), true);
+        if (chunk.env_params_tdz) {
+            // Spec FDI ordering: params start uninitialized (their raw values
+            // sit in registers), the entry bytecode initializes each one left
+            // to right, and Op::BindEnvLocals creates the body's bindings
+            // only after the whole parameter list resolved.
+            for (const auto& p : chunk.env_params) {
+                env->create_uninitialized_binding(p, true);
+            }
+        } else {
+            for (size_t i = 0; i < chunk.env_params.size(); i++) {
+                Value v = i < args.size() ? args[i] : Value();
+                env->create_binding(chunk.env_params[i], v, true);
+            }
+            for (const auto& loc : chunk.env_locals) {
+                if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
+                else env->create_binding(loc.name, Value(), true);
+            }
         }
     }
 
@@ -573,6 +583,51 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
+            case Op::StaLookup: {
+                // Mirrors AssignmentExpression's identifier PutValue. `with` and
+                // direct eval bail out of the VM, so resolving the reference at
+                // write time matches the tree-walker's captured-env behavior.
+                const std::string& name = chunk.names[read_u16(code, pc)];
+                pc += 2;
+                if (ctx.is_in_tdz(name)) {
+                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    CHECK_EXC();
+                    break;
+                }
+                Environment* env = ctx.find_binding_env(name);
+                CHECK_EXC();
+                if (!env) {
+                    if (ctx.is_strict_mode()) {
+                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        CHECK_EXC();
+                        break;
+                    }
+                    // Sloppy PutValue on an unresolvable reference: global object.
+                    Object* global = ctx.get_global_object();
+                    if (global) global->set_property(name, acc);
+                    break;
+                }
+                if (env->get_type() == Environment::Type::Object && env->get_binding_object()) {
+                    Object* bobj = env->get_binding_object();
+                    if (!bobj->has_own_property(name) && ctx.is_strict_mode()) {
+                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        CHECK_EXC();
+                        break;
+                    }
+                    bool ok = bobj->set_property(name, acc);
+                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                    }
+                } else {
+                    bool ok = env->set_binding(name, acc);
+                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                    }
+                }
+                CHECK_EXC();
+                break;
+            }
+
             case Op::LdaEnv: {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
@@ -613,6 +668,15 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
                 ctx.get_lexical_environment()->initialize_binding(name, acc);  // current environment, no chain walk
+                break;
+            }
+
+            case Op::BindEnvLocals: {
+                Environment* env = ctx.get_lexical_environment();
+                for (const auto& loc : chunk.env_locals) {
+                    if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
+                    else env->create_binding(loc.name, Value(), true);
+                }
                 break;
             }
 
@@ -886,6 +950,55 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
+            case Op::DeleteNamed:
+            case Op::DeleteKeyed: {
+                uint8_t obj_reg = code[pc];
+                std::string property_name;
+                if (op == Op::DeleteNamed) {
+                    property_name = chunk.names[read_u16(code, pc + 1)];
+                    pc += 3;
+                } else {
+                    pc += 1;
+                }
+                const Value& recv = regs[obj_reg];
+                Object* obj = recv.is_object() ? recv.as_object()
+                            : recv.is_function() ? static_cast<Object*>(recv.as_function())
+                            : nullptr;
+                if (!obj) {
+                    // null/undefined: ToObject throws; other primitives wrap into a
+                    // temporary whose delete trivially succeeds.
+                    if (recv.is_null() || recv.is_undefined()) {
+                        ctx.throw_type_error("Cannot convert undefined or null to object");
+                        CHECK_EXC();
+                        break;
+                    }
+                    if (op == Op::DeleteKeyed) {
+                        (void)acc.to_property_key();  // ToPropertyKey may still throw
+                        CHECK_EXC();
+                    }
+                    acc = Value(true);
+                    break;
+                }
+                if (op == Op::DeleteKeyed) {
+                    property_name = acc.to_property_key();
+                    CHECK_EXC();
+                }
+                bool deleted;
+                if (obj->get_type() == Object::ObjectType::Proxy) {
+                    deleted = static_cast<Proxy*>(obj)->delete_trap(Value(property_name));
+                } else {
+                    deleted = obj->delete_property(property_name);
+                }
+                CHECK_EXC();
+                if (!deleted && ctx.is_strict_mode()) {
+                    ctx.throw_type_error("Cannot delete property '" + property_name + "'");
+                    CHECK_EXC();
+                    break;
+                }
+                acc = Value(deleted);
+                break;
+            }
+
             case Op::CreateObject: {
                 pc += 2;  // hint currently informational only (see BytecodeCompiler)
                 Object* obj = ObjectFactory::create_object().release();
@@ -969,6 +1082,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 Value run_suspendable(const ASTNode* body, Context& ctx, bool& used_vm) {
     used_vm = false;
     if (!enabled() || !body) return Value();
+    // Same `with`-chain restriction as Function::call's compile decision.
+    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        if (e->is_with_environment()) return Value();
+    }
     static const std::vector<std::unique_ptr<Parameter>> no_params;
     auto chunk = BytecodeCompiler::compile(body, no_params, /*suspendable=*/true);
     if (!chunk) return Value();
