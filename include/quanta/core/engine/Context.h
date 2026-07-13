@@ -77,6 +77,7 @@ private:
     bool super_called_;
     bool this_needs_super_;  // derived class ctor: accessing 'this' before super() throws
     Object* last_super_override_ = nullptr;  // comparison-only, see last_super_override()
+    Environment* owned_env_ = nullptr;  // see set_owned_env()
     Value new_target_;
     bool original_this_was_nullish_;
     bool original_this_was_primitive_; // set when native call had a non-null/undefined primitive thisArg
@@ -166,6 +167,9 @@ public:
     void set_this_binding(Object* this_obj) { this_binding_ = this_obj; }
 
     Environment* get_lexical_environment() const { return lexical_environment_; }
+    // The env created FOR this context (function/eval env); dies with the
+    // context in ~Context unless a capture marked it escaped.
+    void set_owned_env(Environment* env) { owned_env_ = env; }
     Environment* get_variable_environment() const { return variable_environment_; }
     void set_lexical_environment(Environment* env) { lexical_environment_ = env; }
     void set_variable_environment(Environment* env) { variable_environment_ = env; }
@@ -377,6 +381,7 @@ private:
     Object* binding_object_;
     bool is_with_environment_ = false; // ES6 8.1.1.2.1 HasBinding: only `with` object environments consult @@unscopables
     bool is_closure_boundary_ = false; // marks script-level env: stop snapshot loops here
+    bool escaped_ = false;  // see is_escaped()
 
 public:
     // Write-barrier dedup flag, owned by the Collector (set on first binding
@@ -396,6 +401,17 @@ public:
     void set_with_environment(bool value) { is_with_environment_ = value; }
     bool is_closure_boundary() const { return is_closure_boundary_; }
     void mark_closure_boundary() { is_closure_boundary_ = true; }
+
+    // Escape tracking: a block-scope env that was never captured (by a closure's
+    // closure_environment_, a child context's outer chain, or an eval env) can be
+    // deleted on pop instead of leaking. Marking walks the outer chain so every
+    // env reachable from a captured one is pinned too.
+    bool is_escaped() const { return escaped_; }
+    void mark_escaped() {
+        for (Environment* e = this; e && !e->escaped_; e = e->outer_environment_) {
+            e->escaped_ = true;
+        }
+    }
 
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;

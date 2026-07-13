@@ -323,6 +323,24 @@ std::vector<Environment*>& remembered_envs() {
     return envs;
 }
 
+// Popped block envs awaiting free -- see Collector::release_env.
+std::vector<Environment*>& pending_env_frees() {
+    static thread_local std::vector<Environment*> envs;
+    return envs;
+}
+
+void flush_pending_env_frees() {
+    auto& pending = pending_env_frees();
+    if (pending.empty()) return;
+    std::unordered_set<Environment*> dead(pending.begin(), pending.end());
+    auto& rem = remembered_envs();
+    rem.erase(std::remove_if(rem.begin(), rem.end(),
+                             [&](Environment* e) { return dead.count(e) > 0; }),
+              rem.end());
+    for (Environment* e : pending) delete e;
+    pending.clear();
+}
+
 bool env_flag(const char* name) {
     const char* val = std::getenv(name);
     return val && *val && *val != '0';
@@ -467,6 +485,9 @@ void run_collection(bool minor) {
     remembered_cells().clear();
     for (Environment* e : remembered_envs()) e->gc_remembered_ = false;
     remembered_envs().clear();
+    // Remembered set is empty now, so popped block envs have no remaining referents.
+    for (Environment* e : pending_env_frees()) delete e;
+    pending_env_frees().clear();
 
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {
@@ -526,6 +547,13 @@ void Collector::write_barrier_env(Environment* env) {
     if (barriers_disabled() || !env || env->gc_remembered_) return;
     env->gc_remembered_ = true;
     remembered_envs().push_back(env);
+}
+
+void Collector::release_env(Environment* env) {
+    if (!env) return;
+    auto& pending = pending_env_frees();
+    pending.push_back(env);
+    if (pending.size() >= 8192) flush_pending_env_frees();
 }
 
 void Collector::safepoint() {

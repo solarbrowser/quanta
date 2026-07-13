@@ -90,6 +90,7 @@ private:
     std::vector<std::string> pending_labels_;  // set by LABELED_STATEMENT, taken by the next loop/switch
     std::unordered_set<const ASTNode*> hoisted_fn_decls_;  // top-level fn decls bound by compile()'s prologue
     bool allow_arguments_ = false;  // `arguments` reads compile to LdaLookup (chunk needs_arguments set)
+    bool suspendable_ = false;  // generator/async body, see compile()'s parameter
     int try_env_depth_ = 0;
     int env_depth_ = 0;
     std::vector<size_t>* chain_shortcircuit_jumps_ = nullptr;

@@ -49,6 +49,10 @@ public:
     static void write_barrier(const void* cell);
     // Same for environments (not cells; flag-deduped per cycle).
     static void write_barrier_env(Environment* env);
+    // Frees a popped, unescaped block environment. Deferred, not immediate:
+    // the remembered set may still reference it until the cycle's cleanup;
+    // a size threshold flushes even on GC-quiet workloads.
+    static void release_env(Environment* env);
 
     struct CycleStats {
         size_t marked_cells = 0;

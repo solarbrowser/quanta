@@ -1407,6 +1407,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     BytecodeCompiler compiler(param_names, env_mode);
     if (compiler.failed_) return nullptr;
     compiler.allow_arguments_ = needs_arguments;
+    compiler.suspendable_ = suspendable;
     if (has_rest) {
         if (!env_mode || !compiler.env_names_.insert(rest_name).second) return nullptr;
     }
@@ -2108,6 +2109,14 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         case ASTNode::Type::RETURN_STATEMENT: {
             const auto* stmt = static_cast<const ReturnStatement*>(node);
             if (stmt->get_argument()) {
+                // ReturnStatement::evaluate carries semantics Op::Return lacks: an
+                // async generator's `return <expr>` awaits the value, and its
+                // set_return_value tells `return undefined` from falling off.
+                if (suspendable_) {
+                    if (!emit_treewalker_delegate(node)) return false;
+                    emit(Op::Return);
+                    return true;
+                }
                 if (!compile_expression(stmt->get_argument())) return false;
             } else {
                 emit(Op::LdaUndefined);

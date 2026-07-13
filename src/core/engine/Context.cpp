@@ -122,6 +122,9 @@ Context::Context(Engine* engine, Context* parent, Type type)
 
 Context::~Context() {
     call_stack_.clear();
+    if (owned_env_ && !owned_env_->is_escaped()) {
+        Collector::release_env(owned_env_);
+    }
 }
 
 void Context::set_global_object(Object* global) {
@@ -1124,19 +1127,24 @@ std::unique_ptr<Context> create_function_context(Engine* engine, Context* parent
         }
     }
 
+    // The new context's env chain hangs off outer_env and can outlive the
+    // current block (fibers, survivor contexts) -- pin the chain.
+    if (outer_env) outer_env->mark_escaped();
     auto func_env = std::make_unique<Environment>(Environment::Type::Function, outer_env);
     context->set_lexical_environment(func_env.release());
     context->set_variable_environment(context->get_lexical_environment());
+    context->set_owned_env(context->get_lexical_environment());
 
     return context;
 }
 
 std::unique_ptr<Context> create_eval_context(Engine* engine, Context* parent) {
     auto context = std::make_unique<Context>(engine, parent, Context::Type::Eval);
-    
+
+    if (parent->get_lexical_environment()) parent->get_lexical_environment()->mark_escaped();
     context->set_lexical_environment(parent->get_lexical_environment());
     context->set_variable_environment(parent->get_variable_environment());
-    
+
     return context;
 }
 
@@ -1160,10 +1168,13 @@ void Context::push_block_scope() {
 
 void Context::pop_block_scope() {
     if (lexical_environment_ && lexical_environment_->get_outer()) {
-        // Don't delete -- child contexts (e.g. async function fibers) may hold
-        // a pointer to this block scope as their outer_environment_.  The env
-        // leaks with the context, which is acceptable given Context also leaks.
-        lexical_environment_ = lexical_environment_->get_outer();
+        Environment* popped = lexical_environment_;
+        lexical_environment_ = popped->get_outer();
+        // Captured chains were pinned via mark_escaped(); an unescaped env is
+        // dead the moment it's popped.
+        if (!popped->is_escaped()) {
+            Collector::release_env(popped);
+        }
     }
 }
 

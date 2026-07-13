@@ -477,10 +477,13 @@ void register_global_builtins(Context& ctx) {
                     auto eval_ctx_ptr = std::make_unique<Context>(engine, &ctx, Context::Type::Eval);
                     Context& eval_ctx = *eval_ctx_ptr;
                     eval_ctx.set_strict_mode(true);
+                    // The eval env outlives this block via the survivor context -- pin its outer chain.
+                    if (ctx.get_lexical_environment()) ctx.get_lexical_environment()->mark_escaped();
                     auto eval_env = new Environment(
                         Environment::Type::Declarative, ctx.get_lexical_environment());
                     eval_ctx.set_lexical_environment(eval_env);
                     eval_ctx.set_variable_environment(eval_env);
+                    eval_ctx.set_owned_env(eval_env);
                     // Native call machinery temporarily overwrites "this" in the calling env.
                     // Recover the caller's real "this" from the backup set before the overwrite.
                     Value caller_this_val;
@@ -530,9 +533,20 @@ void register_global_builtins(Context& ctx) {
                     auto* var_env = ctx.get_variable_environment();
 
                     // var-vs-lexical-declaration collision is a SyntaxError regardless of direct/indirect; indirect eval checks the global env, not the caller's lex_env.
-                    Environment* global_lex_env = (!is_direct && engine && engine->get_global_context())
-                        ? engine->get_global_context()->get_lexical_environment()
-                        : lex_env;
+                    Environment* global_lex_env = lex_env;
+                    if (!is_direct && engine && engine->get_global_context()) {
+                        // The global context's CURRENT lexical env may be a block scope
+                        // (top-level code shares this context); walk up to the script-hoist
+                        // env sitting directly on the global object env, where top-level
+                        // let/const/class actually live.
+                        Context* gctx = engine->get_global_context();
+                        Environment* ge = gctx->get_lexical_environment();
+                        Environment* gvar = gctx->get_variable_environment();
+                        while (ge && ge != gvar && ge->get_outer() && ge->get_outer() != gvar) {
+                            ge = ge->get_outer();
+                        }
+                        global_lex_env = ge;
+                    }
                     if (global_lex_env) {
                         for (const auto& vname : var_names) {
                             if (global_lex_env->has_lexical_declaration(vname)) {
@@ -634,7 +648,9 @@ void register_global_builtins(Context& ctx) {
                         var_env_base = global_ctx->get_variable_environment();
                     }
 
-                    // Spec 18.2.1 step 9a: eval's lexEnv is a NEW declarative env
+                    // Spec 18.2.1 step 9a: eval's lexEnv is a NEW declarative env.
+                    // It outlives this block via the survivor context -- pin its outer chain.
+                    if (outer_env) outer_env->mark_escaped();
                     auto* eval_lex_env = new Environment(
                         Environment::Type::Declarative, outer_env);
 
@@ -644,6 +660,7 @@ void register_global_builtins(Context& ctx) {
 
                     eval_ctx.set_lexical_environment(eval_lex_env);
                     eval_ctx.set_variable_environment(var_env_base);
+                    eval_ctx.set_owned_env(eval_lex_env);
                     Object* this_binding = is_direct ? ctx.get_this_binding() : (engine && engine->get_global_context() ? engine->get_global_context()->get_this_binding() : ctx.get_this_binding());
                     eval_ctx.set_this_binding(this_binding);
                     // Native call machinery temporarily overwrites "this" in the calling env;

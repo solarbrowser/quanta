@@ -771,6 +771,8 @@ public:
 class BlockStatement : public ASTNode {
 private:
     std::vector<std::unique_ptr<ASTNode>> statements_;
+    // Blocks without their own block-scoped bindings skip the per-evaluation Environment.
+    mutable int8_t needs_scope_ = -1;
 
 public:
     BlockStatement(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)
@@ -780,6 +782,7 @@ public:
     size_t statement_count() const { return statements_.size(); }
 
     void check_use_strict_directive(Context& ctx);
+    bool needs_own_scope() const;
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

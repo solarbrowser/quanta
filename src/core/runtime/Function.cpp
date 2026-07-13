@@ -30,6 +30,15 @@ namespace Quanta {
 
 thread_local Object* Function::s_throw_type_error_ = nullptr;
 
+// A closure pins its captured environment chain: pop_block_scope deletes
+// unescaped block envs, so the capture must mark the chain first.
+static Environment* capture_closure_environment(Context* closure_context) {
+    if (!closure_context) return nullptr;
+    Environment* env = closure_context->get_lexical_environment();
+    if (env) env->mark_escaped();
+    return env;
+}
+
 // Duplicate parameter names share one binding; only the last occurrence is live-mapped.
 // Shared by setup_mapped_arguments() and the pre-pass seeding raw element values.
 static bool param_gets_mapped_accessor(const std::vector<std::unique_ptr<Parameter>>& params, size_t mi) {
@@ -47,7 +56,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameters_(params),
       body_(std::move(body)), closure_context_(closure_context),
-      closure_environment_(closure_context ? closure_context->get_lexical_environment() : nullptr),
+      closure_environment_(capture_closure_environment(closure_context)),
       prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
@@ -82,7 +91,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context),
-      closure_environment_(closure_context ? closure_context->get_lexical_environment() : nullptr),
+      closure_environment_(capture_closure_environment(closure_context)),
       prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
@@ -985,6 +994,7 @@ void Function::set_function_prototype(Object* proto) {
 
 void Function::set_closure_environment(Environment* env) {
     Collector::write_barrier(this);
+    if (env) env->mark_escaped();
     closure_environment_ = env;
 }
 

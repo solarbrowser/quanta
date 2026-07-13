@@ -633,6 +633,33 @@ void BlockStatement::check_use_strict_directive(Context& ctx) {
     }
 }
 
+bool BlockStatement::needs_own_scope() const {
+    if (needs_scope_ >= 0) return needs_scope_ != 0;
+    bool needs = false;
+    for (const auto& stmt : statements_) {
+        switch (stmt->get_type()) {
+            case ASTNode::Type::VARIABLE_DECLARATION: {
+                auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+                if (vd->get_kind() != VariableDeclarator::Kind::VAR) needs = true;
+                break;
+            }
+            // Function/class declarations bind lexically in the block; a labeled
+            // statement can wrap a function declaration (Annex B) -- be conservative.
+            case ASTNode::Type::FUNCTION_DECLARATION:
+            case ASTNode::Type::CLASS_DECLARATION:
+            case ASTNode::Type::USING_DECLARATION:
+            case ASTNode::Type::LABELED_STATEMENT:
+                needs = true;
+                break;
+            default:
+                break;
+        }
+        if (needs) break;
+    }
+    needs_scope_ = needs ? 1 : 0;
+    return needs;
+}
+
 Value BlockStatement::evaluate(Context& ctx) {
     Value last_value;
 
@@ -642,14 +669,19 @@ Value BlockStatement::evaluate(Context& ctx) {
         if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) { has_using = true; break; }
     }
 
+    const bool own_scope = needs_own_scope();
     Environment* old_lexical_env = ctx.get_lexical_environment();
-    auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lexical_env);
-    Environment* block_env_ptr = block_env.release();
-    ctx.set_lexical_environment(block_env_ptr);
+    Environment* block_env_ptr = old_lexical_env;
+    if (own_scope) {
+        auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lexical_env);
+        block_env_ptr = block_env.release();
+        ctx.set_lexical_environment(block_env_ptr);
+    }
 
     // Pre-create TDZ bindings for let/const at the top level of this block (spec 14.2.2).
     // Without this, closures defined before a let/const declaration would bypass TDZ
     // because the binding wouldn't exist yet when they run.
+    if (own_scope) {
     for (const auto& stmt : statements_) {
         if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             auto* vd = static_cast<VariableDeclaration*>(stmt.get());
@@ -668,14 +700,9 @@ Value BlockStatement::evaluate(Context& ctx) {
             }
         }
     }
+    }
 
     if (has_using) ctx.push_dispose_scope();
-
-    // Note: block_env_ptr is intentionally NOT deleted here. Child contexts
-    // created inside the block (e.g. async function fibers) store this env as
-    // their outer_environment_. Deleting it would cause use-after-free when
-    // those fibers resume after the block exits.  Environments are already
-    // leaked by Context::~Context(), so leaking here is consistent.
 
     bool exiting = false;
     bool block_had_non_empty = false;
@@ -714,12 +741,18 @@ Value BlockStatement::evaluate(Context& ctx) {
         }
     } catch (...) {
         if (has_using) ctx.run_dispose_resources();
-        ctx.set_lexical_environment(old_lexical_env);
+        if (own_scope) {
+            ctx.set_lexical_environment(old_lexical_env);
+            if (!block_env_ptr->is_escaped()) Collector::release_env(block_env_ptr);
+        }
         throw;
     }
 
     if (has_using) ctx.run_dispose_resources();
-    ctx.set_lexical_environment(old_lexical_env);
+    if (own_scope) {
+        ctx.set_lexical_environment(old_lexical_env);
+        if (!block_env_ptr->is_escaped()) Collector::release_env(block_env_ptr);
+    }
 
     if (exiting) {
         g_empty_completion = false;
