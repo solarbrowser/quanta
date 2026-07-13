@@ -442,6 +442,52 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         return result;
     }
     
+    // Register-mode fast call: a compiled chunk with no env-resident names
+    // needs no per-call Environment (every binding insert is already skipped)
+    // and no heap Context / survivor-pool bookkeeping -- a stack Context
+    // pointing straight at the captured chain suffices. The first call always
+    // takes the full path below (compiles the chunk, resolves the cached
+    // strict/closure/self-name states this guard reads).
+    if (VM::enabled() && !vm_incompatible_ && bytecode_chunk_ && !bytecode_chunk_->env_mode &&
+        !is_class_constructor_ && strict_directive_state_ >= 0 &&
+        closure_props_state_ == 0 && (self_name_state_ == 0 || self_name_state_ == 2) &&
+        !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
+        Context fast_ctx(ctx.get_engine(), &ctx, Context::Type::Function);
+        Environment* outer_env = get_closure_environment();
+        if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
+        if (!outer_env) outer_env = ctx.get_lexical_environment();
+        fast_ctx.set_lexical_environment(outer_env);
+        fast_ctx.set_variable_environment(outer_env);
+        if (is_strict_ || strict_directive_state_ == 1) fast_ctx.set_strict_mode(true);
+
+        Value fast_this = this_value;
+        if (is_arrow_) {
+            if (this->has_property("__arrow_this__")) fast_this = this->get_property("__arrow_this__");
+        } else if (!fast_ctx.is_strict_mode()) {
+            if (this_value.is_undefined() || this_value.is_null()) {
+                Object* global = fast_ctx.get_global_object();
+                if (global) fast_this = Value(global);
+            } else {
+                fast_this = ObjectFactory::box_primitive_this_sloppy(fast_ctx, this_value);
+            }
+        }
+        if (fast_this.is_object() || fast_this.is_function()) {
+            fast_ctx.set_this_binding(fast_this.is_object() ? fast_this.as_object()
+                                                            : fast_this.as_function());
+        }
+
+        ExecContextScope gc_frame(&fast_ctx);
+        Context* prev_context = Object::current_context_;
+        Object::current_context_ = &fast_ctx;
+        Value vm_result = VM::run(*bytecode_chunk_, fast_ctx, args, &fast_this);
+        Object::current_context_ = prev_context;
+        if (fast_ctx.has_exception()) {
+            ctx.throw_exception(fast_ctx.get_exception(), true);
+            return Value();
+        }
+        return vm_result;
+    }
+
     Context* parent_context = &ctx;
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     Context& function_context = *function_context_ptr;
@@ -642,8 +688,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     }
                 }
             }
-            if (self_name_state_ == 1 && !function_context.has_binding(name_)) {
-                function_context.create_binding(name_, Value(this), false);
+            if (self_name_state_ == 1) {
+                if (!function_context.has_binding(name_)) {
+                    function_context.create_binding(name_, Value(this), false);
+                } else {
+                    // The captured chain already provides the name (function
+                    // declarations): fast calls don't need the self-binding.
+                    self_name_state_ = 2;
+                }
             }
             // Arrows resolve `arguments` lexically -- only a real function
             // materializes its own. The mapped accessors read the parameter
