@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/vm/BytecodeCompiler.h"
+#include <algorithm>
 #include "quanta/parser/AST.h"
 #include <climits>
 #include <cmath>
@@ -1717,11 +1718,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             selective = true;
         }
     }
-    bool env_mode = full_env || has_closures || has_nested_lex;
 
     if (selective) {
-        // Nested/loop-header lexicals and catch params live in block/loop
-        // Environments at runtime; their names resolve through the chain.
+        // Catch params stay Environment-resident (the tree-walker's catch
+        // machinery binds them by name). A nested/loop-header lexical only
+        // needs the env when a closure can see it or the name shadows
+        // another declaration -- otherwise it gets a register with a TDZ
+        // re-arm at its block's entry (see BLOCK_STATEMENT).
         std::vector<BytecodeChunk::LoopEnvVar> direct_vars_pre;
         bool unused_pre = false;
         collect_direct_lexical_decls(body, direct_vars_pre, unused_pre);
@@ -1729,13 +1732,25 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         for (const auto& v : direct_vars_pre) direct_pre.insert(v.name);
         std::vector<DeclInfo> declared_pre;
         if (!prescan_declarations(body, declared_pre)) return nullptr;
+        std::unordered_map<std::string, int> decl_count;
+        for (const auto& info : declared_pre) decl_count[info.name]++;
         for (const auto& info : declared_pre) {
-            if (info.is_catch_param || (info.is_lexical && !direct_pre.count(info.name))) {
+            if (info.is_catch_param) {
+                env_resident.insert(info.name);
+            } else if (info.is_lexical && !direct_pre.count(info.name) &&
+                       decl_count[info.name] > 1) {
                 env_resident.insert(info.name);
             }
         }
+        // Nothing ended up captured: the whole function is register-pure
+        // (closures still pin the env for CreateClosure delegation).
+        if (env_resident.empty() && !has_closures) {
+            selective = false;
+        }
     }
+    bool env_mode2 = full_env || has_closures || !env_resident.empty();
 
+    const bool env_mode = env_mode2;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
     if (compiler.failed_) return nullptr;
     compiler.allow_arguments_ = needs_arguments;
@@ -1952,6 +1967,13 @@ int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extr
     std::vector<BytecodeChunk::LoopEnvVar> vars = std::move(extra_vars);
     bool needs_own_env = false;
     if (!collect_direct_lexical_decls(body, vars, needs_own_env)) return -1;
+    // Register-resident lexicals get their TDZ re-armed at block entry
+    // instead of living in the per-iteration env.
+    vars.erase(std::remove_if(vars.begin(), vars.end(),
+                              [&](const BytecodeChunk::LoopEnvVar& v) {
+                                  return !env_names_.count(v.name) && lookup_local(v.name) >= 0;
+                              }),
+               vars.end());
     if (vars.empty() && !needs_own_env) return -1;
     chunk_->loop_envs.push_back(std::move(vars));
     return static_cast<int>(chunk_->loop_envs.size() - 1);
@@ -1991,7 +2013,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     // Entered before compiling `right`: a lexical ForDeclaration's bound name
     // is in TDZ even during the head's own iterable/object expression (spec).
     std::vector<BytecodeChunk::LoopEnvVar> extra_vars;
-    if (declare_fresh && env_mode_) {
+    if (declare_fresh && env_mode_ && env_names_.count(var_name)) {
         extra_vars.push_back({var_name, true, is_const, false});
     }
     int loop_env_idx = setup_loop_env(std::move(extra_vars), body);
@@ -2328,12 +2350,25 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // A block with its own direct let/const gets its own Environment
             // -- a nested block's own names are its own scope's concern.
             int block_env_idx = -1;
-            if (env_mode_) {
+            {
                 std::vector<BytecodeChunk::LoopEnvVar> vars;
                 bool needs_own_env = false;
                 if (!collect_direct_lexical_decls(block, vars, needs_own_env)) return false;
-                if (!vars.empty() || needs_own_env) {
-                    chunk_->loop_envs.push_back(std::move(vars));
+                std::vector<BytecodeChunk::LoopEnvVar> env_vars;
+                for (const auto& v : vars) {
+                    int reg = env_names_.count(v.name) ? -1 : lookup_local(v.name);
+                    if (reg >= 0) {
+                        // Register-resident block lexical: re-arm its TDZ on
+                        // (re-)entry so a loop iteration can't see the last one.
+                        emit(Op::LdaTdz);
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(reg));
+                    } else {
+                        env_vars.push_back(v);
+                    }
+                }
+                if (env_mode_ && (!env_vars.empty() || needs_own_env)) {
+                    chunk_->loop_envs.push_back(std::move(env_vars));
                     block_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
                     emit_u16(static_cast<uint16_t>(block_env_idx));
