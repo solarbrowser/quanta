@@ -151,6 +151,11 @@ public:
     bool has_private_slot(const std::string& key) const;
     std::string find_private_slot_key(const std::string& prefix) const;
     Value get_private_slot_value(const std::string& key) const;
+    // Direct storage pointer for a plain data field in sparse overflow, or
+    // nullptr (absent, or descriptor-based: accessors/statics need the full
+    // path). Backbone of the VM's private inline cache -- the pointer is only
+    // used immediately, never stored.
+    Value* private_field_slot(const std::string& key);
     bool get_private_slot_descriptor(const std::string& key, PropertyDescriptor& out) const;
     void set_private_slot_value(const std::string& key, const Value& value);
     void add_private_field(const std::string& key, const Value& value = Value());

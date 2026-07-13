@@ -228,6 +228,12 @@ void Object::add_private_field(const std::string& key, const Value& value) {
     property_insertion_order_.push_back(key);
 }
 
+Value* Object::private_field_slot(const std::string& key) {
+    if (!sparse_overflow_) return nullptr;
+    auto it = sparse_overflow_->find(key);
+    return it != sparse_overflow_->end() ? &it->second : nullptr;
+}
+
 std::string Object::find_private_slot_key(const std::string& prefix) const {
     // Raw prefix scan over private storage -- get_own_property_keys hides
     // qualified slots, so resumed-async private resolution can't use it.

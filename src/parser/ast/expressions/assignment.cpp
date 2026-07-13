@@ -838,6 +838,40 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
                         return Value();
                     }
+                    if (pd.is_accessor_descriptor() && operator_ != Operator::ASSIGN) {
+                        // Compound (+= etc.) on a prototype-held private accessor:
+                        // read and write through the accessor pair with `this` =
+                        // the instance. The generic switch below would call the
+                        // getter via read_base->get_property, i.e. with the
+                        // declaring prototype as the receiver.
+                        if (!pd.has_getter()) {
+                            ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                            return Value();
+                        }
+                        Function* getter_fn = dynamic_cast<Function*>(pd.get_getter());
+                        Value cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
+                        if (ctx.has_exception()) return Value();
+                        Value final_value = right_value;
+                        switch (operator_) {
+                            case Operator::PLUS_ASSIGN:        final_value = cur.add(right_value); break;
+                            case Operator::MINUS_ASSIGN:       final_value = cur.subtract(right_value); break;
+                            case Operator::MUL_ASSIGN:         final_value = cur.multiply(right_value); break;
+                            case Operator::DIV_ASSIGN:         final_value = cur.divide(right_value); break;
+                            case Operator::MOD_ASSIGN:         final_value = cur.modulo(right_value); break;
+                            case Operator::BITWISE_AND_ASSIGN: final_value = cur.bitwise_and(right_value); break;
+                            case Operator::BITWISE_OR_ASSIGN:  final_value = cur.bitwise_or(right_value); break;
+                            case Operator::BITWISE_XOR_ASSIGN: final_value = cur.bitwise_xor(right_value); break;
+                            case Operator::LEFT_SHIFT_ASSIGN:  final_value = cur.left_shift(right_value); break;
+                            case Operator::RIGHT_SHIFT_ASSIGN: final_value = cur.right_shift(right_value); break;
+                            case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: final_value = cur.unsigned_right_shift(right_value); break;
+                            default: break;
+                        }
+                        if (ctx.has_exception()) return Value();
+                        Function* setter_fn = dynamic_cast<Function*>(pd.get_setter());
+                        if (setter_fn) setter_fn->call(ctx, {final_value}, object_value);
+                        if (ctx.has_exception()) return Value();
+                        return final_value;
+                    }
                 } else {
                     // Private instance field not yet initialized on this object
                     ctx.throw_type_error("Cannot set private field " + prop_name + " on an object that has not been initialized");

@@ -1322,6 +1322,19 @@ bool contains_return_statement(const ASTNode* node) {
     }
 }
 
+// Literal `.#name` on a non-super base -- the only form that is a private
+// reference (a computed key spelling "#x" is an ordinary property).
+bool member_is_private(const MemberExpression* mem) {
+    if (mem->is_computed()) return false;
+    if (mem->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+        static_cast<const Identifier*>(mem->get_object())->get_name() == "super") {
+        return false;
+    }
+    if (mem->get_property()->get_type() != ASTNode::Type::IDENTIFIER) return false;
+    const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
+    return !name.empty() && name[0] == '#';
+}
+
 // NamedEvaluation candidates: AssignmentExpression::evaluate infers the
 // function/class name from the LHS identifier, so those assignments stay
 // on the tree-walker. (Named function expressions delegate too -- the
@@ -1814,6 +1827,12 @@ uint16_t BytecodeCompiler::alloc_feedback_slot() {
     return static_cast<uint16_t>(chunk_->feedback.size() - 1);
 }
 
+uint16_t BytecodeCompiler::alloc_private_feedback() {
+    if (chunk_->private_feedback.size() >= 0xFFFF) { failed_ = true; return 0; }
+    chunk_->private_feedback.push_back(PrivateFeedback{});
+    return static_cast<uint16_t>(chunk_->private_feedback.size() - 1);
+}
+
 bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
     if (mem->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
         static_cast<const Identifier*>(mem->get_object())->get_name() == "super") {
@@ -1875,7 +1894,8 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
 
     if (expr->get_left()->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return false;
     const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
-    if (!member_is_supported(mem)) return emit_treewalker_delegate(expr);
+    const bool priv = member_is_private(mem);
+    if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(expr);
     if (chain_contains_optional(mem)) return false;
 
     if (!compile_expression(mem->get_object())) return false;
@@ -1887,16 +1907,16 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     if (!mem->is_computed()) {
         uint16_t name_idx = add_name(
             static_cast<const Identifier*>(mem->get_property())->get_name());
-        emit(Op::GetNamed);
+        emit(priv ? Op::GetPrivate : Op::GetNamed);
         emit_u8(static_cast<uint8_t>(obj_reg));
         emit_u16(name_idx);
-        emit_u16(alloc_feedback_slot());
+        emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
         size_t skip = emit_jump(skip_op);
         if (!compile_expression(expr->get_right())) return false;
-        emit(Op::SetNamed);
+        emit(priv ? Op::SetPrivate : Op::SetNamed);
         emit_u8(static_cast<uint8_t>(obj_reg));
         emit_u16(name_idx);
-        emit_u16(alloc_feedback_slot());
+        emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
         if (!patch_jump(skip)) return false;
         free_temp(obj_reg);
         return !failed_;
@@ -2602,7 +2622,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
         case ASTNode::Type::MEMBER_EXPRESSION: {
             const auto* mem = static_cast<const MemberExpression*>(node);
-            if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
+            const bool priv = member_is_private(mem);
+            if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
             if (!compile_expression(mem->get_object())) return false;
             int obj_reg = alloc_temp();
             if (failed_) return false;
@@ -2611,10 +2632,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
             if (!mem->is_computed()) {
                 const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
-                emit(Op::GetNamed);
+                emit(priv ? Op::GetPrivate : Op::GetNamed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u16(add_name(name));
-                emit_u16(alloc_feedback_slot());
+                emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
             } else {
                 // Evaluating the key leaves it in the accumulator, exactly
                 // what GetKeyed expects -- no extra register needed for reads.
@@ -2790,7 +2811,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
                     if (operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                         const auto* mem = static_cast<const MemberExpression*>(operand);
-                        if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
+                        const bool priv = member_is_private(mem);
+                        if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
                         if (chain_contains_optional(mem)) return false;
 
                         if (!compile_expression(mem->get_object())) return false;
@@ -2804,10 +2826,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         if (!mem->is_computed()) {
                             name_idx = add_name(
                                 static_cast<const Identifier*>(mem->get_property())->get_name());
-                            emit(Op::GetNamed);
+                            emit(priv ? Op::GetPrivate : Op::GetNamed);
                             emit_u8(static_cast<uint8_t>(obj_reg));
                             emit_u16(name_idx);
-                            emit_u16(alloc_feedback_slot());
+                            emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
                         } else {
                             if (!compile_expression(mem->get_property())) return false;
                             key_reg = alloc_temp();
@@ -2828,10 +2850,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         }
                         emit(is_inc ? Op::Inc : Op::Dec);
                         if (!mem->is_computed()) {
-                            emit(Op::SetNamed);
+                            emit(priv ? Op::SetPrivate : Op::SetNamed);
                             emit_u8(static_cast<uint8_t>(obj_reg));
                             emit_u16(name_idx);
-                            emit_u16(alloc_feedback_slot());
+                            emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
                         } else {
                             emit(Op::SetKeyed);
                             emit_u8(static_cast<uint8_t>(obj_reg));
@@ -3015,7 +3037,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
             if (expr->get_left()->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return false;
             const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
-            if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
+            const bool priv = member_is_private(mem);
+            if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
 
             if (!compile_expression(mem->get_object())) return false;
             int obj_reg = alloc_temp();
@@ -3037,10 +3060,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
             if (compound) {
                 if (!mem->is_computed()) {
-                    emit(Op::GetNamed);
+                    emit(priv ? Op::GetPrivate : Op::GetNamed);
                     emit_u8(static_cast<uint8_t>(obj_reg));
                     emit_u16(name_idx);
-                    emit_u16(alloc_feedback_slot());
+                    emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
                 } else {
                     emit(Op::Ldar);
                     emit_u8(static_cast<uint8_t>(key_reg));
@@ -3060,10 +3083,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             }
 
             if (!mem->is_computed()) {
-                emit(Op::SetNamed);
+                emit(priv ? Op::SetPrivate : Op::SetNamed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u16(name_idx);
-                emit_u16(alloc_feedback_slot());
+                emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
             } else {
                 emit(Op::SetKeyed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
@@ -3098,11 +3121,13 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 const ASTNode* mem_prop;
                 bool mem_computed;
                 bool mem_optional = callee->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION;
+                bool mem_private = false;
                 if (!mem_optional) {
                     const auto* mem = static_cast<const MemberExpression*>(callee);
-                    // super.method(...) / obj.#method(...) / this.#method(...): delegate
-                    // the whole call to the tree-walker instead of bailing the function.
-                    if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
+                    mem_private = member_is_private(mem);
+                    // super.method(...): delegate the whole call to the
+                    // tree-walker instead of bailing the function.
+                    if (!mem_private && !member_is_supported(mem)) return emit_treewalker_delegate(node);
                     mem_obj = mem->get_object();
                     mem_prop = mem->get_property();
                     mem_computed = mem->is_computed();
@@ -3138,10 +3163,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 std::string method_name;
                 if (!mem_computed) {
                     method_name = static_cast<const Identifier*>(mem_prop)->get_name();
-                    emit(Op::GetNamed);
+                    emit(mem_private ? Op::GetPrivate : Op::GetNamed);
                     emit_u8(static_cast<uint8_t>(obj_reg));
                     emit_u16(add_name(method_name));
-                    emit_u16(alloc_feedback_slot());
+                    emit_u16(mem_private ? alloc_private_feedback() : alloc_feedback_slot());
                 } else {
                     method_name = "<computed>";  // CallResolved diagnostics only
                     if (!compile_expression(mem_prop)) return false;

@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include "quanta/core/runtime/String.h"
 #include "quanta/parser/AST.h"
+#include "quanta/core/engine/CallStack.h"  // private_brand_check, resolve_private_storage_key
 
 namespace Quanta {
 
@@ -22,8 +23,6 @@ inline bool is_chain_link_type(ASTNode::Type t) {
     return t == ASTNode::Type::MEMBER_EXPRESSION || t == ASTNode::Type::CALL_EXPRESSION ||
            t == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION;
 }
-
-bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name, bool require_exists = true);
 
 // Set only when a chain link just returned undefined because its OWN base
 // was nullish (a genuine `?.` short-circuit). The next link up consumes it

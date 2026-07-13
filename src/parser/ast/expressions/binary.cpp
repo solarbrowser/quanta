@@ -1065,6 +1065,47 @@ static bool write_member_update_result(Context& ctx, MemberExpression* member, c
                 write_obj->set_private_slot_value(qualified, new_value);
                 return true;
             }
+            // Prototype-held private accessor/method: write through the setter
+            // with `this` = the instance -- falling through to set_property
+            // would silently plant an ordinary bare-"#x" data property.
+            Object* owner = resolve_private_accessor_owner(prop_name);
+            PropertyDescriptor pd;
+            bool found = false;
+            if (owner) {
+                pd = owner->get_property_descriptor(qualified);
+                found = pd.is_accessor_descriptor() || pd.has_value();
+                if (!found) {
+                    pd = owner->get_property_descriptor(prop_name);
+                    found = pd.is_accessor_descriptor() || pd.has_value();
+                }
+            }
+            if (!found) {
+                for (Object* proto = write_obj->get_prototype(); proto; proto = proto->get_prototype()) {
+                    pd = proto->get_property_descriptor(qualified);
+                    if (pd.is_accessor_descriptor() || pd.has_value()) { found = true; break; }
+                    pd = proto->get_property_descriptor(prop_name);
+                    if (pd.is_accessor_descriptor() || pd.has_value()) { found = true; break; }
+                }
+            }
+            if (found && pd.is_accessor_descriptor()) {
+                if (!pd.has_setter()) {
+                    ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
+                    return false;
+                }
+                Function* setter_fn = dynamic_cast<Function*>(pd.get_setter());
+                if (setter_fn) {
+                    Value recv = write_obj->is_function()
+                        ? Value(static_cast<Function*>(write_obj)) : Value(write_obj);
+                    setter_fn->call(ctx, {new_value}, recv);
+                    if (ctx.has_exception()) return false;
+                }
+                return true;
+            }
+            if (found) {
+                // Data (a private method): not assignable.
+                ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
+                return false;
+            }
         }
         write_obj->set_property(prop_name, new_value);
     }

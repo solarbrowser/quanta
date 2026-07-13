@@ -118,6 +118,12 @@ std::string resolve_private_storage_key(const std::string& bare_name, Object* ob
 // for private accessors/methods, which live on that exact prototype, not on obj's own slots.
 Object* resolve_private_accessor_owner(const std::string& bare_name);
 
+// PrivateBrandCheck: does an active frame's brand admit `prop_name` on obj?
+// Defined in member.cpp; shared by the tree-walker's private member paths
+// and the VM's Op::GetPrivate/SetPrivate slow path.
+class Context;
+bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name, bool require_exists = true);
+
 }
 
 #endif

@@ -89,6 +89,8 @@ enum class Op : uint8_t {
 
     GetNamed,     // r_obj n fb
     SetNamed,     // r_obj n fb
+    GetPrivate,   // r_obj n fb -- literal `.#name`: brand check + qualified-slot access
+    SetPrivate,   // r_obj n fb
     GetKeyed,     // r_obj
     SetKeyed,     // r_obj r_key
     DeleteNamed,  // r_obj n -- acc = delete r_obj.name
@@ -118,6 +120,15 @@ struct FeedbackSlot {
     uint32_t slot_index = 0;
 };
 
+// Inline cache for one GetPrivate/SetPrivate site: the resolved qualified
+// key ("#x@<brand>"). Site-constant -- a chunk belongs to one Function,
+// which belongs to one class evaluation -- so once resolved, the per-access
+// brand walk (CallStack scan + key concatenation) is gone; presence of the
+// qualified slot on the receiver IS the brand check.
+struct PrivateFeedback {
+    std::string qualified;  // empty until the slow path resolves a data field
+};
+
 // One try region: [start_pc, end_pc) -> handler_pc.
 struct HandlerEntry {
     uint32_t start_pc;
@@ -132,6 +143,7 @@ struct BytecodeChunk {
     std::vector<std::string> names; // identifier names for LdaLookup/Call diagnostics
     std::vector<SourceEntry> positions;
     mutable std::vector<FeedbackSlot> feedback; // written as call sites warm up
+    mutable std::vector<PrivateFeedback> private_feedback; // GetPrivate/SetPrivate sites
     uint16_t register_count = 0;
     uint8_t parameter_count = 0;    // params occupy regs[0..parameter_count)
 

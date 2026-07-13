@@ -52,6 +52,7 @@ const OpInfo& op_info(Op op) {
         {"CreateRestArray", 1, 'r'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
         {"GetNamed", 5, 'g'}, {"SetNamed", 5, 'g'},
+        {"GetPrivate", 5, 'g'}, {"SetPrivate", 5, 'g'},
         {"GetKeyed", 1, 'r'}, {"SetKeyed", 2, 'r'},
         {"DeleteNamed", 3, 'l'}, {"DeleteKeyed", 1, 'r'},
         {"CreateObject", 2, 'h'}, {"CreateArray", 2, 'h'},

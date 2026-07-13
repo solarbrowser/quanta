@@ -6,6 +6,7 @@
 
 #include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/BigInt.h"
@@ -224,6 +225,169 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         int32_t idx = s ? s->find_slot(name) : -1;
         if (idx >= 0) { fb->shape = s; fb->slot_index = static_cast<uint32_t>(idx); }
     }
+}
+
+// Literal `.#name` access, mirroring the tree-walker's private member paths
+// (MemberExpression::evaluate / AssignmentExpression's private branch).
+// The IC caches the site's resolved qualified key: private fields live in
+// sparse overflow (not shape slots), and a present qualified slot IS the
+// brand proof, so the fast path is one map lookup with no brand walk.
+Value get_private(Context& ctx, const Value& receiver, const std::string& name, PrivateFeedback* pf) {
+    Object* obj = as_object_like(receiver);
+    if (!obj) {
+        ctx.throw_type_error("Cannot read private member " + name + " from an object whose class did not declare it");
+        return Value();
+    }
+    if (pf && !pf->qualified.empty()) {
+        if (const Value* slot = obj->private_field_slot(pf->qualified)) return *slot;
+    }
+    if (!private_brand_check(ctx, obj, name)) {
+        if (!ctx.has_exception()) {
+            ctx.throw_type_error("Cannot read private member " + name + " from an object whose class did not declare it");
+        }
+        return Value();
+    }
+    std::string qualified = resolve_private_storage_key(name, obj);
+    if (obj->has_private_slot(qualified)) {
+        PropertyDescriptor own_d;
+        if (obj->get_private_slot_descriptor(qualified, own_d) && own_d.is_accessor_descriptor()) {
+            if (!own_d.has_getter()) {
+                ctx.throw_type_error("'" + name + "' accessor has no getter");
+                return Value();
+            }
+            Function* getter_fn = dynamic_cast<Function*>(own_d.get_getter());
+            return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+        }
+        if (pf) {
+            if (const Value* slot = obj->private_field_slot(qualified)) {
+                pf->qualified = qualified;
+                return *slot;
+            }
+        }
+        return obj->get_private_slot_value(qualified);
+    }
+    // Methods/accessors live under the qualified key on the declaring
+    // prototype/constructor.
+    if (Object* owner = resolve_private_accessor_owner(name)) {
+        PropertyDescriptor d = owner->get_property_descriptor(qualified);
+        bool use_qualified = d.is_accessor_descriptor() || d.has_value();
+        if (!use_qualified) d = owner->get_property_descriptor(name);
+        const std::string& used = use_qualified ? qualified : name;
+        if (d.is_accessor_descriptor()) {
+            if (!d.has_getter()) {
+                ctx.throw_type_error("'" + used + "' accessor has no getter");
+                return Value();
+            }
+            Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+            return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+        }
+        if (d.has_value()) return owner->get_property(used);
+        return Value();
+    }
+    // No declaring frame (e.g. resumed past an await/yield): scan the chain.
+    for (Object* lookup = obj; lookup; lookup = lookup->get_prototype()) {
+        PropertyDescriptor d = lookup->get_property_descriptor(qualified);
+        bool use_qualified = d.is_accessor_descriptor() || d.has_value();
+        if (!use_qualified) d = lookup->get_property_descriptor(name);
+        const std::string& used = use_qualified ? qualified : name;
+        if (d.is_accessor_descriptor()) {
+            if (!d.has_getter()) {
+                ctx.throw_type_error("'" + used + "' accessor has no getter");
+                return Value();
+            }
+            Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+            return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+        }
+        if (d.has_value()) return lookup->get_property(used);
+    }
+    return Value();
+}
+
+void set_private(Context& ctx, const Value& receiver, const std::string& name,
+                 const Value& value, PrivateFeedback* pf) {
+    Object* obj = as_object_like(receiver);
+    if (!obj) {
+        ctx.throw_type_error("Cannot write private member " + name + " to an object whose class did not declare it");
+        return;
+    }
+    Collector::write_barrier(obj);
+    if (pf && !pf->qualified.empty()) {
+        if (Value* slot = obj->private_field_slot(pf->qualified)) { *slot = value; return; }
+    }
+    if (!private_brand_check(ctx, obj, name, /*require_exists=*/false)) {
+        if (!ctx.has_exception()) {
+            ctx.throw_type_error("Cannot write private member " + name + " to an object whose class did not declare it");
+        }
+        return;
+    }
+    std::string qualified = resolve_private_storage_key(name, obj);
+    if (obj->has_private_slot(qualified)) {
+        PropertyDescriptor own_pd;
+        if (obj->get_private_slot_descriptor(qualified, own_pd) && own_pd.is_accessor_descriptor()) {
+            if (!own_pd.has_setter()) {
+                ctx.throw_type_error("'" + qualified + "' was defined without a setter");
+                return;
+            }
+            Function* setter_fn = dynamic_cast<Function*>(own_pd.get_setter());
+            if (setter_fn) setter_fn->call(ctx, {value}, receiver);
+            return;
+        }
+        if (own_pd.has_value() && own_pd.get_value().is_function()) {
+            Function* mfn = own_pd.get_value().as_function();
+            if (mfn && mfn->has_property("__private_class_brand__")) {
+                ctx.throw_type_error("'" + qualified + "' is a private method and cannot be assigned to");
+                return;
+            }
+        }
+        if (pf) {
+            if (Value* slot = obj->private_field_slot(qualified)) {
+                pf->qualified = qualified;
+                *slot = value;
+                return;
+            }
+        }
+        obj->set_private_slot_value(qualified, value);
+        return;
+    }
+    // Method/accessor on the declaring prototype/constructor.
+    PropertyDescriptor pd;
+    bool found = false;
+    std::string used = qualified;
+    if (Object* owner = resolve_private_accessor_owner(name)) {
+        pd = owner->get_property_descriptor(qualified);
+        found = pd.has_value() || pd.is_accessor_descriptor();
+        if (!found) {
+            pd = owner->get_property_descriptor(name);
+            found = pd.has_value() || pd.is_accessor_descriptor();
+            if (found) used = name;
+        }
+    }
+    if (!found) {
+        for (Object* proto = obj->get_prototype(); proto; proto = proto->get_prototype()) {
+            pd = proto->get_property_descriptor(qualified);
+            if (pd.has_value() || pd.is_accessor_descriptor()) { found = true; break; }
+            pd = proto->get_property_descriptor(name);
+            if (pd.has_value() || pd.is_accessor_descriptor()) { found = true; used = name; break; }
+        }
+    }
+    if (!found) {
+        ctx.throw_type_error("Cannot set private field " + name + " on an object that has not been initialized");
+        return;
+    }
+    if (pd.is_accessor_descriptor()) {
+        if (!pd.has_setter()) {
+            ctx.throw_type_error("'" + used + "' was defined without a setter");
+            return;
+        }
+        Function* setter_fn = dynamic_cast<Function*>(pd.get_setter());
+        if (setter_fn) setter_fn->call(ctx, {value}, receiver);
+        return;
+    }
+    if (pd.has_value() && pd.get_value().is_function()) {
+        ctx.throw_type_error("'" + used + "' is a private method and cannot be assigned to");
+        return;
+    }
+    obj->ordinary_set(used, value);
 }
 
 }
@@ -913,6 +1077,24 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
                 set_named(ctx, regs[obj_reg], chunk.names[name_idx], acc, &chunk.feedback[fb_idx]);
+                CHECK_EXC();
+                break;
+            }
+            case Op::GetPrivate: {
+                uint8_t obj_reg = code[pc];
+                uint16_t name_idx = read_u16(code, pc + 1);
+                uint16_t fb_idx = read_u16(code, pc + 3);
+                pc += 5;
+                acc = get_private(ctx, regs[obj_reg], chunk.names[name_idx], &chunk.private_feedback[fb_idx]);
+                CHECK_EXC();
+                break;
+            }
+            case Op::SetPrivate: {
+                uint8_t obj_reg = code[pc];
+                uint16_t name_idx = read_u16(code, pc + 1);
+                uint16_t fb_idx = read_u16(code, pc + 3);
+                pc += 5;
+                set_private(ctx, regs[obj_reg], chunk.names[name_idx], acc, &chunk.private_feedback[fb_idx]);
                 CHECK_EXC();
                 break;
             }
