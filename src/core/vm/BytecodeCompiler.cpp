@@ -612,6 +612,258 @@ bool uses_arguments(const ASTNode* node) {
     }
 }
 
+// Selective env_mode capture analysis. Collects every identifier that
+// occurs inside a closure-creating node (function/arrow/async): if such a
+// name is one of this function's locals, it must stay Environment-resident.
+// Over-collection is harmless (a register candidate merely stays in the
+// env); under-collection is a correctness bug, so anything this scanner
+// cannot see through reports a fallback flag and the caller compiles the
+// whole function in full env_mode:
+//  - saw_eval: a closure mentions `eval` -- its program text can reference
+//    any local invisibly.
+//  - saw_class: class bodies (methods, fields, heritage) are not traversed
+//    here yet.
+//  - unknown: an AST node type outside this switch.
+void collect_closure_names(const ASTNode* node, bool inside_closure,
+                           std::unordered_set<std::string>& out,
+                           bool& saw_eval, bool& saw_class, bool& unknown) {
+    if (!node) return;
+    auto walk_params = [&](const std::vector<std::unique_ptr<Parameter>>& ps) {
+        for (const auto& p : ps) {
+            if (p->has_default())
+                collect_closure_names(p->get_default_value(), true, out, saw_eval, saw_class, unknown);
+            if (p->has_destructuring())
+                collect_closure_names(p->get_destructuring_pattern(), true, out, saw_eval, saw_class, unknown);
+        }
+    };
+    switch (node->get_type()) {
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::REGEX_LITERAL:
+        case ASTNode::Type::EMPTY_STATEMENT:
+        case ASTNode::Type::BREAK_STATEMENT:
+        case ASTNode::Type::CONTINUE_STATEMENT:
+            return;
+        case ASTNode::Type::IDENTIFIER: {
+            if (!inside_closure) return;
+            const std::string& n = static_cast<const Identifier*>(node)->get_name();
+            if (n == "eval") saw_eval = true;
+            out.insert(n);
+            return;
+        }
+        case ASTNode::Type::FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const FunctionExpression*>(node);
+            walk_params(n->get_params());
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::FUNCTION_DECLARATION: {
+            const auto* n = static_cast<const FunctionDeclaration*>(node);
+            walk_params(n->get_params());
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const ArrowFunctionExpression*>(node);
+            walk_params(n->get_params());
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const AsyncFunctionExpression*>(node);
+            walk_params(n->get_params());
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::CLASS_DECLARATION:
+            saw_class = true;
+            return;
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements())
+                collect_closure_names(stmt.get(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_consequent(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_alternate(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            collect_closure_names(n->get_init(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_update(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            collect_closure_names(n->get_try_block(), inside_closure, out, saw_eval, saw_class, unknown);
+            if (const ASTNode* cc = n->get_catch_clause())
+                collect_closure_names(static_cast<const CatchClause*>(cc)->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_finally_block(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            collect_closure_names(n->get_discriminant(), inside_closure, out, saw_eval, saw_class, unknown);
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                collect_closure_names(cc->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
+                for (const auto& st : cc->get_consequent())
+                    collect_closure_names(st.get(), inside_closure, out, saw_eval, saw_class, unknown);
+            }
+            return;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            collect_closure_names(static_cast<const LabeledStatement*>(node)->get_statement(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            collect_closure_names(static_cast<const ExpressionStatement*>(node)->get_expression(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::RETURN_STATEMENT: {
+            const auto* n = static_cast<const ReturnStatement*>(node);
+            collect_closure_names(n->get_argument(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::THROW_STATEMENT:
+            collect_closure_names(static_cast<const ThrowStatement*>(node)->get_expression(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations())
+                collect_closure_names(d->get_init(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            collect_closure_names(n->get_source(), inside_closure, out, saw_eval, saw_class, unknown);
+            for (const auto& dv : n->get_default_values())
+                collect_closure_names(dv.expr.get(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            collect_closure_names(static_cast<const UnaryExpression*>(node)->get_operand(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_consequent(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_alternate(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            collect_closure_names(n->get_callee(), inside_closure, out, saw_eval, saw_class, unknown);
+            for (const auto& arg : n->get_arguments())
+                collect_closure_names(arg.get(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            collect_closure_names(n->get_constructor(), inside_closure, out, saw_eval, saw_class, unknown);
+            for (const auto& arg : n->get_arguments())
+                collect_closure_names(arg.get(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            // `x.name` references only `x` -- a non-computed property is a name.
+            const auto* n = static_cast<const MemberExpression*>(node);
+            collect_closure_names(n->get_object(), inside_closure, out, saw_eval, saw_class, unknown);
+            if (n->is_computed())
+                collect_closure_names(n->get_property(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            collect_closure_names(n->get_object(), inside_closure, out, saw_eval, saw_class, unknown);
+            if (n->is_computed())
+                collect_closure_names(n->get_property(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            collect_closure_names(static_cast<const SpreadElement*>(node)->get_argument(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements())
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION)
+                    collect_closure_names(el.expression.get(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& prop : n->get_properties()) {
+                if (prop->computed && prop->key)
+                    collect_closure_names(prop->key.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                if (prop->value)
+                    collect_closure_names(prop->value.get(), inside_closure, out, saw_eval, saw_class, unknown);
+            }
+            return;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements())
+                collect_closure_names(el.get(), inside_closure, out, saw_eval, saw_class, unknown);
+            return;
+        }
+        default:
+            unknown = true;
+            return;
+    }
+}
+
 // True if `node` references `super` (property or call) or a private name
 // (#x) anywhere within it. Forces env_mode: these forms are delegated whole
 // to the tree-walker's own evaluate() (see the MEMBER_EXPRESSION/CALL_EXPRESSION/
@@ -1427,12 +1679,64 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // bindings and any captured locals resolvable through a real Environment.
     // Suspendable bodies always use env_mode: locals must survive across the
     // fiber suspension that delegated yield/await expressions perform.
-    bool env_mode = suspendable || has_complex_params || needs_arguments ||
-                     contains_closure(body) || contains_destructuring(body) ||
-                     contains_nested_lexical_decl(static_cast<const BlockStatement*>(body)) ||
-                     uses_super_or_private(body);
+    bool has_closures = contains_closure(body);
+    bool has_nested_lex = contains_nested_lexical_decl(static_cast<const BlockStatement*>(body));
+    // Private access no longer forces env_mode: GetPrivate/SetPrivate resolve
+    // brands through the CallStack, not the env chain. `super` still needs the
+    // env (__super__/__home_object__ bindings); detect it from a whole-body
+    // name sweep, whose opacity flags force full env_mode just like the
+    // selective scan below. Delegated private forms that do need an env
+    // (#x in obj, delete this.#x) hit emit_treewalker_delegate's guards and
+    // fall back to the tree-walker.
+    std::unordered_set<std::string> all_names;
+    bool an_eval = false, an_class = false, an_unknown = false;
+    collect_closure_names(body, /*inside_closure=*/true, all_names, an_eval, an_class, an_unknown);
+    bool full_env = suspendable || has_complex_params || needs_arguments ||
+                    contains_destructuring(body) || an_class || an_unknown ||
+                    all_names.count("super") > 0;
 
-    BytecodeCompiler compiler(param_names, env_mode);
+    // Selective env_mode: only names a closure can observe (or that need a
+    // runtime scope: nested lexicals, catch params, hoisted function names)
+    // stay Environment-resident; every other local gets a register. Any
+    // opacity -- eval inside a closure, class bodies, an AST form the
+    // scanner doesn't know -- falls back to full env_mode.
+    std::unordered_set<std::string> env_resident;
+    bool selective = false;
+    if (!full_env && (has_closures || has_nested_lex)) {
+        bool saw_eval = false, saw_class = false, unknown = false;
+        collect_closure_names(body, /*inside_closure=*/false, env_resident,
+                              saw_eval, saw_class, unknown);
+        if (saw_eval || saw_class || unknown) {
+            full_env = true;
+        } else {
+            for (const auto& stmt : static_cast<const BlockStatement*>(body)->get_statements()) {
+                if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+                const auto* fd = static_cast<const FunctionDeclaration*>(stmt.get());
+                if (fd->get_id()) env_resident.insert(fd->get_id()->get_name());
+            }
+            selective = true;
+        }
+    }
+    bool env_mode = full_env || has_closures || has_nested_lex;
+
+    if (selective) {
+        // Nested/loop-header lexicals and catch params live in block/loop
+        // Environments at runtime; their names resolve through the chain.
+        std::vector<BytecodeChunk::LoopEnvVar> direct_vars_pre;
+        bool unused_pre = false;
+        collect_direct_lexical_decls(body, direct_vars_pre, unused_pre);
+        std::unordered_set<std::string> direct_pre;
+        for (const auto& v : direct_vars_pre) direct_pre.insert(v.name);
+        std::vector<DeclInfo> declared_pre;
+        if (!prescan_declarations(body, declared_pre)) return nullptr;
+        for (const auto& info : declared_pre) {
+            if (info.is_catch_param || (info.is_lexical && !direct_pre.count(info.name))) {
+                env_resident.insert(info.name);
+            }
+        }
+    }
+
+    BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
     if (compiler.failed_) return nullptr;
     compiler.allow_arguments_ = needs_arguments;
     compiler.suspendable_ = suspendable;
@@ -1462,7 +1766,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // refuse rather than compile an incorrectly-mutable const.
         if (info.is_const && assigns_to_identifier(body, info.name)) return nullptr;
 
-        if (env_mode) {
+        bool resident = env_mode && (!selective || env_resident.count(info.name) > 0);
+        if (resident) {
             // A repeat declare_local (shadowed name) is fine -- the Environment
             // chain resolves each occurrence to its own scope at runtime.
             compiler.declare_local(info.name);
@@ -1479,14 +1784,27 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
     compiler.temp_watermark_ = compiler.next_register_;
 
-    if (!env_mode) {
+    if (!env_mode || selective) {
         // Every let/const register starts in TDZ; the declaring statement's
-        // own Star lifts it later.
+        // own Star lifts it later. (Env-resident names have no register.)
         for (const auto& info : declared) {
             if (!info.is_lexical) continue;
+            int reg = compiler.lookup_local(info.name);
+            if (reg < 0 || compiler.env_names_.count(info.name)) continue;
             compiler.emit(Op::LdaTdz);
             compiler.emit(Op::Star);
-            compiler.emit_u8(static_cast<uint8_t>(compiler.lookup_local(info.name)));
+            compiler.emit_u8(static_cast<uint8_t>(reg));
+        }
+    }
+    if (selective) {
+        // Captured params: registers hold the raw arguments (run() fills
+        // them); seed the env binding every read/write will resolve to.
+        for (size_t i = 0; i < param_names.size(); i++) {
+            if (!env_resident.count(param_names[i])) continue;
+            compiler.emit(Op::Ldar);
+            compiler.emit_u8(static_cast<uint8_t>(i));
+            compiler.emit(Op::StaEnvInit);
+            compiler.emit_u16(compiler.add_name(param_names[i]));
         }
     }
     // Non-rest parameters' function-entry bindings are data-driven from the
@@ -1600,20 +1918,30 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->env_mode = env_mode;
     compiler.chunk_->env_params_tdz = params_tdz;
     compiler.chunk_->needs_arguments = needs_arguments;
-    if (env_mode) compiler.chunk_->env_params = param_names;
+    if (env_mode && !selective) compiler.chunk_->env_params = param_names;
     return std::move(compiler.chunk_);
 }
 
-BytecodeCompiler::BytecodeCompiler(const std::vector<std::string>& param_names, bool env_mode)
+BytecodeCompiler::BytecodeCompiler(const std::vector<std::string>& param_names, bool env_mode,
+                                   const std::unordered_set<std::string>* env_resident)
     : chunk_(std::make_unique<BytecodeChunk>()), env_mode_(env_mode) {
-    if (env_mode_) {
+    if (env_resident) {
+        full_env_ = false;
+        env_resident_ = *env_resident;
+    }
+    if (env_mode_ && full_env_) {
         for (const auto& p : param_names) {
             if (!env_names_.insert(p).second) { failed_ = true; return; }
         }
         return;
     }
+    // Register (or selective) mode: every param owns register i. A selective
+    // env-resident param keeps its register as the entry seed source; all
+    // reads/writes go through the env binding (see emit_read_local).
     for (const auto& p : param_names) {
-        if (!declare_local(p)) { failed_ = true; return; }
+        if (locals_.count(p)) { failed_ = true; return; }
+        locals_[p] = next_register_++;
+        if (env_mode_ && env_resident_.count(p)) env_names_.insert(p);
     }
 }
 
@@ -1737,7 +2065,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
 }
 
 bool BytecodeCompiler::is_local(const std::string& name) const {
-    return env_mode_ ? env_names_.count(name) > 0 : locals_.count(name) > 0;
+    return env_names_.count(name) > 0 || locals_.count(name) > 0;
 }
 
 int BytecodeCompiler::lookup_local(const std::string& name) const {
@@ -1746,7 +2074,9 @@ int BytecodeCompiler::lookup_local(const std::string& name) const {
 }
 
 bool BytecodeCompiler::declare_local(const std::string& name) {
-    if (env_mode_) return env_names_.insert(name).second;
+    if (env_mode_ && (full_env_ || env_resident_.count(name))) {
+        return env_names_.insert(name).second;
+    }
     if (locals_.count(name)) return false;
     if (next_register_ >= kMaxRegisters) return false;
     locals_[name] = next_register_++;
@@ -1766,7 +2096,7 @@ void BytecodeCompiler::free_temp(int reg) {
 }
 
 void BytecodeCompiler::emit_read_local(const std::string& name) {
-    if (env_mode_) {
+    if (env_names_.count(name)) {
         emit(Op::LdaEnv);
         emit_u16(add_name(name));
         return;
@@ -1783,7 +2113,7 @@ void BytecodeCompiler::emit_read_local(const std::string& name) {
 }
 
 void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declaration) {
-    if (env_mode_) {
+    if (env_names_.count(name)) {
         emit(is_declaration ? Op::StaEnvInit : Op::StaEnv);
         emit_u16(add_name(name));
         return;
@@ -1854,6 +2184,19 @@ bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
 // Environment (env_mode is forced whenever uses_super_or_private matches).
 bool BytecodeCompiler::emit_treewalker_delegate(const ASTNode* node) {
     if (!env_mode_) return false;
+    if (!full_env_) {
+        // Selective storage: the delegated subtree resolves names through the
+        // ctx chain, so a reference to a register-resident local would miss.
+        // Refuse (whole function falls back to the tree-walker) rather than
+        // compile wrong code.
+        std::unordered_set<std::string> names;
+        bool saw_eval = false, saw_class = false, unknown = false;
+        collect_closure_names(node, /*inside_closure=*/true, names, saw_eval, saw_class, unknown);
+        if (unknown || saw_class || saw_eval) return false;
+        for (const auto& n : names) {
+            if (locals_.count(n) && !env_names_.count(n)) return false;
+        }
+    }
     if (chunk_->closures.size() >= 0xFFFF) return false;
     chunk_->closures.push_back(node);
     emit(Op::CreateClosure);

@@ -33,7 +33,14 @@ public:
         bool suspendable = false);
 
 private:
-    BytecodeCompiler(const std::vector<std::string>& param_names, bool env_mode);
+    // env_resident: selective env_mode -- only these names live in the
+    // Environment, everything else gets a register. Null = full env_mode
+    // (every local in the env) when env_mode is true.
+    BytecodeCompiler(const std::vector<std::string>& param_names, bool env_mode,
+                     const std::unordered_set<std::string>* env_resident = nullptr);
+
+    bool full_env_ = true;  // env_mode_ && !full_env_ = selective storage
+    std::unordered_set<std::string> env_resident_;
 
     bool compile_statement(const ASTNode* node);
     bool compile_expression(const ASTNode* node);  // result in accumulator
