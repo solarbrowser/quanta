@@ -24,8 +24,13 @@ class Parameter;
 // tree-walker (no mixed execution).
 class BytecodeCompiler {
 public:
+    // `suspendable`: generator/async body -- forces env_mode (yield/await are
+    // delegated to the tree-walker, which suspends the surrounding fiber) and
+    // rejects bodies with yield/await inside try (a C++ GeneratorReturnException
+    // from return() would skip VM finally blocks).
     static std::unique_ptr<BytecodeChunk> compile(
-        const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params);
+        const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
+        bool suspendable = false);
 
 private:
     BytecodeCompiler(const std::vector<std::string>& param_names, bool env_mode);
@@ -83,6 +88,7 @@ private:
     int temp_watermark_ = 0;
     std::vector<LoopScope> loop_stack_;
     std::vector<std::string> pending_labels_;  // set by LABELED_STATEMENT, taken by the next loop/switch
+    std::unordered_set<const ASTNode*> hoisted_fn_decls_;  // top-level fn decls bound by compile()'s prologue
     bool allow_arguments_ = false;  // `arguments` reads compile to LdaLookup (chunk needs_arguments set)
     int try_env_depth_ = 0;
     int env_depth_ = 0;

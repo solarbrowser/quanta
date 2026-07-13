@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/FiberRegistry.h"
+#include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
@@ -81,7 +82,17 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
     Context* ctx = self->exec_context_;
     try {
         if (self->body_) {
-            self->body_->evaluate(*ctx);
+            // Bindings already live in exec_context_; a delegated await suspends
+            // the fiber from inside the VM dispatch loop (see Generator::run_body).
+            bool used_vm = false;
+            Value vm_result = VM::run_suspendable(self->body_.get(), *ctx, used_vm);
+            if (used_vm) {
+                if (!vm_result.is_undefined() && !ctx->has_return_value() && !ctx->has_exception()) {
+                    ctx->set_return_value(vm_result);
+                }
+            } else {
+                self->body_->evaluate(*ctx);
+            }
         }
     } catch (const std::exception& e) {
         if (!ctx->has_exception()) {
@@ -500,7 +511,16 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
     Context* ctx = self->generator_context_;
     try {
         if (self->body_) {
-            self->body_->evaluate(*ctx);
+            // Same VM-or-treewalk split as Generator::run_body.
+            bool used_vm = false;
+            Value vm_result = VM::run_suspendable(self->body_.get(), *ctx, used_vm);
+            if (used_vm) {
+                if (!vm_result.is_undefined() && !ctx->has_return_value() && !ctx->has_exception()) {
+                    ctx->set_return_value(vm_result);
+                }
+            } else {
+                self->body_->evaluate(*ctx);
+            }
         }
     } catch (const GeneratorReturnException& ret_ex) {
         if (!ctx->has_return_value()) {

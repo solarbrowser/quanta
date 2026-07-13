@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/parser/AST.h"
 #include "quanta/parser/Parser.h"
+#include "quanta/core/vm/Interpreter.h"
 #include <iostream>
 
 namespace Quanta {
@@ -47,7 +48,19 @@ void Generator::fiber_entry(uint32_t lo, uint32_t hi) {
 void Generator::run_body() {
     try {
         if (body_) {
-            body_->evaluate(*generator_context_);
+            // Bindings already live in generator_context_; a delegated yield
+            // suspends the fiber from inside the VM dispatch loop, so the
+            // compiled form needs no resumable state of its own.
+            bool used_vm = false;
+            Value vm_result = VM::run_suspendable(body_.get(), *generator_context_, used_vm);
+            if (used_vm) {
+                if (!vm_result.is_undefined() && !generator_context_->has_return_value() &&
+                    !generator_context_->has_exception()) {
+                    generator_context_->set_return_value(vm_result);
+                }
+            } else {
+                body_->evaluate(*generator_context_);
+            }
         }
     } catch (const GeneratorReturnException&) {
         // return() called -- generator terminated cleanly

@@ -21,6 +21,12 @@ namespace VM {
 // through ctx (same contract as ASTNode::evaluate).
 Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args);
 
+// Compiles and runs a generator/async BODY inside its fiber: bindings (this,
+// params, arguments) already live in ctx, yield/await suspend the fiber from
+// inside the dispatch loop. Sets used_vm=false (and runs nothing) when the
+// body doesn't compile -- the caller then tree-walks it as before.
+Value run_suspendable(const ASTNode* body, Context& ctx, bool& used_vm);
+
 // Process-wide opt-in switch, read once: QUANTA_VM=1 enables compilation
 // and execution, QUANTA_VM=0/unset keeps everything on the tree-walker.
 bool enabled();

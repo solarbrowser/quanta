@@ -274,6 +274,10 @@ bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
             const auto* n = static_cast<const FunctionDeclaration*>(node);
             return assigns_to_identifier(n->get_body(), name);
         }
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const AsyncFunctionExpression*>(node);
+            return assigns_to_identifier(n->get_body(), name);
+        }
         case ASTNode::Type::CLASS_DECLARATION: {
             const auto* n = static_cast<const ClassDeclaration*>(node);
             return assigns_to_identifier(n->get_superclass(), name) ||
@@ -304,6 +308,7 @@ bool contains_closure(const ASTNode* node) {
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
         case ASTNode::Type::FUNCTION_DECLARATION:
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
         case ASTNode::Type::CLASS_DECLARATION:  // methods capture the environment
             return true;
         case ASTNode::Type::BLOCK_STATEMENT: {
@@ -434,6 +439,11 @@ bool uses_arguments(const ASTNode* node) {
             return false;
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
             return uses_arguments(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+            // Async arrows share the enclosing arguments; async functions own theirs.
+            const auto* n = static_cast<const AsyncFunctionExpression*>(node);
+            return n->is_arrow() && uses_arguments(n->get_body());
+        }
         case ASTNode::Type::CLASS_DECLARATION: {
             // Superclass expressions and computed keys evaluate in the
             // enclosing scope; method bodies get their own arguments.
@@ -618,6 +628,11 @@ bool uses_super_or_private(const ASTNode* node) {
             return false;
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
             return uses_super_or_private(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+            // Async arrows share the enclosing this/super/private context.
+            const auto* n = static_cast<const AsyncFunctionExpression*>(node);
+            return n->is_arrow() && uses_super_or_private(n->get_body());
+        }
         case ASTNode::Type::CLASS_DECLARATION: {
             const auto* n = static_cast<const ClassDeclaration*>(node);
             return uses_super_or_private(n->get_superclass()) || uses_super_or_private(n->get_body());
@@ -795,6 +810,232 @@ bool uses_super_or_private(const ASTNode* node) {
             }
             return false;
         }
+        default:
+            return false;
+    }
+}
+
+// True if `node` contains a yield/await anywhere in the CURRENT function's own
+// code (descends into arrows, stops at nested function/class-body boundaries --
+// same rule as uses_arguments, since yield/await belong to the enclosing
+// suspendable function).
+bool contains_suspend(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::YIELD_EXPRESSION:
+        case ASTNode::Type::AWAIT_EXPRESSION:
+            return true;
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+        case ASTNode::Type::FUNCTION_DECLARATION:
+        case ASTNode::Type::CLASS_DECLARATION:
+            return false;
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const AsyncFunctionExpression*>(node);
+            return n->is_arrow() && contains_suspend(n->get_body());
+        }
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+            return contains_suspend(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& s : n->get_statements()) if (contains_suspend(s.get())) return true;
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return contains_suspend(n->get_test()) || contains_suspend(n->get_consequent()) ||
+                   contains_suspend(n->get_alternate());
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            return contains_suspend(n->get_test()) || contains_suspend(n->get_body());
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            return contains_suspend(n->get_body()) || contains_suspend(n->get_test());
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            return contains_suspend(n->get_init()) || contains_suspend(n->get_test()) ||
+                   contains_suspend(n->get_update()) || contains_suspend(n->get_body());
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            return contains_suspend(n->get_right()) || contains_suspend(n->get_body());
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            return contains_suspend(n->get_right()) || contains_suspend(n->get_body());
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (contains_suspend(n->get_try_block())) return true;
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                if (contains_suspend(static_cast<const CatchClause*>(cc)->get_body())) return true;
+            }
+            return contains_suspend(n->get_finally_block());
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (contains_suspend(n->get_discriminant())) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (cc->get_test() && contains_suspend(cc->get_test())) return true;
+                for (const auto& s : cc->get_consequent()) if (contains_suspend(s.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_suspend(static_cast<const LabeledStatement*>(node)->get_statement());
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return contains_suspend(static_cast<const ExpressionStatement*>(node)->get_expression());
+        case ASTNode::Type::RETURN_STATEMENT: {
+            const auto* n = static_cast<const ReturnStatement*>(node);
+            return n->get_argument() && contains_suspend(n->get_argument());
+        }
+        case ASTNode::Type::THROW_STATEMENT:
+            return contains_suspend(static_cast<const ThrowStatement*>(node)->get_expression());
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations()) {
+                if (d->get_init() && contains_suspend(d->get_init())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            if (n->get_source() && contains_suspend(n->get_source())) return true;
+            for (const auto& dv : n->get_default_values()) {
+                if (contains_suspend(dv.expr.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return contains_suspend(n->get_left()) || contains_suspend(n->get_right());
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return contains_suspend(static_cast<const UnaryExpression*>(node)->get_operand());
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            return contains_suspend(n->get_left()) || contains_suspend(n->get_right());
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            return contains_suspend(n->get_left()) || contains_suspend(n->get_right());
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            return contains_suspend(n->get_test()) || contains_suspend(n->get_consequent()) ||
+                   contains_suspend(n->get_alternate());
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            if (contains_suspend(n->get_callee())) return true;
+            for (const auto& a : n->get_arguments()) if (contains_suspend(a.get())) return true;
+            return false;
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (contains_suspend(n->get_constructor())) return true;
+            for (const auto& a : n->get_arguments()) if (contains_suspend(a.get())) return true;
+            return false;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* n = static_cast<const MemberExpression*>(node);
+            return contains_suspend(n->get_object()) ||
+                   (n->is_computed() && contains_suspend(n->get_property()));
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            return contains_suspend(n->get_object()) ||
+                   (n->is_computed() && contains_suspend(n->get_property()));
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return contains_suspend(static_cast<const SpreadElement*>(node)->get_argument());
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION &&
+                    contains_suspend(el.expression.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& p : n->get_properties()) {
+                if (p->value && contains_suspend(p->value.get())) return true;
+                if (p->computed && p->key && contains_suspend(p->key.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el && contains_suspend(el.get())) return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
+// True if any try statement in the body contains a yield/await. Such bodies
+// can't compile: generator return()/throw() unwinds as a C++ exception from
+// the suspended point and would skip the VM's finally handling.
+bool contains_try_with_suspend(const ASTNode* node) {
+    if (!node) return false;
+    if (node->get_type() == ASTNode::Type::TRY_STATEMENT) {
+        if (contains_suspend(node)) return true;
+    }
+    switch (node->get_type()) {
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+        case ASTNode::Type::FUNCTION_DECLARATION:
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
+        case ASTNode::Type::CLASS_DECLARATION:
+            return false;
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& s : n->get_statements()) {
+                if (contains_try_with_suspend(s.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return contains_try_with_suspend(n->get_consequent()) ||
+                   contains_try_with_suspend(n->get_alternate());
+        }
+        case ASTNode::Type::WHILE_STATEMENT:
+            return contains_try_with_suspend(static_cast<const WhileStatement*>(node)->get_body());
+        case ASTNode::Type::DO_WHILE_STATEMENT:
+            return contains_try_with_suspend(static_cast<const DoWhileStatement*>(node)->get_body());
+        case ASTNode::Type::FOR_STATEMENT:
+            return contains_try_with_suspend(static_cast<const ForStatement*>(node)->get_body());
+        case ASTNode::Type::FOR_OF_STATEMENT:
+            return contains_try_with_suspend(static_cast<const ForOfStatement*>(node)->get_body());
+        case ASTNode::Type::FOR_IN_STATEMENT:
+            return contains_try_with_suspend(static_cast<const ForInStatement*>(node)->get_body());
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (contains_try_with_suspend(n->get_try_block())) return true;
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                if (contains_try_with_suspend(static_cast<const CatchClause*>(cc)->get_body())) return true;
+            }
+            return contains_try_with_suspend(n->get_finally_block());
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                for (const auto& s : cc->get_consequent()) {
+                    if (contains_try_with_suspend(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_try_with_suspend(static_cast<const LabeledStatement*>(node)->get_statement());
         default:
             return false;
     }
@@ -1100,9 +1341,11 @@ bool chain_contains_optional(const ASTNode* node) {
 }
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
-    const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params) {
+    const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
+    bool suspendable) {
     if (!body || body->get_type() != ASTNode::Type::BLOCK_STATEMENT) return nullptr;
     if (params.size() > 64) return nullptr;
+    if (suspendable && contains_try_with_suspend(body)) return nullptr;
 
     // Default/destructured/rest parameters force env_mode: rest needs a
     // fresh (not run()-auto-bound) slot, and destructuring only knows how
@@ -1154,7 +1397,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // super/private-name access also forces env_mode: those forms delegate
     // to the tree-walker's own evaluate() and need `this`/`__super__`/brand
     // bindings and any captured locals resolvable through a real Environment.
-    bool env_mode = has_complex_params || needs_arguments ||
+    // Suspendable bodies always use env_mode: locals must survive across the
+    // fiber suspension that delegated yield/await expressions perform.
+    bool env_mode = suspendable || has_complex_params || needs_arguments ||
                      contains_closure(body) || contains_destructuring(body) ||
                      contains_nested_lexical_decl(static_cast<const BlockStatement*>(body)) ||
                      uses_super_or_private(body);
@@ -1259,6 +1504,22 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
 
     const auto* block = static_cast<const BlockStatement*>(body);
+
+    // Hoist top-level function declarations (incl. generator/async forms):
+    // FunctionDeclaration::evaluate creates the function AND binds its name,
+    // so a plain delegation before the body gives `g(); function g() {}` the
+    // right order. Block-nested declarations (Annex B territory) still bail
+    // in compile_statement.
+    for (const auto& stmt : block->get_statements()) {
+        if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+        if (!env_mode) return nullptr;
+        if (compiler.chunk_->closures.size() >= 0xFFFF) return nullptr;
+        compiler.hoisted_fn_decls_.insert(stmt.get());
+        compiler.chunk_->closures.push_back(stmt.get());
+        compiler.emit(Op::CreateClosure);
+        compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->closures.size() - 1));
+    }
+
     for (const auto& stmt : block->get_statements()) {
         if (!compiler.compile_statement(stmt.get())) return nullptr;
     }
@@ -1558,6 +1819,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
     switch (node->get_type()) {
         case ASTNode::Type::EMPTY_STATEMENT:
             return true;
+
+        // Already created and bound by the hoisting pass in compile();
+        // block-nested declarations (Annex B) keep bailing to the tree-walker.
+        case ASTNode::Type::FUNCTION_DECLARATION:
+            return hoisted_fn_decls_.count(node) > 0;
 
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* block = static_cast<const BlockStatement*>(node);
@@ -2654,13 +2920,22 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             return patch_jump(end_jump);
         }
 
+        // yield/await delegate to the tree-walker, which suspends the current
+        // FIBER (stackful coroutine) -- the VM's own C++ frame sleeps through
+        // the suspension and the sent/resolved value lands in the accumulator.
+        case ASTNode::Type::YIELD_EXPRESSION:
+        case ASTNode::Type::AWAIT_EXPRESSION:
+            return emit_treewalker_delegate(node);
+
         // Delegates to the tree-walker's own evaluate() (Op::CreateClosure) --
         // correct since env_mode guarantees every local this closure could
         // reference lives in ctx.get_lexical_environment(). CLASS_DECLARATION
         // here is the expression form (`const C = class {}`): evaluate()
-        // returns the class without binding a name.
+        // returns the class without binding a name. Generator forms ride the
+        // FUNCTION_EXPRESSION node; async fns/arrows have their own type.
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
         case ASTNode::Type::CLASS_DECLARATION: {
             if (!env_mode_) return false;
             if (chunk_->closures.size() >= 0xFFFF) return false;

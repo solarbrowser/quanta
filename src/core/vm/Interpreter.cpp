@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/vm/Interpreter.h"
+#include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/BigInt.h"
@@ -963,6 +964,27 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 
 #undef BINARY_OP
 #undef CHECK_EXC
+}
+
+Value run_suspendable(const ASTNode* body, Context& ctx, bool& used_vm) {
+    used_vm = false;
+    if (!enabled() || !body) return Value();
+    static const std::vector<std::unique_ptr<Parameter>> no_params;
+    auto chunk = BytecodeCompiler::compile(body, no_params, /*suspendable=*/true);
+    if (!chunk) return Value();
+    used_vm = true;
+    static const bool disasm = [] {
+        const char* env = std::getenv("QUANTA_VM_DISASM");
+        return env && env[0] == '1';
+    }();
+    if (disasm) {
+        std::fprintf(stderr, "%s", disassemble_chunk(*chunk, "<suspendable>").c_str());
+    }
+    // The chunk has no traced owner (Function caches don't apply: each
+    // generator/executor owns a cloned body); root its constants for the
+    // whole, possibly fiber-suspended, execution.
+    ValueVectorRoot const_root(&chunk->constants);
+    return run(*chunk, ctx, {});
 }
 
 }
