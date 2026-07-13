@@ -429,6 +429,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
         }
     }
 
+    // The frame's own environment: per-call, so lookup_cache must never
+    // point into it (outer captured envs are the cacheable ones).
+    Environment* entry_env = ctx.get_lexical_environment();
+
     // Op::LdaThis cache: `this` is immutable for the whole frame (derived
     // constructors never enter the VM), so resolve the binding at most once.
     bool this_resolved = this_val != nullptr;
@@ -724,9 +728,16 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             }
 
             case Op::LdaLookup: {
-                // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                uint16_t name_idx = read_u16(code, pc);
                 pc += 2;
+                {
+                    // Captured-chain fast path: the resolved binding address is
+                    // stable for this chunk's lifetime (see lookup_cache).
+                    const auto& entry = chunk.lookup_cache[name_idx];
+                    if (entry.slot) { acc = *entry.slot; break; }
+                }
+                // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
+                const std::string& name = chunk.names[name_idx];
                 if (ctx.is_in_tdz(name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
@@ -737,6 +748,11 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 if (env) {
                     acc = env->get_binding_direct(name, &ctx);
                     CHECK_EXC();
+                    if (env != entry_env) {
+                        if (Value* slot = env->stable_binding_slot(name)) {
+                            chunk.lookup_cache[name_idx] = {env, slot};
+                        }
+                    }
                 } else if (ctx.has_binding(name)) {
                     acc = ctx.get_binding(name);
                     CHECK_EXC();
@@ -771,11 +787,25 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             }
 
             case Op::StaLookup: {
+                uint16_t sta_name_idx = read_u16(code, pc);
+                pc += 2;
+                {
+                    const auto& entry = chunk.lookup_cache[sta_name_idx];
+                    if (entry.slot) {
+                        // The barrier records "env gained a reference" for the
+                        // remembered set -- storing a non-heap value can't.
+                        if (acc.is_object() || acc.is_function() || acc.is_string() ||
+                            acc.is_symbol() || acc.is_bigint()) {
+                            Collector::write_barrier_env(entry.env);
+                        }
+                        *entry.slot = acc;
+                        break;
+                    }
+                }
                 // Mirrors AssignmentExpression's identifier PutValue. `with` and
                 // direct eval bail out of the VM, so resolving the reference at
                 // write time matches the tree-walker's captured-env behavior.
-                const std::string& name = chunk.names[read_u16(code, pc)];
-                pc += 2;
+                const std::string& name = chunk.names[sta_name_idx];
                 if (ctx.is_in_tdz(name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
@@ -809,6 +839,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     bool ok = env->set_binding(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                    } else if (ok && env != entry_env) {
+                        if (Value* slot = env->stable_binding_slot(name)) {
+                            chunk.lookup_cache[sta_name_idx] = {env, slot};
+                        }
                     }
                 }
                 CHECK_EXC();

@@ -419,6 +419,10 @@ public:
     Value get_binding_with_depth(const std::string& name, int depth) const;
     bool set_binding(const std::string& name, const Value& value);
     Value get_binding_direct(const std::string& name, Context* ctx = nullptr) const;
+    // Address-stable storage pointer for an initialized, mutable,
+    // non-deletable declarative binding (unordered_map nodes never move).
+    // Backbone of the VM's outer-variable cache; null when any guard fails.
+    Value* stable_binding_slot(const std::string& name);
     bool set_binding_direct(const std::string& name, const Value& value, Context* ctx = nullptr);
     Environment* find_binding_env(const std::string& name);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);

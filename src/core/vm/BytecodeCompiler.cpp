@@ -1919,6 +1919,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->env_params_tdz = params_tdz;
     compiler.chunk_->needs_arguments = needs_arguments;
     if (env_mode && !selective) compiler.chunk_->env_params = param_names;
+    compiler.chunk_->lookup_cache.assign(compiler.chunk_->names.size(),
+                                         BytecodeChunk::LookupCacheEntry{});
     return std::move(compiler.chunk_);
 }
 

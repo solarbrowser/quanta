@@ -922,6 +922,17 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
     return Value();
 }
 
+Value* Environment::stable_binding_slot(const std::string& name) {
+    if (type_ == Type::Object || is_with_environment_) return nullptr;
+    auto it = bindings_.find(name);
+    if (it == bindings_.end()) return nullptr;
+    auto d = deletable_flags_.find(name);
+    if (d != deletable_flags_.end() && d->second) return nullptr;
+    if (!is_mutable_binding(name)) return nullptr;
+    if (!is_initialized_binding(name)) return nullptr;
+    return &it->second;
+}
+
 bool Environment::set_binding_direct(const std::string& name, const Value& value, Context* ctx) {
     Collector::write_barrier_env(this);
     if (type_ == Type::Object && binding_object_) {

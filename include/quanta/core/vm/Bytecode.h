@@ -17,6 +17,7 @@ namespace Quanta {
 class Visitor;
 class Shape;
 class ASTNode;
+class Environment;
 
 // Register-based, accumulator-centric instruction set (V8 Ignition model).
 // Encoding: u8 opcode + fixed operands -- r: u8 register, k: u16 constant-
@@ -145,6 +146,12 @@ struct BytecodeChunk {
     std::vector<SourceEntry> positions;
     mutable std::vector<FeedbackSlot> feedback; // written as call sites warm up
     mutable std::vector<PrivateFeedback> private_feedback; // GetPrivate/SetPrivate sites
+    // Per-name outer-variable cache for LdaLookup/StaLookup: a captured
+    // chain is fixed per Function instance (and the chunk belongs to one),
+    // so a resolved stable binding pointer stays valid for the chunk's
+    // lifetime. See Environment::stable_binding_slot for the guards.
+    struct LookupCacheEntry { Environment* env = nullptr; Value* slot = nullptr; };
+    mutable std::vector<LookupCacheEntry> lookup_cache; // indexed by name id
     uint16_t register_count = 0;
     uint8_t parameter_count = 0;    // params occupy regs[0..parameter_count)
 
