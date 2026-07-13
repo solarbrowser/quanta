@@ -418,6 +418,9 @@ private:
     // in call-heavy profiles. -1 unknown, 0 no, 1 yes.
     mutable int8_t strict_directive_state_ = -1;
     mutable int8_t closure_props_state_ = -1;
+    // -1 unknown, 0 body never mentions the function's own name (skip the
+    // per-call self-reference binding), 1 mentions it.
+    mutable int8_t self_name_state_ = -1;
 
 public:
     Function(const std::string& name, 

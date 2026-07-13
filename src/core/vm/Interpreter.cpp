@@ -392,7 +392,8 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
 
 }
 
-Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args) {
+Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
+          const Value* this_val) {
     // Zero-initialized so leftover stack garbage in an unused slot can't look
     // like a live heap pointer to the conservative GC scan.
     Value regs[256] = {};
@@ -430,8 +431,8 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 
     // Op::LdaThis cache: `this` is immutable for the whole frame (derived
     // constructors never enter the VM), so resolve the binding at most once.
-    bool this_resolved = false;
-    Value this_value;
+    bool this_resolved = this_val != nullptr;
+    Value this_value = this_val ? *this_val : Value();
 
     const uint8_t* code = chunk.code.data();
     const Value* constants = chunk.constants.data();

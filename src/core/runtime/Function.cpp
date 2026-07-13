@@ -531,9 +531,17 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
     }
 
-    if (!function_context.create_binding("this", actual_this, true)) {
-        // Binding already exists -- force update
-        function_context.set_binding("this", actual_this);
+    // Register-mode VM frames take `this` as a run() parameter (Op::LdaThis),
+    // so the per-call binding insert -- and the hash-map growth it forces in
+    // the fresh Environment -- is skipped. First call (chunk not compiled
+    // yet) and every non-VM path still bind normally.
+    bool vm_register_fast = VM::enabled() && !vm_incompatible_ && bytecode_chunk_ &&
+                            !bytecode_chunk_->env_mode && !function_context.this_needs_super();
+    if (!vm_register_fast) {
+        if (!function_context.create_binding("this", actual_this, true)) {
+            // Binding already exists -- force update
+            function_context.set_binding("this", actual_this);
+        }
     }
 
     // A named class's own name is bound as an immutable self-reference inside its
@@ -576,7 +584,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     if (this->has_property("__super_is_null__")) {
         function_context.create_binding("__super_is_null__", Value(true), false);
     }
-    if (this->has_property("__private_brands__")) {
+    if (!vm_register_fast && this->has_property("__private_brands__")) {
         Value brands = this->get_property("__private_brands__");
         if (!brands.is_undefined() && !brands.is_null()) {
             function_context.create_binding("__eval_private_names__", brands, false);
@@ -624,8 +632,17 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
         if (bytecode_chunk_) {
             // Named function expressions still need their self-reference
-            // binding for recursion through LdaLookup.
-            if (!name_.empty() && name_ != "<anonymous>" && !function_context.has_binding(name_)) {
+            // binding for recursion through LdaLookup -- but only if the
+            // compiled body mentions the name at all (checked once).
+            if (self_name_state_ < 0) {
+                self_name_state_ = 0;
+                if (!name_.empty() && name_ != "<anonymous>") {
+                    for (const auto& n : bytecode_chunk_->names) {
+                        if (n == name_) { self_name_state_ = 1; break; }
+                    }
+                }
+            }
+            if (self_name_state_ == 1 && !function_context.has_binding(name_)) {
                 function_context.create_binding(name_, Value(this), false);
             }
             // Arrows resolve `arguments` lexically -- only a real function
@@ -636,7 +653,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
             Context* prev_context = Object::current_context_;
             Object::current_context_ = &function_context;
-            Value vm_result = VM::run(*bytecode_chunk_, function_context, args);
+            Value vm_result = VM::run(*bytecode_chunk_, function_context, args,
+                                      bytecode_chunk_->env_mode ? nullptr : &actual_this);
             Object::current_context_ = prev_context;
 
             // Propagate super_called flag to parent context (mirrors the

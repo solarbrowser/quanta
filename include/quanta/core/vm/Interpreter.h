@@ -19,7 +19,10 @@ namespace VM {
 // so the conservative GC scan covers it for free (and generator fibers
 // freeze it along with the rest of their stack). Exceptions are reported
 // through ctx (same contract as ASTNode::evaluate).
-Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args);
+// this_val: pre-resolved `this` for register-mode frames (skips the per-call
+// "this" binding insert); null falls back to scope-chain resolution.
+Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
+          const Value* this_val = nullptr);
 
 // Compiles and runs a generator/async BODY inside its fiber: bindings (this,
 // params, arguments) already live in ctx, yield/await suspend the fiber from
