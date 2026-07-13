@@ -315,7 +315,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     CallStackFrameGuard frame_guard(stack, get_name(), ctx.get_current_filename(), call_position, this);
 
     execution_count_++;
-    last_call_time_ = std::chrono::high_resolution_clock::now();
 
     if (execution_count_ >= 3) {
         #ifdef __GNUC__
@@ -452,12 +451,23 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         !is_class_constructor_ && strict_directive_state_ >= 0 &&
         closure_props_state_ == 0 && (self_name_state_ == 0 || self_name_state_ == 2) &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
-        Context fast_ctx(ctx.get_engine(), &ctx, Context::Type::Function);
+        // The Context must be heap-allocated and survivor-managed like the
+        // full path: native code (promise reactions, job queues) can capture
+        // the active context and run after this call returns -- a stack
+        // context would dangle. The saving here is everything else: no
+        // per-call Environment, no binding inserts, `this` as a run() param.
+        auto fast_ctx_ptr = std::make_unique<Context>(ctx.get_engine(), &ctx, Context::Type::Function);
+        Context& fast_ctx = *fast_ctx_ptr;
+        Engine* fast_engine = ctx.get_engine();
+        ContextSurvivorGuard fast_survivor(fast_ctx_ptr, fast_engine);
         Environment* outer_env = get_closure_environment();
         if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
         if (!outer_env) outer_env = ctx.get_lexical_environment();
+        // The chain can outlive this call for the same reason the context can.
+        if (outer_env) outer_env->mark_escaped();
         fast_ctx.set_lexical_environment(outer_env);
         fast_ctx.set_variable_environment(outer_env);
+        fast_ctx.set_arrow_function_context(is_arrow_);
         if (is_strict_ || strict_directive_state_ == 1) fast_ctx.set_strict_mode(true);
 
         Value fast_this = this_value;

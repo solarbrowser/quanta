@@ -411,7 +411,6 @@ private:
 
     mutable uint32_t execution_count_;
     mutable bool is_hot_;
-    mutable std::chrono::high_resolution_clock::time_point last_call_time_;
     // Once-per-function facts cached on first call: the 'use strict' directive
     // is static per body, and __closure_ self-reference props are installed at
     // class-evaluation time -- re-deriving either on every call showed up hard

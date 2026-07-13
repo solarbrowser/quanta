@@ -3130,7 +3130,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     const ASTNode* operand = expr->get_operand();
                     if (operand->get_type() == ASTNode::Type::IDENTIFIER) {
                         const std::string& name = static_cast<const Identifier*>(operand)->get_name();
-                        if (is_local(name)) {
+                        if (name == "this") {
+                            // Register frames no longer bind "this" -- a chain
+                            // lookup would find some outer frame's binding.
+                            emit(Op::LdaThis);
+                        } else if (is_local(name)) {
                             emit_read_local(name);
                         } else if ((name == "arguments" && !allow_arguments_) || name == "eval" ||
                                    name == "super" || name == "new") {
