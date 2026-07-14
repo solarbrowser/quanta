@@ -29,6 +29,16 @@ struct DeclInfo {
 bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
     if (!node) return true;
     switch (node->get_type()) {
+        case ASTNode::Type::CLASS_DECLARATION: {
+            // Nested class statements are lexically-scoped like `let` and
+            // need a declared slot too, or is_local() never recognizes the
+            // name (see the CLASS_DECLARATION case in compile_statement).
+            const auto* cd = static_cast<const ClassDeclaration*>(node);
+            if (!cd->is_expression() && cd->get_id() && !cd->get_id()->get_name().empty()) {
+                out.push_back({cd->get_id()->get_name(), /*is_lexical=*/true, /*is_const=*/false});
+            }
+            return true;
+        }
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* decl = static_cast<const VariableDeclaration*>(node);
             bool is_lexical = decl->get_kind() != VariableDeclarator::Kind::VAR;
@@ -3150,13 +3160,18 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::CLASS_DECLARATION: {
-            // Same delegation as closures: ClassDeclaration::evaluate builds
-            // the whole class AND binds its name in the current environment.
+            // ClassDeclaration::evaluate() binds the class's own name via
+            // ctx.create_lexical_binding() on the environment directly, so a
+            // register-resident name is never written -- force it here.
             if (!env_mode_) return false;
             if (chunk_->closures.size() >= 0xFFFF) return false;
             chunk_->closures.push_back(node);
             emit(Op::CreateClosure);
             emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+            const Identifier* class_id = static_cast<const ClassDeclaration*>(node)->get_id();
+            if (class_id && !class_id->get_name().empty() && !env_names_.count(class_id->get_name())) {
+                emit_write_local(class_id->get_name(), /*is_declaration=*/true);
+            }
             return true;
         }
 
