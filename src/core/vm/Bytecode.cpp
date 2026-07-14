@@ -41,6 +41,7 @@ const OpInfo& op_info(Op op) {
         {"Neg", 0, '-'}, {"LogicalNot", 0, '-'}, {"BitNot", 0, '-'}, {"TypeOf", 0, '-'},
         {"ToNumber", 0, '-'}, {"ToNumeric", 0, '-'}, {"Inc", 0, '-'}, {"ToTemplateString", 0, '-'}, {"ToPropertyKey", 0, '-'}, {"CheckObjectCoercible", 0, '-'}, {"Dec", 0, '-'},
         {"LdaLookup", 2, 'n'}, {"LdaLookupTypeof", 2, 'n'}, {"StaLookup", 2, 'n'},
+        {"CheckLookupResolvable", 2, 'n'}, {"StaLookupChecked", 3, 'l'},
         {"LdaEnv", 2, 'n'}, {"StaEnv", 2, 'n'}, {"StaEnvInit", 2, 'n'},
         {"BindEnvLocals", 0, '-'},
         {"EnterLoopEnv", 2, 'z'}, {"AdvanceLoopEnv", 2, 'z'}, {"ExitLoopEnv", 0, '-'},

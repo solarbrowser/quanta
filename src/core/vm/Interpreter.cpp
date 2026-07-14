@@ -867,6 +867,62 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
+            case Op::CheckLookupResolvable: {
+                const std::string& name = chunk.names[read_u16(code, pc)];
+                pc += 2;
+                acc = Value(ctx.find_binding_env(name) != nullptr || ctx.has_binding(name));
+                break;
+            }
+
+            case Op::StaLookupChecked: {
+                uint8_t resolved_reg = code[pc];
+                const std::string& name = chunk.names[read_u16(code, pc + 1)];
+                pc += 3;
+                if (!regs[resolved_reg].to_boolean()) {
+                    // Unresolvable BEFORE the RHS ran -- honor that verdict
+                    // even if the RHS just created the binding (e.g.
+                    // `x = (this.x = 1)`): PutValue resolves before GetValue
+                    // of the RHS, spec 13.15.2 step 1-4.
+                    if (ctx.is_strict_mode()) {
+                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        CHECK_EXC();
+                        break;
+                    }
+                    Object* global = ctx.get_global_object();
+                    if (global) global->set_property(name, acc);
+                    break;
+                }
+                if (ctx.is_in_tdz(name)) {
+                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    CHECK_EXC();
+                    break;
+                }
+                Environment* env = ctx.find_binding_env(name);
+                CHECK_EXC();
+                if (env) {
+                    bool ok = env->set_binding(name, acc);
+                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                    }
+                } else if (ctx.has_binding(name)) {
+                    // Object environment record (global/with) path.
+                    ctx.set_binding(name, acc);
+                } else {
+                    // Resolvable before the RHS ran, but the RHS deleted the
+                    // binding (e.g. `x = (delete global.x, 2)`) --
+                    // SetMutableBinding's own HasBinding check now fails.
+                    if (ctx.is_strict_mode()) {
+                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        CHECK_EXC();
+                        break;
+                    }
+                    Object* global = ctx.get_global_object();
+                    if (global) global->set_property(name, acc);
+                }
+                CHECK_EXC();
+                break;
+            }
+
             case Op::LdaEnv: {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;

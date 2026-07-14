@@ -3685,9 +3685,21 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         return emit_treewalker_delegate(node);
                     }
                     if (!compound) {
-                        if (!compile_expression(expr->get_right())) return false;
-                        emit(Op::StaLookup);
+                        // Spec 13.15.2: ResolveBinding happens before the RHS
+                        // evaluates, so an unresolvable reference throws (in
+                        // strict mode) even if the RHS itself creates the
+                        // binding, e.g. `x = (this.x = 1)`.
+                        emit(Op::CheckLookupResolvable);
                         emit_u16(add_name(name));
+                        int resolved = alloc_temp();
+                        if (failed_) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(resolved));
+                        if (!compile_expression(expr->get_right())) return false;
+                        emit(Op::StaLookupChecked);
+                        emit_u8(static_cast<uint8_t>(resolved));
+                        emit_u16(add_name(name));
+                        free_temp(resolved);
                         return !failed_;
                     }
                     // Spec order: the old value is read (and an unresolvable

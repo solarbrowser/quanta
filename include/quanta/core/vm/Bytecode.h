@@ -61,6 +61,8 @@ enum class Op : uint8_t {
     LdaLookup,    // n -- chain walk (globals/closures, non-env_mode)
     LdaLookupTypeof, // n -- like LdaLookup, but an unresolved name yields undefined instead of throwing
     StaLookup,    // n -- chain-walk write: TDZ/const checks, sloppy-mode global fallback
+    CheckLookupResolvable, // n -- acc = bool: does `name` resolve right now (checked pre-RHS)
+    StaLookupChecked,     // r_resolved n -- StaLookup honoring a pre-RHS CheckLookupResolvable verdict
     LdaEnv,       // n -- env_mode chain walk
     StaEnv,       // n
     StaEnvInit,   // n -- current environment only, no chain walk
