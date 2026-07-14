@@ -15,6 +15,7 @@
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/engine/CallStack.h"
+#include "quanta/core/vm/BytecodeCompiler.h"
 #include <sstream>
 #include <set>
 #include <unordered_set>
@@ -1104,13 +1105,26 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     std::string closure_key = "__closure_" + class_name;
     std::string const_marker = "__closure_const_" + class_name; // marks binding as immutable
     Value ctor_val(constructor_fn.get());
-    auto mark_class_name_closure = [&](Function* fn) {
+    // Skip methods that never read the class name -- its presence alone
+    // disqualifies a call from Function::call's register-mode fast path.
+    // force=true for the constructor, which must always see it (15.7.14 step 7).
+    auto mark_class_name_closure = [&](Function* fn, bool force = false) {
+        if (!force) {
+            bool refs = fn->get_body() && BytecodeCompiler::references_identifier(fn->get_body(), class_name);
+            if (!refs) {
+                for (const auto& p : fn->get_parameter_objects()) {
+                    if (p->has_default() && BytecodeCompiler::references_identifier(p->get_default_value(), class_name)) { refs = true; break; }
+                    if (p->has_destructuring() && BytecodeCompiler::references_identifier(p->get_destructuring_pattern(), class_name)) { refs = true; break; }
+                }
+            }
+            if (!refs) return;
+        }
         fn->set_property(closure_key, ctor_val);
         fn->set_property(const_marker, Value(true));
     };
     if (!class_name.empty()) {
         // The constructor itself must see the class name as const (spec 15.7.14 step 7)
-        mark_class_name_closure(constructor_fn.get());
+        mark_class_name_closure(constructor_fn.get(), /*force=*/true);
     }
     if (proto_ptr) {
         auto proto_keys = proto_ptr->get_own_property_keys_unfiltered();

@@ -48,6 +48,10 @@ public:
     // VM::compile_suspendable -- so compile()'s own scan never sees those).
     static bool references_arguments(const ASTNode* node);
 
+    // Conservative "could this subtree ever read identifier `name`" check
+    // (true on eval/nested-class/unknown, same opacity rules as above).
+    static bool references_identifier(const ASTNode* node, const std::string& name);
+
 private:
     // env_resident: selective env_mode -- only these names live in the
     // Environment, everything else gets a register. Null = full env_mode

@@ -907,6 +907,17 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
     }
 }
 
+}
+
+bool BytecodeCompiler::references_identifier(const ASTNode* node, const std::string& name) {
+    std::unordered_set<std::string> names;
+    bool saw_eval = false, saw_class = false, unknown = false;
+    collect_closure_names(node, /*inside_closure=*/true, names, saw_eval, saw_class, unknown);
+    return saw_eval || saw_class || unknown || names.count(name) > 0;
+}
+
+namespace {
+
 // True if `node` references `super` (property or call) or a private name
 // (#x) anywhere within it. Forces env_mode: these forms are delegated whole
 // to the tree-walker's own evaluate() (see the MEMBER_EXPRESSION/CALL_EXPRESSION/

@@ -127,6 +127,11 @@ public:
     explicit Context(Engine* engine, Context* parent, Type type);
     ~Context();
 
+    // Pooled: reuses freed blocks instead of round-tripping the allocator
+    // on every call (see Context.cpp).
+    static void* operator new(size_t size);
+    static void operator delete(void* ptr);
+
     Type get_type() const { return type_; }
     State get_state() const { return state_; }
     uint32_t get_id() const { return context_id_; }

@@ -90,6 +90,31 @@ void Context::gc_trace(Visitor& v) const {
 }
 
 
+namespace {
+// Freed Context blocks awaiting reuse. Never subclassed, so every block is
+// exactly sizeof(Context) -- no per-block size bookkeeping needed.
+constexpr size_t kContextPoolCap = 512;
+thread_local std::vector<void*> g_context_pool;
+}
+
+void* Context::operator new(size_t size) {
+    if (!g_context_pool.empty()) {
+        void* p = g_context_pool.back();
+        g_context_pool.pop_back();
+        return p;
+    }
+    return ::operator new(size);
+}
+
+void Context::operator delete(void* ptr) {
+    if (!ptr) return;
+    if (g_context_pool.size() < kContextPoolCap) {
+        g_context_pool.push_back(ptr);
+        return;
+    }
+    ::operator delete(ptr);
+}
+
 Context::Context(Engine* engine, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
