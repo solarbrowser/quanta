@@ -28,6 +28,10 @@ class ASTNode;
 class Function;
 class Engine;
 class Environment;
+class BytecodeChunk;
+class Visitor;
+class AsyncFunction;
+class AsyncGeneratorFunction;
 
 // Fiber-based async executor (ucontext_t). The body runs exactly once on a
 // dedicated stack. `await expr` suspends via swapcontext; promise callbacks
@@ -36,7 +40,10 @@ class Environment;
 // When the awaited Promise settles, resume() swaps back into the fiber.
 class AsyncExecutor : public std::enable_shared_from_this<AsyncExecutor> {
 public:
-    AsyncExecutor(std::unique_ptr<ASTNode> body,
+    // body is non-owning: it points into owner_fn's own body, kept
+    // reachable by the GC-trace lambda passed to FiberRegistry below.
+    AsyncExecutor(ASTNode* body,
+                  AsyncFunction* owner_fn,
                   std::unique_ptr<Context> exec_ctx,
                   Promise* outer_promise,
                   Engine* engine);
@@ -62,7 +69,8 @@ public:
     char* fiber_stack_;  // FiberStackPool'dan; dtor iade eder
 
 private:
-    std::unique_ptr<ASTNode> body_;
+    ASTNode* body_;
+    AsyncFunction* owner_fn_;
     static thread_local AsyncExecutor* current_;
     static void fiber_entry(uint32_t lo, uint32_t hi);
 };
@@ -74,6 +82,9 @@ class AsyncFunction : public Function {
 private:
     std::unique_ptr<ASTNode> body_;
     std::vector<std::unique_ptr<Parameter>> ast_params_;
+    // Lazy body->bytecode cache (mirrors Function::bytecode_chunk_).
+    std::unique_ptr<BytecodeChunk> suspendable_chunk_;
+    bool suspendable_incompatible_ = false;
 
 public:
     AsyncFunction(const std::string& name,
@@ -86,6 +97,9 @@ public:
                   Context* closure_context);
 
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value()) override;
+
+    const BytecodeChunk* get_suspendable_chunk(Context& ctx);
+    void trace(Visitor& v) override;
 
 private:
 };
@@ -133,7 +147,10 @@ private:
 public:
     Context* get_generator_context() const { return generator_context_; }
     Context* get_outer_context() const { return outer_context_; }
-    std::unique_ptr<ASTNode> body_;
+    // Non-owning: points into owner_fn_'s own body, kept reachable by
+    // trace() visiting owner_fn_.
+    ASTNode* body_;
+    AsyncGeneratorFunction* owner_fn_ = nullptr;
     State state_;
 
     // Fiber infrastructure
@@ -172,7 +189,8 @@ public:
     std::deque<Request> request_queue_;
 
 public:
-    AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
+    AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body, AsyncGeneratorFunction* owner_fn,
+                   Context* outer_ctx = nullptr);
     void trace(Visitor& v) override;
     virtual ~AsyncGenerator();
 
@@ -221,6 +239,9 @@ private:
 
 class AsyncGeneratorFunction : public Function {
     std::unique_ptr<ASTNode> body_;
+    // Lazy body->bytecode cache (mirrors GeneratorFunction/AsyncFunction).
+    std::unique_ptr<BytecodeChunk> suspendable_chunk_;
+    bool suspendable_incompatible_ = false;
 public:
     AsyncGeneratorFunction(const std::string& name,
                            const std::vector<std::string>& params,
@@ -231,6 +252,9 @@ public:
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context);
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value()) override;
+
+    const BytecodeChunk* get_suspendable_chunk(Context& ctx);
+    void trace(Visitor& v) override;
 };
 
 

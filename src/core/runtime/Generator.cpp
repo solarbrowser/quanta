@@ -15,6 +15,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/vm/Interpreter.h"
+#include "quanta/core/vm/BytecodeCompiler.h"
 #include <iostream>
 
 namespace Quanta {
@@ -52,9 +53,10 @@ void Generator::run_body() {
             // Bindings already live in generator_context_; a delegated yield
             // suspends the fiber from inside the VM dispatch loop, so the
             // compiled form needs no resumable state of its own.
-            bool used_vm = false;
-            Value vm_result = VM::run_suspendable(body_.get(), *generator_context_, used_vm);
-            if (used_vm) {
+            auto* gen_fn = static_cast<GeneratorFunction*>(generator_function_);
+            const BytecodeChunk* chunk = gen_fn ? gen_fn->get_suspendable_chunk(*generator_context_) : nullptr;
+            if (chunk) {
+                Value vm_result = VM::run_suspendable_chunk(*chunk, *generator_context_);
                 if (!vm_result.is_undefined() && !generator_context_->has_return_value() &&
                     !generator_context_->has_exception()) {
                     generator_context_->set_return_value(vm_result);
@@ -72,9 +74,9 @@ void Generator::run_body() {
     swapcontext(&fiber_->fiber_ctx, &fiber_->caller_ctx);
 }
 
-Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
+Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx)
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
-      body_(std::move(body)), state_(State::SuspendedStart),
+      body_(body), state_(State::SuspendedStart),
       fiber_stack_(FiberStackPool::acquire(STACK_SIZE)), outer_context_(outer_ctx) {
 
     if (gen_func) {
@@ -727,8 +729,25 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         }
     }
 
-    // Create arguments object BEFORE default param evaluation (default exprs can reference arguments)
-    {
+    // Compile now so the arguments-object check below can see needs_arguments.
+    const BytecodeChunk* susp_chunk = get_suspendable_chunk(gen_context);
+
+    // The chunk always compiles with an empty parameter list (params bind
+    // into the Context directly, not chunk registers -- see
+    // VM::compile_suspendable), so needs_arguments only reflects the body;
+    // a default/destructuring pattern reading `arguments` needs its own check.
+    bool params_need_arguments = false;
+    for (const auto& p : get_parameter_objects()) {
+        if ((p->has_default() && BytecodeCompiler::references_arguments(p->get_default_value())) ||
+            (p->has_destructuring() && BytecodeCompiler::references_arguments(p->get_destructuring_pattern()))) {
+            params_need_arguments = true;
+            break;
+        }
+    }
+
+    // Create arguments object BEFORE default param evaluation (defaults can
+    // reference it). Skipped when nothing needs it, mirroring Function::call.
+    if (!susp_chunk || susp_chunk->needs_arguments || params_need_arguments) {
         auto arguments_obj = ObjectFactory::create_array(args.size());
         for (size_t i = 0; i < args.size(); ++i)
             arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
@@ -837,12 +856,25 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         scan_for_var_declarations(body_.get(), gen_context);
     }
 
-    std::unique_ptr<ASTNode> body_clone;
-    if (body_) {
-        body_clone = body_->clone();
-    }
+    return std::make_unique<Generator>(this, gen_context_ptr.release(), body_.get(), &ctx);
+}
 
-    return std::make_unique<Generator>(this, gen_context_ptr.release(), std::move(body_clone), &ctx);
+const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx) {
+    if (suspendable_incompatible_) return nullptr;
+    if (suspendable_chunk_) return suspendable_chunk_.get();
+    // Same `with`-chain check as Function::call; fixed at closure creation.
+    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        if (e->is_with_environment()) { suspendable_incompatible_ = true; return nullptr; }
+    }
+    suspendable_chunk_ = VM::compile_suspendable(body_.get());
+    if (!suspendable_chunk_) { suspendable_incompatible_ = true; return nullptr; }
+    Collector::write_barrier(this);
+    return suspendable_chunk_.get();
+}
+
+void GeneratorFunction::trace(Visitor& v) {
+    Function::trace(v);
+    if (suspendable_chunk_) suspendable_chunk_->trace(v);
 }
 
 

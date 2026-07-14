@@ -20,6 +20,8 @@ namespace Quanta {
 class Context;
 class ASTNode;
 class Function;
+class BytecodeChunk;
+class Visitor;
 
 class YieldException : public std::exception {
 public:
@@ -72,7 +74,9 @@ public:
 private:
     Function* generator_function_;
     Context* generator_context_;
-    std::unique_ptr<ASTNode> body_;
+    // Non-owning: points into generator_function_'s own body, kept alive by
+    // trace() visiting generator_function_.
+    ASTNode* body_;
     State state_;
 
     // Fiber-based (stackful coroutine) implementation
@@ -98,7 +102,7 @@ public:
     Value return_argument_;
     bool throwing_ = false;
     bool returning_ = false;
-    Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
+    Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx = nullptr);
     void trace(Visitor& v) override;
     virtual ~Generator();
 
@@ -152,6 +156,10 @@ private:
 class GeneratorFunction : public Function {
 private:
     std::unique_ptr<ASTNode> body_;
+    // Lazy body->bytecode cache, shared by every generator this function
+    // produces (mirrors Function::bytecode_chunk_/vm_incompatible_).
+    std::unique_ptr<BytecodeChunk> suspendable_chunk_;
+    bool suspendable_incompatible_ = false;
 
 public:
     GeneratorFunction(const std::string& name,
@@ -167,6 +175,11 @@ public:
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
 
     std::unique_ptr<Generator> create_generator(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+
+    // Compiles on first call and caches; permanently null if the body or the
+    // captured scope chain (a `with`) is incompatible.
+    const BytecodeChunk* get_suspendable_chunk(Context& ctx);
+    void trace(Visitor& v) override;
 };
 
 class YieldExpression;

@@ -11,6 +11,7 @@
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/core/vm/Interpreter.h"
+#include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
@@ -37,6 +38,7 @@ void AsyncGenerator::trace(Visitor& v) {
     v.visit(return_arg_);
     v.visit(await_result_);
     v.visit_object(pending_promise_);
+    v.visit_object(owner_fn_);
     for (const auto& req : request_queue_) {
         v.visit(req.value);
         v.visit_object(req.promise);
@@ -46,7 +48,8 @@ void AsyncGenerator::trace(Visitor& v) {
 
 thread_local AsyncExecutor* AsyncExecutor::current_ = nullptr;
 
-AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
+AsyncExecutor::AsyncExecutor(ASTNode* body,
+                              AsyncFunction* owner_fn,
                               std::unique_ptr<Context> exec_ctx,
                               Promise* outer_promise,
                               Engine* engine)
@@ -55,7 +58,8 @@ AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
       exec_context_(exec_context_owned_.get()),
       engine_(engine),
       fiber_stack_(FiberStackPool::acquire(STACK_SIZE)),
-      body_(std::move(body)) {
+      body_(body),
+      owner_fn_(owner_fn) {
     getcontext(&fiber_->fiber_ctx);
     fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_;
     fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
@@ -68,6 +72,7 @@ AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
             v.visit_object(outer_promise_);
             v.visit_context(exec_context_);
             v.visit(await_result_);
+            v.visit_object(owner_fn_);
         });
 
 }
@@ -86,9 +91,9 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
         if (self->body_) {
             // Bindings already live in exec_context_; a delegated await suspends
             // the fiber from inside the VM dispatch loop (see Generator::run_body).
-            bool used_vm = false;
-            Value vm_result = VM::run_suspendable(self->body_.get(), *ctx, used_vm);
-            if (used_vm) {
+            const BytecodeChunk* chunk = self->owner_fn_ ? self->owner_fn_->get_suspendable_chunk(*ctx) : nullptr;
+            if (chunk) {
+                Value vm_result = VM::run_suspendable_chunk(*chunk, *ctx);
                 if (!vm_result.is_undefined() && !ctx->has_return_value() && !ctx->has_exception()) {
                     ctx->set_return_value(vm_result);
                 }
@@ -243,11 +248,27 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         if (p == "arguments") param_named_arguments = true;
     }
 
-    // Created BEFORE parameter binding: default expressions may reference it
-    // (spec: unmapped arguments exists during non-simple parameter evaluation).
+    // Compile now so the arguments-object check below can see needs_arguments.
+    const BytecodeChunk* susp_chunk = get_suspendable_chunk(*exec_ctx);
+
+    // The chunk always compiles with an empty parameter list (see
+    // VM::compile_suspendable), so needs_arguments only reflects the body;
+    // check defaults/destructuring for `arguments` separately.
+    bool params_need_arguments = false;
+    for (const auto& p : param_objs) {
+        if ((p->has_default() && BytecodeCompiler::references_arguments(p->get_default_value())) ||
+            (p->has_destructuring() && BytecodeCompiler::references_arguments(p->get_destructuring_pattern()))) {
+            params_need_arguments = true;
+            break;
+        }
+    }
+
+    // Created BEFORE parameter binding: default expressions may reference it.
     // Arrow functions inherit arguments from the enclosing scope; a parameter
-    // literally named "arguments" takes precedence over the object.
-    if (!is_arrow() && !param_named_arguments) {
+    // literally named "arguments" takes precedence. Skipped when nothing
+    // needs it, mirroring Function::call.
+    if (!is_arrow() && !param_named_arguments &&
+        (!susp_chunk || susp_chunk->needs_arguments || params_need_arguments)) {
         auto arguments_obj = ObjectFactory::create_array(args.size());
         for (size_t i = 0; i < args.size(); ++i) {
             arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
@@ -355,10 +376,9 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         scan_for_var_declarations(body_.get(), *exec_ctx);
     }
 
-    // Clone body and start executor
-    std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;
+    // Shared with every call, like an ordinary function's body -- no clone.
     auto executor = std::make_shared<AsyncExecutor>(
-        std::move(body_clone), std::move(exec_ctx), promise_raw, ctx.get_engine());
+        body_.get(), this, std::move(exec_ctx), promise_raw, ctx.get_engine());
     executor->run();
 
     // Transfer the exec context to the engine's survivor pool so closures created inside the body can still look up bindings later. Mirrors ContextSurvivorGuard in sync Function::call().
@@ -373,6 +393,23 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     return promise_value;
 }
 
+const BytecodeChunk* AsyncFunction::get_suspendable_chunk(Context& ctx) {
+    if (suspendable_incompatible_) return nullptr;
+    if (suspendable_chunk_) return suspendable_chunk_.get();
+    // Same `with`-chain check as Function::call; fixed at closure creation.
+    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        if (e->is_with_environment()) { suspendable_incompatible_ = true; return nullptr; }
+    }
+    suspendable_chunk_ = VM::compile_suspendable(body_.get());
+    if (!suspendable_chunk_) { suspendable_incompatible_ = true; return nullptr; }
+    Collector::write_barrier(this);
+    return suspendable_chunk_.get();
+}
+
+void AsyncFunction::trace(Visitor& v) {
+    Function::trace(v);
+    if (suspendable_chunk_) suspendable_chunk_->trace(v);
+}
 
 
 AsyncAwaitExpression::AsyncAwaitExpression(std::unique_ptr<ASTNode> expression)
@@ -479,11 +516,12 @@ thread_local Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
 thread_local Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
 thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 
-AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
+AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body,
+                               AsyncGeneratorFunction* owner_fn, Context* outer_ctx)
     : Object(ObjectType::Custom), context_owned_(std::move(ctx)),
       generator_context_(context_owned_.get()),
       outer_context_(outer_ctx),
-      body_(std::move(body)), state_(State::SuspendedStart),
+      body_(body), owner_fn_(owner_fn), state_(State::SuspendedStart),
       fiber_stack_(FiberStackPool::acquire(STACK_SIZE)) {
     getcontext(&fiber_->fiber_ctx);
     fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_;
@@ -515,9 +553,9 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
     try {
         if (self->body_) {
             // Same VM-or-treewalk split as Generator::run_body.
-            bool used_vm = false;
-            Value vm_result = VM::run_suspendable(self->body_.get(), *ctx, used_vm);
-            if (used_vm) {
+            const BytecodeChunk* chunk = self->owner_fn_ ? self->owner_fn_->get_suspendable_chunk(*ctx) : nullptr;
+            if (chunk) {
+                Value vm_result = VM::run_suspendable_chunk(*chunk, *ctx);
                 if (!vm_result.is_undefined() && !ctx->has_return_value() && !ctx->has_exception()) {
                     ctx->set_return_value(vm_result);
                 }
@@ -1620,15 +1658,32 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
         }
     }
 
-    // arguments object
-    auto arguments_obj = ObjectFactory::create_array(args.size());
-    for (size_t i = 0; i < args.size(); ++i) {
-        arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
+    // Compile now so the arguments-object check below can see needs_arguments.
+    const BytecodeChunk* susp_chunk = get_suspendable_chunk(*gen_ctx);
+
+    // The chunk always compiles with an empty parameter list (see
+    // VM::compile_suspendable), so needs_arguments only reflects the body;
+    // check defaults/destructuring for `arguments` separately.
+    bool params_need_arguments = false;
+    for (const auto& p : param_objs) {
+        if ((p->has_default() && BytecodeCompiler::references_arguments(p->get_default_value())) ||
+            (p->has_destructuring() && BytecodeCompiler::references_arguments(p->get_destructuring_pattern()))) {
+            params_need_arguments = true;
+            break;
+        }
     }
-    arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
-    arguments_obj->set_type(Object::ObjectType::Arguments);
-    setup_mapped_arguments(*gen_ctx, args, arguments_obj.get());
-    gen_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+
+    // arguments object -- skipped when nothing needs it, mirroring Function::call.
+    if (!susp_chunk || susp_chunk->needs_arguments || params_need_arguments) {
+        auto arguments_obj = ObjectFactory::create_array(args.size());
+        for (size_t i = 0; i < args.size(); ++i) {
+            arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
+        }
+        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+        arguments_obj->set_type(Object::ObjectType::Arguments);
+        setup_mapped_arguments(*gen_ctx, args, arguments_obj.get());
+        gen_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+    }
 
     // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.
     {
@@ -1649,13 +1704,30 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     }
 
     Context* outer_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
-    std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;
-    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), std::move(body_clone), outer_ctx);
+    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), body_.get(), this, outer_ctx);
     // OrdinaryCreateFromConstructor: the instance inherits from this function's
     // own "prototype" object, not %AsyncGeneratorPrototype% directly.
     Value own_proto = get_property("prototype");
     if (own_proto.is_object()) async_gen->set_prototype(own_proto.as_object());
     return Value(async_gen.release());
+}
+
+const BytecodeChunk* AsyncGeneratorFunction::get_suspendable_chunk(Context& ctx) {
+    if (suspendable_incompatible_) return nullptr;
+    if (suspendable_chunk_) return suspendable_chunk_.get();
+    // Same `with`-chain check as Function::call; fixed at closure creation.
+    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        if (e->is_with_environment()) { suspendable_incompatible_ = true; return nullptr; }
+    }
+    suspendable_chunk_ = VM::compile_suspendable(body_.get());
+    if (!suspendable_chunk_) { suspendable_incompatible_ = true; return nullptr; }
+    Collector::write_barrier(this);
+    return suspendable_chunk_.get();
+}
+
+void AsyncGeneratorFunction::trace(Visitor& v) {
+    Function::trace(v);
+    if (suspendable_chunk_) suspendable_chunk_->trace(v);
 }
 
 }

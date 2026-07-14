@@ -42,6 +42,12 @@ public:
     static std::unique_ptr<BytecodeChunk> compile_script(
         const std::vector<std::unique_ptr<ASTNode>>& statements);
 
+    // The same `arguments` scan compile() runs over a body, exposed for
+    // callers checking a parameter default/destructuring pattern directly
+    // (a suspendable body always compiles with an empty param list -- see
+    // VM::compile_suspendable -- so compile()'s own scan never sees those).
+    static bool references_arguments(const ASTNode* node);
+
 private:
     // env_resident: selective env_mode -- only these names live in the
     // Environment, everything else gets a register. Null = full env_mode

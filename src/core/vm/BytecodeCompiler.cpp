@@ -618,10 +618,26 @@ bool uses_arguments(const ASTNode* node) {
             }
             return false;
         }
+        case ASTNode::Type::YIELD_EXPRESSION: {
+            const auto* n = static_cast<const YieldExpression*>(node);
+            return n->get_argument() && uses_arguments(n->get_argument());
+        }
+        case ASTNode::Type::AWAIT_EXPRESSION: {
+            const auto* n = static_cast<const AwaitExpression*>(node);
+            return n->get_argument() && uses_arguments(n->get_argument());
+        }
         default:
             return false;
     }
 }
+
+}
+
+bool BytecodeCompiler::references_arguments(const ASTNode* node) {
+    return uses_arguments(node);
+}
+
+namespace {
 
 // Selective env_mode capture analysis. Collects every identifier that
 // occurs inside a closure-creating node (function/arrow/async): if such a
@@ -637,14 +653,15 @@ bool uses_arguments(const ASTNode* node) {
 //  - unknown: an AST node type outside this switch.
 void collect_closure_names(const ASTNode* node, bool inside_closure,
                            std::unordered_set<std::string>& out,
-                           bool& saw_eval, bool& saw_class, bool& unknown) {
+                           bool& saw_eval, bool& saw_class, bool& unknown,
+                           bool suspendable = false) {
     if (!node) return;
     auto walk_params = [&](const std::vector<std::unique_ptr<Parameter>>& ps) {
         for (const auto& p : ps) {
             if (p->has_default())
-                collect_closure_names(p->get_default_value(), true, out, saw_eval, saw_class, unknown);
+                collect_closure_names(p->get_default_value(), true, out, saw_eval, saw_class, unknown, suspendable);
             if (p->has_destructuring())
-                collect_closure_names(p->get_destructuring_pattern(), true, out, saw_eval, saw_class, unknown);
+                collect_closure_names(p->get_destructuring_pattern(), true, out, saw_eval, saw_class, unknown, suspendable);
         }
     };
     switch (node->get_type()) {
@@ -669,25 +686,25 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         case ASTNode::Type::FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const FunctionExpression*>(node);
             walk_params(n->get_params());
-            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::FUNCTION_DECLARATION: {
             const auto* n = static_cast<const FunctionDeclaration*>(node);
             walk_params(n->get_params());
-            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const ArrowFunctionExpression*>(node);
             walk_params(n->get_params());
-            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
             walk_params(n->get_params());
-            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::CLASS_DECLARATION:
@@ -696,177 +713,192 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
             for (const auto& stmt : n->get_statements())
-                collect_closure_names(stmt.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(stmt.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::IF_STATEMENT: {
             const auto* n = static_cast<const IfStatement*>(node);
-            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_consequent(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_alternate(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_consequent(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_alternate(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::WHILE_STATEMENT: {
             const auto* n = static_cast<const WhileStatement*>(node);
-            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::DO_WHILE_STATEMENT: {
             const auto* n = static_cast<const DoWhileStatement*>(node);
-            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::FOR_STATEMENT: {
             const auto* n = static_cast<const ForStatement*>(node);
-            collect_closure_names(n->get_init(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_update(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_init(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_update(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::FOR_OF_STATEMENT: {
             const auto* n = static_cast<const ForOfStatement*>(node);
-            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::FOR_IN_STATEMENT: {
             const auto* n = static_cast<const ForInStatement*>(node);
-            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::TRY_STATEMENT: {
             const auto* n = static_cast<const TryStatement*>(node);
-            collect_closure_names(n->get_try_block(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_try_block(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             if (const ASTNode* cc = n->get_catch_clause())
-                collect_closure_names(static_cast<const CatchClause*>(cc)->get_body(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_finally_block(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(static_cast<const CatchClause*>(cc)->get_body(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_finally_block(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::SWITCH_STATEMENT: {
             const auto* n = static_cast<const SwitchStatement*>(node);
-            collect_closure_names(n->get_discriminant(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_discriminant(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             for (const auto& c : n->get_cases()) {
                 const auto* cc = static_cast<const CaseClause*>(c.get());
-                collect_closure_names(cc->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(cc->get_test(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
                 for (const auto& st : cc->get_consequent())
-                    collect_closure_names(st.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                    collect_closure_names(st.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             }
             return;
         }
         case ASTNode::Type::LABELED_STATEMENT:
-            collect_closure_names(static_cast<const LabeledStatement*>(node)->get_statement(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(static_cast<const LabeledStatement*>(node)->get_statement(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         case ASTNode::Type::EXPRESSION_STATEMENT:
-            collect_closure_names(static_cast<const ExpressionStatement*>(node)->get_expression(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(static_cast<const ExpressionStatement*>(node)->get_expression(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         case ASTNode::Type::RETURN_STATEMENT: {
+            // Suspendable: return's argument also delegates to the tree-walker.
             const auto* n = static_cast<const ReturnStatement*>(node);
-            collect_closure_names(n->get_argument(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_argument(), suspendable ? true : inside_closure,
+                                  out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::THROW_STATEMENT:
-            collect_closure_names(static_cast<const ThrowStatement*>(node)->get_expression(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(static_cast<const ThrowStatement*>(node)->get_expression(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations())
-                collect_closure_names(d->get_init(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(d->get_init(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
             const auto* n = static_cast<const DestructuringAssignment*>(node);
-            collect_closure_names(n->get_source(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_source(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             for (const auto& dv : n->get_default_values())
-                collect_closure_names(dv.expr.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(dv.expr.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
-            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::UNARY_EXPRESSION:
-            collect_closure_names(static_cast<const UnaryExpression*>(node)->get_operand(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(static_cast<const UnaryExpression*>(node)->get_operand(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         case ASTNode::Type::BINARY_EXPRESSION: {
             const auto* n = static_cast<const BinaryExpression*>(node);
-            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
             const auto* n = static_cast<const NullishCoalescingExpression*>(node);
-            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_left(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_right(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::CONDITIONAL_EXPRESSION: {
             const auto* n = static_cast<const ConditionalExpression*>(node);
-            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_consequent(), inside_closure, out, saw_eval, saw_class, unknown);
-            collect_closure_names(n->get_alternate(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_consequent(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_alternate(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* n = static_cast<const CallExpression*>(node);
-            collect_closure_names(n->get_callee(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_callee(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             for (const auto& arg : n->get_arguments())
-                collect_closure_names(arg.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(arg.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            collect_closure_names(n->get_constructor(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_constructor(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             for (const auto& arg : n->get_arguments())
-                collect_closure_names(arg.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(arg.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::MEMBER_EXPRESSION: {
             // `x.name` references only `x` -- a non-computed property is a name.
             const auto* n = static_cast<const MemberExpression*>(node);
-            collect_closure_names(n->get_object(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_object(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             if (n->is_computed())
-                collect_closure_names(n->get_property(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(n->get_property(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
             const auto* n = static_cast<const OptionalChainingExpression*>(node);
-            collect_closure_names(n->get_object(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(n->get_object(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             if (n->is_computed())
-                collect_closure_names(n->get_property(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(n->get_property(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::SPREAD_ELEMENT:
-            collect_closure_names(static_cast<const SpreadElement*>(node)->get_argument(), inside_closure, out, saw_eval, saw_class, unknown);
+            collect_closure_names(static_cast<const SpreadElement*>(node)->get_argument(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         case ASTNode::Type::TEMPLATE_LITERAL: {
             const auto* n = static_cast<const TemplateLiteral*>(node);
             for (const auto& el : n->get_elements())
                 if (el.type == TemplateLiteral::Element::Type::EXPRESSION)
-                    collect_closure_names(el.expression.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                    collect_closure_names(el.expression.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::OBJECT_LITERAL: {
             const auto* n = static_cast<const ObjectLiteral*>(node);
             for (const auto& prop : n->get_properties()) {
                 if (prop->computed && prop->key)
-                    collect_closure_names(prop->key.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                    collect_closure_names(prop->key.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
                 if (prop->value)
-                    collect_closure_names(prop->value.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                    collect_closure_names(prop->value.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
             }
             return;
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
             for (const auto& el : n->get_elements())
-                collect_closure_names(el.get(), inside_closure, out, saw_eval, saw_class, unknown);
+                collect_closure_names(el.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            return;
+        }
+        // Delegated to the tree-walker, like a closure (see emit_treewalker_delegate).
+        case ASTNode::Type::YIELD_EXPRESSION: {
+            const auto* n = static_cast<const YieldExpression*>(node);
+            if (n->get_argument())
+                collect_closure_names(n->get_argument(), true, out, saw_eval, saw_class, unknown, suspendable);
+            return;
+        }
+        case ASTNode::Type::AWAIT_EXPRESSION: {
+            const auto* n = static_cast<const AwaitExpression*>(node);
+            if (n->get_argument())
+                collect_closure_names(n->get_argument(), true, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         default:
@@ -1762,8 +1794,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 
     // `arguments` forces env_mode too: its mapped accessors (sloppy mode,
     // simple params) read/write the parameter bindings through the context,
-    // which register-mode parameters don't have.
+    // which register-mode parameters don't have. A default/destructuring
+    // expression can reference it too (spec: it exists during parameter
+    // evaluation already).
     bool needs_arguments = uses_arguments(body);
+    for (const auto& p : params) {
+        if (p->has_default() && uses_arguments(p->get_default_value())) needs_arguments = true;
+        if (p->has_destructuring() && uses_arguments(p->get_destructuring_pattern())) needs_arguments = true;
+    }
 
     // Shadowing is covered too: a true duplicate name always has a nested
     // occurrence (a top-level dup is already a parser SyntaxError).
@@ -1783,22 +1821,23 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // fall back to the tree-walker.
     std::unordered_set<std::string> all_names;
     bool an_eval = false, an_class = false, an_unknown = false;
-    collect_closure_names(body, /*inside_closure=*/true, all_names, an_eval, an_class, an_unknown);
-    bool full_env = suspendable || has_complex_params || needs_arguments ||
+    collect_closure_names(body, /*inside_closure=*/true, all_names, an_eval, an_class, an_unknown, suspendable);
+    bool full_env = has_complex_params || needs_arguments ||
                     contains_destructuring(body) || an_class || an_unknown ||
                     all_names.count("super") > 0;
 
-    // Selective env_mode: only names a closure can observe (or that need a
-    // runtime scope: nested lexicals, catch params, hoisted function names)
-    // stay Environment-resident; every other local gets a register. Any
+    // Selective env_mode: only names a closure (or a suspendable body's own
+    // yield/await/return delegate) can observe, or that need a runtime
+    // scope (nested lexicals, catch params, hoisted function names), stay
+    // Environment-resident; every other local gets a register. Any
     // opacity -- eval inside a closure, class bodies, an AST form the
     // scanner doesn't know -- falls back to full env_mode.
     std::unordered_set<std::string> env_resident;
     bool selective = false;
-    if (!full_env && (has_closures || has_nested_lex)) {
+    if (!full_env && (has_closures || has_nested_lex || suspendable)) {
         bool saw_eval = false, saw_class = false, unknown = false;
         collect_closure_names(body, /*inside_closure=*/false, env_resident,
-                              saw_eval, saw_class, unknown);
+                              saw_eval, saw_class, unknown, suspendable);
         if (saw_eval || saw_class || unknown) {
             full_env = true;
         } else {
@@ -1837,12 +1876,15 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             }
         }
         // Nothing ended up captured: the whole function is register-pure
-        // (closures still pin the env for CreateClosure delegation).
-        if (env_resident.empty() && !has_closures) {
+        // (closures still pin the env for CreateClosure delegation; a
+        // suspendable body keeps env_mode on regardless, see env_mode2).
+        if (env_resident.empty() && !has_closures && !suspendable) {
             selective = false;
         }
     }
-    bool env_mode2 = full_env || has_closures || !env_resident.empty();
+    // Suspendable bodies always keep env_mode on: emit_treewalker_delegate
+    // requires it to delegate yield/await/return at all.
+    bool env_mode2 = full_env || has_closures || !env_resident.empty() || suspendable;
 
     const bool env_mode = env_mode2;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);

@@ -1436,17 +1436,11 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     return run(*chunk, ctx, {}, &global_this);
 }
 
-Value run_suspendable(const ASTNode* body, Context& ctx, bool& used_vm) {
-    used_vm = false;
-    if (!enabled() || !body) return Value();
-    // Same `with`-chain restriction as Function::call's compile decision.
-    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-        if (e->is_with_environment()) return Value();
-    }
+std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body) {
+    if (!enabled() || !body) return nullptr;
     static const std::vector<std::unique_ptr<Parameter>> no_params;
     auto chunk = BytecodeCompiler::compile(body, no_params, /*suspendable=*/true);
-    if (!chunk) return Value();
-    used_vm = true;
+    if (!chunk) return nullptr;
     static const bool disasm = [] {
         const char* env = std::getenv("QUANTA_VM_DISASM");
         return env && env[0] == '1';
@@ -1454,11 +1448,11 @@ Value run_suspendable(const ASTNode* body, Context& ctx, bool& used_vm) {
     if (disasm) {
         std::fprintf(stderr, "%s", disassemble_chunk(*chunk, "<suspendable>").c_str());
     }
-    // The chunk has no traced owner (Function caches don't apply: each
-    // generator/executor owns a cloned body); root its constants for the
-    // whole, possibly fiber-suspended, execution.
-    ValueVectorRoot const_root(&chunk->constants);
-    return run(*chunk, ctx, {});
+    return chunk;
+}
+
+Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx) {
+    return run(chunk, ctx, {});
 }
 
 }

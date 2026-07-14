@@ -24,11 +24,16 @@ namespace VM {
 Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
           const Value* this_val = nullptr);
 
-// Compiles and runs a generator/async BODY inside its fiber: bindings (this,
-// params, arguments) already live in ctx, yield/await suspend the fiber from
-// inside the dispatch loop. Sets used_vm=false (and runs nothing) when the
-// body doesn't compile -- the caller then tree-walks it as before.
-Value run_suspendable(const ASTNode* body, Context& ctx, bool& used_vm);
+// Compiles a generator/async BODY for the suspendable calling convention
+// (bindings already live in ctx; yield/await suspend the fiber from inside
+// the dispatch loop). Null means the body doesn't compile -- caller
+// tree-walks instead. Callers cache the result on the owning Function
+// (see GeneratorFunction::get_suspendable_chunk) instead of recompiling
+// per call/fiber.
+std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body);
+
+// Runs a chunk from compile_suspendable. Traced through its owning Function.
+Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx);
 
 // Script tier: compile+run a Program's top-level statements (hoisting must
 // already be done by Program::evaluate). used_vm=false -> caller tree-walks.
