@@ -1214,8 +1214,8 @@ void Context::add_disposable_resource(const Value& resource, const Value& method
 bool await_value(Context& ctx, const Value& value, Value& out_result) {
     AsyncGenerator* async_gen = AsyncGenerator::get_current();
     AsyncExecutor* exec = AsyncExecutor::get_current();
-    bool in_gen_fiber = async_gen && !async_gen->fiber_stack_.empty();
-    bool in_exec_fiber = !in_gen_fiber && exec && !exec->fiber_stack_.empty();
+    bool in_gen_fiber = async_gen && async_gen->fiber_stack_ != nullptr;
+    bool in_exec_fiber = !in_gen_fiber && exec && exec->fiber_stack_ != nullptr;
 
     Context* gctx = nullptr;
     if (in_gen_fiber) {

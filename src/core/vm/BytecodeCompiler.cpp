@@ -1601,6 +1601,88 @@ bool is_named_evaluation_rhs(const ASTNode* node) {
            t == ASTNode::Type::CLASS_DECLARATION;
 }
 
+// Recursively collects for-header lexical names (`for (let i = ...; ...)`,
+// C-style only -- for-of/for-in headers use a different, already-safe
+// mechanism). These are the only nested lexicals whose register inclusion
+// selective env_mode allows: their per-iteration scope means an outer
+// reference to the same name is a different binding, not a leak, and this
+// is where the register refinement's real performance win comes from
+// (arith_loop/properties). Every OTHER nested lexical (block/switch/catch)
+// stays env-resident unconditionally, since a register isn't block-scoped
+// and would otherwise leak past the owning block (see scope-lex-const.js).
+void collect_for_header_names(const ASTNode* node, std::unordered_set<std::string>& out) {
+    if (!node) return;
+    switch (node->get_type()) {
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            if (n->get_init() && n->get_init()->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                const auto* vd = static_cast<const VariableDeclaration*>(n->get_init());
+                if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                    for (const auto& d : vd->get_declarations()) {
+                        if (d->get_id()) out.insert(d->get_id()->get_name());
+                    }
+                }
+            }
+            collect_for_header_names(n->get_body(), out);
+            return;
+        }
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements()) collect_for_header_names(stmt.get(), out);
+            return;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            collect_for_header_names(n->get_consequent(), out);
+            collect_for_header_names(n->get_alternate(), out);
+            return;
+        }
+        case ASTNode::Type::WHILE_STATEMENT:
+            collect_for_header_names(static_cast<const WhileStatement*>(node)->get_body(), out);
+            return;
+        case ASTNode::Type::DO_WHILE_STATEMENT:
+            collect_for_header_names(static_cast<const DoWhileStatement*>(node)->get_body(), out);
+            return;
+        case ASTNode::Type::FOR_OF_STATEMENT:
+            collect_for_header_names(static_cast<const ForOfStatement*>(node)->get_body(), out);
+            return;
+        case ASTNode::Type::FOR_IN_STATEMENT:
+            collect_for_header_names(static_cast<const ForInStatement*>(node)->get_body(), out);
+            return;
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            collect_for_header_names(n->get_try_block(), out);
+            if (const ASTNode* cc = n->get_catch_clause())
+                collect_for_header_names(static_cast<const CatchClause*>(cc)->get_body(), out);
+            collect_for_header_names(n->get_finally_block(), out);
+            return;
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            for (const auto& c : n->get_cases()) {
+                for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent())
+                    collect_for_header_names(s.get(), out);
+            }
+            return;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            collect_for_header_names(static_cast<const LabeledStatement*>(node)->get_statement(), out);
+            return;
+        default:
+            return;
+    }
+}
+
+// Masks the active optional-chain collector// Masks the active optional-chain collector while compiling a subexpression
+// that is NOT part of the chain's spine (computed keys, call arguments):
+// a nested `a?.b` inside must short-circuit only itself, not the outer chain.
+struct ChainMaskScope {
+    std::vector<size_t>*& slot;
+    std::vector<size_t>* saved;
+    explicit ChainMaskScope(std::vector<size_t>*& s) : slot(s), saved(s) { slot = nullptr; }
+    ~ChainMaskScope() { slot = saved; }
+};
+
 // True if `node`'s object/callee spine contains an optional-chaining link
 // (a?.b, a?.b.c(), ...).
 bool chain_contains_optional(const ASTNode* node) {
@@ -1734,11 +1816,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (!prescan_declarations(body, declared_pre)) return nullptr;
         std::unordered_map<std::string, int> decl_count;
         for (const auto& info : declared_pre) decl_count[info.name]++;
+        std::unordered_set<std::string> for_header_names;
+        collect_for_header_names(body, for_header_names);
         for (const auto& info : declared_pre) {
             if (info.is_catch_param) {
                 env_resident.insert(info.name);
             } else if (info.is_lexical && !direct_pre.count(info.name) &&
-                       decl_count[info.name] > 1) {
+                       (decl_count[info.name] > 1 || !for_header_names.count(info.name))) {
                 env_resident.insert(info.name);
             }
         }
@@ -1939,6 +2023,119 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     return std::move(compiler.chunk_);
 }
 
+std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
+    const std::vector<std::unique_ptr<ASTNode>>& statements) {
+    // Scan the whole program once. Modules and anything opaque to the
+    // scanners tree-walk; class definitions and closure-side eval only
+    // disable the nested-register refinement (top-level names are outer
+    // bindings either way, so correctness doesn't depend on the scan).
+    std::unordered_set<std::string> closure_names;
+    bool saw_eval = false, saw_class = false, unknown = false;
+    for (const auto& st : statements) {
+        auto t = st->get_type();
+        if (t == ASTNode::Type::EXPORT_STATEMENT || t == ASTNode::Type::IMPORT_STATEMENT) {
+            return nullptr;
+        }
+        if (contains_destructuring(st.get())) return nullptr;
+        collect_closure_names(st.get(), /*inside_closure=*/false, closure_names,
+                              saw_eval, saw_class, unknown);
+    }
+    if (saw_eval) return nullptr;  // a closure's eval text can name anything
+    bool refine = !saw_class && !unknown;
+
+    // Top-level names are pre-hoisted outer bindings (vars on the global,
+    // let/const/class in the script env, function declarations already
+    // evaluated) -- the compiler must treat them as non-locals.
+    std::unordered_set<std::string> top_names;
+    for (const auto& st : statements) {
+        const ASTNode* eff = st.get();
+        if (eff->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            const auto* vd = static_cast<const VariableDeclaration*>(eff);
+            for (const auto& d : vd->get_declarations()) {
+                if (d->get_id()) top_names.insert(d->get_id()->get_name());
+            }
+        } else if (eff->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+            const auto* cd = static_cast<const ClassDeclaration*>(eff);
+            if (cd->get_id()) top_names.insert(cd->get_id()->get_name());
+        } else if (eff->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+            const auto* fd = static_cast<const FunctionDeclaration*>(eff);
+            if (fd->get_id()) top_names.insert(fd->get_id()->get_name());
+        }
+    }
+
+    // Nested declarations follow the same selective rules as function
+    // bodies: captured/shadowed/catch names stay env-resident, the rest get
+    // registers (top-level `var`s inside blocks/loops are global writes --
+    // they stay non-local too). Only statements that are NOT themselves a
+    // top-level declaration get scanned: a nested declarator can share a
+    // name with a top-level one (shadowing, e.g. `let x` at script scope and
+    // `for (let x ...)`), and that nested binding needs its own local/env
+    // slot -- name-matching it against top_names would wrongly treat it as
+    // already handled by hoisting and never assign it a home at all (see
+    // scope-lex-const.js / let-outer-inner-let-bindings.js).
+    std::vector<DeclInfo> declared;
+    for (const auto& st : statements) {
+        auto t = st->get_type();
+        if (t == ASTNode::Type::VARIABLE_DECLARATION || t == ASTNode::Type::CLASS_DECLARATION ||
+            t == ASTNode::Type::FUNCTION_DECLARATION) {
+            continue;  // top-level decl itself: already hoisted, no nested content
+        }
+        if (!prescan_declarations(st.get(), declared)) return nullptr;
+    }
+    std::unordered_map<std::string, int> decl_count;
+    for (const auto& info : declared) decl_count[info.name]++;
+    std::unordered_set<std::string> for_header_names;
+    for (const auto& st : statements) collect_for_header_names(st.get(), for_header_names);
+    std::unordered_set<std::string> env_resident;
+    for (const auto& info : declared) {
+        if (!info.is_lexical && !info.is_catch_param) continue;  // nested var: global
+        if (!for_header_names.count(info.name) || info.is_catch_param || !refine ||
+            closure_names.count(info.name) || decl_count[info.name] > 1 ||
+            top_names.count(info.name)) {
+            env_resident.insert(info.name);
+        }
+    }
+
+    BytecodeCompiler compiler({}, /*env_mode=*/true, &env_resident);
+    if (compiler.failed_) return nullptr;
+    compiler.script_mode_ = true;
+    for (const auto& info : declared) {
+        if (!info.is_lexical && !info.is_catch_param) continue;
+        if (env_resident.count(info.name)) {
+            compiler.declare_local(info.name);
+        } else {
+            if (!compiler.declare_local(info.name)) return nullptr;
+            if (info.is_lexical) {
+                compiler.lexical_registers_.insert(compiler.lookup_local(info.name));
+            }
+        }
+    }
+    compiler.temp_watermark_ = compiler.next_register_;
+    for (const auto& info : declared) {
+        if (!info.is_lexical) continue;
+        int reg = compiler.lookup_local(info.name);
+        if (reg < 0 || compiler.env_names_.count(info.name)) continue;
+        compiler.emit(Op::LdaTdz);
+        compiler.emit(Op::Star);
+        compiler.emit_u8(static_cast<uint8_t>(reg));
+    }
+
+    for (const auto& st : statements) {
+        if (st->get_type() == ASTNode::Type::FUNCTION_DECLARATION) continue;  // pre-evaluated
+        if (!compiler.compile_statement(st.get())) return nullptr;
+    }
+    compiler.emit(Op::LdaUndefined);
+    compiler.emit(Op::Return);
+
+    compiler.chunk_->register_count = static_cast<uint16_t>(compiler.temp_watermark_);
+    compiler.chunk_->parameter_count = 0;
+    compiler.chunk_->env_mode = true;
+    compiler.chunk_->script_mode = true;
+    compiler.chunk_->lookup_cache.assign(compiler.chunk_->names.size(),
+                                         BytecodeChunk::LookupCacheEntry{});
+    return std::move(compiler.chunk_);
+}
+
 BytecodeCompiler::BytecodeCompiler(const std::vector<std::string>& param_names, bool env_mode,
                                    const std::unordered_set<std::string>* env_resident)
     : chunk_(std::make_unique<BytecodeChunk>()), env_mode_(env_mode) {
@@ -2034,6 +2231,16 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     if (failed_) return false;
     emit(Op::Star);
     emit_u8(static_cast<uint8_t>(iterator_reg));
+
+    if (loop_env_idx >= 0) {
+        // Spec 14.7.5.6 ForIn/OfBodyEvaluation step 1: CreatePerIterationEnvironment
+        // runs once more right after head evaluation (the object/iterable
+        // expression, where a closure may capture the still-TDZ binding),
+        // before the first per-iteration binding write -- same reasoning as
+        // the C-style FOR_STATEMENT fix above.
+        emit(Op::AdvanceLoopEnv);
+        emit_u16(static_cast<uint16_t>(loop_env_idx));
+    }
 
     size_t loop_start = chunk_->code.size();
     emit(Op::IteratorNextOrJump);
@@ -2294,6 +2501,18 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     if (failed_) return false;
     emit(Op::Star);
     emit_u8(static_cast<uint8_t>(key_reg));
+    // Spec: CheckObjectCoercible(base) before ToPropertyKey(key) for the
+    // GetValue this logical-assignment form performs before its RHS.
+    emit(Op::Ldar);
+    emit_u8(static_cast<uint8_t>(obj_reg));
+    emit(Op::CheckObjectCoercible);
+    emit(Op::Ldar);
+    emit_u8(static_cast<uint8_t>(key_reg));
+    emit(Op::ToPropertyKey);  // once; GetKeyed/SetKeyed below reuse the string
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(key_reg));
+    emit(Op::Ldar);
+    emit_u8(static_cast<uint8_t>(key_reg));
     emit(Op::GetKeyed);  // key still in the accumulator after Star
     emit_u8(static_cast<uint8_t>(obj_reg));
     size_t skip = emit_jump(skip_op);
@@ -2407,7 +2626,32 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     continue;
                 }
 
-                if (!is_local(name)) return false;  // prescan declared everything
+                if (!is_local(name)) {
+                    if (!script_mode_) return false;  // prescan declared everything
+                    // Top-level script declaration: the binding pre-exists
+                    // (vars on the global object, let/const uninitialized in
+                    // the script env). NamedEvaluation stays on the
+                    // tree-walker via a whole-declaration delegate.
+                    if (d->get_init() && is_named_evaluation_rhs(d->get_init())) {
+                        if (!emit_treewalker_delegate(node)) return false;
+                        break;
+                    }
+                    bool is_lex = decl->get_kind() != VariableDeclarator::Kind::VAR;
+                    if (!d->get_init()) {
+                        if (is_var) continue;
+                        emit(Op::LdaUndefined);
+                    } else {
+                        if (!compile_expression(d->get_init())) return false;
+                    }
+                    if (is_lex) {
+                        emit(Op::StaEnvInit);  // initializes the TDZ binding
+                        emit_u16(add_name(name));
+                    } else {
+                        emit(Op::StaLookup);
+                        emit_u16(add_name(name));
+                    }
+                    continue;
+                }
                 if (!d->get_init()) {
                     // `var x;`: pure hoisting, binding already exists as
                     // undefined (`const x;` is a grammar error).
@@ -2533,6 +2777,15 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 } else {
                     if (!compile_expression(stmt->get_init())) return false;
                 }
+            }
+            if (loop_env_idx >= 0) {
+                // Spec 14.7.4.3 ForBodyEvaluation step 1: CreatePerIterationEnvironment
+                // runs once more right after the init, before the first test --
+                // a closure created during init (e.g. a second declarator's
+                // initializer) must NOT alias the environment the first test/
+                // body/update mutate.
+                emit(Op::AdvanceLoopEnv);
+                emit_u16(static_cast<uint16_t>(loop_env_idx));
             }
             size_t loop_start = chunk_->code.size();
             size_t exit_jump = 0;
@@ -2790,7 +3043,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // Spec: every case shares ONE lexical scope, not one each --
             // entered after the discriminant, before any case test runs.
             int switch_env_idx = -1;
-            if (env_mode_) {
+            {
                 std::vector<BytecodeChunk::LoopEnvVar> vars;
                 bool needs_own_env = false;
                 for (const auto& c : cases) {
@@ -2798,8 +3051,25 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                         if (!collect_direct_lexical_decls(s.get(), vars, needs_own_env)) return false;
                     }
                 }
-                if (!vars.empty() || needs_own_env) {
-                    chunk_->loop_envs.push_back(std::move(vars));
+                std::vector<BytecodeChunk::LoopEnvVar> env_vars;
+                for (const auto& v : vars) {
+                    int reg = env_names_.count(v.name) ? -1 : lookup_local(v.name);
+                    if (reg >= 0) {
+                        // Register-resident case-block lexical: re-arm its
+                        // TDZ instead of living in the switch's own env --
+                        // a register isn't block-scoped, so this alone
+                        // wouldn't stop it leaking past the switch, but the
+                        // TDZ re-arm at least matches re-entry semantics
+                        // (switch bodies don't loop, so this runs once).
+                        emit(Op::LdaTdz);
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(reg));
+                    } else {
+                        env_vars.push_back(v);
+                    }
+                }
+                if (env_mode_ && (!env_vars.empty() || needs_own_env)) {
+                    chunk_->loop_envs.push_back(std::move(env_vars));
                     switch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
                     emit_u16(static_cast<uint16_t>(switch_env_idx));
@@ -3024,7 +3294,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             } else {
                 // Evaluating the key leaves it in the accumulator, exactly
                 // what GetKeyed expects -- no extra register needed for reads.
-                if (!compile_expression(mem->get_property())) return false;
+                {
+                    ChainMaskScope mask(chain_shortcircuit_jumps_);
+                    if (!compile_expression(mem->get_property())) return false;
+                }
                 emit(Op::GetKeyed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
             }
@@ -3061,7 +3334,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 emit_u16(add_name(name));
                 emit_u16(alloc_feedback_slot());
             } else {
-                if (!compile_expression(mem->get_property())) return false;
+                {
+                    ChainMaskScope mask(chain_shortcircuit_jumps_);
+                    if (!compile_expression(mem->get_property())) return false;
+                }
                 emit(Op::GetKeyed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
             }
@@ -3224,6 +3500,18 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                             key_reg = alloc_temp();
                             if (failed_) return false;
                             emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(key_reg));
+                            // Spec: CheckObjectCoercible(base) before
+                            // ToPropertyKey(key) for ++/--'s GetValue step.
+                            emit(Op::Ldar);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                            emit(Op::CheckObjectCoercible);
+                            emit(Op::Ldar);
+                            emit_u8(static_cast<uint8_t>(key_reg));
+                            emit(Op::ToPropertyKey);  // once; GetKeyed/SetKeyed reuse the string
+                            emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(key_reg));
+                            emit(Op::Ldar);
                             emit_u8(static_cast<uint8_t>(key_reg));
                             emit(Op::GetKeyed);  // key still in the accumulator
                             emit_u8(static_cast<uint8_t>(obj_reg));
@@ -3454,6 +3742,16 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     emit_u16(name_idx);
                     emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
                 } else {
+                    // Spec: CheckObjectCoercible(base) before ToPropertyKey(key)
+                    // for a compound assignment's GetValue step.
+                    emit(Op::Ldar);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    emit(Op::CheckObjectCoercible);
+                    emit(Op::Ldar);
+                    emit_u8(static_cast<uint8_t>(key_reg));
+                    emit(Op::ToPropertyKey);  // once; GetKeyed/SetKeyed below reuse the string
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(key_reg));
                     emit(Op::Ldar);
                     emit_u8(static_cast<uint8_t>(key_reg));
                     emit(Op::GetKeyed);
@@ -3468,6 +3766,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 emit_u8(static_cast<uint8_t>(old_val));
                 free_temp(old_val);
             } else {
+                // Plain assign: per spec, the key is NOT converted to a
+                // property key until PutValue -- after the RHS evaluates.
+                // (base[k] = v where base is null must run k's toString
+                // AFTER v, not before -- see AssignmentExpression's own
+                // deferred-ToPropertyKey comment.)
                 if (!compile_expression(expr->get_right())) return false;
             }
 
@@ -3558,6 +3861,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     emit_u16(mem_private ? alloc_private_feedback() : alloc_feedback_slot());
                 } else {
                     method_name = "<computed>";  // CallResolved diagnostics only
+                    ChainMaskScope key_mask(chain_shortcircuit_jumps_);
                     if (!compile_expression(mem_prop)) return false;
                     emit(Op::GetKeyed);
                     emit_u8(static_cast<uint8_t>(obj_reg));
@@ -3572,12 +3876,15 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 }
 
                 int args_start = next_register_;
+                {
+                    ChainMaskScope mask(chain_shortcircuit_jumps_);
                 for (const auto& arg : call_args) {
                     int arg_reg = alloc_temp();
                     if (failed_) return false;
                     if (!compile_expression(arg.get())) return false;
                     emit(Op::Star);
                     emit_u8(static_cast<uint8_t>(arg_reg));
+                }
                 }
 
                 emit(Op::CallResolved);
@@ -3615,12 +3922,15 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             // Arguments occupy consecutive temps: each argument expression
             // balances its own temps, so alloc_temp stays contiguous here.
             int args_start = next_register_;
+            {
+                ChainMaskScope mask(chain_shortcircuit_jumps_);
             for (const auto& arg : call_args) {
                 int arg_reg = alloc_temp();
                 if (failed_) return false;
                 if (!compile_expression(arg.get())) return false;
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(arg_reg));
+            }
             }
 
             emit(Op::Call);
@@ -3740,11 +4050,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         key = oss.str();
                     }
                 }
+                // `__proto__: v` is the special prototype-setting form, and
+                // any other key must be CreateDataProperty (a poisoned
+                // Object.prototype accessor must not fire) -- DefineOwn.
+                if (key == "__proto__") return false;
                 if (!compile_expression(prop->value.get())) return false;
-                emit(Op::SetNamed);
+                emit(Op::DefineOwn);
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u16(add_name(key));
-                emit_u16(alloc_feedback_slot());
             }
             emit(Op::Ldar);
             emit_u8(static_cast<uint8_t>(obj_reg));
@@ -3756,8 +4069,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             const auto* lit = static_cast<const ArrayLiteral*>(node);
             if (lit->get_elements().size() > 200) return false;
             for (const auto& el : lit->get_elements()) {
-                // Holes are represented as a null element pointer; spread
-                // needs iterator protocol -- both stay on the tree-walker.
+                // Spread needs the iterator protocol -- tree-walker's job.
                 if (!el || el->get_type() == ASTNode::Type::SPREAD_ELEMENT) return false;
             }
 
@@ -3770,6 +4082,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
             const auto& elements = lit->get_elements();
             for (size_t i = 0; i < elements.size(); i++) {
+                // Holes ride the UNDEFINED_LITERAL node and are skipped --
+                // no own element, same as ArrayLiteral::evaluate. CreateArray
+                // already fixed the length.
+                if (elements[i]->get_type() == ASTNode::Type::UNDEFINED_LITERAL) continue;
                 int key_reg = alloc_temp();
                 if (failed_) return false;
                 if (i <= static_cast<size_t>(INT8_MAX)) {
@@ -3782,7 +4098,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(key_reg));
                 if (!compile_expression(elements[i].get())) return false;
-                emit(Op::SetKeyed);
+                // CreateDataProperty: a poisoned Array.prototype index must
+                // not block or intercept the literal's own element.
+                emit(Op::DefineElement);
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u8(static_cast<uint8_t>(key_reg));
                 free_temp(key_reg);

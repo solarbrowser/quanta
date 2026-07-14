@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Async.h"
+#include "quanta/core/runtime/FiberStackPool.h"
 #include <cstdio>
 #include <cstdlib>
 #include "quanta/core/gc/Collector.h"
@@ -53,16 +54,16 @@ AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
       exec_context_owned_(std::move(exec_ctx)),
       exec_context_(exec_context_owned_.get()),
       engine_(engine),
-      fiber_stack_(STACK_SIZE),
+      fiber_stack_(FiberStackPool::acquire(STACK_SIZE)),
       body_(std::move(body)) {
     getcontext(&fiber_->fiber_ctx);
-    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_;
     fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
     fiber_->fiber_ctx.uc_link = nullptr;
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get(), nullptr,
+    FiberRegistry::register_fiber(this, fiber_stack_, STACK_SIZE, fiber_.get(), nullptr,
         [this](Visitor& v) {
             v.visit_object(outer_promise_);
             v.visit_context(exec_context_);
@@ -73,6 +74,7 @@ AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
 
 AsyncExecutor::~AsyncExecutor() {
     FiberRegistry::unregister_fiber(this);
+    if (fiber_stack_) FiberStackPool::release(fiber_stack_, STACK_SIZE);
 }
 
 void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
@@ -380,7 +382,7 @@ AsyncAwaitExpression::AsyncAwaitExpression(std::unique_ptr<ASTNode> expression)
 Value AsyncAwaitExpression::evaluate(Context& ctx) {
     AsyncExecutor* exec = AsyncExecutor::get_current();
 
-    if (exec && !exec->fiber_stack_.empty()) {
+    if (exec && exec->fiber_stack_) {
         // Fiber-based path: no replay, just suspend/resume
 
         Value expr_val = expression_ ? expression_->evaluate(ctx) : Value();
@@ -482,15 +484,15 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<AST
       generator_context_(context_owned_.get()),
       outer_context_(outer_ctx),
       body_(std::move(body)), state_(State::SuspendedStart),
-      fiber_stack_(STACK_SIZE) {
+      fiber_stack_(FiberStackPool::acquire(STACK_SIZE)) {
     getcontext(&fiber_->fiber_ctx);
-    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_;
     fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
     fiber_->fiber_ctx.uc_link = nullptr;
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get(), this);
+    FiberRegistry::register_fiber(this, fiber_stack_, STACK_SIZE, fiber_.get(), this);
     if (s_async_generator_prototype_) {
         set_prototype(s_async_generator_prototype_);
     }
@@ -498,6 +500,7 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<AST
 
 AsyncGenerator::~AsyncGenerator() {
     FiberRegistry::unregister_fiber(this);
+    if (fiber_stack_) FiberStackPool::release(fiber_stack_, STACK_SIZE);
     // Closures born inside the generator body share this context via their
     // closure_context_; a swept generator must not tear it down under them.
     // Contexts stay engine-lifetime until they become traced cells themselves.

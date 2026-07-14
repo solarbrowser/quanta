@@ -59,7 +59,7 @@ public:
     // Fiber infrastructure
     static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
-    std::vector<char> fiber_stack_;
+    char* fiber_stack_;  // FiberStackPool'dan; dtor iade eder
 
 private:
     std::unique_ptr<ASTNode> body_;
@@ -139,7 +139,7 @@ public:
     // Fiber infrastructure
     static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
-    std::vector<char> fiber_stack_;
+    char* fiber_stack_;  // FiberStackPool'dan; dtor iade eder
 
     // Yield protocol (written by fiber, read by caller after suspend)
     SuspendReason suspend_reason_ = SuspendReason::Done;

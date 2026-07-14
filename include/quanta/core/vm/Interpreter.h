@@ -30,6 +30,11 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 // body doesn't compile -- the caller then tree-walks it as before.
 Value run_suspendable(const ASTNode* body, Context& ctx, bool& used_vm);
 
+// Script tier: compile+run a Program's top-level statements (hoisting must
+// already be done by Program::evaluate). used_vm=false -> caller tree-walks.
+Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
+                 Context& ctx, bool& used_vm);
+
 // Process-wide opt-in switch, read once: QUANTA_VM=1 enables compilation
 // and execution, QUANTA_VM=0/unset keeps everything on the tree-walker.
 bool enabled();

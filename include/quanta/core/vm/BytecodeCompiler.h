@@ -32,6 +32,16 @@ public:
         const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
         bool suspendable = false);
 
+    // Script tier: compiles a Program's top-level statements. All hoisting
+    // (vars on the global, the script lexical env with its TDZ bindings,
+    // function declarations) has already run -- every top-level name is a
+    // pre-existing outer binding reached via LdaLookup/StaLookup, whose
+    // lookup cache works at full strength because the script env is
+    // persistent. Nested lexicals get the same register treatment as in
+    // function bodies. Null = tree-walk the statements instead.
+    static std::unique_ptr<BytecodeChunk> compile_script(
+        const std::vector<std::unique_ptr<ASTNode>>& statements);
+
 private:
     // env_resident: selective env_mode -- only these names live in the
     // Environment, everything else gets a register. Null = full env_mode
@@ -100,6 +110,7 @@ private:
     std::unordered_set<const ASTNode*> hoisted_fn_decls_;  // top-level fn decls bound by compile()'s prologue
     bool allow_arguments_ = false;  // `arguments` reads compile to LdaLookup (chunk needs_arguments set)
     bool suspendable_ = false;  // generator/async body, see compile()'s parameter
+    bool script_mode_ = false;  // top-level Program chunk, see compile_script()
     int try_env_depth_ = 0;
     int env_depth_ = 0;
     std::vector<size_t>* chain_shortcircuit_jumps_ = nullptr;

@@ -52,6 +52,10 @@ enum class Op : uint8_t {
     ToNumeric,    // BigInt passes through
     Inc,
     ToTemplateString, // template interpolation's own stringify
+    ToPropertyKey, // acc = ToPropertyKey(acc): once, before the RHS runs
+                   // (computed member writes -- toString observably one call)
+    CheckObjectCoercible, // throws TypeError if acc is null/undefined; acc
+                          // unchanged otherwise (RequireObjectCoercible)
     Dec,
 
     LdaLookup,    // n -- chain walk (globals/closures, non-env_mode)
@@ -97,6 +101,9 @@ enum class Op : uint8_t {
     SetKeyed,     // r_obj r_key
     DeleteNamed,  // r_obj n -- acc = delete r_obj.name
     DeleteKeyed,  // r_obj -- key in acc; acc = delete r_obj[key]
+    DefineOwn,    // r_obj n -- literal property: CreateDataProperty, never a
+                  // proto setter / inherited read-only check
+    DefineElement, // r_obj r_key -- array literal element (set_element)
 
     CreateObject, // n
     CreateArray,  // n
@@ -163,6 +170,9 @@ struct BytecodeChunk {
     // bytecode, and env_locals bound only afterwards (Op::BindEnvLocals), so a
     // default expression can't see a later parameter or a body-level binding.
     bool env_params_tdz = false;
+    // Top-level script chunk: the frame's lexical env is the PERSISTENT
+    // script env (not per-call), so the lookup cache may point into it.
+    bool script_mode = false;
     std::vector<std::string> env_params;
     struct EnvLocal { std::string name; bool is_lexical; bool is_const; };
     std::vector<EnvLocal> env_locals;

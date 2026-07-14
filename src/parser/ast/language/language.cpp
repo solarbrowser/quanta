@@ -1667,7 +1667,7 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
 Value AwaitExpression::evaluate(Context& ctx) {
     // Async generator fiber path
     AsyncGenerator* async_gen = AsyncGenerator::get_current();
-    if (async_gen && !async_gen->fiber_stack_.empty()) {
+    if (async_gen && async_gen->fiber_stack_ != nullptr) {
         Value expr_val = argument_ ? argument_->evaluate(ctx) : Value();
         if (ctx.has_exception()) return Value();
 
@@ -1763,7 +1763,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
 
     AsyncExecutor* exec = AsyncExecutor::get_current();
 
-    if (exec && !exec->fiber_stack_.empty()) {
+    if (exec && exec->fiber_stack_ != nullptr) {
         // Fiber-based await: evaluate, suspend, resume with result
         if (!argument_) {
             // `await` with no argument -- suspend once then return undefined

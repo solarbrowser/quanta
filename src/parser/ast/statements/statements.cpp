@@ -6,6 +6,7 @@
 
 #include "quanta/parser/AST.h"
 #include "quanta/core/gc/Collector.h"
+#include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
@@ -132,6 +133,18 @@ Value Program::evaluate(Context& ctx) {
             if (ctx.has_exception()) {
                 return Value();
             }
+        }
+    }
+
+    // Script tier: with hoisting done, the statement loop itself can run as
+    // bytecode (completion value not tracked -- callers that need it, e.g.
+    // eval, don't take this path).
+    if (ctx.get_type() != Context::Type::Eval) {
+        bool used_vm = false;
+        Value vm_result = VM::run_script(statements_, ctx, used_vm);
+        if (used_vm) {
+            if (ctx.has_exception()) return Value();
+            return vm_result;
         }
     }
 
@@ -1552,7 +1565,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
     if (is_await_) {
         // AsyncExecutor::current_ is thread-local and survives AsyncGenerator::enter_fiber's ucontext swap, so it can still point at an unrelated outer exec -- check the async-generator fiber first to avoid swapcontext-ing into the wrong coroutine.
         AsyncGenerator* async_gen = AsyncGenerator::get_current();
-        bool in_async_gen_fiber = async_gen && !async_gen->fiber_stack_.empty();
+        bool in_async_gen_fiber = async_gen && async_gen->fiber_stack_ != nullptr;
         AsyncExecutor* exec = in_async_gen_fiber ? nullptr : AsyncExecutor::get_current();
         Context* gctx = in_async_gen_fiber
             ? (async_gen->get_outer_context() ? async_gen->get_outer_context() : async_gen->get_generator_context())
@@ -1707,7 +1720,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 }
                 awaited = async_gen->await_result_;
                 async_gen->await_result_ = Value();
-            } else if (exec && !exec->fiber_stack_.empty()) {
+            } else if (exec && exec->fiber_stack_ != nullptr) {
                 // Fiber-based: call next(), await the result
                 Value next_method_val = iterator_obj->get_property("next");
                 if (!next_method_val.is_function()) {
@@ -1995,7 +2008,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     value = async_gen->await_result_;
                     async_gen->await_result_ = Value();
-                } else if (exec && !exec->fiber_stack_.empty()) {
+                } else if (exec && exec->fiber_stack_ != nullptr) {
                     // `value` was already fully wrapped, awaited, and unwrapped by the
                     // AsyncFromSyncIteratorContinuation step above (next_result_promise's
                     // resolution) -- nothing further to await here.

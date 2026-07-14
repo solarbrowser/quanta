@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Generator.h"
+#include "quanta/core/runtime/FiberStackPool.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/core/gc/Visitor.h"
@@ -74,7 +75,7 @@ void Generator::run_body() {
 Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
       body_(std::move(body)), state_(State::SuspendedStart),
-      fiber_stack_(STACK_SIZE), outer_context_(outer_ctx) {
+      fiber_stack_(FiberStackPool::acquire(STACK_SIZE)), outer_context_(outer_ctx) {
 
     if (gen_func) {
         Value fn_proto = gen_func->get_property("prototype");
@@ -87,17 +88,18 @@ Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> 
 
     // Set up fiber context
     getcontext(&fiber_->fiber_ctx);
-    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_;
     fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
     fiber_->fiber_ctx.uc_link = nullptr;
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFF), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_.data(), fiber_stack_.size(), fiber_.get(), this);
+    FiberRegistry::register_fiber(this, fiber_stack_, STACK_SIZE, fiber_.get(), this);
 }
 
 Generator::~Generator() {
     FiberRegistry::unregister_fiber(this);
+    if (fiber_stack_) FiberStackPool::release(fiber_stack_, STACK_SIZE);
 }
 
 Generator::GeneratorResult Generator::next(const Value& value) {
@@ -843,5 +845,33 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     return std::make_unique<Generator>(this, gen_context_ptr.release(), std::move(body_clone), &ctx);
 }
 
+
+}
+
+namespace Quanta {
+
+thread_local std::vector<FiberStackPool::Bucket> FiberStackPool::buckets_;
+
+char* FiberStackPool::acquire(size_t size) {
+    for (auto& b : buckets_) {
+        if (b.size == size && !b.free.empty()) {
+            char* p = b.free.back();
+            b.free.pop_back();
+            return p;
+        }
+    }
+    return new char[size];
+}
+
+void FiberStackPool::release(char* p, size_t size) {
+    for (auto& b : buckets_) {
+        if (b.size == size) {
+            if (b.free.size() >= kMaxPerBucket) { delete[] p; return; }
+            b.free.push_back(p);
+            return;
+        }
+    }
+    buckets_.push_back({size, {p}});
+}
 
 }

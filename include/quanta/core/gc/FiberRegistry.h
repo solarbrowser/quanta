@@ -18,8 +18,10 @@ class Visitor;
 
 // Live fibers (Generator / AsyncGenerator / AsyncExecutor). A suspended
 // fiber's stack is full of live cell references the conservative scanner
-// must see. Stack buffers are zero-initialized vectors, so scanning the
-// whole buffer is safe and cheap; the FiberState pair carries the saved
+// must see. Stacks come from FiberStackPool and may hold a previous
+// fiber's remains below the live region -- fine, since the scanner
+// validates every candidate word against the heap (stale words cost at
+// most temporary false retention). The FiberState pair carries the saved
 // register file, scanned as a raw word range.
 class FiberRegistry {
 public:

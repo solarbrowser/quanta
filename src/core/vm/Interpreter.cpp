@@ -126,6 +126,10 @@ void set_primitive_named(Context& ctx, const Value& prim, const std::string& nam
             Value proto = ctor.as_function()->get_property("prototype");
             Object* level = (!ctx.has_exception() && proto.is_object()) ? proto.as_object() : nullptr;
             while (level) {
+                if (level->get_type() == Object::ObjectType::Proxy) {
+                    static_cast<Proxy*>(level)->set_trap(Value(name), value, prim);
+                    return;
+                }
                 PropertyDescriptor desc = level->get_property_descriptor(name);
                 if (desc.is_accessor_descriptor()) {
                     if (desc.has_setter()) {
@@ -430,8 +434,9 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     }
 
     // The frame's own environment: per-call, so lookup_cache must never
-    // point into it (outer captured envs are the cacheable ones).
-    Environment* entry_env = ctx.get_lexical_environment();
+    // point into it (outer captured envs are the cacheable ones). A script
+    // frame's env is the persistent script env -- fully cacheable.
+    Environment* entry_env = chunk.script_mode ? nullptr : ctx.get_lexical_environment();
 
     // Op::LdaThis cache: `this` is immutable for the whole frame (derived
     // constructors never enter the VM), so resolve the binding at most once.
@@ -446,26 +451,26 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 
     // On exception, find the innermost handler covering instr_pc; `continue`
     // re-enters the for(;;) below with pc already moved to the handler.
+// NOT a do-while(0) macro: `continue` inside do{}while(0) binds to the
+// do-while, not the dispatch loop -- the rest of the case would keep
+// running with pc already pointed at the handler, clobbering the
+// exception value in acc (found via ~{valueOf(){throw}} in a try).
 #define CHECK_EXC()                                                        \
-    do {                                                                   \
-        if (ctx.has_exception()) {                                        \
-            int32_t handler_pc = -1;                                       \
-            uint32_t best_width = UINT32_MAX;                              \
-            for (const auto& h : chunk.handlers) {                        \
-                if (instr_pc >= h.start_pc && instr_pc < h.end_pc) {       \
-                    uint32_t width = h.end_pc - h.start_pc;                \
-                    if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); } \
-                }                                                          \
+    if (ctx.has_exception()) {                                            \
+        int32_t handler_pc = -1;                                           \
+        uint32_t best_width = UINT32_MAX;                                  \
+        for (const auto& h : chunk.handlers) {                            \
+            if (instr_pc >= h.start_pc && instr_pc < h.end_pc) {           \
+                uint32_t width = h.end_pc - h.start_pc;                    \
+                if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); } \
             }                                                              \
-            if (handler_pc >= 0) {                                        \
-                acc = ctx.get_exception();                                \
-                ctx.clear_exception();                                    \
-                pc = static_cast<uint32_t>(handler_pc);                   \
-                continue;                                                  \
-            }                                                              \
-            return Value();                                               \
         }                                                                  \
-    } while (0)
+        if (handler_pc < 0) return Value();                               \
+        acc = ctx.get_exception();                                        \
+        ctx.clear_exception();                                            \
+        pc = static_cast<uint32_t>(handler_pc);                           \
+        continue;                                                          \
+    } else ((void)0)
 
 #define BINARY_OP(binop, expr)                                             \
     do {                                                                   \
@@ -708,6 +713,19 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             case Op::ToTemplateString:
                 acc = Value(TemplateLiteral::stringify_element(ctx, acc));
                 CHECK_EXC();
+                break;
+            case Op::ToPropertyKey:
+                if (!acc.is_string()) {
+                    acc = Value(acc.to_property_key());
+                    CHECK_EXC();
+                }
+                break;
+            case Op::CheckObjectCoercible:
+                if (acc.is_null() || acc.is_undefined()) {
+                    ctx.throw_type_error(std::string("Cannot read properties of ") +
+                        (acc.is_null() ? "null" : "undefined"));
+                    CHECK_EXC();
+                }
                 break;
             case Op::Inc:
             case Op::Dec: {
@@ -1238,6 +1256,24 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
+            case Op::DefineOwn: {
+                uint8_t obj_reg = code[pc];
+                uint16_t name_idx = read_u16(code, pc + 1);
+                pc += 3;
+                Object* obj = as_object_like(regs[obj_reg]);
+                if (obj) obj->set_property(chunk.names[name_idx], acc);
+                CHECK_EXC();
+                break;
+            }
+            case Op::DefineElement: {
+                uint8_t obj_reg = code[pc];
+                uint8_t key_reg = code[pc + 1];
+                pc += 2;
+                Object* obj = as_object_like(regs[obj_reg]);
+                if (obj) obj->set_element(static_cast<uint32_t>(regs[key_reg].to_number()), acc);
+                CHECK_EXC();
+                break;
+            }
             case Op::CreateObject: {
                 pc += 2;  // hint currently informational only (see BytecodeCompiler)
                 Object* obj = ObjectFactory::create_object().release();
@@ -1246,8 +1282,11 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
             case Op::CreateArray: {
+                uint16_t n = read_u16(code, pc);
                 pc += 2;
-                acc = Value(ObjectFactory::create_array(0).release());
+                auto arr = ObjectFactory::create_array(0);
+                if (n) arr->set_length(n);  // trailing holes count toward length
+                acc = Value(arr.release());
                 break;
             }
             case Op::CreateRestArray: {
@@ -1316,6 +1355,29 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 
 #undef BINARY_OP
 #undef CHECK_EXC
+}
+
+Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
+                 Context& ctx, bool& used_vm) {
+    used_vm = false;
+    if (!enabled()) return Value();
+    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        if (e->is_with_environment()) return Value();
+    }
+    auto chunk = BytecodeCompiler::compile_script(statements);
+    if (!chunk) return Value();
+    used_vm = true;
+    static const bool disasm = [] {
+        const char* env = std::getenv("QUANTA_VM_DISASM");
+        return env && env[0] == '1';
+    }();
+    if (disasm) {
+        std::fprintf(stderr, "%s", disassemble_chunk(*chunk, "<script>").c_str());
+    }
+    ValueVectorRoot const_root(&chunk->constants);
+    Value global_this = ctx.get_global_object()
+        ? Value(ctx.get_global_object()) : Value();
+    return run(*chunk, ctx, {}, &global_this);
 }
 
 Value run_suspendable(const ASTNode* body, Context& ctx, bool& used_vm) {

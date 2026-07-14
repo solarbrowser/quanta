@@ -80,7 +80,7 @@ private:
 public:
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
 private:
-    std::vector<char> fiber_stack_;
+    char* fiber_stack_;  // FiberStackPool'dan; dtor iade eder
 
     static thread_local Generator* current_generator_;
     static thread_local size_t current_yield_counter_;
