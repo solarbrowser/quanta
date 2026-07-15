@@ -489,8 +489,19 @@ void run_minor_collection() {
     MarkVisitor& v = mark_visitor();
     v.reset_for_new_cycle();
     // Old cells/environments mutated since the last cycle: their new edges
-    // may be the only path to young cells.
-    for (const Heap::ProbeResult& p : remembered_cells()) v.push_remembered(p);
+    // may be the only path to young cells. Re-probe rather than trusting the
+    // stored ProbeResult: if the cell was freed since being remembered (e.g.
+    // a still-unreleased unique_ptr<Object> staging local that got marked by
+    // an intervening collection, then destructed on an early-return path
+    // instead of being handed into the graph), its slot may since have been
+    // reused -- possibly by a cell of a different kind/size, or even by a
+    // whole different (kind, size-class) block if the old one was emptied
+    // and reclaimed. Re-probing confirms the address is still a live,
+    // same-kind cell before it's dispatched through a virtual trace() call.
+    for (const Heap::ProbeResult& p : remembered_cells()) {
+        Heap::ProbeResult fresh = Heap::exact_cell(p.cell);
+        if (fresh.cell == p.cell && fresh.kind == p.kind) v.push_remembered(fresh);
+    }
     for (Environment* e : remembered_envs()) v.visit_environment(e);
     // See FiberRegistry::Record::owner_cell for why these are minor roots.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {

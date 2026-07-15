@@ -5,6 +5,7 @@
  */
 #include "quanta/core/engine/builtins/ArrayBuiltin.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -1667,7 +1668,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             auto result = ObjectFactory::create_array(static_cast<uint32_t>(length));
 
             // read-through-holes: Get for every index, no HasProperty check.
+            // Rooted: the compare callback below runs user code that can trigger GC.
             std::vector<Value> items;
+            ValueVectorRoot items_root(&items);
             items.reserve(static_cast<size_t>(length));
             for (double i = 0; i < length; i++) {
                 items.push_back(this_obj->get_property(Value(i).to_string()));
@@ -2456,6 +2459,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             // Spec: read each present index once (holes get no [[Get]] at all), sort the
             // snapshot in memory, then [[Set]] the sorted items back and [[Delete]] the rest.
             std::vector<Value> items;
+            ValueVectorRoot items_root(&items);
             items.reserve(length);
             for (uint32_t i = 0; i < length; i++) {
                 if (this_obj->has_property(std::to_string(i))) {

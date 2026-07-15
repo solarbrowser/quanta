@@ -5,6 +5,7 @@
  */
 #include "quanta/core/engine/builtins/TypedArrayBuiltin.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/TypedArray.h"
@@ -530,7 +531,10 @@ static Value construct_typed_array_generic(Context& ctx, const std::vector<Value
                 if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                 return Value();
             }
+            // Filled across user next() calls; the vector's heap buffer is
+            // invisible to the conservative stack scan.
             std::vector<Value> items;
+            ValueVectorRoot items_root(&items);
             Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
             while (it) {
                 Value next_fn = it->get_property("next");
@@ -887,7 +891,10 @@ void register_typed_array_builtins(Context& ctx) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             size_t length = ta->length();
+            // Accumulates across callback calls; BigInt elements are fresh
+            // cells only reachable through this vector's heap buffer.
             std::vector<Value> filtered;
+            ValueVectorRoot filtered_root(&filtered);
 
             for (size_t i = 0; i < length; i++) {
                 Value element = ta->get_element(i);

@@ -6,6 +6,7 @@
 
 #include "quanta/core/engine/builtins/ErrorBuiltin.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -73,6 +74,9 @@ static bool error_arg_to_string(Context& ctx, const Value& v, std::string& out) 
 
 // IterableToList(errors): GetIterator then IteratorStep/IteratorValue, propagating any abrupt step.
 static bool error_iterable_to_list(Context& ctx, const Value& iterable, std::vector<Value>& out) {
+    // Filled across user next() calls; the vector's heap buffer is invisible
+    // to the conservative stack scan.
+    ValueVectorRoot out_root(&out);
     Object* obj = iterable.is_function() ? static_cast<Object*>(iterable.as_function())
                                           : iterable.is_object() ? iterable.as_object() : nullptr;
     if (!obj) { ctx.throw_type_error("errors is not iterable"); return false; }

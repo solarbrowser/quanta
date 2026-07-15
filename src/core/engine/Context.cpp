@@ -134,7 +134,7 @@ Context::Context(Engine* engine, Context* parent, Type type)
       execution_depth_(0), global_object_(parent ? parent->global_object_ : nullptr),
       current_exception_(), has_exception_(false), return_value_(), has_return_value_(false),
       has_break_(false), has_continue_(false), current_loop_label_(), next_statement_label_(),
-      is_in_constructor_call_(false), super_called_(false), this_needs_super_(false), original_this_was_nullish_(false), original_this_was_primitive_(false), strict_mode_(parent && type != Type::Function ? parent->strict_mode_ : false),
+      is_in_constructor_call_(false), super_called_(false), this_needs_super_(false), strict_mode_(parent && type != Type::Function ? parent->strict_mode_ : false),
       engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>") {
 
 

@@ -80,8 +80,8 @@ private:
     Object* last_super_override_ = nullptr;  // comparison-only, see last_super_override()
     Environment* owned_env_ = nullptr;  // see set_owned_env()
     Value new_target_;
-    bool original_this_was_nullish_;
-    bool original_this_was_primitive_; // set when native call had a non-null/undefined primitive thisArg
+    bool original_this_was_nullish_ = false;
+    bool original_this_was_primitive_ = false; // set when native call had a non-null/undefined primitive thisArg
     // Set by Function::construct() right before it calls Function::call() on the same
     // function, so call() can tell "I'm the construct invocation" apart from a plain call
     // made from inside that constructor's body (which must see new.target == undefined).

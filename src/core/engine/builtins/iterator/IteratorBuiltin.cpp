@@ -5,6 +5,7 @@
  */
 #include "quanta/core/engine/builtins/IteratorBuiltin.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -1446,8 +1447,13 @@ void register_iterator_constructor(Context& ctx) {
             Value outer_next = outer_iter_obj->get_property("next");
             if (ctx.has_exception()) return Value();
 
+            // Filled across JS calls ([Symbol.iterator](), next()): the vectors'
+            // heap buffers are invisible to the conservative stack scan, so a
+            // collection mid-loop would sweep the earlier columns' iterators.
             std::vector<Value> iters;
             std::vector<Value> iter_nexts;
+            ValueVectorRoot iters_root(&iters);
+            ValueVectorRoot nexts_root(&iter_nexts);
             while (true) {
                 auto [item, done] = iterator_helper_step(ctx, outer_iter, outer_next);
                 if (ctx.has_exception()) {
@@ -1490,6 +1496,7 @@ void register_iterator_constructor(Context& ctx) {
             }
             uint32_t iter_count = (uint32_t)iters.size();
             std::vector<Value> padding(iter_count, Value());
+            ValueVectorRoot padding_root(&padding);
             if (mode == "longest" && !padding_option.is_undefined()) {
                 Object* padding_obj = padding_option.is_function() ? static_cast<Object*>(padding_option.as_function()) : padding_option.as_object();
                 Value pad_iter_fn = iter_sym ? padding_obj->get_property(iter_sym->to_property_key()) : Value();
@@ -1594,8 +1601,12 @@ void register_iterator_constructor(Context& ctx) {
 
             Object* iterables_obj = iterables_val.is_function() ? static_cast<Object*>(iterables_val.as_function()) : iterables_val.as_object();
             std::vector<std::string> keys;
+            // Same rooting as Iterator.zip: filled across JS calls, and the
+            // vectors' heap buffers are invisible to the stack scan.
             std::vector<Value> iters;
             std::vector<Value> iter_nexts;
+            ValueVectorRoot iters_root(&iters);
+            ValueVectorRoot nexts_root(&iter_nexts);
             // A Proxy must be observed through its [[OwnPropertyKeys]] and
             // [[GetOwnProperty]] traps, not the plain object tables.
             bool iterables_is_proxy = iterables_obj->get_type() == Object::ObjectType::Proxy;
@@ -1648,6 +1659,7 @@ void register_iterator_constructor(Context& ctx) {
 
             uint32_t iter_count = (uint32_t)iters.size();
             std::vector<Value> padding(iter_count, Value());
+            ValueVectorRoot padding_root(&padding);
             if (mode == "longest" && !padding_option.is_undefined()) {
                 // For zipKeyed, padding is a plain object: read Get(paddingOption, key) per key.
                 Object* padding_obj = padding_option.is_function() ? static_cast<Object*>(padding_option.as_function()) : padding_option.as_object();
