@@ -60,7 +60,7 @@ const OpInfo& op_info(Op op) {
         {"DefineOwn", 3, 'l'}, {"DefineElement", 2, 'r'},
         {"CreateObject", 2, 'h'}, {"CreateArray", 2, 'h'},
         {"Jump", 2, 'o'}, {"JumpIfTrue", 2, 'o'}, {"JumpIfFalse", 2, 'o'},
-        {"Return", 0, '-'}, {"Throw", 0, '-'},
+        {"Return", 0, '-'}, {"Throw", 0, '-'}, {"ReraiseGeneratorReturn", 0, '-'},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");

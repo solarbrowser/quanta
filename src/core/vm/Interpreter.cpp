@@ -1403,14 +1403,35 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 CHECK_EXC();
                 break;
 
+            case Op::ReraiseGeneratorReturn:
+                throw GeneratorReturnException(acc);
+
             default:
                 ctx.throw_exception(Value(std::string("VM: invalid opcode")));
                 return Value();
         }
         } catch (const YieldException&) {
             throw;
-        } catch (const GeneratorReturnException&) {
-            throw;
+        } catch (const GeneratorReturnException& gen_ret) {
+            // .return() resumed a suspended yield/await mid-try: skip any
+            // catch clause (spec) and run the covering try/catch's finally,
+            // same handler-table lookup as CHECK_EXC but keyed off
+            // genreturn_pc -- Op::ReraiseGeneratorReturn re-throws once
+            // finally is done, so an enclosing try's own handler picks it
+            // up in turn.
+            int32_t genreturn_pc = -1;
+            uint32_t best_width = UINT32_MAX;
+            for (const auto& h : chunk.handlers) {
+                if (h.genreturn_pc < 0) continue;
+                if (instr_pc >= h.start_pc && instr_pc < h.end_pc) {
+                    uint32_t width = h.end_pc - h.start_pc;
+                    if (width < best_width) { best_width = width; genreturn_pc = h.genreturn_pc; }
+                }
+            }
+            if (genreturn_pc < 0) throw;
+            acc = gen_ret.return_value;
+            pc = static_cast<uint32_t>(genreturn_pc);
+            continue;
         } catch (const std::exception& e) {
             // A native call (e.g. Proxy invariant violation) threw a raw C++
             // exception; CHECK_EXC below routes it like a normal JS throw.

@@ -115,6 +115,9 @@ enum class Op : uint8_t {
     JumpIfFalse,  // o
     Return,
     Throw,
+    ReraiseGeneratorReturn, // acc holds the .return() value -- a finally-only
+                            // landing pad's tail: re-throw as a C++
+                            // GeneratorReturnException once finally is done.
 
     kCount
 };
@@ -145,6 +148,12 @@ struct HandlerEntry {
     uint32_t start_pc;
     uint32_t end_pc;
     uint32_t handler_pc;
+    // A generator .return() mid-suspend unwinds as a C++ exception, not a
+    // catchable JS value, and must skip any catch clause -- so it needs its
+    // own landing pad (finally-only) instead of reusing handler_pc. -1 when
+    // this region has no suspend point in it (not a suspendable chunk, or no
+    // finally to run).
+    int32_t genreturn_pc = -1;
 };
 
 // One per compiled function body, owned by its Function, shared by every call.

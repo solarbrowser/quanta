@@ -25,9 +25,10 @@ class Parameter;
 class BytecodeCompiler {
 public:
     // `suspendable`: generator/async body -- forces env_mode (yield/await are
-    // delegated to the tree-walker, which suspends the surrounding fiber) and
-    // rejects bodies with yield/await inside try (a C++ GeneratorReturnException
-    // from return() would skip VM finally blocks).
+    // delegated to the tree-walker, which suspends the surrounding fiber). A
+    // try/finally wrapping one gets its own generator-return landing pad
+    // (Op::ReraiseGeneratorReturn) so a mid-suspend .return() still runs
+    // finally instead of skipping it.
     static std::unique_ptr<BytecodeChunk> compile(
         const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
         bool suspendable = false);

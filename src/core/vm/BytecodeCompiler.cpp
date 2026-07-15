@@ -499,10 +499,38 @@ bool contains_closure(const ASTNode* node) {
     }
 }
 
-// True if a bare destructuring assignment (`[a,b]=[b,a];`, not a declaration's
-// init) appears anywhere -- those delegate to the tree-walker and force
-// env_mode. Same arrow/function descent rule as uses_arguments.
-bool contains_destructuring_expr(const ASTNode* node) {
+bool has_spread(const std::vector<std::unique_ptr<ASTNode>>& nodes) {
+    for (const auto& n : nodes) {
+        if (n && n->get_type() == ASTNode::Type::SPREAD_ELEMENT) return true;
+    }
+    return false;
+}
+
+// Anything the native CreateObject/DefineOwn path can't emit (it only does
+// plain data properties with a static string/number/identifier key):
+// methods/accessors, computed keys, spread, __proto__, oversized literals.
+bool object_literal_is_complex(const ObjectLiteral* lit) {
+    for (const auto& prop : lit->get_properties()) {
+        if (!prop->key) return true;  // spread: null key
+        if (prop->type != ObjectLiteral::PropertyType::Value || prop->computed) return true;
+        auto kt = prop->key->get_type();
+        if (kt == ASTNode::Type::IDENTIFIER) {
+            if (static_cast<const Identifier*>(prop->key.get())->get_name() == "__proto__") return true;
+        } else if (kt == ASTNode::Type::STRING_LITERAL) {
+            if (static_cast<const StringLiteral*>(prop->key.get())->get_value() == "__proto__") return true;
+        } else if (kt != ASTNode::Type::NUMBER_LITERAL) {
+            return true;
+        }
+    }
+    return lit->get_properties().size() > 200;
+}
+
+// True if an always-delegated expression -- a bare destructuring assignment
+// (`[a,b]=[b,a];`, not a declaration's init), a complex object literal, or a
+// spread in call/new/array-literal position -- appears anywhere: those need
+// env_mode to delegate at all. Same arrow/function descent rule as
+// uses_arguments.
+bool contains_delegated_expr(const ASTNode* node) {
     if (!node) return false;
     if (node->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) return true;
     switch (node->get_type()) {
@@ -510,88 +538,88 @@ bool contains_destructuring_expr(const ASTNode* node) {
         case ASTNode::Type::FUNCTION_DECLARATION:
             return false;
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
-            return contains_destructuring_expr(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+            return contains_delegated_expr(static_cast<const ArrowFunctionExpression*>(node)->get_body());
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
-            return n->is_arrow() && contains_destructuring_expr(n->get_body());
+            return n->is_arrow() && contains_delegated_expr(n->get_body());
         }
         case ASTNode::Type::CLASS_DECLARATION:
             return false;  // method bodies are their own compile() unit
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
             for (const auto& stmt : n->get_statements()) {
-                if (contains_destructuring_expr(stmt.get())) return true;
+                if (contains_delegated_expr(stmt.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::IF_STATEMENT: {
             const auto* n = static_cast<const IfStatement*>(node);
-            return contains_destructuring_expr(n->get_test()) || contains_destructuring_expr(n->get_consequent()) ||
-                   contains_destructuring_expr(n->get_alternate());
+            return contains_delegated_expr(n->get_test()) || contains_delegated_expr(n->get_consequent()) ||
+                   contains_delegated_expr(n->get_alternate());
         }
         case ASTNode::Type::WHILE_STATEMENT: {
             const auto* n = static_cast<const WhileStatement*>(node);
-            return contains_destructuring_expr(n->get_test()) || contains_destructuring_expr(n->get_body());
+            return contains_delegated_expr(n->get_test()) || contains_delegated_expr(n->get_body());
         }
         case ASTNode::Type::DO_WHILE_STATEMENT: {
             const auto* n = static_cast<const DoWhileStatement*>(node);
-            return contains_destructuring_expr(n->get_body()) || contains_destructuring_expr(n->get_test());
+            return contains_delegated_expr(n->get_body()) || contains_delegated_expr(n->get_test());
         }
         case ASTNode::Type::FOR_STATEMENT: {
             const auto* n = static_cast<const ForStatement*>(node);
-            return contains_destructuring_expr(n->get_init()) || contains_destructuring_expr(n->get_test()) ||
-                   contains_destructuring_expr(n->get_update()) || contains_destructuring_expr(n->get_body());
+            return contains_delegated_expr(n->get_init()) || contains_delegated_expr(n->get_test()) ||
+                   contains_delegated_expr(n->get_update()) || contains_delegated_expr(n->get_body());
         }
         case ASTNode::Type::FOR_OF_STATEMENT: {
             const auto* n = static_cast<const ForOfStatement*>(node);
-            return contains_destructuring_expr(n->get_right()) || contains_destructuring_expr(n->get_body());
+            return contains_delegated_expr(n->get_right()) || contains_delegated_expr(n->get_body());
         }
         case ASTNode::Type::FOR_IN_STATEMENT: {
             const auto* n = static_cast<const ForInStatement*>(node);
-            return contains_destructuring_expr(n->get_right()) || contains_destructuring_expr(n->get_body());
+            return contains_delegated_expr(n->get_right()) || contains_delegated_expr(n->get_body());
         }
         case ASTNode::Type::TRY_STATEMENT: {
             const auto* n = static_cast<const TryStatement*>(node);
-            if (contains_destructuring_expr(n->get_try_block())) return true;
+            if (contains_delegated_expr(n->get_try_block())) return true;
             if (const ASTNode* cc = n->get_catch_clause()) {
-                if (contains_destructuring_expr(static_cast<const CatchClause*>(cc)->get_body())) return true;
+                if (contains_delegated_expr(static_cast<const CatchClause*>(cc)->get_body())) return true;
             }
-            return contains_destructuring_expr(n->get_finally_block());
+            return contains_delegated_expr(n->get_finally_block());
         }
         case ASTNode::Type::SWITCH_STATEMENT: {
             const auto* n = static_cast<const SwitchStatement*>(node);
-            if (contains_destructuring_expr(n->get_discriminant())) return true;
+            if (contains_delegated_expr(n->get_discriminant())) return true;
             for (const auto& c : n->get_cases()) {
                 const auto* cc = static_cast<const CaseClause*>(c.get());
-                if (cc->get_test() && contains_destructuring_expr(cc->get_test())) return true;
+                if (cc->get_test() && contains_delegated_expr(cc->get_test())) return true;
                 for (const auto& s : cc->get_consequent()) {
-                    if (contains_destructuring_expr(s.get())) return true;
+                    if (contains_delegated_expr(s.get())) return true;
                 }
             }
             return false;
         }
         case ASTNode::Type::LABELED_STATEMENT:
-            return contains_destructuring_expr(static_cast<const LabeledStatement*>(node)->get_statement());
+            return contains_delegated_expr(static_cast<const LabeledStatement*>(node)->get_statement());
         case ASTNode::Type::EXPRESSION_STATEMENT:
-            return contains_destructuring_expr(static_cast<const ExpressionStatement*>(node)->get_expression());
+            return contains_delegated_expr(static_cast<const ExpressionStatement*>(node)->get_expression());
         case ASTNode::Type::RETURN_STATEMENT: {
             const auto* n = static_cast<const ReturnStatement*>(node);
-            return n->get_argument() && contains_destructuring_expr(n->get_argument());
+            return n->get_argument() && contains_delegated_expr(n->get_argument());
         }
         case ASTNode::Type::THROW_STATEMENT:
-            return contains_destructuring_expr(static_cast<const ThrowStatement*>(node)->get_expression());
+            return contains_delegated_expr(static_cast<const ThrowStatement*>(node)->get_expression());
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations()) {
                 // A declaration's own init is contains_destructuring's job;
                 // only destructuring exprs nested inside it count here.
                 if (d->get_init() && d->get_init()->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT &&
-                    contains_destructuring_expr(d->get_init())) return true;
+                    contains_delegated_expr(d->get_init())) return true;
                 if (d->get_init() && d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                     const auto* da = static_cast<const DestructuringAssignment*>(d->get_init());
-                    if (contains_destructuring_expr(da->get_source())) return true;
+                    if (contains_delegated_expr(da->get_source())) return true;
                     for (const auto& dv : da->get_default_values())
-                        if (contains_destructuring_expr(dv.expr.get())) return true;
+                        if (contains_delegated_expr(dv.expr.get())) return true;
                 }
             }
             return false;
@@ -604,80 +632,84 @@ bool contains_destructuring_expr(const ASTNode* node) {
                 n->get_left()->get_type() == ASTNode::Type::OBJECT_LITERAL) {
                 return true;
             }
-            return contains_destructuring_expr(n->get_left()) || contains_destructuring_expr(n->get_right());
+            return contains_delegated_expr(n->get_left()) || contains_delegated_expr(n->get_right());
         }
         case ASTNode::Type::UNARY_EXPRESSION:
-            return contains_destructuring_expr(static_cast<const UnaryExpression*>(node)->get_operand());
+            return contains_delegated_expr(static_cast<const UnaryExpression*>(node)->get_operand());
         case ASTNode::Type::BINARY_EXPRESSION: {
             const auto* n = static_cast<const BinaryExpression*>(node);
-            return contains_destructuring_expr(n->get_left()) || contains_destructuring_expr(n->get_right());
+            return contains_delegated_expr(n->get_left()) || contains_delegated_expr(n->get_right());
         }
         case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
             const auto* n = static_cast<const NullishCoalescingExpression*>(node);
-            return contains_destructuring_expr(n->get_left()) || contains_destructuring_expr(n->get_right());
+            return contains_delegated_expr(n->get_left()) || contains_delegated_expr(n->get_right());
         }
         case ASTNode::Type::CONDITIONAL_EXPRESSION: {
             const auto* n = static_cast<const ConditionalExpression*>(node);
-            return contains_destructuring_expr(n->get_test()) || contains_destructuring_expr(n->get_consequent()) ||
-                   contains_destructuring_expr(n->get_alternate());
+            return contains_delegated_expr(n->get_test()) || contains_delegated_expr(n->get_consequent()) ||
+                   contains_delegated_expr(n->get_alternate());
         }
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* n = static_cast<const CallExpression*>(node);
-            if (contains_destructuring_expr(n->get_callee())) return true;
+            if (has_spread(n->get_arguments())) return true;
+            if (contains_delegated_expr(n->get_callee())) return true;
             for (const auto& arg : n->get_arguments()) {
-                if (contains_destructuring_expr(arg.get())) return true;
+                if (contains_delegated_expr(arg.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            if (contains_destructuring_expr(n->get_constructor())) return true;
+            if (has_spread(n->get_arguments())) return true;
+            if (contains_delegated_expr(n->get_constructor())) return true;
             for (const auto& arg : n->get_arguments()) {
-                if (contains_destructuring_expr(arg.get())) return true;
+                if (contains_delegated_expr(arg.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::MEMBER_EXPRESSION: {
             const auto* n = static_cast<const MemberExpression*>(node);
-            return contains_destructuring_expr(n->get_object()) ||
-                   (n->is_computed() && contains_destructuring_expr(n->get_property()));
+            return contains_delegated_expr(n->get_object()) ||
+                   (n->is_computed() && contains_delegated_expr(n->get_property()));
         }
         case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
             const auto* n = static_cast<const OptionalChainingExpression*>(node);
-            return contains_destructuring_expr(n->get_object()) ||
-                   (n->is_computed() && contains_destructuring_expr(n->get_property()));
+            return contains_delegated_expr(n->get_object()) ||
+                   (n->is_computed() && contains_delegated_expr(n->get_property()));
         }
         case ASTNode::Type::SPREAD_ELEMENT:
-            return contains_destructuring_expr(static_cast<const SpreadElement*>(node)->get_argument());
+            return contains_delegated_expr(static_cast<const SpreadElement*>(node)->get_argument());
         case ASTNode::Type::TEMPLATE_LITERAL: {
             const auto* n = static_cast<const TemplateLiteral*>(node);
             for (const auto& el : n->get_elements()) {
                 if (el.type == TemplateLiteral::Element::Type::EXPRESSION &&
-                    contains_destructuring_expr(el.expression.get())) return true;
+                    contains_delegated_expr(el.expression.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::OBJECT_LITERAL: {
             const auto* n = static_cast<const ObjectLiteral*>(node);
+            if (object_literal_is_complex(n)) return true;
             for (const auto& prop : n->get_properties()) {
-                if (prop->value && contains_destructuring_expr(prop->value.get())) return true;
+                if (prop->value && contains_delegated_expr(prop->value.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
+            if (has_spread(n->get_elements())) return true;
             for (const auto& el : n->get_elements()) {
-                if (el && contains_destructuring_expr(el.get())) return true;
+                if (el && contains_delegated_expr(el.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::YIELD_EXPRESSION: {
             const auto* n = static_cast<const YieldExpression*>(node);
-            return n->get_argument() && contains_destructuring_expr(n->get_argument());
+            return n->get_argument() && contains_delegated_expr(n->get_argument());
         }
         case ASTNode::Type::AWAIT_EXPRESSION: {
             const auto* n = static_cast<const AwaitExpression*>(node);
-            return n->get_argument() && contains_destructuring_expr(n->get_argument());
+            return n->get_argument() && contains_delegated_expr(n->get_argument());
         }
         default:
             return false;
@@ -1098,17 +1130,21 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             return;
         }
         case ASTNode::Type::CALL_EXPRESSION: {
+            // Spread args delegate whole (see compile_expression) -- force
+            // residency same as a complex object literal above.
             const auto* n = static_cast<const CallExpression*>(node);
-            collect_closure_names(n->get_callee(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            bool forced = inside_closure || has_spread(n->get_arguments());
+            collect_closure_names(n->get_callee(), forced, out, saw_eval, saw_class, unknown, suspendable);
             for (const auto& arg : n->get_arguments())
-                collect_closure_names(arg.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+                collect_closure_names(arg.get(), forced, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            collect_closure_names(n->get_constructor(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+            bool forced = inside_closure || has_spread(n->get_arguments());
+            collect_closure_names(n->get_constructor(), forced, out, saw_eval, saw_class, unknown, suspendable);
             for (const auto& arg : n->get_arguments())
-                collect_closure_names(arg.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+                collect_closure_names(arg.get(), forced, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         case ASTNode::Type::MEMBER_EXPRESSION: {
@@ -1137,19 +1173,23 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             return;
         }
         case ASTNode::Type::OBJECT_LITERAL: {
+            // A complex literal delegates whole (see compile_expression) --
+            // same env-residency forcing as DESTRUCTURING_ASSIGNMENT above.
             const auto* n = static_cast<const ObjectLiteral*>(node);
+            bool forced = inside_closure || object_literal_is_complex(n);
             for (const auto& prop : n->get_properties()) {
                 if (prop->computed && prop->key)
-                    collect_closure_names(prop->key.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+                    collect_closure_names(prop->key.get(), forced, out, saw_eval, saw_class, unknown, suspendable);
                 if (prop->value)
-                    collect_closure_names(prop->value.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+                    collect_closure_names(prop->value.get(), forced, out, saw_eval, saw_class, unknown, suspendable);
             }
             return;
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
+            bool forced = inside_closure || has_spread(n->get_elements());
             for (const auto& el : n->get_elements())
-                collect_closure_names(el.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable);
+                collect_closure_names(el.get(), forced, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
         // Delegated to the tree-walker, like a closure (see emit_treewalker_delegate).
@@ -1550,66 +1590,6 @@ bool contains_suspend(const ASTNode* node) {
     }
 }
 
-// True if any try statement in the body contains a yield/await. Such bodies
-// can't compile: generator return()/throw() unwinds as a C++ exception from
-// the suspended point and would skip the VM's finally handling.
-bool contains_try_with_suspend(const ASTNode* node) {
-    if (!node) return false;
-    if (node->get_type() == ASTNode::Type::TRY_STATEMENT) {
-        if (contains_suspend(node)) return true;
-    }
-    switch (node->get_type()) {
-        case ASTNode::Type::FUNCTION_EXPRESSION:
-        case ASTNode::Type::FUNCTION_DECLARATION:
-        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
-        case ASTNode::Type::CLASS_DECLARATION:
-            return false;
-        case ASTNode::Type::BLOCK_STATEMENT: {
-            const auto* n = static_cast<const BlockStatement*>(node);
-            for (const auto& s : n->get_statements()) {
-                if (contains_try_with_suspend(s.get())) return true;
-            }
-            return false;
-        }
-        case ASTNode::Type::IF_STATEMENT: {
-            const auto* n = static_cast<const IfStatement*>(node);
-            return contains_try_with_suspend(n->get_consequent()) ||
-                   contains_try_with_suspend(n->get_alternate());
-        }
-        case ASTNode::Type::WHILE_STATEMENT:
-            return contains_try_with_suspend(static_cast<const WhileStatement*>(node)->get_body());
-        case ASTNode::Type::DO_WHILE_STATEMENT:
-            return contains_try_with_suspend(static_cast<const DoWhileStatement*>(node)->get_body());
-        case ASTNode::Type::FOR_STATEMENT:
-            return contains_try_with_suspend(static_cast<const ForStatement*>(node)->get_body());
-        case ASTNode::Type::FOR_OF_STATEMENT:
-            return contains_try_with_suspend(static_cast<const ForOfStatement*>(node)->get_body());
-        case ASTNode::Type::FOR_IN_STATEMENT:
-            return contains_try_with_suspend(static_cast<const ForInStatement*>(node)->get_body());
-        case ASTNode::Type::TRY_STATEMENT: {
-            const auto* n = static_cast<const TryStatement*>(node);
-            if (contains_try_with_suspend(n->get_try_block())) return true;
-            if (const ASTNode* cc = n->get_catch_clause()) {
-                if (contains_try_with_suspend(static_cast<const CatchClause*>(cc)->get_body())) return true;
-            }
-            return contains_try_with_suspend(n->get_finally_block());
-        }
-        case ASTNode::Type::SWITCH_STATEMENT: {
-            const auto* n = static_cast<const SwitchStatement*>(node);
-            for (const auto& c : n->get_cases()) {
-                const auto* cc = static_cast<const CaseClause*>(c.get());
-                for (const auto& s : cc->get_consequent()) {
-                    if (contains_try_with_suspend(s.get())) return true;
-                }
-            }
-            return false;
-        }
-        case ASTNode::Type::LABELED_STATEMENT:
-            return contains_try_with_suspend(static_cast<const LabeledStatement*>(node)->get_statement());
-        default:
-            return false;
-    }
-}
 
 // True if `node` contains a `let/const/var [a,b]=...` declaration anywhere.
 // Forces env_mode: Op::DestructureBind binds through a real Environment.
@@ -1978,7 +1958,6 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     bool suspendable) {
     if (!body || body->get_type() != ASTNode::Type::BLOCK_STATEMENT) return nullptr;
     if (params.size() > 64) return nullptr;
-    if (suspendable && contains_try_with_suspend(body)) return nullptr;
 
     // Default/destructured/rest parameters force env_mode: rest needs a
     // fresh (not run()-auto-bound) slot, and destructuring only knows how
@@ -2040,9 +2019,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // fiber suspension that delegated yield/await expressions perform.
     bool has_closures = contains_closure(body);
     bool has_nested_lex = contains_nested_lexical_decl(static_cast<const BlockStatement*>(body));
-    // Bare destructuring assignments delegate to the tree-walker, so they
-    // need env_mode just like a suspendable body's yield/await.
-    bool has_destructuring_expr = contains_destructuring_expr(body);
+    // Bare destructuring assignments and complex object literals delegate to
+    // the tree-walker, so they need env_mode like a suspendable's yield/await.
+    bool has_delegated_expr = contains_delegated_expr(body);
     // Private access no longer forces env_mode: GetPrivate/SetPrivate resolve
     // brands through the CallStack, not the env chain. `super` still needs the
     // env (__super__/__home_object__ bindings); detect it from a whole-body
@@ -2065,7 +2044,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // scanner doesn't know -- falls back to full env_mode.
     std::unordered_set<std::string> env_resident;
     bool selective = false;
-    if (!full_env && (has_closures || has_nested_lex || suspendable || has_destructuring_expr)) {
+    if (!full_env && (has_closures || has_nested_lex || suspendable || has_delegated_expr)) {
         bool saw_eval = false, saw_class = false, unknown = false;
         collect_closure_names(body, /*inside_closure=*/false, env_resident,
                               saw_eval, saw_class, unknown, suspendable);
@@ -2108,15 +2087,15 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         }
         // Nothing ended up captured: the whole function is register-pure
         // (closures still pin the env for CreateClosure delegation; a
-        // suspendable body or a destructuring expression -- e.g. `[]=x;`,
-        // no targets -- keeps env_mode on regardless, see env_mode2).
-        if (env_resident.empty() && !has_closures && !suspendable && !has_destructuring_expr) {
+        // suspendable body or a delegated expr -- e.g. `[]=x;`, no targets --
+        // keeps env_mode on regardless, see env_mode2).
+        if (env_resident.empty() && !has_closures && !suspendable && !has_delegated_expr) {
             selective = false;
         }
     }
-    // Suspendable bodies and bare destructuring expressions always keep
-    // env_mode on: emit_treewalker_delegate requires it to delegate at all.
-    bool env_mode2 = full_env || has_closures || !env_resident.empty() || suspendable || has_destructuring_expr;
+    // Suspendable bodies and delegated expressions always keep env_mode on:
+    // emit_treewalker_delegate requires it to delegate at all.
+    bool env_mode2 = full_env || has_closures || !env_resident.empty() || suspendable || has_delegated_expr;
 
     const bool env_mode = env_mode2;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
@@ -3280,6 +3259,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             }
             size_t jump_try_ok = emit_jump(Op::Jump);
 
+            // Patched with genreturn_pc below, once that pc is known.
+            size_t handler_idx_try = SIZE_MAX, handler_idx_catch = SIZE_MAX;
+
             size_t catch_body_start = 0, catch_body_end = 0, jump_catch_ok = 0;
             if (catch_node) {
                 const auto* clause = static_cast<const CatchClause*>(catch_node);
@@ -3320,6 +3302,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 }
                 jump_catch_ok = emit_jump(Op::Jump);
 
+                handler_idx_try = chunk_->handlers.size();
                 chunk_->handlers.push_back({static_cast<uint32_t>(try_start),
                                              static_cast<uint32_t>(try_end),
                                              static_cast<uint32_t>(catch_pc)});
@@ -3341,13 +3324,42 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit(Op::Throw);
 
                 if (catch_node) {
+                    handler_idx_catch = chunk_->handlers.size();
                     chunk_->handlers.push_back({static_cast<uint32_t>(catch_body_start),
                                                  static_cast<uint32_t>(catch_body_end),
                                                  static_cast<uint32_t>(reraise_pc)});
                 } else {
+                    handler_idx_try = chunk_->handlers.size();
                     chunk_->handlers.push_back({static_cast<uint32_t>(try_start),
                                                  static_cast<uint32_t>(try_end),
                                                  static_cast<uint32_t>(reraise_pc)});
+                }
+
+                // A generator .return() mid-suspend unwinds as a C++
+                // exception that must skip any catch clause -- always a
+                // finally-only pad, whether or not catch_node exists.
+                bool try_needs_genreturn = suspendable_ && contains_suspend(stmt->get_try_block());
+                bool catch_needs_genreturn = suspendable_ && catch_node &&
+                    contains_suspend(static_cast<const CatchClause*>(catch_node)->get_body());
+                if (try_needs_genreturn || catch_needs_genreturn) {
+                    size_t genreturn_pc = chunk_->code.size();
+                    if (save_env) emit(Op::RestoreEnv);
+                    int gr_temp = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(gr_temp));
+                    if (!compile_statement(finally_node)) return false;
+                    emit(Op::Ldar);
+                    emit_u8(static_cast<uint8_t>(gr_temp));
+                    free_temp(gr_temp);
+                    emit(Op::ReraiseGeneratorReturn);
+
+                    if (try_needs_genreturn && handler_idx_try != SIZE_MAX) {
+                        chunk_->handlers[handler_idx_try].genreturn_pc = static_cast<int32_t>(genreturn_pc);
+                    }
+                    if (catch_needs_genreturn && handler_idx_catch != SIZE_MAX) {
+                        chunk_->handlers[handler_idx_catch].genreturn_pc = static_cast<int32_t>(genreturn_pc);
+                    }
                 }
             }
 
@@ -3576,6 +3588,16 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             free_temp(result_reg);
             return !failed_;
         }
+
+        case ASTNode::Type::REGEX_LITERAL:
+            // RegexLiteral::evaluate reads no bindings (built-in RegExp ctor
+            // only), so this skips emit_treewalker_delegate's env_mode
+            // requirement -- register-pure functions keep compiling.
+            if (chunk_->closures.size() >= 0xFFFF) return false;
+            chunk_->closures.push_back(node);
+            emit(Op::CreateClosure);
+            emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+            return !failed_;
 
         case ASTNode::Type::BOOLEAN_LITERAL:
             emit(static_cast<const BooleanLiteral*>(node)->get_value() ? Op::LdaTrue : Op::LdaFalse);
@@ -4156,9 +4178,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             const ASTNode* callee = call->get_callee();
             const auto& call_args = call->get_arguments();
             if (call_args.size() > 200) return false;
-            for (const auto& arg : call_args) {
-                if (arg->get_type() == ASTNode::Type::SPREAD_ELEMENT) return false;
-            }
+            // process_arguments_with_spread's iterator-protocol expansion has
+            // no register-mode equivalent -- delegate whole.
+            if (has_spread(call_args)) return emit_treewalker_delegate(node);
 
             // obj.method(...): the receiver must be `obj`, not undefined --
             // needs CallResolved, not a plain Call of the loaded function value.
@@ -4301,9 +4323,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             const auto* expr = static_cast<const NewExpression*>(node);
             const auto& new_args = expr->get_arguments();
             if (new_args.size() > 200) return false;
-            for (const auto& arg : new_args) {
-                if (arg->get_type() == ASTNode::Type::SPREAD_ELEMENT) return false;
-            }
+            if (has_spread(new_args)) return emit_treewalker_delegate(node);
 
             if (!compile_expression(expr->get_constructor())) return false;
             int callee_reg = alloc_temp();
@@ -4367,18 +4387,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
         case ASTNode::Type::OBJECT_LITERAL: {
             const auto* lit = static_cast<const ObjectLiteral*>(node);
-            using PropType = ObjectLiteral::PropertyType;
-            // Plain data properties with a static string/number/identifier key only.
-            for (const auto& prop : lit->get_properties()) {
-                if (!prop->key) return false;  // spread property: null key
-                if (prop->type != PropType::Value || prop->computed) return false;
-                auto kt = prop->key->get_type();
-                if (kt != ASTNode::Type::IDENTIFIER && kt != ASTNode::Type::STRING_LITERAL &&
-                    kt != ASTNode::Type::NUMBER_LITERAL) {
-                    return false;
-                }
-            }
-            if (lit->get_properties().size() > 200) return false;
+            // Methods/accessors, computed keys, spread, __proto__:
+            // ObjectLiteral::evaluate handles every form, and method closures
+            // capture through the ctx chain delegation provides.
+            if (object_literal_is_complex(lit)) return emit_treewalker_delegate(node);
 
             emit(Op::CreateObject);
             emit_u16(static_cast<uint16_t>(lit->get_properties().size()));
@@ -4405,10 +4417,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         key = oss.str();
                     }
                 }
-                // `__proto__: v` is the special prototype-setting form, and
-                // any other key must be CreateDataProperty (a poisoned
-                // Object.prototype accessor must not fire) -- DefineOwn.
-                if (key == "__proto__") return false;
+                // CreateDataProperty (a poisoned Object.prototype accessor
+                // must not fire) -- DefineOwn.
                 if (!compile_expression(prop->value.get())) return false;
                 emit(Op::DefineOwn);
                 emit_u8(static_cast<uint8_t>(obj_reg));
@@ -4424,9 +4434,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             const auto* lit = static_cast<const ArrayLiteral*>(node);
             if (lit->get_elements().size() > 200) return false;
             for (const auto& el : lit->get_elements()) {
-                // Spread needs the iterator protocol -- tree-walker's job.
-                if (!el || el->get_type() == ASTNode::Type::SPREAD_ELEMENT) return false;
+                if (!el) return false;
             }
+            if (has_spread(lit->get_elements())) return emit_treewalker_delegate(node);
 
             emit(Op::CreateArray);
             emit_u16(static_cast<uint16_t>(lit->get_elements().size()));
