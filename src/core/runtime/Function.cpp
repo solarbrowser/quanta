@@ -650,10 +650,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // VM execution branches off BEFORE parameter/arguments materialization:
     // compiled functions read parameters from registers and reject any use of
     // `arguments`/`this`/`eval`, so the whole binding ceremony below is dead
-    // weight for them (it dominated call-heavy benchmarks, e.g. fib).
-    // Derived-class constructors always tree-walk: their `this` reads need the
-    // this-TDZ check in Identifier::evaluate, which LdaLookup bypasses.
-    if (VM::enabled() && !vm_incompatible_ && !function_context.this_needs_super() && body_ &&
+    // weight for them (it dominated call-heavy benchmarks, e.g. fib). Derived
+    // constructors ARE compiled -- Op::LdaThis carries its own this-TDZ check.
+    if (VM::enabled() && !vm_incompatible_ && body_ &&
         body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         if (!bytecode_chunk_) {
             // A `with` environment in the captured scope chain makes write-

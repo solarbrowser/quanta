@@ -40,8 +40,8 @@ Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx);
 Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
                  Context& ctx, bool& used_vm);
 
-// Process-wide opt-in switch, read once: QUANTA_VM=1 enables compilation
-// and execution, QUANTA_VM=0/unset keeps everything on the tree-walker.
+// Process-wide switch, read once: on by default; QUANTA_VM=0 is the kill
+// switch back to the tree-walker (QUANTA_VM=1/unset/anything else: on).
 bool enabled();
 
 }

@@ -33,7 +33,8 @@ namespace VM {
 bool enabled() {
     static const bool on = [] {
         const char* env = std::getenv("QUANTA_VM");
-        return env && env[0] == '1';
+        if (!env) return true;
+        return env[0] != '0';
     }();
     return on;
 }
@@ -438,8 +439,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     // frame's env is the persistent script env -- fully cacheable.
     Environment* entry_env = chunk.script_mode ? nullptr : ctx.get_lexical_environment();
 
-    // Op::LdaThis cache: `this` is immutable for the whole frame (derived
-    // constructors never enter the VM), so resolve the binding at most once.
+    // Op::LdaThis cache: `this`'s VALUE is immutable for the whole frame
+    // (even in a derived constructor -- super() sets it once), so resolve
+    // the binding at most once. Whether a read is ALLOWED yet is a separate,
+    // per-read check (this-TDZ, see the opcode below).
     bool this_resolved = this_val != nullptr;
     Value this_value = this_val ? *this_val : Value();
 
@@ -517,6 +520,15 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
 
             case Op::LdaThis: {
+                // Derived-constructor this-TDZ (spec 9.1.1.3.4 GetThisBinding):
+                // mirrors Identifier::evaluate's check for "this" -- must be
+                // re-checked on every read, not just once, since a `super()`
+                // call between two reads flips it mid-frame.
+                if (ctx.this_needs_super()) {
+                    ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+                    CHECK_EXC();
+                    break;
+                }
                 if (!this_resolved) {
                     // Same resolution as LdaLookup 'this': the binding is
                     // created by Function::call (arrows find the outer one

@@ -66,7 +66,8 @@ private:
     bool compile_expression(const ASTNode* node);  // result in accumulator
 
     bool compile_for_each_loop(const ASTNode* left, const ASTNode* right,
-                               const ASTNode* body, bool is_for_in);
+                               const ASTNode* body, bool is_for_in,
+                               int left_decl_kind = -1);
     bool compile_logical_assignment(const class AssignmentExpression* expr);
 
     bool is_local(const std::string& name) const;
@@ -89,7 +90,8 @@ private:
     bool member_is_supported(const class MemberExpression* mem) const;
     bool emit_treewalker_delegate(const ASTNode* node);
 
-    int setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body);
+    int setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body,
+                       bool force_own_env = false);
 
     size_t emit_jump(Op op);
     bool patch_jump(size_t operand_pos);
@@ -104,6 +106,7 @@ private:
         int base_try_depth;  // try_env_depth_ at loop entry
         bool is_switch = false;  // break-only: continue skips past this to the enclosing loop
         std::vector<std::string> labels;  // labels a labeled break/continue can target this by
+        int iterator_reg = -1;  // for-of/for-in only: IteratorClose target for an escaping return
     };
 
     std::vector<std::string> take_pending_labels();
