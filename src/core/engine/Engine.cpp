@@ -339,25 +339,11 @@ void Engine::add_survivor_context(Context* ctx) {
     Heap::note_extra_bytes(sizeof(Context));
 }
 
-void Engine::clear_survivor_contexts() {
-    // Skip contexts still referenced by a pending timer, Promise, or suspended async fiber (see EventLoop::context_use_count_).
-    std::vector<Context*> still_in_use;
-    for (auto* ctx : survivor_contexts_) {
-        if (EventLoop::instance().is_context_in_use(ctx)) {
-            still_in_use.push_back(ctx);
-        } else {
-            delete ctx;
-        }
-    }
-    survivor_contexts_ = std::move(still_in_use);
-}
-
 void Engine::run_event_loop_to_completion(Context& ctx) {
     Collector::safepoint();
     if (ctx.has_pending_microtasks()) {
         ctx.drain_microtasks();
     }
-    clear_survivor_contexts();
 
     if (EventLoop::instance().has_pending_timers()) {
         EventLoop::instance().run_pending_timers(ctx);
@@ -365,7 +351,6 @@ void Engine::run_event_loop_to_completion(Context& ctx) {
         if (ctx.has_pending_microtasks()) {
             ctx.drain_microtasks();
         }
-        clear_survivor_contexts();
     }
 }
 

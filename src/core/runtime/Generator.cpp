@@ -78,7 +78,6 @@ Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* o
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
       body_(body), state_(State::SuspendedStart),
       fiber_stack_(FiberStackPool::acquire(STACK_SIZE)), outer_context_(outer_ctx) {
-
     if (gen_func) {
         Value fn_proto = gen_func->get_property("prototype");
         if (fn_proto.is_object()) {
@@ -111,6 +110,8 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     sent_value_ = value;
     throwing_ = false;
     returning_ = false;
+    // Direct-assigned traced field: re-gray for an open incremental cycle.
+    Collector::write_barrier(this);
 
     state_ = State::Executing;
     Generator* prev = current_generator_;
@@ -154,6 +155,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     returning_ = true;
     return_argument_ = value;
     sent_value_ = Value();
+    Collector::write_barrier(this);
 
     state_ = State::Executing;
     Generator* prev = current_generator_;
@@ -192,6 +194,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     throwing_ = true;
     throw_value_ = exception;
     sent_value_ = Value();
+    Collector::write_barrier(this);
 
     state_ = State::Executing;
     Generator* prev = current_generator_;

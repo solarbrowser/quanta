@@ -111,9 +111,11 @@ public:
     static const std::vector<Engine*>& all_engines();
     Context* get_current_context() const;
 
-    // Survivor pool for function contexts (Promise async support)
+    // Survivor pool for function contexts (Promise async support). Pruned
+    // only by the collector's own reachability-based pass (Collector.cpp) --
+    // a context not currently in EventLoop use may still be reachable
+    // through a closure, which only a mark pass can confirm.
     void add_survivor_context(Context* ctx);
-    void clear_survivor_contexts();
 
     // Drains microtasks, then drives any pending timers to exhaustion (real wall-clock wait), repeating until both queues are empty.
     void run_event_loop_to_completion(Context& ctx);

@@ -7,6 +7,7 @@
 #ifndef QUANTA_GC_COLLECTOR_H
 #define QUANTA_GC_COLLECTOR_H
 
+#include <chrono>
 #include <cstddef>
 #include <vector>
 
@@ -42,6 +43,18 @@ public:
     // so only unmarked (young) cells are traced and swept; old cells mutated
     // since the last cycle re-enter the trace via the remembered sets.
     static void collect_minor();
+
+    enum class SliceResult { Continuing, CycleComplete };
+
+    // One bounded unit of the shared, cycle-lived MarkVisitor's work: drains
+    // fully to quiescence if `budget` is negative, or stops and returns
+    // Continuing once `budget` has elapsed. Never interrupts mid-Context/
+    // Environment resolution, only between fully-quiesced points.
+    static SliceResult mark_step(std::chrono::microseconds budget);
+
+    // True between a major cycle's first slice and its last (quiescence).
+    // No minor collection runs while true.
+    static bool major_in_progress();
 
     // Records `cell` (base address of a live cell) as mutated. Needed on
     // every post-construction write of a traced field or property slot;

@@ -16,6 +16,7 @@
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
+#include "quanta/core/gc/Collector.h"
 #include <sstream>
 #include <set>
 #include <unordered_set>
@@ -1762,6 +1763,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
 
         async_gen->await_result_ = wrapped_keepalive.is_undefined() ? expr_val : wrapped_keepalive;  // pin awaited value (or wrapper promise) as GC root during suspension
         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+        Collector::write_barrier(async_gen);
         swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
 
         if (async_gen->await_is_throw_) {
@@ -2077,6 +2079,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     }, {Value(async_gen), settled});
                     async_gen->await_result_ = wrapped_keepalive.is_undefined() ? v : wrapped_keepalive;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                    Collector::write_barrier(async_gen);
                     swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                     if (async_gen->await_is_throw_) {
                         ctx.throw_exception(async_gen->await_result_, true);
@@ -2107,6 +2110,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                 p->then(ff_tmp, fr_tmp);
                 async_gen->await_result_ = wrapped_keepalive.is_undefined() ? v : wrapped_keepalive;
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                Collector::write_barrier(async_gen);
                 swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                 if (async_gen->await_is_throw_) {
                     ctx.throw_exception(async_gen->await_result_, true);
@@ -2210,6 +2214,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                 }
                 async_gen->yield_value_    = last_val;
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
+                Collector::write_barrier(async_gen);
                 swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                 // AsyncGeneratorUnwrapYieldResumption step 2: a `return` resumption value is itself
                 // Awaited before this completion reaches the Repeat loop's return-handling below.
@@ -2250,6 +2255,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                             }, {Value(async_gen), settled});
                             async_gen->await_result_ = ret_result;
                             async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                            Collector::write_barrier(async_gen);
                             swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                             if (async_gen->await_is_throw_) {
                                 ctx.throw_exception(async_gen->await_result_, true);
@@ -2279,6 +2285,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                             rp->then(frf, frr);
                             async_gen->await_result_ = ret_result;
                             async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                            Collector::write_barrier(async_gen);
                             swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                             if (async_gen->await_is_throw_) {
                                 ctx.throw_exception(async_gen->await_result_, true);
@@ -2331,6 +2338,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                             }
                             async_gen->await_result_ = ret_result;
                             async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                            Collector::write_barrier(async_gen);
                             swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                             if (async_gen->await_is_throw_) {
                                 ctx.throw_exception(async_gen->await_result_, true);
@@ -2365,6 +2373,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     if (!used_async_iterator && !await_before_yield(last_val)) return Value();
                     async_gen->yield_value_ = last_val;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
+                    Collector::write_barrier(async_gen);
                     swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                 }
                 // throwing_ is handled at the top of the next iteration
@@ -2463,6 +2472,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                 current_gen->yielded_result_ = result;
                 current_gen->yield_raw_result_ = true;
                 current_gen->set_state(Generator::State::SuspendedYield);
+                // Direct-assigned traced field: re-gray for an open incremental cycle.
+                Collector::write_barrier(current_gen);
                 swapcontext(&current_gen->fiber_->fiber_ctx, &current_gen->fiber_->caller_ctx);
                 // Caller side may have repointed this thread-local during suspension -- restore it.
                 Object::current_context_ = &ctx;
@@ -2511,6 +2522,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                         if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                         if (is_return) {
                             current_gen->return_argument_ = deleg_val;
+                            Collector::write_barrier(current_gen);
                             Object::current_context_ = prev_ctx;
                             throw GeneratorReturnException(deleg_val);
                         }
@@ -2522,6 +2534,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     current_gen->yielded_result_ = deleg_result;
                     current_gen->yield_raw_result_ = true;
                     current_gen->set_state(Generator::State::SuspendedYield);
+                    Collector::write_barrier(current_gen);
                     swapcontext(&current_gen->fiber_->fiber_ctx, &current_gen->fiber_->caller_ctx);
                     Object::current_context_ = &ctx;
                     next_arg = current_gen->sent_value_;
@@ -2811,6 +2824,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     }, {Value(async_gen), settled});
                     async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                    Collector::write_barrier(async_gen);
                     swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                     if (async_gen->await_is_throw_) {
                         ctx.throw_exception(async_gen->await_result_, true);
@@ -2840,6 +2854,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     p->then(ff_tmp, fr_tmp);
                     async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                    Collector::write_barrier(async_gen);
                     swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
                     if (async_gen->await_is_throw_) {
                         ctx.throw_exception(async_gen->await_result_, true);
@@ -2854,6 +2869,7 @@ Value YieldExpression::evaluate(Context& ctx) {
 
             async_gen->yield_value_     = yield_value;
             async_gen->suspend_reason_  = AsyncGenerator::SuspendReason::Yield;
+            Collector::write_barrier(async_gen);
             swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
             // Resumed by next()/return()/throw()
             if (async_gen->returning_) {
@@ -2877,6 +2893,7 @@ Value YieldExpression::evaluate(Context& ctx) {
     // Fiber-based yield: actually suspend and switch back to caller
     current_gen->yielded_value_ = yield_value;
     current_gen->set_state(Generator::State::SuspendedYield);
+    Collector::write_barrier(current_gen);
     swapcontext(&current_gen->fiber_->fiber_ctx, &current_gen->fiber_->caller_ctx);
 
     // Resumed by next()/throw()/return()

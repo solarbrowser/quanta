@@ -383,7 +383,7 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
 
     // Transfer the exec context to the engine's survivor pool so closures created inside the body can still look up bindings later. Mirrors ContextSurvivorGuard in sync Function::call().
     // Retain first: the fiber is suspended at its first await and will resume later still using this exact Context.
-    // Without the retain, the very next clear_survivor_contexts() would delete it before the fiber ever resumes.
+    // Without the retain, the collector's reachability-based survivor prune (Collector.cpp) could delete it before the fiber ever resumes.
     // Released in fiber_entry once the function fully completes.
     if (ctx.get_engine() && executor->exec_context_owned_) {
         EventLoop::instance().retain_context(executor->exec_context_owned_.get());
@@ -593,6 +593,8 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
         self->return_value_ = Value();
     }
 
+    // Direct-assigned traced fields: re-gray for an open incremental cycle.
+    Collector::write_barrier(self);
     swapcontext(&self->fiber_->fiber_ctx, &self->fiber_->caller_ctx);
 }
 
@@ -747,12 +749,15 @@ void AsyncGenerator::process_next_request() {
     // resumed code immediately hits Await(resumptionValue.Value), which itself always
     // defers by a tick.
     state_ = State::Executing;
+    Collector::write_barrier(this);
     enter_fiber();
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::enqueue_request(Request::Type type, const Value& value, std::unique_ptr<Promise> promise) {
     Promise* raw = promise.get();
     request_queue_.push_back({type, value, raw});
+    // Direct-mutated traced field: re-gray for an open incremental cycle.
+    Collector::write_barrier(this);
     if (!pending_promise_) {
         process_next_request();
     }
@@ -762,6 +767,7 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::enqueue_request(Request::Ty
 void AsyncGenerator::resume_from_await(Value result, bool is_throw) {
     await_result_   = result;
     await_is_throw_ = is_throw;
+    Collector::write_barrier(this);
     enter_fiber();
 }
 
@@ -1480,7 +1486,6 @@ bool EventLoop::run_pending_timers(Context& ctx) {
         Engine* engine = entry.call_ctx->get_engine();
         Context* drain_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : entry.call_ctx;
         drain_ctx->drain_microtasks();
-        if (engine) engine->clear_survivor_contexts();
     }
     return true;
 }

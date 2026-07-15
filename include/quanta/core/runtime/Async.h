@@ -332,7 +332,9 @@ private:
     std::unordered_set<int64_t> cancelled_ids_;
     int64_t next_timer_id_;
 
-    // Refcounts Context* held by pending timers/Promises so clear_survivor_contexts() doesn't delete one still in use.
+    // Refcounts Context* held by pending timers/Promises so the collector's
+    // reachability-based survivor prune (Collector.cpp) force-keeps one
+    // still in use even if nothing else reaches it.
     std::unordered_map<Context*, int> context_use_count_;
 
 public:
