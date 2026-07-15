@@ -26,7 +26,10 @@ class RegExp {
 private:
     std::string pattern_;
     std::string flags_;
-    void* code_;  // pcre2_code*
+    void* code_;  // pcre2_code* -- raw view; code_owner_ keeps it alive
+    std::shared_ptr<void> code_owner_;  // owns code_ (frees it via pcre2_code_free);
+                                         // shared across every RegExp with the same
+                                         // (pattern,flags) via the compiled-pattern cache
     bool global_;
     bool ignore_case_;
     bool multiline_;
@@ -41,8 +44,10 @@ private:
     // duplicate names) are renamed to synthetic names before compilation and
     // resolved back through this table.
     std::vector<std::pair<std::string, std::vector<uint32_t>>> named_groups_;
-    // Non-null when PCRE2's lookbehind is known to get this pattern wrong; test()/exec() use it instead.
-    std::unique_ptr<RegexBacktrackEngine> backtrack_engine_;
+    // Non-null when PCRE2's lookbehind is known to get this pattern wrong; test()/exec()
+    // use it instead. shared_ptr (not unique_ptr): exec() is const/reentrant, so this is
+    // safely shared across every RegExp with the same (pattern,flags) via the cache too.
+    std::shared_ptr<RegexBacktrackEngine> backtrack_engine_;
 
 public:
     RegExp(const std::string& pattern, const std::string& flags = "");

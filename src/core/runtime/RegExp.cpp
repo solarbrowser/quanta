@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <algorithm>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Quanta {
@@ -23,6 +24,25 @@ namespace Quanta {
 // Set while a pattern is compiled purely to check validity (parser literals);
 // skips JIT compilation of the probe.
 static thread_local bool g_regexp_validation_only = false;
+
+// Compiled-pattern cache: a regex literal evaluates to a fresh RegExp object
+// every time (spec -- each has its own mutable lastIndex), but the underlying
+// pcre2_code is immutable once built and PCRE2_JIT_COMPLETE is expensive, so
+// re-running pcre2_compile+JIT for the same (pattern,flags) on every
+// evaluation was pure waste. thread_local: no cross-thread pcre2_code
+// sharing, matching this codebase's per-thread-everything architecture.
+// Validation-only probes (is_valid_unicode_pattern) never read or write this
+// -- they skip JIT, and caching an un-JIT'd entry would stick a real regex
+// with a slower match path forever.
+namespace {
+struct CompiledRegexEntry {
+    std::shared_ptr<void> code;  // pcre2_code*
+    std::vector<std::pair<std::string, std::vector<uint32_t>>> named_groups;
+    std::shared_ptr<RegexBacktrackEngine> backtrack_engine;
+};
+constexpr size_t kRegexCacheCap = 512;
+thread_local std::unordered_map<std::string, CompiledRegexEntry> g_regex_cache;
+}
 
 // PCRE2 runs in 16-bit mode: match offsets ARE JS string indices, and
 // non-unicode patterns get real UTF-16 code-unit semantics.
@@ -167,10 +187,7 @@ RegExp::RegExp(const std::string& pattern, const std::string& flags)
 }
 
 RegExp::~RegExp() {
-    if (code_) {
-        pcre2_code_free(static_cast<pcre2_code*>(code_));
-        code_ = nullptr;
-    }
+    // code_owner_'s deleter (if this was the last reference) frees code_.
 }
 
 void RegExp::parse_flags(const std::string& flags) {
@@ -2217,17 +2234,29 @@ static void validate_js_modifiers(const std::string& pat) {
 }
 
 void RegExp::do_compile() {
-    if (code_) {
-        pcre2_code_free(static_cast<pcre2_code*>(code_));
-        code_ = nullptr;
+    std::string cache_key;
+    if (!g_regexp_validation_only) {
+        cache_key = pattern_;
+        cache_key.push_back('\0');
+        cache_key += flags_;
+        auto it = g_regex_cache.find(cache_key);
+        if (it != g_regex_cache.end()) {
+            code_owner_ = it->second.code;
+            code_ = code_owner_.get();
+            named_groups_ = it->second.named_groups;
+            backtrack_engine_ = it->second.backtrack_engine;
+            return;
+        }
     }
+    code_owner_.reset();
+    code_ = nullptr;
 
     validate_js_modifiers(pattern_);
 
     backtrack_engine_.reset();
     if (RegexBacktrackEngine::pattern_needs_backtrack_engine(pattern_)) {
         try {
-            backtrack_engine_ = std::make_unique<RegexBacktrackEngine>(pattern_, ignore_case_, multiline_, dotall_, unicode_);
+            backtrack_engine_ = std::make_shared<RegexBacktrackEngine>(pattern_, ignore_case_, multiline_, dotall_, unicode_);
         } catch (...) {
             backtrack_engine_.reset(); // unsupported syntax; keep the PCRE2 (possibly imperfect) result
         }
@@ -2334,7 +2363,13 @@ void RegExp::do_compile() {
         pcre2_jit_compile(re, PCRE2_JIT_COMPLETE | PCRE2_JIT_PARTIAL_SOFT);
     }
 
-    code_ = re;
+    code_owner_ = std::shared_ptr<void>(re, [](void* p) { pcre2_code_free(static_cast<pcre2_code*>(p)); });
+    code_ = code_owner_.get();
+
+    if (!g_regexp_validation_only) {
+        if (g_regex_cache.size() >= kRegexCacheCap) g_regex_cache.clear();
+        g_regex_cache[cache_key] = {code_owner_, named_groups_, backtrack_engine_};
+    }
 }
 
 // In /u mode PCRE2_UTF validates the subject, so lone surrogate units are
