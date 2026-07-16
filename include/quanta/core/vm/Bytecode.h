@@ -8,6 +8,7 @@
 #define QUANTA_VM_BYTECODE_H
 
 #include "quanta/core/runtime/Value.h"
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -128,10 +129,32 @@ struct SourceEntry {
     uint32_t column;
 };
 
-// Inline-cache slot for one GetNamed/SetNamed site (monomorphic only).
+// Inline-cache slot for one GetNamed/SetNamed site: mono -> poly (up to
+// kMaxEntries distinct shapes) -> mega. count==0 is Uninit, count==1 behaves
+// exactly like the old monomorphic-only cache (a length-1 scan), count>1 is
+// the polymorphic case -- all three share the same scan/learn code path.
+// Once `mega` is set the site is permanently uncached (same as fb==nullptr).
 struct FeedbackSlot {
-    Shape* shape = nullptr;
-    uint32_t slot_index = 0;
+    struct Entry { Shape* shape = nullptr; uint32_t slot_index = 0; };
+    static constexpr uint8_t kMaxEntries = 4;
+    std::array<Entry, kMaxEntries> entries{};
+    uint8_t count = 0;
+    bool mega = false;
+
+    // SetNamed-only: caches adding a brand-new own property (a shape
+    // transition), keyed by the shape BEFORE the add. `proto_epoch` is
+    // Object::proto_epoch() when last validated blocker-free -- only
+    // trusted while it still matches. GetNamed sites carry these fields
+    // too but never touch them.
+    struct TransitionEntry {
+        Shape* from_shape = nullptr;
+        Shape* to_shape = nullptr;
+        uint32_t slot_index = 0;
+        uint64_t proto_epoch = 0;
+    };
+    std::array<TransitionEntry, kMaxEntries> transitions{};
+    uint8_t transition_count = 0;
+    bool transition_mega = false;
 };
 
 // Inline cache for one GetPrivate/SetPrivate site: the resolved qualified

@@ -58,7 +58,16 @@ public:
 
     static thread_local Context* current_context_;
 
+    // Monotonic; bumped by set_prototype() and by property add/remove/
+    // attribute-change on a used_as_prototype() object. SetNamed's
+    // transition-cache trusts a cached "no [[Set]] blocker on this chain"
+    // answer only while this hasn't moved since it was validated.
+    static thread_local uint64_t proto_epoch_;
+public:
+    static uint64_t proto_epoch() { return proto_epoch_; }
 private:
+    static void bump_proto_epoch() { ++proto_epoch_; }
+
     struct ObjectHeader {
         Object* prototype;
         ObjectType type;
@@ -196,6 +205,13 @@ public:
     void freeze();
     bool is_sealed() const;
     bool is_frozen() const;
+
+    // Set once (never cleared) the first time set_prototype() installs this
+    // object as someone's [[Prototype]] -- gates whether this object's own
+    // mutations need to bump proto_epoch(), so ordinary objects never pay it.
+    static constexpr uint8_t kUsedAsPrototype = 0x02;
+    bool used_as_prototype() const { return header_.flags & kUsedAsPrototype; }
+    void mark_used_as_prototype() { header_.flags |= kUsedAsPrototype; }
     
     virtual uint32_t get_length() const;
     void set_length(uint32_t length);
@@ -256,6 +272,13 @@ public:
     // Out-of-line: descriptors_'s value type (PropertyDescriptor) is only
     // forward-declared this early in the header.
     bool has_descriptor_override(const std::string& key) const;
+
+    // SetNamed's transition-cache fast path: adds `key` using an
+    // already-resolved destination shape, skipping both Shape::transition(key)'s
+    // hash lookup and the prototype-chain walk. Caller guarantees every
+    // precondition store_in_overflow's "new property" branch would have
+    // checked (Ordinary, extensible, no descriptor override, shape lacks key).
+    void add_shape_property_cached(const std::string& key, const Value& value, Shape* to_shape);
 
     Value get_internal_property(const std::string& key) const;
     void set_internal_property(const std::string& key, const Value& value);

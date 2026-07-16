@@ -150,8 +150,46 @@ void set_primitive_named(Context& ctx, const Value& prim, const std::string& nam
     }
 }
 
+// Records a newly-observed (shape, slot) pair for a call site. Dedups
+// against entries already present: SetNamed in particular can re-derive the
+// same shape it already has cached (e.g. many objects from one constructor
+// converging on one shape after their last field is added), and inserting a
+// duplicate would burn through the fixed budget without ever caching an
+// actually-distinct shape, tripping mega early for no benefit.
+void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index) {
+    for (uint8_t i = 0; i < fb->count; i++) {
+        if (fb->entries[i].shape == shape) return;
+    }
+    if (fb->count < FeedbackSlot::kMaxEntries) {
+        fb->entries[fb->count++] = {shape, slot_index};
+    } else {
+        fb->mega = true;
+    }
+}
+
+// Like learn_feedback, but a duplicate from_shape REFRESHES the entry rather
+// than no-opping: to_shape/slot_index are deterministic for (from_shape, key),
+// but proto_epoch goes stale and a re-hit needs the current value to trust it.
+void learn_transition(FeedbackSlot* fb, Shape* from_shape, Shape* to_shape,
+                       uint32_t slot_index, uint64_t epoch) {
+    for (uint8_t i = 0; i < fb->transition_count; i++) {
+        if (fb->transitions[i].from_shape == from_shape) {
+            fb->transitions[i] = {from_shape, to_shape, slot_index, epoch};
+            return;
+        }
+    }
+    if (fb->transition_count < FeedbackSlot::kMaxEntries) {
+        fb->transitions[fb->transition_count++] = {from_shape, to_shape, slot_index, epoch};
+    } else {
+        fb->transition_mega = true;
+    }
+}
+
 // A shape match alone doesn't prove "plain data slot, no override" -- both
 // the hit check and the miss-path refill re-verify has_descriptor_override.
+// has_descriptor_override is a fact about (obj, name), independent of which
+// entry matches, so it's checked once per call (in `cacheable`) rather than
+// once per scanned entry.
 Value get_named(Context& ctx, const Value& receiver, const std::string& name, FeedbackSlot* fb) {
     if (receiver.is_null() || receiver.is_undefined()) {
         ctx.throw_type_error("Cannot read property of null or undefined");
@@ -160,10 +198,17 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name, Fe
     Object* obj = as_object_like(receiver);
     if (!obj) return get_primitive_named(ctx, receiver, name);
 
-    if (fb && obj->get_type() == Object::ObjectType::Ordinary &&
-        obj->get_shape() == fb->shape && !obj->has_descriptor_override(name)) {
-        const Value* slot = obj->get_shape_slot_unchecked(fb->slot_index);
-        if (slot) return *slot;
+    bool cacheable = fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+                      !obj->has_descriptor_override(name);
+    if (cacheable) {
+        Shape* shape = obj->get_shape();
+        for (uint8_t i = 0; i < fb->count; i++) {
+            if (fb->entries[i].shape == shape) {
+                const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                if (slot) return *slot;
+                break;
+            }
+        }
     }
     // An own accessor must run before get_property()'s type-specific
     // shortcuts, which don't know about one installed via defineProperty.
@@ -193,10 +238,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name, Fe
     }
     Value result = obj->get_property(name);
     if (ctx.has_exception()) return Value();
-    if (fb && obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(name)) {
+    if (cacheable) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
-        if (idx >= 0) { fb->shape = s; fb->slot_index = static_cast<uint32_t>(idx); }
+        if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
     }
     return result;
 }
@@ -212,11 +257,41 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     if (!obj) { set_primitive_named(ctx, receiver, name, value); return; }
 
     Collector::write_barrier(obj);
-    if (fb && obj->get_type() == Object::ObjectType::Ordinary &&
-        obj->get_shape() == fb->shape && !obj->has_descriptor_override(name)) {
-        Value* slot = obj->get_shape_slot_unchecked(fb->slot_index);
-        if (slot) { *slot = value; return; }
+    if (fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+        !obj->has_descriptor_override(name)) {
+        Shape* shape = obj->get_shape();
+        for (uint8_t i = 0; i < fb->count; i++) {
+            if (fb->entries[i].shape == shape) {
+                Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                if (slot) { *slot = value; return; }
+                break;
+            }
+        }
     }
+
+    // Transition-cache: adding a brand-new own property. A hit skips both
+    // Shape::transition(key)'s hash lookup and ordinary_set's prototype-chain
+    // walk below -- safe only while proto_epoch() still matches what it was
+    // when learned. is_extensible() is checked fresh, not folded into the
+    // epoch: a non-extensible object just stops hitting this path.
+    if (fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
+        !obj->has_descriptor_override(name) && obj->is_extensible()) {
+        Shape* shape = obj->get_shape();
+        uint64_t epoch = Object::proto_epoch();
+        for (uint8_t i = 0; i < fb->transition_count; i++) {
+            const auto& te = fb->transitions[i];
+            if (te.from_shape == shape && te.proto_epoch == epoch) {
+                obj->add_shape_property_cached(name, value, te.to_shape);
+                return;
+            }
+        }
+    }
+
+    Shape* shape_before = obj->get_shape();
+    bool was_new = fb && obj->get_type() == Object::ObjectType::Ordinary &&
+                    !obj->has_descriptor_override(name) &&
+                    shape_before && shape_before->find_slot(name) < 0;
+
     // ordinary_set (not set_property): checks inherited non-writable/Proxy
     // targets first, unlike set_property which would just shadow them.
     bool ok = obj->ordinary_set(name, value);
@@ -225,10 +300,26 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         ctx.throw_type_error("Cannot assign to read only property '" + name + "'");
         return;
     }
-    if (fb && obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(name)) {
+    // Re-checked fresh, not reusing a pre-call flag: ordinary_set can migrate
+    // obj to dictionary mode (shape transition cap hit while adding a new
+    // property), which changes has_descriptor_override's answer for `name`.
+    if (fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+        !obj->has_descriptor_override(name)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
-        if (idx >= 0) { fb->shape = s; fb->slot_index = static_cast<uint32_t>(idx); }
+        if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+    }
+    // Transition learn: has_descriptor_override re-checked post-call (not the
+    // pre-call value) so a no-trap Proxy's set forward -- which can transition
+    // obj's shape via set_property_descriptor, always leaving a descriptors_
+    // entry behind -- is naturally excluded from being learned here.
+    if (was_new && ok && fb && !fb->transition_mega &&
+        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(name)) {
+        Shape* s = obj->get_shape();
+        int32_t idx = s ? s->find_slot(name) : -1;
+        if (idx >= 0) {
+            learn_transition(fb, shape_before, s, static_cast<uint32_t>(idx), Object::proto_epoch());
+        }
     }
 }
 

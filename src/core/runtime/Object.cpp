@@ -25,6 +25,8 @@ namespace Quanta {
 
 thread_local Context* Object::current_context_ = nullptr;
 
+thread_local uint64_t Object::proto_epoch_ = 0;
+
 thread_local std::unordered_map<std::string, std::string> Object::interned_keys_;
 
 void* Object::operator new(size_t size) {
@@ -70,6 +72,17 @@ bool Object::has_shape_slot(const std::string& key) const {
 
 bool Object::has_descriptor_override(const std::string& key) const {
     return descriptors_ && descriptors_->count(key) > 0;
+}
+
+void Object::add_shape_property_cached(const std::string& key, const Value& value, Shape* to_shape) {
+    shape_ = to_shape;
+    shape_slots_.push_back(value);
+    header_.property_count++;
+    property_insertion_order_.push_back(key);
+    update_hash_code();
+    // Mirrors store_in_overflow's own bump for the equivalent slow-path
+    // branch -- this object may itself be used as another chain's prototype.
+    if (used_as_prototype()) bump_proto_epoch();
 }
 
 bool Object::set_shape_slot(const std::string& key, const Value& value) {
@@ -164,13 +177,21 @@ Object::Object(ObjectType type) {
 }
 
 Object::Object(Object* prototype, ObjectType type) : Object(type) {
-    header_.prototype = prototype;
+    // Must go through set_prototype, not a direct header_.prototype write --
+    // it marks `prototype` used_as_prototype(), which the transition-cache
+    // relies on for every object ever installed as a prototype, including
+    // via this constructor (Object.create(proto), Error-hierarchy bootstrap).
+    if (prototype) set_prototype(prototype);
 }
 
 void Object::set_prototype(Object* prototype) {
     Collector::write_barrier(this);
     header_.prototype = prototype;
     update_hash_code();
+    // The engine's single [[Prototype]]-change choke point, so marking+bumping
+    // here covers every caller (setPrototypeOf, __proto__, class extends, ...).
+    if (prototype) prototype->mark_used_as_prototype();
+    Object::bump_proto_epoch();
 }
 
 bool Object::has_prototype(Object* prototype) const {
@@ -856,6 +877,9 @@ bool Object::ordinary_set(const std::string& key, const Value& value) {
 }
 
 void Object::remove_own_property(const std::string& key) {
+    // See proto_epoch()'s doc comment; bumped up front like
+    // set_property_descriptor, not at each return point below.
+    if (used_as_prototype()) bump_proto_epoch();
     if (descriptors_) descriptors_->erase(key);
 
     uint32_t index;
@@ -890,6 +914,10 @@ bool Object::delete_property(const std::string& key) {
     if (!desc.is_configurable()) {
         return false;
     }
+
+    // Property genuinely exists and is configurable, so this call will
+    // actually remove it -- see proto_epoch()'s doc comment.
+    if (used_as_prototype()) bump_proto_epoch();
 
     uint32_t index;
     if (is_array_index(key, &index)) {
@@ -1251,6 +1279,12 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     if (header_.type == ObjectType::Proxy) {
         return static_cast<Proxy*>(this)->define_property_trap(make_prop_key_value(key), desc);
     }
+
+    // Bumped up front rather than at each of this function's many return
+    // points -- defineProperty can create/attach-accessor/change attributes,
+    // any of which affects blocker status; a failed call bumping too is
+    // safe, just an occasional over-invalidation.
+    if (used_as_prototype()) bump_proto_epoch();
 
     // Runs before the configurability checks below: an out-of-range length throws
     // RangeError even when the descriptor also conflicts with length's non-configurability.
@@ -2253,6 +2287,7 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
             property_insertion_order_.push_back(key);
         }
         update_hash_code();
+        if (used_as_prototype()) bump_proto_epoch();
         return true;
     }
 
@@ -2285,6 +2320,10 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
     }
 
     update_hash_code();
+    // A new own property (or an attribute-changing dictionary-mode overwrite
+    // above) can change whether this object, if consulted as a prototype,
+    // still blocks a [[Set]] -- see proto_epoch()'s doc comment.
+    if (used_as_prototype()) bump_proto_epoch();
     return true;
 }
 
