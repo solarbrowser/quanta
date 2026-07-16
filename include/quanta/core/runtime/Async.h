@@ -129,6 +129,10 @@ public:
         Completed
     };
 
+    // promise is unowned by the GC while held here (unique_ptr, not a traced
+    // slot), so every caller must .release() it into a GC-reachable location
+    // (e.g. returned to JS as a Value, or handed to Promise::then) before this
+    // struct goes out of scope -- never let it drop while still pending.
     struct AsyncGeneratorResult {
         std::unique_ptr<Promise> promise;
         AsyncGeneratorResult(std::unique_ptr<Promise> p) : promise(std::move(p)) {}

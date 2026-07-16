@@ -78,6 +78,7 @@ void Context::gc_trace(Visitor& v) const {
     v.visit(current_exception_);
     v.visit(return_value_);
     v.visit(new_target_);
+    v.visit(import_meta_);
     for (const auto& frame : call_stack_) {
         if (frame) frame->gc_trace(v);
     }

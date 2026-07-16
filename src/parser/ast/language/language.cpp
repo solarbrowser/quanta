@@ -495,6 +495,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     std::vector<std::unique_ptr<ASTNode>> static_field_initializers;
     bool has_explicit_constructor = false;
     std::vector<std::pair<std::string, PropertyDescriptor>> deferred_instance_methods;
+    // deferred_instance_methods' Function Values live inside PropertyDescriptor,
+    // which ValueVectorRoot can't root directly (it only walks vector<Value>).
+    // Mirror every such Value into this flat, rooted vector too -- computed
+    // method keys can run arbitrary side-effecting code (toString()) between
+    // when one method is deferred here and the next is processed.
+    std::vector<Value> deferred_methods_values_root_vec;
+    ValueVectorRoot deferred_methods_values_root(&deferred_methods_values_root_vec);
 
     if (body_) {
         for (const auto& stmt : body_->get_statements()) {
@@ -647,13 +654,17 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         else desc.set_setter(instance_method.release());
                         desc.set_enumerable(false);
                         desc.set_configurable(true);
+                        if (desc.get_getter()) deferred_methods_values_root_vec.push_back(Value(desc.get_getter()));
+                        if (desc.get_setter()) deferred_methods_values_root_vec.push_back(Value(desc.get_setter()));
                         if (existing_deferred) *existing_deferred = desc;
                         else deferred_instance_methods.push_back({storage_name, desc});
                     } else {
                         if (method_name.find("@@sym:") == 0 || method_name.find("Symbol.") == 0) {
                             instance_method->set_name(accessor_function_name(method_name, ""));
                         }
-                        PropertyDescriptor method_desc(Value(instance_method.release()),
+                        Function* instance_method_raw = instance_method.release();
+                        deferred_methods_values_root_vec.push_back(Value(instance_method_raw));
+                        PropertyDescriptor method_desc(Value(instance_method_raw),
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
                         deferred_instance_methods.push_back({storage_name, method_desc});
                     }

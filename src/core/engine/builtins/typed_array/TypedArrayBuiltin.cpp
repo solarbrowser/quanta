@@ -1210,7 +1210,9 @@ void register_typed_array_builtins(Context& ctx) {
             size_t len = ta->length();
             if (len <= 1) return Value(this_obj);
             Function* cmp = (!args.empty() && args[0].is_function()) ? args[0].as_function() : nullptr;
-            std::vector<Value> els; els.reserve(len);
+            std::vector<Value> els;
+            ValueVectorRoot els_root(&els);
+            els.reserve(len);
             for (size_t i = 0; i < len; i++) els.push_back(ta->get_element(i));
             // Plain `<` on doubles is UB for std::sort with NaN present (NaN<x and x<NaN both false); NaN must sort last. Spec also requires stability and comparefn-throw propagation.
             std::stable_sort(els.begin(), els.end(), [&](const Value& a, const Value& b) {
@@ -1408,7 +1410,9 @@ void register_typed_array_builtins(Context& ctx) {
             if (!ta) return Value();
             size_t len = ta->length();
             Function* cmp = (!args.empty() && args[0].is_function()) ? args[0].as_function() : nullptr;
-            std::vector<Value> els; els.reserve(len);
+            std::vector<Value> els;
+            ValueVectorRoot els_root(&els);
+            els.reserve(len);
             for (size_t i = 0; i < len; i++) els.push_back(ta->get_element(i));
             std::sort(els.begin(), els.end(), [&](const Value& a, const Value& b) {
                 if (ctx.has_exception()) return false;

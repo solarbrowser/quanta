@@ -19,6 +19,7 @@ namespace Quanta {
 class Engine;
 class Context;
 class ASTNode;
+class Visitor;
 
 
 class Module {
@@ -30,11 +31,19 @@ private:
     std::unique_ptr<Context> module_context_;
     bool loaded_;
     bool loading_;
-    Value thrown_exception_; 
+    Value thrown_exception_;
 
 public:
     Module(const std::string& id, const std::string& filename);
     ~Module() = default;
+
+    // Visits exports_/thrown_exception_/namespace_ -- the collector's own
+    // roots have no reach into modules at all otherwise. module_context_ is
+    // deliberately NOT visited here: it needs revisit_context's force-
+    // retrace-every-slice treatment, which only exists on the concrete
+    // MarkVisitor (not the abstract Visitor this method takes), so the
+    // caller (Collector.cpp) visits get_context() itself.
+    void gc_trace(Visitor& v) const;
 
     const std::string& get_id() const { return id_; }
     const std::string& get_filename() const { return filename_; }
@@ -84,6 +93,13 @@ public:
     bool is_module_loaded(const std::string& module_id) const;
     const Value& get_last_module_exception() const { return last_module_exception_; }
     bool has_last_module_exception() const { return !last_module_exception_.is_undefined(); }
+
+    // Visits every loaded module's exports_/thrown_exception_/namespace_ and
+    // last_module_exception_. Modules are otherwise entirely outside the
+    // collector's root set (see Collector.cpp's engine loops, which also
+    // separately visit each module's Context via get_context() below).
+    void gc_trace(Visitor& v) const;
+    const std::unordered_map<std::string, std::unique_ptr<Module>>& modules() const { return modules_; }
 
     std::string resolve_module_path(const std::string& module_id, const std::string& from_path = "");
     void add_search_path(const std::string& path);

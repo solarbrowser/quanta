@@ -126,6 +126,13 @@ void Promise::fulfill(const Value& value) {
             // Store on inner to keep callbacks alive
             inner->set_property("__prp_res__", Value(res_fn.release()));
             inner->set_property("__prp_rej__", Value(rej_fn.release()));
+            // rf/rj capture self (the outer promise) raw and dereference it
+            // (self->fulfill/reject) whenever inner settles, which may be well
+            // after this call returns. inner keeps rf/rj alive via then_records_,
+            // but nothing keeps self alive on its own -- mirror self onto rf/rj
+            // too, so self survives for as long as inner (and hence rf/rj) does.
+            rf->set_property("[[PrpSelf]]", Value(self), PropertyAttributes::None);
+            rj->set_property("[[PrpSelf]]", Value(self), PropertyAttributes::None);
             inner->then(rf, rj);
         }
         return;
@@ -175,6 +182,15 @@ void Promise::fulfill(const Value& value) {
                     Function* rj = rej_fn.get();
                     self->set_property("__trp_res__", Value(res_fn.release()));
                     self->set_property("__trp_rej__", Value(rej_fn.release()));
+                    // rf/rj capture self raw in their C++ closures and dereference it
+                    // (self->fulfill/reject) whenever the thenable finally calls one of
+                    // them -- which may be well after this job returns (a deferred
+                    // thenable). self->set_property above only anchors rf/rj to self, not
+                    // the reverse, so mirror self back onto them: as long as the thenable
+                    // keeps rf/rj reachable (e.g. captured in its own callback closure),
+                    // self now stays reachable too.
+                    rf->set_property("[[TrpSelf]]", Value(self), PropertyAttributes::None);
+                    rj->set_property("[[TrpSelf]]", Value(self), PropertyAttributes::None);
                     if (Object::current_context_) {
                         then_fn->call(*Object::current_context_, {Value(rf), Value(rj)}, thenable);
                         if (Object::current_context_->has_exception()) {

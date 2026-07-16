@@ -516,6 +516,15 @@ void run_minor_collection() {
         // only reachable through one wouldn't be rediscovered this cycle --
         // keep rooting all of them here unconditionally.
         for (Context* c : engine->get_survivor_contexts()) v.visit_context(c);
+        // Modules are otherwise entirely outside the root set (exports_,
+        // thrown_exception_, the cached namespace object) -- see
+        // ModuleLoader::gc_trace's doc comment.
+        if (ModuleLoader* loader = engine->get_module_loader()) {
+            loader->gc_trace(v);
+            for (const auto& kv : loader->modules()) {
+                if (Context* ctx = kv.second->get_context()) v.visit_context(ctx);
+            }
+        }
     }
     v.visit_context(Object::current_context_);
     for (Context* c : exec_context_stack()) v.visit_context(c);
@@ -578,6 +587,14 @@ void scan_major_roots(MarkVisitor& v) {
     // every slice, not only the first.
     for (Engine* engine : Engine::all_engines()) {
         v.revisit_context(engine->get_global_context());
+        // See ModuleLoader::gc_trace's doc comment; module contexts need the
+        // same every-slice re-trace as any other root context.
+        if (ModuleLoader* loader = engine->get_module_loader()) {
+            loader->gc_trace(v);
+            for (const auto& kv : loader->modules()) {
+                if (Context* ctx = kv.second->get_context()) v.revisit_context(ctx);
+            }
+        }
     }
     v.revisit_context(Object::current_context_);
     for (Context* c : exec_context_stack()) v.revisit_context(c);
@@ -666,11 +683,17 @@ void finish_major_cycle(MarkVisitor& v) {
     g_major_in_progress = false;
 }
 
-// Placeholders, not yet tuned: if allocation keeps outpacing an open cycle's
-// marking progress for this long, the next slice ignores its budget and
-// finishes the cycle in one go instead of letting it drag on indefinitely.
-constexpr uint32_t kMaxSlicesBeforeForceFinish = 5000;
-constexpr auto kMaxCycleWallClockBeforeForceFinish = std::chrono::seconds(2);
+// If allocation keeps outpacing an open cycle's marking progress this long,
+// the next slice ignores its budget and finishes the cycle in one go instead
+// of letting it drag on indefinitely. Measured under QUANTA_GC_PROFILE=1
+// against a sustained-allocation, growing-heap workload (heap climbing to
+// 1M live objects while churning further short-lived ones): steady-state
+// major cycles land around 850-950 slices; the transient cycles that run
+// WHILE the heap is still growing (root re-scans keep finding genuinely new
+// objects, so a single cycle marks more as it goes) topped out around 2.24s.
+// Both thresholds keep roughly 2-3x headroom over that measured ceiling.
+constexpr uint32_t kMaxSlicesBeforeForceFinish = 3000;
+constexpr auto kMaxCycleWallClockBeforeForceFinish = std::chrono::seconds(5);
 
 // Starts a fresh major cycle if none is open, otherwise continues the one
 // already in progress. Re-scans every root each call rather than trying to
@@ -727,7 +750,19 @@ bool barriers_disabled() {
     return disabled;
 }
 
-// Placeholder, not yet tuned against a real pause-time target.
+// Measured under QUANTA_GC_PROFILE=1: median/p90 slice time tracks this
+// target closely (~510-520us) under sustained heavy allocation. The rare
+// (~1%) outlier -- confirmed up to ~20-230ms, not this target being wrong
+// -- is one Array whose elements_ holds a very large number of object
+// references: Object::trace()'s `for (const auto& val : elements_)` visits
+// them all in one uninterruptible trace_cell() call (mark_step only checks
+// its deadline between steps, not within one). Strings don't share this
+// risk (rope nodes are small, each a separate step); shape-mode named
+// properties are capped at kMaxSlots. Deliberately not fixed here: making
+// a single array's trace resumable across a slice boundary means its
+// elements_ can be mutated by the mutator in between (push/pop/splice)
+// before the resume point runs, which needs the same care as this
+// session's write-barrier/epoch designs, not a quick chunked-loop patch.
 std::chrono::microseconds default_major_slice_budget() {
     return std::chrono::microseconds(500);
 }

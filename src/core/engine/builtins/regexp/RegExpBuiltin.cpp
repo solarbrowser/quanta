@@ -5,6 +5,7 @@
  */
 #include "quanta/core/engine/builtins/RegExpBuiltin.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -808,6 +809,13 @@ void register_regexp_builtins(Context& ctx) {
             if (!set_ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex' of regexp"); return Value(); }
             struct MatchRecord { int js_idx; std::string matched; std::vector<Value> captures; Value groups; };
             std::vector<MatchRecord> matches;
+            // matches' Values (captures/groups) live inside a vector<MatchRecord>,
+            // which ValueVectorRoot can't root directly (it only walks vector<Value>).
+            // Mirror every such Value into this flat, rooted vector too, so they
+            // survive from collection here through the replacement loop below,
+            // which may run long after (and allocate a lot, under GC_STRESS).
+            std::vector<Value> matches_values_root_vec;
+            ValueVectorRoot matches_values_root(&matches_values_root_vec);
             size_t safety = 0;
             const size_t max_iter = str.length() + 2;
             while (safety++ < max_iter) {
@@ -846,6 +854,8 @@ void register_regexp_builtins(Context& ctx) {
                 Value grps_v = m->get_property("groups");
                 if (ctx.has_exception()) return Value();
                 matches.push_back({idx_js, matched_s, caps, grps_v});
+                for (const auto& c : caps) matches_values_root_vec.push_back(c);
+                matches_values_root_vec.push_back(grps_v);
                 if (matched_s.empty()) {
                     // ToLength(Get(rx, "lastIndex")) then AdvanceStringIndex
                     Value cur_li = this_obj->get_property("lastIndex");
@@ -1195,6 +1205,15 @@ void register_regexp_builtins(Context& ctx) {
             }, 0);
         proto->set_property("next", Value(next_fn.release()), PropertyAttributes::BuiltinFunction);
         regexp_string_iter_proto = proto.release();
+        // regexp_string_iter_proto is otherwise reachable only through the raw
+        // pointer captured by [Symbol.matchAll]'s closure below (invisible to
+        // the collector) until some live iterator instance's own prototype_
+        // field keeps it reachable transitively -- but nothing creates such an
+        // instance until user code actually calls matchAll, so it can be swept
+        // between here and then. Pin it onto RegExp.prototype (definitely
+        // GC-reachable via the RegExp global) since, per spec, this prototype
+        // is intentionally not exposed via any other named property.
+        regexp_proto_ptr->set_property("[[StringIteratorProto]]", Value(regexp_string_iter_proto), PropertyAttributes::None);
     }
 
     // RegExp.prototype[Symbol.matchAll]: per-spec, creates a matcher via SpeciesConstructor then returns iterator.

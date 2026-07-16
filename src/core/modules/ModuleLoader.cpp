@@ -7,6 +7,7 @@
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/gc/Visitor.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/parser/AST.h"
 #include "quanta/lexer/Lexer.h"
@@ -156,9 +157,20 @@ void Module::set_context(std::unique_ptr<Context> context) {
     module_context_ = std::move(context);
 }
 
+void Module::gc_trace(Visitor& v) const {
+    for (const auto& kv : exports_) v.visit(kv.second);
+    v.visit(thrown_exception_);
+    v.visit(namespace_);
+}
+
 ModuleLoader::ModuleLoader(Engine* engine) : engine_(engine) {
     add_search_path("./");
     add_search_path("./node_modules/");
+}
+
+void ModuleLoader::gc_trace(Visitor& v) const {
+    for (const auto& kv : modules_) kv.second->gc_trace(v);
+    v.visit(last_module_exception_);
 }
 
 Module* ModuleLoader::load_module(const std::string& module_id, const std::string& from_path) {

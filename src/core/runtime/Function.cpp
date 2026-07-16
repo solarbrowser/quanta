@@ -184,24 +184,33 @@ void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>&
     if (fn_ctx.is_strict_mode() || parameter_objects_.empty() || !is_simple_params) return;
 
     size_t map_count = std::min(args.size(), parameter_objects_.size());
+    // fn_ctx itself does NOT outlive the accessors once the arguments object
+    // escapes this call (e.g. `args = arguments;` then read later): fn_ctx is
+    // popped from the exec-context stack when this call returns and becomes
+    // GC-invisible, but a raw Context* capture doesn't know that. Capture the
+    // Environment instead -- the same object Context::get/set_binding just
+    // delegate to -- and pin it via the standard closure_environment_
+    // mechanism (Function::trace already visits it), exactly like a real JS
+    // closure capturing its defining scope.
+    Environment* env_ptr = capture_closure_environment(&fn_ctx);
     for (size_t mi = 0; mi < map_count; mi++) {
         if (!param_gets_mapped_accessor(parameter_objects_, mi)) continue;
         auto name = std::make_shared<std::string>(parameter_objects_[mi]->get_name()->get_name());
-        // fn_ctx outlives the accessors, so a raw pointer is safe to capture.
-        Context* fc_ptr = &fn_ctx;
         auto getter_fn = ObjectFactory::create_native_function("get",
-            [fc_ptr, name](Context& ctx, const std::vector<Value>&) -> Value {
+            [env_ptr, name](Context& ctx, const std::vector<Value>&) -> Value {
                 (void)ctx;
-                return fc_ptr->get_binding(*name);
+                return env_ptr ? env_ptr->get_binding(*name) : Value();
             });
+        getter_fn->set_closure_environment(env_ptr);
         // Mark getter so get_property_descriptor can synthesize a DATA descriptor
         getter_fn->set_property("__param_map__", Value(true));
         auto setter_fn = ObjectFactory::create_native_function("set",
-            [fc_ptr, name](Context& ctx, const std::vector<Value>& a) -> Value {
+            [env_ptr, name](Context& ctx, const std::vector<Value>& a) -> Value {
                 (void)ctx;
-                if (!a.empty()) fc_ptr->set_binding(*name, a[0]);
+                if (!a.empty() && env_ptr) env_ptr->set_binding(*name, a[0]);
                 return Value();
             });
+        setter_fn->set_closure_environment(env_ptr);
         PropertyDescriptor map_desc;
         map_desc.set_getter(getter_fn.get());
         map_desc.set_setter(setter_fn.get());

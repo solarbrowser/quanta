@@ -28,7 +28,7 @@ static bool new_promise_capability(Context& ctx, Value C_val, PromiseCapabilityR
     }
     Function* C = C_val.as_function();
 
-    struct CapState { Value resolve_val; Value reject_val; Function* resolve_fn = nullptr; Function* reject_fn = nullptr; };
+    struct CapState { Value resolve_val; Value reject_val; Function* resolve_fn = nullptr; Function* reject_fn = nullptr; Function* self_fn = nullptr; };
     auto state = std::make_shared<CapState>();
 
     auto executor = ObjectFactory::create_native_function("",
@@ -47,8 +47,19 @@ static bool new_promise_capability(Context& ctx, Value C_val, PromiseCapabilityR
             state->reject_val = rej_arg;
             if (res_arg.is_function()) state->resolve_fn = res_arg.as_function();
             if (rej_arg.is_function()) state->reject_fn = rej_arg.as_function();
+            // res_arg/rej_arg are otherwise reachable only through this
+            // invisible CapState shared_ptr for the rest of C's constructor
+            // call (which may do arbitrary additional work -- e.g. wrap
+            // things in another Promise -- before returning). Pin them onto
+            // the executor itself, which stays reachable throughout via C's
+            // own parameter binding.
+            if (state->self_fn) {
+                state->self_fn->set_property("__cap_res__", res_arg, PropertyAttributes::None);
+                state->self_fn->set_property("__cap_rej__", rej_arg, PropertyAttributes::None);
+            }
             return Value();
         }, 2);
+    state->self_fn = executor.get();
 
     Value executor_val(executor.release());
     std::vector<Value> ctor_args = { executor_val };
@@ -64,6 +75,17 @@ static bool new_promise_capability(Context& ctx, Value C_val, PromiseCapabilityR
     if (!state->resolve_fn || !state->reject_fn) {
         ctx.throw_type_error("Promise capability functions not callable");
         return false;
+    }
+
+    // Pin resolve/reject onto promise_val too: every caller already keeps it
+    // reachable (it's what gets returned to JS), so this protects out.resolve/
+    // out.reject for as long as the caller holds onto cap.promise, without
+    // each of the ~10 call sites needing its own pin for the common case.
+    Object* pin_target = promise_val.is_function() ? static_cast<Object*>(promise_val.as_function())
+                        : (promise_val.is_object() ? promise_val.as_object() : nullptr);
+    if (pin_target) {
+        pin_target->set_property("__cap_res__", Value(state->resolve_fn), PropertyAttributes::None);
+        pin_target->set_property("__cap_rej__", Value(state->reject_fn), PropertyAttributes::None);
     }
 
     out.promise = promise_val;
@@ -526,7 +548,18 @@ void register_promise_builtins(Context& ctx) {
                         }, 0);
                     return resolve_then_continue(ctx, result, thrower.release());
                 }, 1);
-            std::vector<Value> then_args = { Value(then_wrapper.release()), Value(catch_wrapper.release()) };
+            Function* tw = then_wrapper.release();
+            Function* cw = catch_wrapper.release();
+            // Lambda captures are invisible to the collector: on_finally and
+            // (via resolve_then_continue's own capture) species_ctor must
+            // survive until the wrapper actually fires, which may be well
+            // after this call returns. Mirror them as hidden properties,
+            // same as promise_then's [[Handler]] pin.
+            tw->set_property("[[OnFinally]]", Value(on_finally), PropertyAttributes::None);
+            tw->set_property("[[SpeciesCtor]]", Value(species_ctor), PropertyAttributes::None);
+            cw->set_property("[[OnFinally]]", Value(on_finally), PropertyAttributes::None);
+            cw->set_property("[[SpeciesCtor]]", Value(species_ctor), PropertyAttributes::None);
+            std::vector<Value> then_args = { Value(tw), Value(cw) };
             return then_val.as_function()->call(ctx, then_args, this_val);
         }, 1);
     promise_prototype->set_property("finally", Value(promise_finally.release()), PropertyAttributes::BuiltinFunction);
@@ -714,6 +747,15 @@ void register_promise_builtins(Context& ctx) {
                 reject_capability_with_exception(ctx, cap);
                 return cap.promise;
             }
+
+            // Unlike all/any, race reuses cap.resolve/cap.reject raw for every
+            // element instead of a per-element handler, so pin them directly
+            // onto pin_target -- each next_promise may be a non-Promise
+            // thenable with no GC pin of its own (see all's __all_ful__ pin).
+            Object* pin_target = as_object_or_function(cap.promise);
+            if (!pin_target) pin_target = ctx.get_global_object();
+            pin_target->set_property("__race_res__", Value(cap.resolve), PropertyAttributes::None);
+            pin_target->set_property("__race_rej__", Value(cap.reject), PropertyAttributes::None);
 
             // First settled promise wins (cap.resolve/cap.reject already enforce "AlreadyResolved"
             // semantics, so the same pair is safely reused for every element).
@@ -1228,6 +1270,13 @@ void register_promise_builtins(Context& ctx) {
                         return Value();
                     }, 1);
 
+                // Mirrors Promise.all's on_ful: on_reject is pinned below, so
+                // holding cap_resolve/cap_reject as its own properties keeps
+                // them (and the [[Err N]] mirror-pin target at line ~1226
+                // above) alive too -- without this they exist only inside the
+                // malloc'd AnyState shared_ptr, invisible to the collector.
+                on_reject->set_property("[[CapResolve]]", Value(cap_resolve), PropertyAttributes::None);
+                on_reject->set_property("[[CapReject]]", Value(state->cap_reject), PropertyAttributes::None);
                 Function* reject_raw = on_reject.release();
                 pin_target->set_property("__any_r__" + std::to_string(idx), Value(reject_raw));
 

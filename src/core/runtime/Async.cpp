@@ -1086,7 +1086,15 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
                     }, 1);
                 on_ok->set_property("[[Capability]]", cap_val);
                 on_err->set_property("[[Capability]]", cap_val);
-                rp->then(on_ok.release(), on_err.release());
+                Function* on_ok_fn = on_ok.release();
+                Function* on_err_fn = on_err.release();
+                // Hardening, not a confirmed bug: rp is always a genuine Promise, whose
+                // then_records_ already traces on_ok_fn/on_err_fn. Also pin them onto cap
+                // (the value this function returns, so definitely reachable) so they don't
+                // depend solely on rp's own reachability.
+                cap->set_property("__ad_ok__", Value(on_ok_fn), PropertyAttributes::None);
+                cap->set_property("__ad_err__", Value(on_err_fn), PropertyAttributes::None);
+                rp->then(on_ok_fn, on_err_fn);
                 return Value(cap);
             }, 0);
         async_iterator_prototype->set_property(async_dispose_symbol->to_property_key(),
@@ -1225,19 +1233,25 @@ std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
                     return Value();
                 });
                 
-            auto reject_fn = ObjectFactory::create_native_function("reject", 
+            auto reject_fn = ObjectFactory::create_native_function("reject",
                 [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
                     Value reject_reason = args.empty() ? Value() : args[0];
                     promise_ptr->reject(reject_reason);
                     return Value();
                 });
-            
+
+            // Mirrors Promise::fulfill's __trp_res__/__trp_rej__ pin (Promise.cpp:176-177):
+            // the thenable may call resolve/reject asynchronously, well after this
+            // function returns, so pin both onto promise itself to keep them alive.
+            promise->set_property("__trp_res__", Value(resolve_fn.get()), PropertyAttributes::None);
+            promise->set_property("__trp_rej__", Value(reject_fn.get()), PropertyAttributes::None);
+
             std::vector<Value> then_args = {
                 Value(resolve_fn.release()),
                 Value(reject_fn.release())
             };
-            
+
             then_fn->call(ctx, then_args, value);
         }
         
