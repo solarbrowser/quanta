@@ -12,6 +12,7 @@
 namespace Quanta {
 
 class Context;
+class Function;
 
 namespace VM {
 
@@ -21,8 +22,12 @@ namespace VM {
 // through ctx (same contract as ASTNode::evaluate).
 // this_val: pre-resolved `this` for register-mode frames (skips the per-call
 // "this" binding insert); null falls back to scope-chain resolution.
+// owner: the Function whose BytecodeChunk this is, needed to write_barrier
+// when GetNamed's prototype-chain cache learns a new holder/prototype
+// reference (see FeedbackSlot::ProtoEntry). Null for run_script's ownerless
+// top-level chunk -- that cache is simply inert there (see run_script).
 Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
-          const Value* this_val = nullptr);
+          const Value* this_val = nullptr, Function* owner = nullptr);
 
 // Compiles a generator/async BODY for the suspendable calling convention
 // (bindings already live in ctx; yield/await suspend the fiber from inside
@@ -33,7 +38,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body);
 
 // Runs a chunk from compile_suspendable. Traced through its owning Function.
-Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx);
+Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx, Function* owner);
 
 // Script tier: compile+run a Program's top-level statements (hoisting must
 // already be done by Program::evaluate). used_vm=false -> caller tree-walks.

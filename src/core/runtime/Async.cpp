@@ -93,7 +93,7 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
             // the fiber from inside the VM dispatch loop (see Generator::run_body).
             const BytecodeChunk* chunk = self->owner_fn_ ? self->owner_fn_->get_suspendable_chunk(*ctx) : nullptr;
             if (chunk) {
-                Value vm_result = VM::run_suspendable_chunk(*chunk, *ctx);
+                Value vm_result = VM::run_suspendable_chunk(*chunk, *ctx, self->owner_fn_);
                 if (!vm_result.is_undefined() && !ctx->has_return_value() && !ctx->has_exception()) {
                     ctx->set_return_value(vm_result);
                 }
@@ -555,7 +555,7 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
             // Same VM-or-treewalk split as Generator::run_body.
             const BytecodeChunk* chunk = self->owner_fn_ ? self->owner_fn_->get_suspendable_chunk(*ctx) : nullptr;
             if (chunk) {
-                Value vm_result = VM::run_suspendable_chunk(*chunk, *ctx);
+                Value vm_result = VM::run_suspendable_chunk(*chunk, *ctx, self->owner_fn_);
                 if (!vm_result.is_undefined() && !ctx->has_return_value() && !ctx->has_exception()) {
                     ctx->set_return_value(vm_result);
                 }

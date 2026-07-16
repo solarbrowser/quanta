@@ -56,7 +56,7 @@ void Generator::run_body() {
             auto* gen_fn = static_cast<GeneratorFunction*>(generator_function_);
             const BytecodeChunk* chunk = gen_fn ? gen_fn->get_suspendable_chunk(*generator_context_) : nullptr;
             if (chunk) {
-                Value vm_result = VM::run_suspendable_chunk(*chunk, *generator_context_);
+                Value vm_result = VM::run_suspendable_chunk(*chunk, *generator_context_, gen_fn);
                 if (!vm_result.is_undefined() && !generator_context_->has_return_value() &&
                     !generator_context_->has_exception()) {
                     generator_context_->set_return_value(vm_result);

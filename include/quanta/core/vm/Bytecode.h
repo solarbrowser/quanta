@@ -19,6 +19,7 @@ class Visitor;
 class Shape;
 class ASTNode;
 class Environment;
+class Object;
 
 // Register-based, accumulator-centric instruction set (V8 Ignition model).
 // Encoding: u8 opcode + fixed operands -- r: u8 register, k: u16 constant-
@@ -155,6 +156,27 @@ struct FeedbackSlot {
     std::array<TransitionEntry, kMaxEntries> transitions{};
     uint8_t transition_count = 0;
     bool transition_mega = false;
+
+    // GetNamed-only: caches reading an INHERITED (not own) data property.
+    // `prototype` is the receiver's immediate get_prototype() at learn time
+    // (Shape alone doesn't encode [[Prototype]] -- two receivers can share
+    // a shape while having different prototype chains, e.g. two
+    // Object.create(x) results that later add the same keys). `holder` is
+    // the ancestor where the property actually lives (possibly further up
+    // than `prototype`); `proto_epoch` covers everything structural changing
+    // anywhere between receiver and holder. Unlike Shape*, `prototype`/
+    // `holder` are real GC cells -- see BytecodeChunk::trace and the
+    // write_barrier call in learn_proto.
+    struct ProtoEntry {
+        Shape* receiver_shape = nullptr;
+        Object* prototype = nullptr;
+        uint64_t proto_epoch = 0;
+        Object* holder = nullptr;
+        uint32_t slot_index = 0;
+    };
+    std::array<ProtoEntry, kMaxEntries> proto_entries{};
+    uint8_t proto_count = 0;
+    bool proto_mega = false;
 };
 
 // Inline cache for one GetPrivate/SetPrivate site: the resolved qualified

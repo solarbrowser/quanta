@@ -185,12 +185,36 @@ void learn_transition(FeedbackSlot* fb, Shape* from_shape, Shape* to_shape,
     }
 }
 
+// GetNamed's inherited-property read cache. Dedups on {receiver_shape,
+// prototype} (both must match -- see FeedbackSlot::ProtoEntry): a duplicate
+// refreshes epoch/holder/slot in place, same reasoning as learn_transition.
+// write_barrier(owner) covers holder/prototype being real GC cells stored
+// into owner's (possibly already-old) BytecodeChunk.
+void learn_proto(FeedbackSlot* fb, Shape* receiver_shape, Object* prototype,
+                  Object* holder, uint32_t slot_index, uint64_t epoch, Function* owner) {
+    for (uint8_t i = 0; i < fb->proto_count; i++) {
+        auto& pe = fb->proto_entries[i];
+        if (pe.receiver_shape == receiver_shape && pe.prototype == prototype) {
+            Collector::write_barrier(owner);
+            pe = {receiver_shape, prototype, epoch, holder, slot_index};
+            return;
+        }
+    }
+    if (fb->proto_count < FeedbackSlot::kMaxEntries) {
+        Collector::write_barrier(owner);
+        fb->proto_entries[fb->proto_count++] = {receiver_shape, prototype, epoch, holder, slot_index};
+    } else {
+        fb->proto_mega = true;
+    }
+}
+
 // A shape match alone doesn't prove "plain data slot, no override" -- both
 // the hit check and the miss-path refill re-verify has_descriptor_override.
 // has_descriptor_override is a fact about (obj, name), independent of which
 // entry matches, so it's checked once per call (in `cacheable`) rather than
 // once per scanned entry.
-Value get_named(Context& ctx, const Value& receiver, const std::string& name, FeedbackSlot* fb) {
+Value get_named(Context& ctx, const Value& receiver, const std::string& name,
+                 FeedbackSlot* fb, Function* owner) {
     if (receiver.is_null() || receiver.is_undefined()) {
         ctx.throw_type_error("Cannot read property of null or undefined");
         return Value();
@@ -225,6 +249,25 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name, Fe
         bool is_integer_indexed_key = obj->is_typed_array() &&
             TypedArrayBase::canonical_numeric_index(name, numeric_index);
         if (!is_integer_indexed_key && !obj->has_own_property(name)) {
+            // Prototype-chain read cache: skips this walk AND the
+            // obj->get_property(name) call below entirely on a hit. Gated on
+            // owner != nullptr -- run_script's ownerless chunk (see
+            // VM::run_script) never populates or trusts this cache, since
+            // its holder/prototype fields would have no GC root otherwise.
+            if (owner && fb && !fb->proto_mega && obj->get_type() == Object::ObjectType::Ordinary &&
+                !obj->has_descriptor_override(name)) {
+                Shape* shape = obj->get_shape();
+                Object* proto0 = obj->get_prototype();
+                uint64_t epoch = Object::proto_epoch();
+                for (uint8_t i = 0; i < fb->proto_count; i++) {
+                    const auto& pe = fb->proto_entries[i];
+                    if (pe.receiver_shape == shape && pe.prototype == proto0 && pe.proto_epoch == epoch) {
+                        const Value* slot = pe.holder->get_shape_slot_unchecked(pe.slot_index);
+                        if (slot) return *slot;
+                        break;
+                    }
+                }
+            }
             for (Object* proto = obj->get_prototype(); proto; proto = proto->get_prototype()) {
                 PropertyDescriptor proto_desc = proto->get_property_descriptor(name);
                 if (proto_desc.is_accessor_descriptor()) {
@@ -232,7 +275,21 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name, Fe
                     Function* getter_fn = dynamic_cast<Function*>(proto_desc.get_getter());
                     return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
                 }
-                if (proto_desc.has_value()) break;
+                if (proto_desc.has_value()) {
+                    // Learn: proto is the holder. Only cacheable as a plain
+                    // shape slot (Ordinary, no descriptor override) -- same
+                    // trust rule as the receiver-side cache.
+                    if (owner && fb && !fb->proto_mega && proto->get_type() == Object::ObjectType::Ordinary &&
+                        !proto->has_descriptor_override(name)) {
+                        Shape* hs = proto->get_shape();
+                        int32_t hidx = hs ? hs->find_slot(name) : -1;
+                        if (hidx >= 0) {
+                            learn_proto(fb, obj->get_shape(), obj->get_prototype(), proto,
+                                        static_cast<uint32_t>(hidx), Object::proto_epoch(), owner);
+                        }
+                    }
+                    break;
+                }
             }
         }
     }
@@ -489,7 +546,7 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
 }
 
 Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
-          const Value* this_val) {
+          const Value* this_val, Function* owner) {
     // Zero-initialized so leftover stack garbage in an unused slot can't look
     // like a live heap pointer to the conservative GC scan.
     Value regs[256] = {};
@@ -1301,7 +1358,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_named(ctx, regs[obj_reg], chunk.names[name_idx], &chunk.feedback[fb_idx]);
+                acc = get_named(ctx, regs[obj_reg], chunk.names[name_idx], &chunk.feedback[fb_idx], owner);
                 CHECK_EXC();
                 break;
             }
@@ -1344,7 +1401,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
-                acc = get_named(ctx, recv, key, nullptr);
+                acc = get_named(ctx, recv, key, nullptr, nullptr);
                 CHECK_EXC();
                 break;
             }
@@ -1575,8 +1632,8 @@ std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body) {
     return chunk;
 }
 
-Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx) {
-    return run(chunk, ctx, {});
+Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx, Function* owner) {
+    return run(chunk, ctx, {}, nullptr, owner);
 }
 
 }

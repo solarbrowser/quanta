@@ -489,7 +489,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         ExecContextScope gc_frame(&fast_ctx);
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &fast_ctx;
-        Value vm_result = VM::run(*bytecode_chunk_, fast_ctx, args, &fast_this);
+        Value vm_result = VM::run(*bytecode_chunk_, fast_ctx, args, &fast_this, this);
         Object::current_context_ = prev_context;
         if (fast_ctx.has_exception()) {
             ctx.throw_exception(fast_ctx.get_exception(), true);
@@ -715,7 +715,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             Context* prev_context = Object::current_context_;
             Object::current_context_ = &function_context;
             Value vm_result = VM::run(*bytecode_chunk_, function_context, args,
-                                      bytecode_chunk_->env_mode ? nullptr : &actual_this);
+                                      bytecode_chunk_->env_mode ? nullptr : &actual_this, this);
             Object::current_context_ = prev_context;
 
             // Propagate super_called flag to parent context (mirrors the
