@@ -79,6 +79,16 @@ private:
     bool this_needs_super_;  // derived class ctor: accessing 'this' before super() throws
     Object* last_super_override_ = nullptr;  // comparison-only, see last_super_override()
     Environment* owned_env_ = nullptr;  // see set_owned_env()
+    // Set when a native call reused this exact context (Function.cpp's
+    // is_native_ branch), or when this context was captured as a Generator's
+    // outer_context_ / an AsyncFunction's Promise::context_ -- both bypass
+    // Object::current_context_ entirely. Consulted by ContextSurvivorGuard:
+    // together with owned_env_->is_escaped() (the closure-capture signal,
+    // via Function::closure_context_/capture_closure_environment's
+    // mark_escaped() call), this is the complete "could anything outlive this
+    // call and still reach this context" answer -- see ContextSurvivorGuard's
+    // doc comment.
+    bool exposed_to_escape_ = false;
     Value new_target_;
     bool original_this_was_nullish_ = false;
     bool original_this_was_primitive_ = false; // set when native call had a non-null/undefined primitive thisArg
@@ -176,6 +186,9 @@ public:
     // The env created FOR this context (function/eval env); dies with the
     // context in ~Context unless a capture marked it escaped.
     void set_owned_env(Environment* env) { owned_env_ = env; }
+    Environment* get_owned_env() const { return owned_env_; }
+    void mark_exposed_to_escape() { exposed_to_escape_ = true; }
+    bool exposed_to_escape() const { return exposed_to_escape_; }
     Environment* get_variable_environment() const { return variable_environment_; }
     void set_lexical_environment(Environment* env) { lexical_environment_ = env; }
     void set_variable_environment(Environment* env) { variable_environment_ = env; }
@@ -481,6 +494,17 @@ namespace ContextFactory {
 // A no-op when the ptr has already been moved elsewhere (the ordinary
 // success path transfers ownership into the created Function/Generator
 // object itself, which is a proper GC cell -- no separate pinning needed).
+//
+// Also a no-op (context destructs normally, no pool registration) when
+// NOTHING could have captured a reference to it: no closure captured its
+// owned_env_ (checked via Environment::is_escaped(), the same signal
+// capture_closure_environment()/Function::set_closure_environment() already
+// set whenever this context becomes a Function::closure_context_), AND
+// nothing marked it exposed_to_escape() (native calls reusing this exact
+// context, or this context becoming a Generator's outer_context_ / an
+// AsyncFunction's Promise::context_). If a future change ever stores a
+// Context* into a longer-lived structure through some OTHER path than these,
+// it must also call mark_exposed_to_escape() or this skip becomes unsafe.
 struct ContextSurvivorGuard {
     std::unique_ptr<Context>& ptr;
     Engine* eng;

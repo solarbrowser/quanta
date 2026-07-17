@@ -630,6 +630,10 @@ std::unique_ptr<ASTNode> UsingDeclaration::clone() const {
 }
 
 void BlockStatement::check_use_strict_directive(Context& ctx) {
+    if (has_use_strict_directive()) ctx.set_strict_mode(true);
+}
+
+bool BlockStatement::has_use_strict_directive() const {
     // Scan the directive prologue -- all consecutive string-literal statements
     // at the top of the function body, not just the first one.
     for (const auto& stmt : statements_) {
@@ -640,10 +644,10 @@ void BlockStatement::check_use_strict_directive(Context& ctx) {
         auto* sl = static_cast<StringLiteral*>(expr);
         // Per spec: directive is only valid when it has no escape sequences.
         if (sl->get_value() == "use strict" && !sl->has_escapes()) {
-            ctx.set_strict_mode(true);
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 bool BlockStatement::needs_own_scope() const {

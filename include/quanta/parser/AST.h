@@ -782,6 +782,9 @@ public:
     size_t statement_count() const { return statements_.size(); }
 
     void check_use_strict_directive(Context& ctx);
+    // Side-effect-free query version of the same directive-prologue scan, for
+    // callers that don't have (or don't want to mutate) a Context.
+    bool has_use_strict_directive() const;
     bool needs_own_scope() const;
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

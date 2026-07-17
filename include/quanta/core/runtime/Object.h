@@ -466,6 +466,11 @@ private:
     // parameter_objects_ from decl_site_ (both or neither -- a body-only
     // materialization would silently mis-bind default/rest params).
     void materialize_from_decl_site();
+    // Detection-only half of the __closure_* scan in Function::call (no
+    // Context needed) -- used to resolve closure_props_state_ before a
+    // Context exists; the call-site scan still runs separately to apply
+    // the bindings when this returns true.
+    bool has_closure_props() const;
 
 public:
     Function(const std::string& name,

@@ -186,6 +186,11 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, get_name(), ctx.get_current_filename(), call_position, this);
 
+    // &ctx (the caller's own context, not a fresh one) is captured into the
+    // Promise's context_ field and can be read again arbitrarily later by
+    // execute_handlers() for .then()/.catch() reactions -- ContextSurvivorGuard
+    // consults this instead of registering unconditionally.
+    ctx.mark_exposed_to_escape();
     auto promise_obj = ObjectFactory::create_promise(&ctx);
     Promise* promise_raw = static_cast<Promise*>(promise_obj.get());
     Value promise_value(promise_obj.release());

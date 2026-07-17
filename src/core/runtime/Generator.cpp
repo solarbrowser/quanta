@@ -859,6 +859,11 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         scan_for_var_declarations(body_.get(), gen_context);
     }
 
+    // &ctx (the caller's own context, not a fresh one) is captured into the
+    // new Generator's outer_context_ and stays reachable for as long as the
+    // Generator object is -- ContextSurvivorGuard consults this instead of
+    // registering unconditionally.
+    ctx.mark_exposed_to_escape();
     return std::make_unique<Generator>(this, gen_context_ptr.release(), body_.get(), &ctx);
 }
 

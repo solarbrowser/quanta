@@ -327,6 +327,15 @@ void Function::materialize_from_decl_site() {
     }
 }
 
+bool Function::has_closure_props() const {
+    for (const auto& key : get_internal_property_keys()) {
+        if (key.length() > 10 && key.substr(0, 10) == "__closure_" && key.substr(0, 16) != "__closure_const_") {
+            return true;
+        }
+    }
+    return false;
+}
+
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     // Roots args across the whole call (native path included): these Values
     // live in the caller's malloc'd vector storage, invisible to the stack scan.
@@ -439,6 +448,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         Value saved_new_target = ctx.get_new_target();
         if (!is_construct_invocation) ctx.set_new_target(Value());
 
+        // ctx is reused as-is (no fresh Context for natives) -- if native_fn_
+        // stashes current_context_ somewhere long-lived (Promise's own ctor,
+        // setTimeout), it's THIS context that would leak. ContextSurvivorGuard
+        // consults this instead of registering unconditionally.
+        ctx.mark_exposed_to_escape();
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &ctx;
         Value result = native_fn_(ctx, args);
@@ -466,12 +480,37 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         return result;
     }
     
+    // Resolve the fast-path gating states as early as possible (before any
+    // Context exists) so a Function called for the first time -- e.g. a
+    // closure recreated fresh on every call of its enclosing function, then
+    // invoked exactly once -- can still qualify below, instead of being
+    // permanently confined to the slow path that only ever resolves these on
+    // a "next" call that never comes. Only possible once bytecode_chunk_ is
+    // already attached (true for shared/pre-attached chunks); the slow-path
+    // resolutions further down remain as the fallback for a chunk that
+    // compiles for the first time later in this same call.
+    if (bytecode_chunk_) {
+        if (strict_directive_state_ < 0 && ast && ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            strict_directive_state_ =
+                (!is_strict_ && static_cast<BlockStatement*>(ast)->has_use_strict_directive()) ? 1 : 0;
+        }
+        if (closure_props_state_ < 0) {
+            closure_props_state_ = has_closure_props() ? 1 : 0;
+        }
+        if (self_name_state_ < 0) {
+            self_name_state_ = 0;
+            if (!name_.empty() && name_ != "<anonymous>") {
+                for (const auto& n : bytecode_chunk_->names) {
+                    if (n == name_) { self_name_state_ = 1; break; }
+                }
+            }
+        }
+    }
+
     // Register-mode fast call: a compiled chunk with no env-resident names
     // needs no per-call Environment (every binding insert is already skipped)
     // and no heap Context / survivor-pool bookkeeping -- a stack Context
-    // pointing straight at the captured chain suffices. The first call always
-    // takes the full path below (compiles the chunk, resolves the cached
-    // strict/closure/self-name states this guard reads).
+    // pointing straight at the captured chain suffices.
     if (VM::enabled() && !vm_incompatible_ && bytecode_chunk_ && !bytecode_chunk_->env_mode &&
         !is_class_constructor_ && strict_directive_state_ >= 0 &&
         closure_props_state_ == 0 && (self_name_state_ == 0 || self_name_state_ == 2) &&

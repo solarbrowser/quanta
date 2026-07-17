@@ -51,7 +51,15 @@ namespace Quanta {
 thread_local uint32_t Context::next_context_id_ = 1;
 
 ContextSurvivorGuard::~ContextSurvivorGuard() {
-    if (eng && ptr) eng->add_survivor_context(ptr.release());
+    if (!ptr) return;
+    // Provably unreachable from anywhere -- see the doc comment above the
+    // struct. Let it destruct normally instead of paying survivor-pool
+    // registration (which also forces extra major GC cycles, Heap.cpp).
+    if (!ptr->exposed_to_escape() &&
+        (!ptr->get_owned_env() || !ptr->get_owned_env()->is_escaped())) {
+        return;
+    }
+    if (eng) eng->add_survivor_context(ptr.release());
 }
 
 void Environment::gc_trace(Visitor& v) const {
