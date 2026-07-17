@@ -148,7 +148,12 @@ void Function::trace(Visitor& v) {
     v.visit_context(closure_context_);
     v.visit_environment(closure_environment_);
     v.visit_object(prototype_);
+    v.visit_object(body_owner_);
     if (bytecode_chunk_) bytecode_chunk_->trace(v);
+    // Otherwise unreachable until some instance adopts it via attach_precompiled_chunk.
+    for (const auto& entry : nested_chunk_cache_) {
+        if (entry.second) entry.second->trace(v);
+    }
 }
 
 static Value make_prop_key_value(const std::string& key) {

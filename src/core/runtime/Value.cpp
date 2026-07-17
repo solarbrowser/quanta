@@ -208,6 +208,51 @@ std::string Value::to_property_key() const {
     return to_string();
 }
 
+std::string Value::to_property_key_strict(Context& ctx) const {
+    if (is_symbol()) return as_symbol()->to_property_key();
+    if (!is_object() && !is_function()) return to_string();
+
+    Object* obj = is_function() ? static_cast<Object*>(as_function()) : as_object();
+
+    Value toPrim_fn = obj->get_property("Symbol.toPrimitive");
+    if (ctx.has_exception()) return "";
+    if (!toPrim_fn.is_undefined()) {
+        // GetMethod semantics: present-but-not-callable is a TypeError, not a
+        // silent fallthrough to toString/valueOf.
+        if (!toPrim_fn.is_function()) {
+            ctx.throw_type_error("Cannot convert object to primitive value");
+            return "";
+        }
+        Value result = toPrim_fn.as_function()->call(ctx, {Value(std::string("string"))}, Value(obj));
+        if (ctx.has_exception()) return "";
+        if (result.is_symbol()) return result.as_symbol()->to_property_key();
+        if (result.is_object() || result.is_function()) {
+            ctx.throw_type_error("Cannot convert object to primitive value");
+            return "";
+        }
+        return result.to_string();
+    }
+
+    Value toString_fn = obj->get_property("toString");
+    if (!ctx.has_exception() && toString_fn.is_function()) {
+        Value r = toString_fn.as_function()->call(ctx, {}, Value(obj));
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+    if (ctx.has_exception()) return "";
+
+    Value valueOf_fn = obj->get_property("valueOf");
+    if (!ctx.has_exception() && valueOf_fn.is_function()) {
+        Value r = valueOf_fn.as_function()->call(ctx, {}, Value(obj));
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+    if (ctx.has_exception()) return "";
+
+    ctx.throw_type_error("Cannot convert object to property key");
+    return "";
+}
+
 double Value::to_number() const {
     if (is_number()) return as_number();
     if (is_undefined()) return std::numeric_limits<double>::quiet_NaN();

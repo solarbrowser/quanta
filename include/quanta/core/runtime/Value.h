@@ -43,6 +43,7 @@ class Object;
 class String;
 class Function;
 class BigInt;
+class Context;
 
 /**
  * JavaScript value representation using NaN-boxing
@@ -324,6 +325,12 @@ public:
     double to_number() const;
     std::string to_string() const;
     std::string to_property_key() const;
+    // Corrected ToPropertyKey for object-literal computed keys: unlike
+    // to_property_key() above, this throws TypeError (GetMethod semantics)
+    // when @@toPrimitive is present but not callable, instead of silently
+    // falling through to toString/valueOf. Mirrors literal_to_property_key
+    // (literals.cpp) and computed_key_to_property_key (language.cpp) exactly.
+    std::string to_property_key_strict(Context& ctx) const;
     Object* to_object() const;
 
     bool strict_equals(const Value& other) const;

@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/String.h"
+#include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
@@ -587,6 +588,21 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     // frame's env is the persistent script env -- fully cacheable.
     Environment* entry_env = chunk.script_mode ? nullptr : ctx.get_lexical_environment();
 
+    // A chunk may be shared across several Function instances created from the
+    // same declaration site (see nested_chunk_cache_/attach_precompiled_chunk),
+    // each with its own captured environment chain -- chunk.lookup_cache can't
+    // be trusted in that case (it would bake in whichever instance resolved a
+    // name first and serve that stale slot to every other instance forever).
+    // Route through the calling Function's own per-instance cache instead;
+    // owner is null only for the ownerless top-level script chunk, which is
+    // inherently single-instance, so chunk.lookup_cache stays fine there.
+    std::vector<BytecodeChunk::LookupCacheEntry>* lookup_cache_ptr = &chunk.lookup_cache;
+    if (owner) {
+        auto& instance_cache = owner->instance_lookup_cache();
+        if (instance_cache.size() < chunk.names.size()) instance_cache.resize(chunk.names.size());
+        lookup_cache_ptr = &instance_cache;
+    }
+
     // Op::LdaThis cache: `this`'s VALUE is immutable for the whole frame
     // (even in a derived constructor -- super() sets it once), so resolve
     // the binding at most once. Whether a read is ALLOWED yet is a separate,
@@ -911,7 +927,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 {
                     // Captured-chain fast path: the resolved binding address is
                     // stable for this chunk's lifetime (see lookup_cache).
-                    const auto& entry = chunk.lookup_cache[name_idx];
+                    const auto& entry = (*lookup_cache_ptr)[name_idx];
                     if (entry.slot) { acc = *entry.slot; break; }
                 }
                 // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
@@ -928,7 +944,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     CHECK_EXC();
                     if (env != entry_env) {
                         if (Value* slot = env->stable_binding_slot(name)) {
-                            chunk.lookup_cache[name_idx] = {env, slot};
+                            (*lookup_cache_ptr)[name_idx] = {env, slot};
                         }
                     }
                 } else if (ctx.has_binding(name)) {
@@ -968,7 +984,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t sta_name_idx = read_u16(code, pc);
                 pc += 2;
                 {
-                    const auto& entry = chunk.lookup_cache[sta_name_idx];
+                    const auto& entry = (*lookup_cache_ptr)[sta_name_idx];
                     if (entry.slot) {
                         // The barrier records "env gained a reference" for the
                         // remembered set -- storing a non-heap value can't.
@@ -1019,7 +1035,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                     } else if (ok && env != entry_env) {
                         if (Value* slot = env->stable_binding_slot(name)) {
-                            chunk.lookup_cache[sta_name_idx] = {env, slot};
+                            (*lookup_cache_ptr)[sta_name_idx] = {env, slot};
                         }
                     }
                 }
@@ -1488,6 +1504,143 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 Object* obj = as_object_like(regs[obj_reg]);
                 if (obj) obj->set_element(static_cast<uint32_t>(regs[key_reg].to_number()), acc);
                 CHECK_EXC();
+                break;
+            }
+            case Op::ToPropertyKeyStrict:
+                if (!acc.is_string()) {
+                    acc = Value(acc.to_property_key_strict(ctx));
+                    CHECK_EXC();
+                }
+                break;
+            case Op::DefineOwnKeyed: {
+                uint8_t obj_reg = code[pc];
+                uint8_t key_reg = code[pc + 1];
+                pc += 2;
+                Object* obj = as_object_like(regs[obj_reg]);
+                if (obj) {
+                    std::string key = regs[key_reg].to_property_key();
+                    CHECK_EXC();
+                    if (key == "__proto__") {
+                        // Computed __proto__ is a plain data property, never
+                        // [[Prototype]] (Annex B.3.1 only special-cases the
+                        // non-computed literal form) -- set_property() would
+                        // otherwise find Object.prototype's own __proto__
+                        // ACCESSOR via its inherited-setter walk and wrongly
+                        // invoke it instead of creating an own property.
+                        obj->set_property_descriptor(key, PropertyDescriptor(acc, PropertyAttributes::Default));
+                    } else {
+                        obj->set_property(key, acc);
+                    }
+                }
+                CHECK_EXC();
+                break;
+            }
+            case Op::FinalizeStaticProperty: {
+                uint8_t obj_reg = code[pc];
+                uint16_t key_name_idx = read_u16(code, pc + 1);
+                uint16_t display_name_idx = read_u16(code, pc + 3);
+                uint8_t kind = code[pc + 5];
+                pc += 6;
+                Object* obj = as_object_like(regs[obj_reg]);
+                if (acc.is_function()) {
+                    Function* fn = acc.as_function();
+                    // Only rename if currently unnamed -- method/getter/setter
+                    // shorthand syntax can't produce a pre-named function, but
+                    // mirror literals.cpp's own guard exactly rather than
+                    // assume that.
+                    if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                        fn->set_name(chunk.names[display_name_idx]);
+                    }
+                    const std::string& key = chunk.names[key_name_idx];
+                    if (kind == 0) {
+                        // Method: spec 14.3.9 -- non-generator methods are not
+                        // constructors and have no .prototype.
+                        fn->set_property("__super_constructor__", Value(true));
+                        if (fn->is_constructor()) {
+                            fn->set_is_constructor(false);
+                            fn->set_function_prototype(nullptr);
+                        }
+                        if (obj) obj->set_property(key, acc);
+                    } else {
+                        // Getter (1) / Setter (2): unconditional prototype strip
+                        // (unlike Method, no is_constructor() guard -- mirrors
+                        // literals.cpp's own asymmetry), then fetch-existing-
+                        // descriptor-and-merge so a getter+setter pair sharing a
+                        // key installs correctly regardless of what else runs
+                        // between them.
+                        fn->set_function_prototype(nullptr);
+                        if (obj) {
+                            PropertyDescriptor desc = obj->has_own_property(key)
+                                ? obj->get_property_descriptor(key) : PropertyDescriptor();
+                            if (kind == 1) desc.set_getter(fn); else desc.set_setter(fn);
+                            desc.set_enumerable(true);
+                            desc.set_configurable(true);
+                            obj->set_property_descriptor(key, desc);
+                        }
+                    }
+                }
+                CHECK_EXC();
+                break;
+            }
+            case Op::FinalizeComputedProperty: {
+                uint8_t obj_reg = code[pc];
+                uint8_t key_reg = code[pc + 1];
+                uint8_t raw_key_reg = code[pc + 2];
+                uint8_t kind = code[pc + 3];
+                pc += 4;
+                Object* obj = as_object_like(regs[obj_reg]);
+                if (kind != 0 && acc.is_function()) {
+                    // ValueWithName (1) or Method (2): NamedEvaluation, computed
+                    // at runtime since the key isn't known until now -- mirrors
+                    // literals.cpp's is_symbol()-aware "[desc]" formatting.
+                    Function* fn = acc.as_function();
+                    // Only rename if currently unnamed (e.g. `{[k]: function named(){}}`
+                    // keeps "named", matching literals.cpp's own guard).
+                    if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                        const Value& raw_key = regs[raw_key_reg];
+                        std::string func_name;
+                        if (raw_key.is_symbol()) {
+                            std::string desc = raw_key.as_symbol()->get_description();
+                            func_name = desc.empty() ? "" : "[" + desc + "]";
+                        } else {
+                            func_name = regs[key_reg].to_property_key();
+                            CHECK_EXC();
+                        }
+                        fn->set_name(func_name);
+                    }
+                }
+                if (kind == 2 && acc.is_function()) {
+                    // Method finalize (spec 14.3.9), same as FinalizeStaticProperty.
+                    Function* fn = acc.as_function();
+                    fn->set_property("__super_constructor__", Value(true));
+                    if (fn->is_constructor()) {
+                        fn->set_is_constructor(false);
+                        fn->set_function_prototype(nullptr);
+                    }
+                }
+                if (obj) {
+                    std::string key = regs[key_reg].to_property_key();
+                    CHECK_EXC();
+                    if (key == "__proto__") {
+                        // Same fix as DefineOwnKeyed: computed __proto__ is a
+                        // plain data property, never [[Prototype]].
+                        obj->set_property_descriptor(key, PropertyDescriptor(acc, PropertyAttributes::Default));
+                    } else {
+                        obj->set_property(key, acc);
+                    }
+                }
+                CHECK_EXC();
+                break;
+            }
+            case Op::SetFunctionNameIfUnnamed: {
+                uint16_t name_idx = read_u16(code, pc);
+                pc += 2;
+                if (acc.is_function()) {
+                    Function* fn = acc.as_function();
+                    if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                        fn->set_name(chunk.names[name_idx]);
+                    }
+                }
                 break;
             }
             case Op::CreateObject: {

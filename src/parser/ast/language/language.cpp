@@ -16,6 +16,7 @@
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
+#include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/gc/Collector.h"
 #include <sstream>
 #include <set>
@@ -621,15 +622,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         for (const auto& p : method_params) async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
                         instance_method = std::make_unique<AsyncFunction>(method_name, std::move(async_params), method->get_value()->get_body()->clone(), &ctx);
                     } else {
-                        instance_method = ObjectFactory::create_js_function(method_name, std::move(method_params), method->get_value()->get_body()->clone(), &ctx);
+                        // Class methods are non-constructors; non-generator methods have no prototype
+                        // (async ones already skip it in AsyncFunction's own ctor).
+                        instance_method = ObjectFactory::create_js_function(method_name, std::move(method_params), method->get_value()->get_body()->clone(), &ctx, /*create_prototype=*/false);
                     }
                     if (!method->get_source_text().empty()) instance_method->set_source_text(method->get_source_text());
                     instance_method->set_is_strict(true);
-                    // Class methods are non-constructors; non-generator methods have no prototype.
-                    if (!method_is_gen) {
-                        instance_method->set_is_constructor(false);
-                        instance_method->set_function_prototype(nullptr);
-                    }
                     instance_method->set_property("__private_class_brand__", Value(prototype.get()));
 
                     // Private methods/accessors are stored on the prototype under the
@@ -959,15 +957,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         for (const auto& p : static_params) async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
                         static_method = std::make_unique<AsyncFunction>(method_name, std::move(async_params), method->get_value()->get_body()->clone(), &ctx);
                     } else {
-                        static_method = ObjectFactory::create_js_function(method_name, std::move(static_params), method->get_value()->get_body()->clone(), &ctx);
+                        // Class static methods are non-constructors; non-generator methods have no
+                        // prototype (async ones already skip it in AsyncFunction's own ctor).
+                        static_method = ObjectFactory::create_js_function(method_name, std::move(static_params), method->get_value()->get_body()->clone(), &ctx, /*create_prototype=*/false);
                     }
                     if (!method->get_source_text().empty()) static_method->set_source_text(method->get_source_text());
                     static_method->set_is_strict(true);
-                    // Class static methods are non-constructors; non-generator methods have no prototype.
-                    if (!static_is_gen) {
-                        static_method->set_is_constructor(false);
-                        static_method->set_function_prototype(nullptr);
-                    }
                     static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
                     if (instance_brands_raw)
                         static_method->set_property("__private_brands__", Value(instance_brands_raw));
@@ -1430,9 +1425,31 @@ std::unique_ptr<ASTNode> MethodDefinition::clone() const {
 Value FunctionExpression::evaluate(Context& ctx) {
     std::string name = is_named() ? id_->get_name() : "";
 
-    std::vector<std::unique_ptr<Parameter>> param_clones;
-    for (const auto& param : params_) {
-        param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+    // Cross-instantiation chunk cache, keyed on `this` and scoped to the
+    // enclosing Function instance -- see nested_chunk_cache_ in Object.h.
+    // Generator/async closures have the same recompile issue via their own
+    // suspendable_chunk_; left for a follow-up.
+    Function* enclosing_fn = nullptr;
+    if (!is_async_ && !is_generator_) {
+        CallStack& cs = CallStack::instance();
+        // A native top frame (eval, generator resume, dynamic import) doesn't
+        // own the executing AST -- caching on it would key by an AST address
+        // that's freed once the native call returns.
+        if (!cs.is_empty() && cs.top().function_ptr && !cs.top().function_ptr->is_native()) {
+            enclosing_fn = cs.top().function_ptr;
+        }
+    }
+    std::shared_ptr<const BytecodeChunk> cached_chunk;
+    bool cache_hit = enclosing_fn && enclosing_fn->lookup_nested_chunk(this, cached_chunk);
+    if (enclosing_fn && !cache_hit) {
+        // Compile from THIS node's own (never-cloned) body_/params_, not the
+        // per-instance clone below -- a chunk compiled from the clone would
+        // bake dangling pointers (chunk.closures/destructuring_patterns) into
+        // whichever instance's clone happens to be first, freed the moment
+        // that first instance is GC'd while later instances still share it.
+        cached_chunk = BytecodeCompiler::compile(body_.get(), params_);
+        enclosing_fn->store_nested_chunk(this, cached_chunk);
+        if (cached_chunk) Collector::write_barrier(enclosing_fn);
     }
 
     std::unique_ptr<Function> function;
@@ -1444,8 +1461,44 @@ Value FunctionExpression::evaluate(Context& ctx) {
         std::vector<std::unique_ptr<Parameter>> gen_params;
         for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
         function = std::make_unique<GeneratorFunction>(name, std::move(gen_params), body_->clone(), &ctx);
+    } else if (cached_chunk && enclosing_fn && !cached_chunk->needs_arguments && VM::enabled()) {
+        // Clone elision: borrow the stable declaration-site AST instead of
+        // cloning body_/params_, pinning enclosing_fn (the AST's real owner,
+        // already confirmed non-native above) for this instance's lifetime.
+        // needs_arguments is excluded because that path reads parameter_objects_
+        // at runtime; requiring VM::enabled() (static-once, so this can't change
+        // later) keeps a tree-walker fallback -- which would need an owned body --
+        // from ever hitting an un-materialized instance; materialize_from_decl_site()
+        // is the backstop regardless.
+        std::vector<std::string> param_names;
+        param_names.reserve(params_.size());
+        for (const auto& p : params_) param_names.push_back(p->get_name()->get_name());
+        function = std::make_unique<Function>(name, param_names, nullptr, &ctx,
+                                              /*create_prototype=*/!is_method_shorthand_);
+        // The vector<string> ctor sets length=param_names.size(); spec length is
+        // params before the first rest/default, matching the Parameter-vector ctor.
+        size_t spec_length = 0;
+        for (const auto& p : params_) {
+            if (p->is_rest() || p->has_default()) break;
+            spec_length++;
+        }
+        if (spec_length != params_.size()) {
+            PropertyDescriptor length_desc(Value(static_cast<double>(spec_length)), PropertyAttributes::Configurable);
+            function->set_property_descriptor("length", length_desc);
+        }
+        function->set_decl_site(this);
+        function->attach_precompiled_chunk(cached_chunk, enclosing_fn);
     } else {
-        function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx);
+        std::vector<std::unique_ptr<Parameter>> param_clones;
+        for (const auto& param : params_) {
+            param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+        }
+        // Method/getter/setter shorthand is non-constructible (spec 14.3.9) -- the
+        // literal/class finalize step would strip .prototype right away, so skip
+        // building it at all.
+        function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx,
+                                              /*create_prototype=*/!is_method_shorthand_);
+        if (cached_chunk) function->attach_precompiled_chunk(cached_chunk, enclosing_fn);
     }
 
     // NamedEvaluation (spec 15.2.5/15.5.3): give a named function expression an immutable
@@ -1553,6 +1606,7 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
     // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
     cloned->set_source_text(source_text_);
     cloned->set_decl_form(is_decl_form_);
+    cloned->set_method_shorthand(is_method_shorthand_);
     return cloned;
 }
 
@@ -1567,8 +1621,6 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
 
         auto* async_fn = new AsyncFunction(name, std::move(async_params), body_->clone(), &ctx);
         async_fn->set_is_arrow(true);
-        async_fn->set_is_constructor(false);
-        async_fn->set_function_prototype(nullptr);
         if (ctx.is_strict_mode()) async_fn->set_is_strict(true);
 
         if (ctx.has_binding("this")) {
@@ -1612,11 +1664,10 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         name,
         std::move(param_clones),
         body_->clone(),
-        &ctx
+        &ctx,
+        /*create_prototype=*/false // arrows are never constructible
     );
 
-    arrow_function->set_is_constructor(false);
-    arrow_function->set_function_prototype(nullptr);
     arrow_function->set_is_arrow(true);
     if (ctx.is_strict_mode()) {
         arrow_function->set_is_strict(true);
@@ -2959,7 +3010,6 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
 
     if (is_arrow_) {
         fn->set_is_arrow(true);
-        fn->set_is_constructor(false);
         if (ctx.has_binding("this")) {
             fn->set_property("__arrow_this__", ctx.get_binding("this"));
         }

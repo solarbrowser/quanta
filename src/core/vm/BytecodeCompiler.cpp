@@ -483,6 +483,9 @@ bool contains_closure(const ASTNode* node) {
         case ASTNode::Type::OBJECT_LITERAL: {
             const auto* n = static_cast<const ObjectLiteral*>(node);
             for (const auto& prop : n->get_properties()) {
+                // Rare: a closure used AS a computed key (e.g. an IIFE),
+                // independent of whether the property's own value is one.
+                if (prop->computed && prop->key && contains_closure(prop->key.get())) return true;
                 if (prop->value && contains_closure(prop->value.get())) return true;
             }
             return false;
@@ -506,13 +509,23 @@ bool has_spread(const std::vector<std::unique_ptr<ASTNode>>& nodes) {
     return false;
 }
 
-// Anything the native CreateObject/DefineOwn path can't emit (it only does
-// plain data properties with a static string/number/identifier key):
-// methods/accessors, computed keys, spread, __proto__, oversized literals.
+// Anything the native path can't emit: spread, non-computed __proto__ (the
+// [[Prototype]]-setting form -- computed/shorthand __proto__ is just a plain
+// data property, handled like any other computed key), computed-key
+// Getter/Setter (excluded on purpose: merging two independently-computed
+// keys' converted values into one accessor descriptor, should they happen to
+// be runtime-equal, isn't worth the complexity here), oversized literals.
+// Static/computed Value and Method properties and static-key Getter/Setter
+// all have native codegen (see the OBJECT_LITERAL case below).
 bool object_literal_is_complex(const ObjectLiteral* lit) {
     for (const auto& prop : lit->get_properties()) {
         if (!prop->key) return true;  // spread: null key
-        if (prop->type != ObjectLiteral::PropertyType::Value || prop->computed) return true;
+        bool is_accessor = prop->type == ObjectLiteral::PropertyType::Getter ||
+                            prop->type == ObjectLiteral::PropertyType::Setter;
+        if (prop->computed) {
+            if (is_accessor) return true;
+            continue;
+        }
         auto kt = prop->key->get_type();
         if (kt == ASTNode::Type::IDENTIFIER) {
             if (static_cast<const Identifier*>(prop->key.get())->get_name() == "__proto__") return true;
@@ -691,6 +704,11 @@ bool contains_delegated_expr(const ASTNode* node) {
             const auto* n = static_cast<const ObjectLiteral*>(node);
             if (object_literal_is_complex(n)) return true;
             for (const auto& prop : n->get_properties()) {
+                // A computed key's own expression can itself be an always-
+                // delegated form (e.g. a destructuring assignment) -- now that
+                // object_literal_is_complex no longer blanket-excludes every
+                // computed key, this can't rely on that short circuit anymore.
+                if (prop->computed && prop->key && contains_delegated_expr(prop->key.get())) return true;
                 if (prop->value && contains_delegated_expr(prop->value.get())) return true;
             }
             return false;
@@ -4387,9 +4405,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
         case ASTNode::Type::OBJECT_LITERAL: {
             const auto* lit = static_cast<const ObjectLiteral*>(node);
-            // Methods/accessors, computed keys, spread, __proto__:
-            // ObjectLiteral::evaluate handles every form, and method closures
-            // capture through the ctx chain delegation provides.
+            // Spread, non-computed __proto__, computed-key Getter/Setter,
+            // oversized: ObjectLiteral::evaluate handles every form, and method
+            // closures capture through the ctx chain delegation provides.
+            // Everything else (static/computed Value and Method, static-key
+            // Getter/Setter) has native codegen below.
             if (object_literal_is_complex(lit)) return emit_treewalker_delegate(node);
 
             emit(Op::CreateObject);
@@ -4399,30 +4419,108 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             emit(Op::Star);
             emit_u8(static_cast<uint8_t>(obj_reg));
 
+            // Spec 12.2.6.9 NamedEvaluation step 6: Getters/Setters are always
+            // named; other properties only if IsAnonymousFunctionDefinition
+            // (checked by AST node shape, not name emptiness) -- mirrors
+            // literals.cpp's own is_anon_fn_def exactly.
+            auto is_anon_fn_def = [](const ASTNode* n) {
+                if (!n) return false;
+                auto t = n->get_type();
+                return t == ASTNode::Type::FUNCTION_EXPRESSION ||
+                       t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+                       t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+                       t == ASTNode::Type::CLASS_DECLARATION;
+            };
+
             for (const auto& prop : lit->get_properties()) {
-                std::string key;
-                auto kt = prop->key->get_type();
-                if (kt == ASTNode::Type::IDENTIFIER) {
-                    key = static_cast<const Identifier*>(prop->key.get())->get_name();
-                } else if (kt == ASTNode::Type::STRING_LITERAL) {
-                    key = static_cast<const StringLiteral*>(prop->key.get())->get_value();
-                } else {
-                    // Matches ObjectLiteral::evaluate's own NUMBER_LITERAL-key formatting exactly.
-                    double n = static_cast<const NumberLiteral*>(prop->key.get())->get_value();
-                    if (n == std::floor(n) && n >= LLONG_MIN && n <= LLONG_MAX) {
-                        key = std::to_string(static_cast<long long>(n));
+                bool is_method = prop->type == ObjectLiteral::PropertyType::Method;
+                bool is_getter = prop->type == ObjectLiteral::PropertyType::Getter;
+                bool is_setter = prop->type == ObjectLiteral::PropertyType::Setter;
+
+                if (!prop->computed) {
+                    // Static key: known at compile time. Matches
+                    // ObjectLiteral::evaluate's own NUMBER_LITERAL-key
+                    // formatting exactly.
+                    std::string key;
+                    auto kt = prop->key->get_type();
+                    if (kt == ASTNode::Type::IDENTIFIER) {
+                        key = static_cast<const Identifier*>(prop->key.get())->get_name();
+                    } else if (kt == ASTNode::Type::STRING_LITERAL) {
+                        key = static_cast<const StringLiteral*>(prop->key.get())->get_value();
                     } else {
-                        std::ostringstream oss;
-                        oss << n;
-                        key = oss.str();
+                        double n = static_cast<const NumberLiteral*>(prop->key.get())->get_value();
+                        if (n == std::floor(n) && n >= LLONG_MIN && n <= LLONG_MAX) {
+                            key = std::to_string(static_cast<long long>(n));
+                        } else {
+                            std::ostringstream oss;
+                            oss << n;
+                            key = oss.str();
+                        }
                     }
+
+                    if (!compile_expression(prop->value.get())) return false;
+
+                    if (is_method || is_getter || is_setter) {
+                        uint16_t key_name_idx = add_name(key);
+                        std::string display_name = is_getter ? ("get " + key)
+                                                  : is_setter ? ("set " + key)
+                                                  : key;
+                        uint16_t display_name_idx = add_name(display_name);
+                        emit(Op::FinalizeStaticProperty);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        emit_u16(key_name_idx);
+                        emit_u16(display_name_idx);
+                        emit_u8(is_method ? 0 : (is_getter ? 1 : 2));
+                    } else {
+                        // NamedEvaluation step 6: unlike Method/Getter/Setter
+                        // (always named), a plain Value property is only named
+                        // if its value is anonymous-function-shaped. A literal
+                        // mixing this with newly-native forms (computed keys,
+                        // methods) used to get this via whole-literal tree-
+                        // walker delegation; must replicate it natively now.
+                        if (is_anon_fn_def(prop->value.get())) {
+                            emit(Op::SetFunctionNameIfUnnamed);
+                            emit_u16(add_name(key));
+                        }
+                        // CreateDataProperty (a poisoned Object.prototype
+                        // accessor must not fire) -- DefineOwn.
+                        emit(Op::DefineOwn);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        emit_u16(add_name(key));
+                    }
+                } else {
+                    // Computed key (Value or Method only -- computed-key
+                    // Getter/Setter is excluded by object_literal_is_complex).
+                    // ToPropertyKey must run before the value/method body
+                    // evaluates (spec order) -- raw_key_reg keeps the
+                    // pre-conversion Value alive for Symbol-aware naming,
+                    // key_reg holds the converted form for install.
+                    int raw_key_reg = alloc_temp();
+                    if (failed_) return false;
+                    if (!compile_expression(prop->key.get())) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(raw_key_reg));
+
+                    int key_reg = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Ldar);
+                    emit_u8(static_cast<uint8_t>(raw_key_reg));
+                    emit(Op::ToPropertyKeyStrict);
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(key_reg));
+
+                    if (!compile_expression(prop->value.get())) return false;
+
+                    uint8_t kind = is_method ? 2
+                                 : (is_anon_fn_def(prop->value.get()) ? 1 : 0);
+                    emit(Op::FinalizeComputedProperty);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    emit_u8(static_cast<uint8_t>(key_reg));
+                    emit_u8(static_cast<uint8_t>(raw_key_reg));
+                    emit_u8(kind);
+                    free_temp(key_reg);
+                    free_temp(raw_key_reg);
                 }
-                // CreateDataProperty (a poisoned Object.prototype accessor
-                // must not fire) -- DefineOwn.
-                if (!compile_expression(prop->value.get())) return false;
-                emit(Op::DefineOwn);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u16(add_name(key));
             }
             emit(Op::Ldar);
             emit_u8(static_cast<uint8_t>(obj_reg));

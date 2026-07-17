@@ -1161,6 +1161,7 @@ private:
     bool is_async_;
     std::string source_text_;
     bool is_decl_form_ = false; // `export default function fn(){}`: HoistableDeclaration, not NamedEvaluation
+    bool is_method_shorthand_ = false; // `{m(){}}`/`get x(){}`: non-constructible, skip the .prototype build
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
@@ -1184,6 +1185,8 @@ public:
     const std::string& get_source_text() const { return source_text_; }
     void set_decl_form(bool v) { is_decl_form_ = v; }
     bool is_decl_form() const { return is_decl_form_; }
+    void set_method_shorthand(bool v) { is_method_shorthand_ = v; }
+    bool is_method_shorthand() const { return is_method_shorthand_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

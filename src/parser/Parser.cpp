@@ -8663,13 +8663,15 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 );
             } else {
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
-                method_value = std::make_unique<FunctionExpression>(
+                auto fe = std::make_unique<FunctionExpression>(
                     nullptr,
                     std::move(params),
                     std::move(block_body),
                     key->get_start(),
                     get_current_position()
                 );
+                fe->set_method_shorthand(true);
+                method_value = std::move(fe);
             }
             
             {

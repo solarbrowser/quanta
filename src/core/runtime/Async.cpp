@@ -15,6 +15,7 @@
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/parser/AST.h"
@@ -164,23 +165,27 @@ AsyncFunction::AsyncFunction(const std::string& name,
                            const std::vector<std::string>& params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
-    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
-    set_is_constructor(false);
-    set_function_prototype(nullptr);
-    remove_own_property("prototype"); // async functions must not have .prototype
-}
+    : Function(name, params, nullptr, closure_context, /*create_prototype=*/false),
+      body_(std::move(body)) {} // async functions must not have .prototype
 
 AsyncFunction::AsyncFunction(const std::string& name,
                            std::vector<std::unique_ptr<Parameter>> params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
-    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
-    set_is_constructor(false);
-    set_function_prototype(nullptr);
-    remove_own_property("prototype");
-}
+    : Function(name, std::move(params), nullptr, closure_context, /*create_prototype=*/false),
+      body_(std::move(body)) {}
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
+    // The body runs synchronously up to the first await inside this call
+    // (executor->run() below), so this frame makes CallStack::top() the real
+    // AST owner while the prefix executes -- without it, closures created
+    // there would see the CALLER as their enclosing function and key the
+    // nested-chunk cache on AST nodes that die with this AsyncFunction.
+    // Post-await resumes run without this frame and fall to the safe clone path.
+    CallStack& stack = CallStack::instance();
+    Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
+    CallStackFrameGuard frame_guard(stack, get_name(), ctx.get_current_filename(), call_position, this);
+
     auto promise_obj = ObjectFactory::create_promise(&ctx);
     Promise* promise_raw = static_cast<Promise*>(promise_obj.get());
     Value promise_value(promise_obj.release());

@@ -427,8 +427,26 @@ private:
     // Lazy AST->bytecode result, shared by every call. vm_incompatible_ is the
     // negative cache: one failed compile routes this function through the
     // tree-walker forever (function-level fallback, see vm-architecture.md).
-    std::unique_ptr<BytecodeChunk> bytecode_chunk_;
+    // shared_ptr: instances sharing a declaration site (nested_chunk_cache_
+    // below) share one compiled chunk instead of each compiling its own.
+    std::shared_ptr<const BytecodeChunk> bytecode_chunk_;
     bool vm_incompatible_ = false;
+    // Per-instance lookup cache, used in place of BytecodeChunk::lookup_cache
+    // when bytecode_chunk_ is shared -- instances differ in captured
+    // environment, so a chunk-level cache would serve stale results.
+    mutable std::vector<BytecodeChunk::LookupCacheEntry> instance_lookup_cache_;
+    // Compiled-chunk cache for closures declared in this function's own body,
+    // keyed by the declaration-site AST node (stable: body_ clones once at
+    // construction, never again). A present key with a null chunk means
+    // "known VM-incompatible," avoiding a doomed recompile every instantiation.
+    std::unordered_map<const ASTNode*, std::shared_ptr<const BytecodeChunk>> nested_chunk_cache_;
+    // Owner + borrow pair for clone elision: when decl_site_ is set, this
+    // instance never cloned body_/parameter_objects_ and reads them through
+    // decl_site_ instead (see ast_body()). body_owner_ is the Function whose
+    // AST decl_site_ (and bytecode_chunk_'s embedded pointers) point into --
+    // pinned here so it outlives this instance (traced in Function::trace).
+    Function* body_owner_ = nullptr;
+    const class FunctionExpression* decl_site_ = nullptr;
     std::string source_text_;
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
@@ -444,16 +462,23 @@ private:
     // per-call self-reference binding), 1 mentions it.
     mutable int8_t self_name_state_ = -1;
 
+    // Tree-walker insurance for borrowed-AST instances: clones body_ AND
+    // parameter_objects_ from decl_site_ (both or neither -- a body-only
+    // materialization would silently mis-bind default/rest params).
+    void materialize_from_decl_site();
+
 public:
-    Function(const std::string& name, 
+    Function(const std::string& name,
              const std::vector<std::string>& params,
              std::unique_ptr<class ASTNode> body,
-             class Context* closure_context);
-             
+             class Context* closure_context,
+             bool create_prototype = true);
+
     Function(const std::string& name,
              std::vector<std::unique_ptr<class Parameter>> params,
              std::unique_ptr<class ASTNode> body,
-             class Context* closure_context);
+             class Context* closure_context,
+             bool create_prototype = true);
              
     Function(const std::string& name,
              std::function<Value(Context&, const std::vector<Value>&)> native_fn,
@@ -472,7 +497,7 @@ public:
     void set_name(const std::string& name);
     const std::vector<std::string>& get_parameters() const { return parameters_; }
     const std::vector<std::unique_ptr<class Parameter>>& get_parameter_objects() const { return parameter_objects_; }
-    const ASTNode* get_body() const { return body_.get(); }
+    const ASTNode* get_body() const { return ast_body(); }
     size_t get_arity() const { return parameters_.size(); }
     bool is_native() const { return is_native_; }
     bool is_constructor() const { return is_constructor_; }
@@ -491,7 +516,32 @@ public:
     void set_construct_slot_hint(uint32_t count) { construct_slot_hint_ = count; }
     const std::string& get_source_text() const { return source_text_; }
     void set_source_text(const std::string& s) { source_text_ = s; }
-    
+
+    // Lazily sized by the caller (Interpreter.cpp) to chunk.names.size().
+    std::vector<BytecodeChunk::LookupCacheEntry>& instance_lookup_cache() const { return instance_lookup_cache_; }
+
+    // Adopts an already-compiled (possibly shared) chunk instead of letting
+    // Function::call compile its own. `owner` must be pinned (see body_owner_).
+    void attach_precompiled_chunk(std::shared_ptr<const BytecodeChunk> chunk, Function* owner) {
+        bytecode_chunk_ = std::move(chunk);
+        body_owner_ = owner;
+    }
+    // Declaration-site AST borrow (clone elision); requires attach above first.
+    void set_decl_site(const class FunctionExpression* site) { decl_site_ = site; }
+    // Out-of-line: needs FunctionExpression, only forward-declared here.
+    class ASTNode* ast_body() const;
+
+    // `out`/return convention: true+chunk on hit, true+null on known-incompatible, false on miss.
+    bool lookup_nested_chunk(const ASTNode* key, std::shared_ptr<const BytecodeChunk>& out) const {
+        auto it = nested_chunk_cache_.find(key);
+        if (it == nested_chunk_cache_.end()) return false;
+        out = it->second;
+        return true;
+    }
+    void store_nested_chunk(const ASTNode* key, std::shared_ptr<const BytecodeChunk> chunk) {
+        nested_chunk_cache_[key] = std::move(chunk);
+    }
+
     uint32_t get_execution_count() const { return execution_count_; }
     bool is_hot_function() const { return is_hot_; }
     void mark_as_hot() const { is_hot_ = true; }
@@ -547,11 +597,13 @@ namespace ObjectFactory {
     std::unique_ptr<Function> create_js_function(const std::string& name,
                                                  const std::vector<std::string>& params,
                                                  std::unique_ptr<class ASTNode> body,
-                                                 class Context* closure_context);
+                                                 class Context* closure_context,
+                                                 bool create_prototype = true);
     std::unique_ptr<Function> create_js_function(const std::string& name,
                                                  std::vector<std::unique_ptr<class Parameter>> params,
                                                  std::unique_ptr<class ASTNode> body,
-                                                 class Context* closure_context);
+                                                 class Context* closure_context,
+                                                 bool create_prototype = true);
     std::unique_ptr<Function> create_native_function(const std::string& name,
                                                      std::function<Value(Context&, const std::vector<Value>&)> fn);
     std::unique_ptr<Function> create_native_function(const std::string& name,

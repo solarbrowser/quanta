@@ -109,6 +109,34 @@ enum class Op : uint8_t {
                   // proto setter / inherited read-only check
     DefineElement, // r_obj r_key -- array literal element (set_element)
 
+    // Object-literal computed-key support (distinct from the generic
+    // ToPropertyKey/SetKeyed opcodes above, which use Value::to_property_key()
+    // -- a subtly different, already-established conversion used by member
+    // assignment. Object literals need literal_to_property_key()'s stricter
+    // GetMethod semantics for @@toPrimitive, so this gets its own opcode
+    // rather than reusing ToPropertyKey).
+    ToPropertyKeyStrict, // acc = Value::to_property_key_strict(acc)
+    DefineOwnKeyed,      // r_obj r_key -- computed-key literal property:
+                         // CreateDataProperty with a register-held key
+                         // (mirrors DefineOwn, key already ToPropertyKey'd)
+
+    // Object-literal method/getter/setter install: folds NamedEvaluation +
+    // the spec 14.3.9 non-constructor finalize (Method) / prototype-strip
+    // (Getter/Setter) + fetch-existing-descriptor-and-merge (Getter/Setter
+    // only) + install into one opcode, so the finalize step -- easy to
+    // forget, and load-bearing (a Method installed without it stays wrongly
+    // constructible via `new`) -- can't be split from installation by a
+    // future edit. acc holds the just-CreateClosure'd function.
+    FinalizeStaticProperty,   // r_obj key_name_idx display_name_idx kind
+                              // kind: 0=Method 1=Getter 2=Setter
+    FinalizeComputedProperty, // r_obj r_key r_raw_key kind
+                              // kind: 0=ValueNoName 1=ValueWithName 2=Method
+    SetFunctionNameIfUnnamed, // name_idx -- static-key Value property whose
+                              // value is an anonymous-function-shaped AST
+                              // node (NamedEvaluation step 6); acc holds the
+                              // function. Only renames if currently unnamed
+                              // (a `function x(){}` value keeps its own name).
+
     CreateObject, // n
     CreateArray,  // n
 

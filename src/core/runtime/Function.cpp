@@ -53,25 +53,27 @@ static bool param_gets_mapped_accessor(const std::vector<std::unique_ptr<Paramet
 Function::Function(const std::string& name,
                    const std::vector<std::string>& params,
                    std::unique_ptr<ASTNode> body,
-                   Context* closure_context)
+                   Context* closure_context,
+                   bool create_prototype)
     : Object(ObjectType::Function), name_(name), parameters_(params),
       body_(std::move(body)), closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context)),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
-    auto proto = ObjectFactory::create_object();
-    prototype_ = proto.release();
+      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
+    if (create_prototype) {
+        auto proto = ObjectFactory::create_object();
+        prototype_ = proto.release();
 
-    // ES5 13.2: function.prototype is {writable:true, enumerable:false, configurable:false}
-    {
+        // ES5 13.2: function.prototype is {writable:true, enumerable:false, configurable:false}
         PropertyDescriptor proto_desc(Value(prototype_), PropertyAttributes::Writable);
         proto_desc.set_enumerable(false);
         proto_desc.set_configurable(false);
         this->set_property_descriptor("prototype", proto_desc);
+
+        // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}
+        PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        prototype_->set_property_descriptor("constructor", ctor_desc);
     }
-    // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}
-    PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
-        PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    prototype_->set_property_descriptor("constructor", ctor_desc);
 
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);
@@ -88,25 +90,25 @@ Function::Function(const std::string& name,
 Function::Function(const std::string& name,
                    std::vector<std::unique_ptr<Parameter>> params,
                    std::unique_ptr<ASTNode> body,
-                   Context* closure_context)
+                   Context* closure_context,
+                   bool create_prototype)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context)),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
     }
-    
-    auto proto = ObjectFactory::create_object();
-    prototype_ = proto.release();
 
-    {
+    if (create_prototype) {
+        auto proto = ObjectFactory::create_object();
+        prototype_ = proto.release();
+
         PropertyDescriptor proto_desc2(Value(prototype_), PropertyAttributes::Writable);
         proto_desc2.set_enumerable(false);
         proto_desc2.set_configurable(false);
         this->set_property_descriptor("prototype", proto_desc2);
-    }
-    {
+
         PropertyDescriptor ctor_desc2(Value(this), static_cast<PropertyAttributes>(
             PropertyAttributes::Writable | PropertyAttributes::Configurable));
         prototype_->set_property_descriptor("constructor", ctor_desc2);
@@ -312,6 +314,19 @@ void Function::create_arguments_object(Context& fn_ctx, const std::vector<Value>
     fn_ctx.create_binding("arguments", Value(arguments_obj.release()), true, false);
 }
 
+ASTNode* Function::ast_body() const {
+    if (body_) return body_.get();
+    return decl_site_ ? decl_site_->get_body() : nullptr;
+}
+
+void Function::materialize_from_decl_site() {
+    if (body_ || !decl_site_) return;
+    body_ = decl_site_->get_body()->clone();
+    for (const auto& p : decl_site_->get_params()) {
+        parameter_objects_.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+    }
+}
+
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     // Roots args across the whole call (native path included): these Values
     // live in the caller's malloc'd vector storage, invisible to the stack scan.
@@ -320,7 +335,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // (e.g. a native function calling another function) doesn't inherit it.
     bool is_construct_invocation = ctx.consume_pending_construct_call();
     CallStack& stack = CallStack::instance();
-    Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
+    ASTNode* ast = ast_body();
+    Position call_position = ast ? ast->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, get_name(), ctx.get_current_filename(), call_position, this);
 
     execution_count_++;
@@ -328,12 +344,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     if (execution_count_ >= 3) {
         #ifdef __GNUC__
         __builtin_prefetch(this, 0, 3);
-        __builtin_prefetch(body_.get(), 0, 3);
+        __builtin_prefetch(ast, 0, 3);
         __builtin_prefetch(&args, 0, 2);
         __builtin_prefetch(&ctx, 0, 2);
         #elif defined(_MSC_VER)
         _mm_prefetch((const char*)this, _MM_HINT_T0);
-        _mm_prefetch((const char*)body_.get(), _MM_HINT_T0);
+        _mm_prefetch((const char*)ast, _MM_HINT_T0);
         _mm_prefetch((const char*)&args, _MM_HINT_T0);
         _mm_prefetch((const char*)&ctx, _MM_HINT_T0);
         #endif
@@ -547,10 +563,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     if (is_strict_) {
         function_context.set_strict_mode(true);
     }
-    if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+    if (ast && ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         if (strict_directive_state_ < 0) {
             bool was_strict = function_context.is_strict_mode();
-            BlockStatement* block = static_cast<BlockStatement*>(body_.get());
+            BlockStatement* block = static_cast<BlockStatement*>(ast);
             block->check_use_strict_directive(function_context);
             strict_directive_state_ =
                 (!was_strict && function_context.is_strict_mode()) ? 1 : 0;
@@ -661,8 +677,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // `arguments`/`this`/`eval`, so the whole binding ceremony below is dead
     // weight for them (it dominated call-heavy benchmarks, e.g. fib). Derived
     // constructors ARE compiled -- Op::LdaThis carries its own this-TDZ check.
-    if (VM::enabled() && !vm_incompatible_ && body_ &&
-        body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+    if (VM::enabled() && !vm_incompatible_ && ast &&
+        ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         if (!bytecode_chunk_) {
             // A `with` environment in the captured scope chain makes write-
             // reference resolution order observable: the tree-walker resolves
@@ -674,7 +690,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
         if (!bytecode_chunk_ && !vm_incompatible_) {
-            bytecode_chunk_ = BytecodeCompiler::compile(body_.get(), parameter_objects_);
+            bytecode_chunk_ = BytecodeCompiler::compile(ast, parameter_objects_);
             if (bytecode_chunk_) {
                 // The chunk's constants (new, unmarked cells) are only reachable
                 // through this Function's trace(). If this Function already
@@ -763,6 +779,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             return vm_result;
         }
     }
+
+    // Only reachable for a borrowed-AST instance when the VM is globally disabled.
+    materialize_from_decl_site();
 
     // For non-simple params (defaults/rest/destructuring), create arguments early
     // so default expressions can reference it (spec: unmapped arguments for non-simple).
@@ -1333,8 +1352,9 @@ namespace ObjectFactory {
 std::unique_ptr<Function> create_js_function(const std::string& name,
                                              const std::vector<std::string>& params,
                                              std::unique_ptr<ASTNode> body,
-                                             Context* closure_context) {
-    auto func = std::make_unique<Function>(name, params, std::move(body), closure_context);
+                                             Context* closure_context,
+                                             bool create_prototype) {
+    auto func = std::make_unique<Function>(name, params, std::move(body), closure_context, create_prototype);
     Object* func_proto = get_function_prototype();
     if (func_proto) {
         func->set_prototype(func_proto);
@@ -1348,8 +1368,9 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
 std::unique_ptr<Function> create_js_function(const std::string& name,
                                              std::vector<std::unique_ptr<Parameter>> params,
                                              std::unique_ptr<ASTNode> body,
-                                             Context* closure_context) {
-    auto func = std::make_unique<Function>(name, std::move(params), std::move(body), closure_context);
+                                             Context* closure_context,
+                                             bool create_prototype) {
+    auto func = std::make_unique<Function>(name, std::move(params), std::move(body), closure_context, create_prototype);
     Object* func_proto = get_function_prototype();
     if (func_proto) {
         func->set_prototype(func_proto);

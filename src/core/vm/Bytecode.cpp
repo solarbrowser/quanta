@@ -66,6 +66,9 @@ const OpInfo& op_info(Op op) {
         {"GetKeyed", 1, 'r'}, {"SetKeyed", 2, 'r'},
         {"DeleteNamed", 3, 'l'}, {"DeleteKeyed", 1, 'r'},
         {"DefineOwn", 3, 'l'}, {"DefineElement", 2, 'r'},
+        {"ToPropertyKeyStrict", 0, '-'}, {"DefineOwnKeyed", 2, 'r'},
+        {"FinalizeStaticProperty", 6, 'm'}, {"FinalizeComputedProperty", 4, 'p'},
+        {"SetFunctionNameIfUnnamed", 2, 'n'},
         {"CreateObject", 2, 'h'}, {"CreateArray", 2, 'h'},
         {"Jump", 2, 'o'}, {"JumpIfTrue", 2, 'o'}, {"JumpIfFalse", 2, 'o'},
         {"Return", 0, '-'}, {"Throw", 0, '-'}, {"ReraiseGeneratorReturn", 0, '-'},
@@ -168,6 +171,24 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
                                (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
                 out << " [" << idx << "]";
+                break;
+            }
+            case 'm': {
+                uint16_t key_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                uint16_t disp_idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
+                                     (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.names[key_idx] << "'"
+                    << " '" << chunk.names[disp_idx] << "'"
+                    << " kind=" << static_cast<int>(chunk.code[operand_pc + 5]);
+                break;
+            }
+            case 'p': {
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " key=r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " raw=r" << static_cast<int>(chunk.code[operand_pc + 2])
+                    << " kind=" << static_cast<int>(chunk.code[operand_pc + 3]);
                 break;
             }
             case 'j': {
