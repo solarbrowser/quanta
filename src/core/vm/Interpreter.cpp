@@ -80,8 +80,14 @@ bool key_is_canonical_index(const std::string& s, size_t& out_index) {
     return true;
 }
 
+// Forward decl: defined below, needed here since get_primitive_named's new
+// prototype-property cache reuses the same (shape, slot_index) learn helper
+// GetNamed's own receiver-shape cache uses.
+void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index);
+
 // Mirrors MemberExpression::evaluate's primitive-receiver branch.
-Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name) {
+Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name,
+                           FeedbackSlot* fb) {
     if (prim.is_string()) {
         if (name == "length") {
             return Value(static_cast<double>(utf16_length(prim.to_string())));
@@ -105,13 +111,37 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     Value proto = ctor.as_function()->get_property("prototype");
     if (ctx.has_exception() || !proto.is_object()) return Value();
     Object* proto_obj = proto.as_object();
+
+    // Mono/poly cache keyed on proto_obj's OWN shape (every string shares the
+    // same String.prototype, etc.) -- not the receiver's shape, which is why
+    // this is a separate check from GetNamed's own receiver-shape cache even
+    // though it shares the same fb/kMaxEntries budget (proto_obj's Shape* is
+    // always distinct from any real receiver's shape, so entries from each
+    // never collide/alias, they just compete for the same 4 slots).
+    bool cacheable = fb && !fb->mega && proto_obj->get_type() == Object::ObjectType::Ordinary &&
+                      !proto_obj->has_descriptor_override(name);
+    if (cacheable) {
+        Shape* shape = proto_obj->get_shape();
+        for (uint8_t i = 0; i < fb->count; i++) {
+            if (fb->entries[i].shape == shape) {
+                const Value* slot = proto_obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                if (slot) return *slot;
+                break;
+            }
+        }
+    }
     PropertyDescriptor desc = proto_obj->get_property_descriptor(name);
     if (desc.is_accessor_descriptor()) {
         if (!desc.has_getter()) return Value();
         Function* getter = dynamic_cast<Function*>(desc.get_getter());
         return getter ? getter->call(ctx, {}, prim) : Value();
     }
-    return proto_obj->get_property(name);
+    if (cacheable && desc.has_value()) {
+        Shape* s = proto_obj->get_shape();
+        int32_t idx = s ? s->find_slot(name) : -1;
+        if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+    }
+    return desc.has_value() ? desc.get_value() : proto_obj->get_property(name);
 }
 
 // Same shape as the tree-walker's primitive assignment fallback.
@@ -221,7 +251,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         return Value();
     }
     Object* obj = as_object_like(receiver);
-    if (!obj) return get_primitive_named(ctx, receiver, name);
+    if (!obj) return get_primitive_named(ctx, receiver, name, fb);
 
     bool cacheable = fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
                       !obj->has_descriptor_override(name);

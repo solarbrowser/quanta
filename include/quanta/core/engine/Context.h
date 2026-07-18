@@ -375,6 +375,27 @@ public:
     std::string to_string() const;
 };
 
+// Backs Environment::slots_'s node/bucket-array malloc/free with a
+// thread_local pool. The pool's REAL state lives in exactly one place in
+// Context.cpp -- not here -- so every TU that includes this header doesn't
+// get its own separate copy (Environment is `new`'d in one TU and `delete`'d
+// in another, Collector.cpp, so there must be a single pool or freed blocks
+// never come back). Same pattern as g_context_pool/g_environment_pool
+// (Context.cpp).
+void* env_slots_pool_take(size_t bytes);
+void env_slots_pool_give(size_t bytes, void* p);
+
+template <typename T>
+struct EnvSlotsAllocator {
+    using value_type = T;
+    EnvSlotsAllocator() noexcept = default;
+    template <typename U> EnvSlotsAllocator(const EnvSlotsAllocator<U>&) noexcept {}
+    T* allocate(std::size_t n) { return static_cast<T*>(env_slots_pool_take(n * sizeof(T))); }
+    void deallocate(T* p, std::size_t n) noexcept { env_slots_pool_give(n * sizeof(T), p); }
+    template <typename U> bool operator==(const EnvSlotsAllocator<U>&) const noexcept { return true; }
+    template <typename U> bool operator!=(const EnvSlotsAllocator<U>&) const noexcept { return false; }
+};
+
 /**
  * Environment for variable bindings
  */
@@ -406,7 +427,8 @@ public:
 private:
     Type type_;
     Environment* outer_environment_;
-    std::unordered_map<std::string, BindingSlot> slots_;
+    std::unordered_map<std::string, BindingSlot, std::hash<std::string>, std::equal_to<std::string>,
+                        EnvSlotsAllocator<std::pair<const std::string, BindingSlot>>> slots_;
     std::unordered_set<std::string> lexical_names_;
     std::unordered_set<std::string> const_binding_names_; // tracks const declarations in Object envs
     Object* binding_object_;

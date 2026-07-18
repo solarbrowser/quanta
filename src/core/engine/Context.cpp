@@ -113,6 +113,54 @@ thread_local std::vector<void*> g_context_pool;
 // so pooling adds no new hazard beyond what Context's own pool already has.
 constexpr size_t kEnvironmentPoolCap = 512;
 thread_local std::vector<void*> g_environment_pool;
+
+// Backs EnvSlotsAllocator (Context.h): pools the malloc/free calls made by
+// Environment::slots_'s node allocator and its (rebound) bucket-array
+// allocator. _Hashtable only ever requests a handful of FIXED sizes (one
+// node size per map instantiation, plus whichever prime bucket-count tiers
+// get hit) -- linear-scan, since the number of distinct sizes seen in
+// practice stays in the single digits.
+struct SizeClassPool {
+    static constexpr size_t kPerClassCap = 256;
+    std::vector<std::pair<size_t, std::vector<void*>>> classes;
+
+    void* take(size_t bytes) {
+        for (auto& c : classes) {
+            if (c.first == bytes) {
+                if (c.second.empty()) return nullptr;
+                void* p = c.second.back();
+                c.second.pop_back();
+                return p;
+            }
+        }
+        // Reserve now: so the push_back in give() can NEVER reallocate/throw
+        // -- deallocate() is noexcept, and a bad_alloc during that realloc
+        // would call std::terminate() (not far-fetched during a GC sweep,
+        // see flush_pending_env_frees).
+        classes.push_back({bytes, {}});
+        classes.back().second.reserve(kPerClassCap);
+        return nullptr;
+    }
+    void give(size_t bytes, void* p) {
+        for (auto& c : classes) {
+            if (c.first == bytes) {
+                if (c.second.size() < kPerClassCap) c.second.push_back(p);
+                else ::operator delete(p);
+                return;
+            }
+        }
+        ::operator delete(p);  // take() always registers the class first, shouldn't reach here
+    }
+};
+thread_local SizeClassPool g_slots_size_pool;
+}
+
+void* env_slots_pool_take(size_t bytes) {
+    if (void* p = g_slots_size_pool.take(bytes)) return p;
+    return ::operator new(bytes);
+}
+void env_slots_pool_give(size_t bytes, void* p) {
+    g_slots_size_pool.give(bytes, p);
 }
 
 void* Context::operator new(size_t size) {
