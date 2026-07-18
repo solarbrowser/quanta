@@ -148,33 +148,6 @@ public:
         }
     }
     
-    void print_banner() {
-        std::cout << CYAN << BOLD;
-        std::cout << "╔═══════════════════════════════════════════════════════════════╗\n";
-        std::cout << "║                      Quanta JavaScript Engine                 ║\n";
-        std::cout << "║                        Interactive Console                    ║\n";
-        std::cout << "╚═══════════════════════════════════════════════════════════════╝\n";
-        std::cout << RESET;
-        std::cout << "\n" << GREEN << "Welcome to Quanta! Type " << BOLD << ".help" << RESET << GREEN 
-                  << " for commands, " << BOLD << ".quit" << RESET << GREEN << " to exit.\n" << RESET;
-        std::cout << "\n";
-    }
-    
-    void print_help() {
-        std::cout << CYAN << BOLD << "Quanta Console Commands:\n" << RESET;
-        std::cout << GREEN << "  .help" << RESET << "     - Show this help message\n";
-        std::cout << GREEN << "  .quit" << RESET << "     - Exit the console\n";
-        std::cout << GREEN << "  .clear" << RESET << "    - Clear the screen\n";
-        std::cout << GREEN << "  .tokens" << RESET << "   - Show tokens for expression\n";
-        std::cout << GREEN << "  .ast" << RESET << "      - Show AST for expression\n";
-        std::cout << "\n" << YELLOW << "JavaScript Features Supported:\n" << RESET;
-        std::cout << "• Variables (var, let, const), Functions, Objects, Arrays\n";
-        std::cout << "• Control flow (if/else, loops, switch), Error handling (try/catch)\n";
-        std::cout << "• Modules (import/export), Advanced operators (+=, ++, etc.)\n";
-        std::cout << "• Built-in functions (console.log, etc.)\n";
-        std::cout << "\n";
-    }
-    
     void show_tokens(const std::string& input) {
         try {
             Lexer lexer(input);
@@ -293,7 +266,11 @@ public:
                     std::cout << CYAN << "Goodbye!\n" << RESET;
                     break;
                 } else if (command == ".help") {
-                    print_help();
+                    std::cout << GREEN << "  .help" << RESET << "     - Show this help message\n";
+                    std::cout << GREEN << "  .quit" << RESET << "     - Exit the console\n";
+                    std::cout << GREEN << "  .clear" << RESET << "    - Clear the screen\n";
+                    std::cout << GREEN << "  .tokens" << RESET << "   - Show tokens for expression\n";
+                    std::cout << GREEN << "  .ast" << RESET << "      - Show AST for expression\n";
                 } else if (command == ".tokens") {
                     std::string rest;
                     std::getline(iss, rest);
@@ -327,9 +304,6 @@ public:
 
 int main(int argc, char* argv[]) {
     try {
-        
-        QuantaConsole console;
-        
         bool execute_code = false;
         bool force_module = false;
         std::string code_to_execute;
@@ -346,12 +320,30 @@ int main(int argc, char* argv[]) {
             } else if (arg == "--module") {
                 force_module = true;
                 continue;
+            } else if (arg == "--version" || arg == "-v") {
+#ifdef QUANTA_VERSION
+                std::cout << QUANTA_VERSION << std::endl;
+#else
+                std::cout << "Version unknown, check build configuration" << std::endl;
+#endif
+                return 0;
+            } else if (arg == "--help" || arg == "-h") {
+                std::cout << "Usage: quanta [options] [file]\n\n"
+                          << "Options:\n"
+                          << "  -c <code>      Execute the given code and exit\n"
+                          << "  --module       Force-load the file as an ES module\n"
+                          << "  -v, --version  Print the engine version and exit\n"
+                          << "  -h, --help     Show this help message and exit\n\n"
+                          << "With no file and no -c, starts the interactive REPL.\n";
+                return 0;
             } else if (arg.find("--") == 0) {
                 continue;
             } else if (filename.empty()) {
                 filename = arg;
             }
         }
+
+        QuantaConsole console;
 
         if (execute_code) {
             bool success = console.evaluate_expression(code_to_execute, false, true);
