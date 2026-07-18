@@ -204,8 +204,11 @@ void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>&
                 return env_ptr ? env_ptr->get_binding(*name) : Value();
             });
         getter_fn->set_closure_environment(env_ptr);
-        // Mark getter so get_property_descriptor can synthesize a DATA descriptor
-        getter_fn->set_property("__param_map__", Value(true));
+        // Mark getter so get_property_descriptor can synthesize a DATA descriptor.
+        // A C++-only private-field write, not a JS-visible property: a plain
+        // property here would let any script forge trust onto its own
+        // accessor (or, via Function.prototype, onto every function at once).
+        getter_fn->is_mapped_arguments_accessor_ = true;
         auto setter_fn = ObjectFactory::create_native_function("set",
             [env_ptr, name](Context& ctx, const std::vector<Value>& a) -> Value {
                 (void)ctx;
@@ -1050,15 +1053,15 @@ Value Function::get_property(const std::string& key) const {
     }
     if (key == "name") {
         if (descriptors_) {
-            auto it = descriptors_->find("name");
-            if (it != descriptors_->end()) {
-                if (it->second.is_data_descriptor()) {
-                    Value v = it->second.get_value();
+            auto* it = descriptors_->find("name");
+            if (it) {
+                if (it->is_data_descriptor()) {
+                    Value v = it->get_value();
                     if (v.is_string() && v.to_string() == "<arrow>") return Value(std::string(""));
                     return v;
                 }
-                if (it->second.is_accessor_descriptor()) {
-                    Object* getter = it->second.get_getter();
+                if (it->is_accessor_descriptor()) {
+                    Object* getter = it->get_getter();
                     if (getter && current_context_) {
                         Function* gfn = dynamic_cast<Function*>(getter);
                         if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Function*>(this)));
@@ -1102,8 +1105,8 @@ Value Function::get_property(const std::string& key) const {
     // A setter-only own accessor must return undefined here, not fall through to an
     // inherited getter for the same key.
     if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end() && it->second.is_accessor_descriptor()) {
+        auto* it = descriptors_->find(key);
+        if (it && it->is_accessor_descriptor()) {
             return Value();
         }
     }
@@ -1121,9 +1124,9 @@ Value Function::get_property(const std::string& key) const {
 
     while (current) {
         if (current->descriptors_) {
-            auto desc_it = current->descriptors_->find(key);
-            if (desc_it != current->descriptors_->end()) {
-                const PropertyDescriptor& desc = desc_it->second;
+            auto* desc_it = current->descriptors_->find(key);
+            if (desc_it) {
+                const PropertyDescriptor& desc = *desc_it;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
                     Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
                     if (getter_fn && current_context_) {
@@ -1159,10 +1162,10 @@ void Function::set_name(const std::string& name) {
     // Force-update the name in descriptors (bypasses writable check)
     // But don't overwrite if the descriptor was explicitly set to a function (e.g. static name())
     if (descriptors_) {
-        auto it = descriptors_->find("name");
-        if (it != descriptors_->end() && it->second.is_data_descriptor()) {
-            if (!it->second.get_value().is_function()) {
-                it->second = PropertyDescriptor(Value(name_), it->second.get_attributes());
+        auto* it = descriptors_->find("name");
+        if (it && it->is_data_descriptor()) {
+            if (!it->get_value().is_function()) {
+                *it = PropertyDescriptor(Value(name_), it->get_attributes());
             }
         }
     }
@@ -1207,8 +1210,8 @@ bool Function::set_property(const std::string& key, const Value& value, Property
     Collector::write_barrier(this);
     if (key == "prototype") {
         if (attrs == PropertyAttributes::Default && descriptors_) {
-            auto it = descriptors_->find("prototype");
-            if (it != descriptors_->end() && it->second.is_data_descriptor() && !it->second.is_writable()) {
+            auto* it = descriptors_->find("prototype");
+            if (it && it->is_data_descriptor() && !it->is_writable()) {
                 return false;
             }
         }

@@ -388,13 +388,25 @@ public:
         Global
     };
 
+public:
+    // A binding used to be spread across 4 parallel maps (bindings_/
+    // mutable_flags_/initialized_flags_/deletable_flags_), hashing and
+    // looking up the same key up to 4 times per binding creation. Default
+    // member initializers mirror each old map's "key absent" fallback
+    // (is_mutable_binding/is_initialized_binding/the deletable check all
+    // read this way) -- get these wrong and a binding whose flags were never
+    // explicitly set (see initialize_binding) silently gets the wrong ones.
+    struct BindingSlot {
+        Value value;
+        bool mutable_flag = true;   // is_mutable_binding: absent -> mutable
+        bool initialized = false;   // is_initialized_binding: absent -> not yet
+        bool deletable = false;     // ES1 DontDelete: absent -> not deletable
+    };
+
 private:
     Type type_;
     Environment* outer_environment_;
-    std::unordered_map<std::string, Value> bindings_;
-    std::unordered_map<std::string, bool> mutable_flags_;
-    std::unordered_map<std::string, bool> initialized_flags_;
-    std::unordered_map<std::string, bool> deletable_flags_;  // ES1: DontDelete attribute (false = DontDelete)
+    std::unordered_map<std::string, BindingSlot> slots_;
     std::unordered_set<std::string> lexical_names_;
     std::unordered_set<std::string> const_binding_names_; // tracks const declarations in Object envs
     Object* binding_object_;

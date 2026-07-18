@@ -45,11 +45,19 @@ void Object::trace(Visitor& v) {
         for (const auto& entry : *sparse_overflow_) v.visit(entry.second);
     }
     if (descriptors_) {
-        for (const auto& entry : *descriptors_) {
-            const PropertyDescriptor& d = entry.second;
+        for (size_t i = 0; i < descriptors_->inline_size(); i++) {
+            const PropertyDescriptor& d = descriptors_->inline_value(i);
             if (d.has_value()) v.visit(d.get_value());
             v.visit_object(d.get_getter());
             v.visit_object(d.get_setter());
+        }
+        if (const auto* ov = descriptors_->overflow()) {
+            for (const auto& entry : *ov) {
+                const PropertyDescriptor& d = entry.second;
+                if (d.has_value()) v.visit(d.get_value());
+                v.visit_object(d.get_getter());
+                v.visit_object(d.get_setter());
+            }
         }
     }
 }
@@ -98,17 +106,17 @@ bool Object::set_shape_slot(const std::string& key, const Value& value) {
 void Object::migrate_to_dictionary_mode() {
     if (!shape_) return;
     if (!descriptors_) {
-        descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+        descriptors_ = std::make_unique<HybridDescriptorMap>();
     }
     auto keys = shape_->keys_in_order();
     for (size_t i = 0; i < keys.size(); i++) {
-        auto it = descriptors_->find(keys[i]);
-        if (it != descriptors_->end()) {
+        auto* it = descriptors_->find(keys[i]);
+        if (it) {
             // Non-default attrs (or an accessor pair) already live here; the shape
             // slot was only the value mirror (or a placeholder for accessors).
             // Overwriting would reset attributes and destroy getters/setters.
-            if (it->second.is_data_descriptor()) {
-                it->second.set_value(shape_slots_[i]);
+            if (it->is_data_descriptor()) {
+                it->set_value(shape_slots_[i]);
             }
         } else {
             (*descriptors_)[keys[i]] = PropertyDescriptor(shape_slots_[i], PropertyAttributes::Default);
@@ -129,16 +137,16 @@ void Object::bump_array_length(double candidate) {
             Value new_len(candidate);
             *slot = new_len;
             if (descriptors_) {
-                auto dit = descriptors_->find("length");
-                if (dit != descriptors_->end()) dit->second.set_value(new_len);
+                auto* dit = descriptors_->find("length");
+                if (dit) dit->set_value(new_len);
             }
         }
         return;
     }
     if (descriptors_) {
-        auto dit = descriptors_->find("length");
-        if (dit != descriptors_->end() && candidate > dit->second.get_value().to_number()) {
-            dit->second.set_value(Value(candidate));
+        auto* dit = descriptors_->find("length");
+        if (dit && candidate > dit->get_value().to_number()) {
+            dit->set_value(Value(candidate));
         }
     }
 }
@@ -269,9 +277,12 @@ std::string Object::find_private_slot_key(const std::string& prefix) const {
         }
     }
     if (descriptors_) {
-        for (const auto& p : *descriptors_) {
-            if (p.first.compare(0, prefix.size(), prefix) == 0) return p.first;
-        }
+        std::string found;
+        bool has_match = descriptors_->find_if(
+            [&](const std::string& k, const PropertyDescriptor&) {
+                return k.compare(0, prefix.size(), prefix) == 0;
+            }, &found);
+        if (has_match) return found;
     }
     return std::string();
 }
@@ -280,8 +291,8 @@ bool Object::get_private_slot_descriptor(const std::string& key, PropertyDescrip
     // Raw descriptor read for a private slot (accessors included); never fires
     // Proxy traps or exotic overrides (e.g. deferred namespace evaluation).
     if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end()) { out = it->second; return true; }
+        auto* it = descriptors_->find(key);
+        if (it) { out = *it; return true; }
     }
     return false;
 }
@@ -294,8 +305,8 @@ Value Object::get_private_slot_value(const std::string& key) const {
         if (it != sparse_overflow_->end()) return it->second;
     }
     if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end() && it->second.is_data_descriptor()) return it->second.get_value();
+        auto* it = descriptors_->find(key);
+        if (it && it->is_data_descriptor()) return it->get_value();
     }
     return Value();
 }
@@ -308,9 +319,9 @@ void Object::set_private_slot_value(const std::string& key, const Value& value) 
         if (it != sparse_overflow_->end()) { it->second = value; return; }
     }
     if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end() && it->second.is_data_descriptor()) {
-            it->second.set_value(value);
+        auto* it = descriptors_->find(key);
+        if (it && it->is_data_descriptor()) {
+            it->set_value(value);
         }
     }
 }
@@ -318,8 +329,7 @@ void Object::set_private_slot_value(const std::string& key, const Value& value) 
 bool Object::has_private_slot(const std::string& key) const {
     // Check if object has a private field/method without the # filter
     if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end()) return true;
+        if (descriptors_->find(key)) return true;
     }
     if (sparse_overflow_) {
         if (sparse_overflow_->find(key) != sparse_overflow_->end()) return true;
@@ -343,8 +353,7 @@ bool Object::has_own_property(const std::string& key) const {
     }
 
     if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end()) {
+        if (descriptors_->find(key)) {
             return true;
         }
     }
@@ -505,9 +514,9 @@ Value Object::get_property(const std::string& key) const {
         }
         // Inherited accessors must be called with the original receiver as `this`, not the prototype.
         if (current->descriptors_) {
-            auto desc_it = current->descriptors_->find(key);
-            if (desc_it != current->descriptors_->end()) {
-                const PropertyDescriptor& desc = desc_it->second;
+            auto* desc_it = current->descriptors_->find(key);
+            if (desc_it) {
+                const PropertyDescriptor& desc = *desc_it;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
                     Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
                     if (getter_fn && current_context_) {
@@ -534,9 +543,9 @@ Value Object::get_own_property(const std::string& key) const {
     if (is_array_index(key, &index)) {
         // Check descriptors first (handles accessor properties like get "0"(){...})
         if (descriptors_) {
-            auto desc_it = descriptors_->find(key);
-            if (desc_it != descriptors_->end()) {
-                const PropertyDescriptor& desc = desc_it->second;
+            auto* desc_it = descriptors_->find(key);
+            if (desc_it) {
+                const PropertyDescriptor& desc = *desc_it;
                 if (desc.is_accessor_descriptor()) {
                     if (desc.has_getter()) {
                         Object* getter = desc.get_getter();
@@ -575,9 +584,9 @@ Value Object::get_own_property(const std::string& key) const {
     // Check accessor descriptors BEFORE shape: shape stores Value() placeholder for them.
     // Data descriptors are checked AFTER shape since shape holds the live value for those.
     if (descriptors_) {
-        auto desc_it = descriptors_->find(key);
-        if (desc_it != descriptors_->end() && desc_it->second.is_accessor_descriptor()) {
-            const PropertyDescriptor& desc = desc_it->second;
+        auto* desc_it = descriptors_->find(key);
+        if (desc_it && desc_it->is_accessor_descriptor()) {
+            const PropertyDescriptor& desc = *desc_it;
             if (desc.has_getter()) {
                 if (key == "cookie") {
                     return Value(std::string(""));
@@ -605,9 +614,9 @@ Value Object::get_own_property(const std::string& key) const {
     }
 
     if (descriptors_) {
-        auto desc_it = descriptors_->find(key);
-        if (desc_it != descriptors_->end() && desc_it->second.is_data_descriptor()) {
-            return desc_it->second.get_value();
+        auto* desc_it = descriptors_->find(key);
+        if (desc_it && desc_it->is_data_descriptor()) {
+            return desc_it->get_value();
         }
     }
 
@@ -655,8 +664,8 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         if (!array_set_length_coerce(current_context_, value, length_double)) return false;
 
         if (descriptors_) {
-            auto it = descriptors_->find("length");
-            if (it != descriptors_->end() && it->second.has_writable() && !it->second.is_writable()) {
+            auto* it = descriptors_->find("length");
+            if (it && it->has_writable() && !it->is_writable()) {
                 return false;
             }
         }
@@ -684,11 +693,11 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         if (!set_shape_slot("length", length_value)) {
             migrate_to_dictionary_mode();
             if (!descriptors_) {
-                descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+                descriptors_ = std::make_unique<HybridDescriptorMap>();
             }
-            auto it = descriptors_->find("length");
-            if (it != descriptors_->end()) {
-                it->second.set_value(length_value);
+            auto* it = descriptors_->find("length");
+            if (it) {
+                it->set_value(length_value);
             } else {
                 (*descriptors_)["length"] = PropertyDescriptor(length_value, PropertyAttributes::Writable);
             }
@@ -696,9 +705,9 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         // get_property_descriptor() checks descriptors_ first -- keep it in sync or it
         // keeps reporting the pre-update length.
         if (descriptors_) {
-            auto it = descriptors_->find("length");
-            if (it != descriptors_->end()) {
-                it->second.set_value(length_value);
+            auto* it = descriptors_->find("length");
+            if (it) {
+                it->set_value(length_value);
             }
         }
         return true;
@@ -816,15 +825,15 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
                 set_shape_slot(key, value);
             }
             if (descriptors_) {
-                auto dit = descriptors_->find(key);
-                if (dit != descriptors_->end() && dit->second.is_data_descriptor()) {
-                    dit->second.set_value(value);
+                auto* dit = descriptors_->find(key);
+                if (dit && dit->is_data_descriptor()) {
+                    dit->set_value(value);
                 }
             }
             return true;
         }
     }
-    
+
     if (!is_extensible()) {
         return false;
     }
@@ -838,7 +847,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     // fallback inside store_in_overflow may have just created.
     if (attrs != PropertyAttributes::Default) {
         if (!descriptors_) {
-            descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+            descriptors_ = std::make_unique<HybridDescriptorMap>();
         }
         (*descriptors_)[key] = PropertyDescriptor(value, attrs);
     }
@@ -953,9 +962,8 @@ bool Object::delete_property(const std::string& key) {
     // Fallback: property may only exist in descriptors (e.g. Function "prototype" intercepted
     // by Function::set_property without storing in shape/overflow)
     if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end()) {
-            descriptors_->erase(it);
+        if (descriptors_->find(key)) {
+            descriptors_->erase(key);
             if (header_.property_count > 0) header_.property_count--;
             update_hash_code();
             return true;
@@ -974,27 +982,27 @@ Value Object::get_element(uint32_t index) const {
     }
     // Arguments: check all descriptors (accessor AND data) since they hold live bindings.
     if (header_.type == ObjectType::Arguments && descriptors_) {
-        auto it = descriptors_->find(std::to_string(index));
-        if (it != descriptors_->end()) {
-            if (it->second.is_accessor_descriptor() && it->second.has_getter()) {
-                Object* getter = it->second.get_getter();
+        auto* it = descriptors_->find(std::to_string(index));
+        if (it) {
+            if (it->is_accessor_descriptor() && it->has_getter()) {
+                Object* getter = it->get_getter();
                 if (getter && current_context_) {
                     Function* gfn = dynamic_cast<Function*>(getter);
                     if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
                 }
             }
-            if (it->second.is_data_descriptor()) return it->second.get_value();
+            if (it->is_data_descriptor()) return it->get_value();
         }
     }
 
     // For all other types: check descriptors_ for both accessor and data properties.
     // Data descriptor values are kept in sync by set_element, so prefer them over elements_.
     if (header_.type != ObjectType::Arguments && descriptors_) {
-        auto it = descriptors_->find(std::to_string(index));
-        if (it != descriptors_->end()) {
-            if (it->second.is_accessor_descriptor()) {
-                if (it->second.has_getter()) {
-                    Object* getter = it->second.get_getter();
+        auto* it = descriptors_->find(std::to_string(index));
+        if (it) {
+            if (it->is_accessor_descriptor()) {
+                if (it->has_getter()) {
+                    Object* getter = it->get_getter();
                     if (getter && current_context_) {
                         Function* gfn = dynamic_cast<Function*>(getter);
                         if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
@@ -1002,7 +1010,7 @@ Value Object::get_element(uint32_t index) const {
                 }
                 return Value(); // setter-only: own property shadows prototype
             }
-            if (it->second.is_data_descriptor()) return it->second.get_value();
+            if (it->is_data_descriptor()) return it->get_value();
         }
     }
 
@@ -1016,9 +1024,9 @@ Value Object::get_element(uint32_t index) const {
     if (header_.type != ObjectType::Arguments && header_.type != ObjectType::TypedArray) {
         std::string key = std::to_string(index);
         if (descriptors_) {
-            auto it = descriptors_->find(key);
-            if (it != descriptors_->end() && it->second.is_data_descriptor())
-                return it->second.get_value();
+            auto* it = descriptors_->find(key);
+            if (it && it->is_data_descriptor())
+                return it->get_value();
         }
         if (sparse_overflow_) {
             auto it = sparse_overflow_->find(key);
@@ -1041,10 +1049,10 @@ bool Object::set_element(uint32_t index, const Value& value) {
     }
     // Check descriptors_ for all types: respect accessor setters and writable flags.
     if (descriptors_) {
-        auto it = descriptors_->find(std::to_string(index));
-        if (it != descriptors_->end()) {
-            if (it->second.is_accessor_descriptor()) {
-                Object* setter = it->second.get_setter();
+        auto* it = descriptors_->find(std::to_string(index));
+        if (it) {
+            if (it->is_accessor_descriptor()) {
+                Object* setter = it->get_setter();
                 if (!setter) return false; // no setter (incl. {set: undefined})
                 if (current_context_) {
                     Function* setter_fn = dynamic_cast<Function*>(setter);
@@ -1052,9 +1060,9 @@ bool Object::set_element(uint32_t index, const Value& value) {
                 }
                 return true;
             }
-            if (it->second.is_data_descriptor()) {
-                if (!it->second.is_writable()) return false;
-                it->second.set_value(value); // keep descriptor in sync with elements_
+            if (it->is_data_descriptor()) {
+                if (!it->is_writable()) return false;
+                it->set_value(value); // keep descriptor in sync with elements_
             }
         }
     }
@@ -1243,26 +1251,34 @@ std::vector<uint32_t> Object::get_element_indices() const {
 PropertyDescriptor Object::get_property_descriptor(const std::string& key) const {
     // Check descriptor map first (takes precedence over shape attrs)
     if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end()) {
+        auto* it = descriptors_->find(key);
+        if (it) {
             // ES6 9.4.4: mapped arguments slots appear as DATA descriptors to callers.
             // Internally we use accessor descriptors for the param aliasing, but expose
             // {value, writable, enumerable, configurable} to [[GetOwnProperty]].
-            if (header_.type == ObjectType::Arguments && it->second.is_accessor_descriptor()) {
-                Function* gfn = it->second.get_getter()
-                    ? dynamic_cast<Function*>(it->second.get_getter()) : nullptr;
-                if (gfn && gfn->has_property("__param_map__")) {
-                    Value cur = (current_context_ && !gfn->has_property("__param_map_severed__"))
+            if (header_.type == ObjectType::Arguments && it->is_accessor_descriptor()) {
+                Function* gfn = it->get_getter()
+                    ? dynamic_cast<Function*>(it->get_getter()) : nullptr;
+                if (gfn && gfn->is_mapped_arguments_accessor()) {
+                    // Capture before the call: even though `gfn` is now provably
+                    // the genuine internal closure (is_mapped_arguments_accessor()
+                    // is a C++-only bit, never JS-settable), keep this
+                    // defense-in-depth -- `it` would otherwise be read after a
+                    // call, which is exactly the shape that was exploitable
+                    // before this bit existed.
+                    bool was_enumerable = it->is_enumerable();
+                    bool was_configurable = it->is_configurable();
+                    Value cur = current_context_
                         ? gfn->call(*current_context_, {}, Value(const_cast<Object*>(this)))
                         : Value();
                     PropertyDescriptor data(cur);
                     data.set_writable(true);
-                    data.set_enumerable(it->second.is_enumerable());
-                    data.set_configurable(it->second.is_configurable());
+                    data.set_enumerable(was_enumerable);
+                    data.set_configurable(was_configurable);
                     return data;
                 }
             }
-            return it->second;
+            return *it;
         }
     }
 
@@ -1308,7 +1324,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     }
 
     if (!descriptors_) {
-        descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+        descriptors_ = std::make_unique<HybridDescriptorMap>();
     }
 
     // Early non-configurable check -- runs BEFORE elements_ is written.
@@ -1347,37 +1363,52 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         // {value:V} updates the binding and keeps the mapping active (do not replace the accessor).
         // Only sever when desc explicitly sets writable:false.
         if (header_.type == ObjectType::Arguments && desc.has_value() && descriptors_) {
-            auto it = descriptors_->find(key);
-            if (it != descriptors_->end() && it->second.is_accessor_descriptor()) {
-                Function* gfn = it->second.get_getter()
-                    ? dynamic_cast<Function*>(it->second.get_getter()) : nullptr;
-                if (gfn && gfn->has_property("__param_map__") && current_context_) {
+            auto* it = descriptors_->find(key);
+            if (it && it->is_accessor_descriptor()) {
+                Function* gfn = it->get_getter()
+                    ? dynamic_cast<Function*>(it->get_getter()) : nullptr;
+                if (gfn && gfn->is_mapped_arguments_accessor() && current_context_) {
+                    bool still_valid = true;
                     // Update param binding
-                    if (it->second.has_setter()) {
-                        Function* setter_fn = dynamic_cast<Function*>(it->second.get_setter());
-                        if (setter_fn) setter_fn->call(*current_context_, {desc.get_value()}, Value(this));
-                    }
-                    // Apply any attribute changes to the accessor descriptor
-                    if (desc.has_enumerable())   it->second.set_enumerable(desc.is_enumerable());
-                    if (desc.has_configurable()) it->second.set_configurable(desc.is_configurable());
-                    // Sever only when explicitly non-writable
-                    if (desc.has_writable() && !desc.is_writable()) {
-                        PropertyDescriptor data(desc.get_value());
-                        data.set_writable(false);
-                        data.set_enumerable(it->second.is_enumerable());
-                        data.set_configurable(it->second.is_configurable());
-                        (*descriptors_)[key] = data;
-                        uint32_t idx;
-                        if (is_array_index(key, &idx)) {
-                            if (idx >= elements_.size()) elements_.resize(idx + 1);
-                            elements_[idx] = desc.get_value();
+                    if (it->has_setter()) {
+                        Function* setter_fn = dynamic_cast<Function*>(it->get_setter());
+                        if (setter_fn) {
+                            setter_fn->call(*current_context_, {desc.get_value()}, Value(this));
+                            // Defense-in-depth re-resolve (see the analogous
+                            // comment in get_property_descriptor) -- `gfn` being
+                            // provably genuine means `setter_fn` can no longer
+                            // run attacker JS here, but keep the safe pattern.
+                            it = descriptors_->find(key);
+                            still_valid = (it && it->is_accessor_descriptor());
                         }
                     }
-                    return true;
+                    if (still_valid) {
+                        // Apply any attribute changes to the accessor descriptor
+                        if (desc.has_enumerable())   it->set_enumerable(desc.is_enumerable());
+                        if (desc.has_configurable()) it->set_configurable(desc.is_configurable());
+                        // Sever only when explicitly non-writable
+                        if (desc.has_writable() && !desc.is_writable()) {
+                            PropertyDescriptor data(desc.get_value());
+                            data.set_writable(false);
+                            data.set_enumerable(it->is_enumerable());
+                            data.set_configurable(it->is_configurable());
+                            *it = data;
+                            uint32_t idx;
+                            if (is_array_index(key, &idx)) {
+                                if (idx >= elements_.size()) elements_.resize(idx + 1);
+                                elements_[idx] = desc.get_value();
+                            }
+                        }
+                        return true;
+                    }
+                    // Mapped slot vanished mid-call -- `it` may now be null.
+                    // Unreachable in practice now that `gfn` is provably genuine
+                    // (its call body never touches this object's own
+                    // properties), but guard it explicitly below regardless.
                 }
                 // Non-param accessor (user-installed): just call its setter if present
-                if (it->second.has_setter() && current_context_) {
-                    Function* setter_fn = dynamic_cast<Function*>(it->second.get_setter());
+                if (it && it->has_setter() && current_context_) {
+                    Function* setter_fn = dynamic_cast<Function*>(it->get_setter());
                     if (setter_fn) setter_fn->call(*current_context_, {desc.get_value()}, Value(this));
                 }
             }
@@ -1469,8 +1500,8 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                     for (size_t i = old_size; i-- > requested_size; ) {
                         bool is_hole = deleted_elements_ && deleted_elements_->count(static_cast<uint32_t>(i));
                         if (!is_hole && descriptors_) {
-                            auto dit = descriptors_->find(std::to_string(i));
-                            if (dit != descriptors_->end() && !dit->second.is_configurable()) {
+                            auto* dit = descriptors_->find(std::to_string(i));
+                            if (dit && !dit->is_configurable()) {
                                 length_shrink_blocked = true;
                                 actual_size = i + 1;
                                 break;
@@ -1495,8 +1526,8 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                     set_shape_slot(key, coerced_value);
                     // get_property_descriptor() checks descriptors_ first -- keep it in sync.
                     if (descriptors_) {
-                        auto it = descriptors_->find(key);
-                        if (it != descriptors_->end()) it->second.set_value(coerced_value);
+                        auto* it = descriptors_->find(key);
+                        if (it) it->set_value(coerced_value);
                     }
                     // A bare value write must not silently drop an explicit attribute
                     // change (e.g. defineProperty({value, configurable:true}) on a
@@ -1507,7 +1538,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                         if (desc.has_writable())     merged.set_writable(desc.is_writable());
                         if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
                         if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
-                        if (!descriptors_) descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+                        if (!descriptors_) descriptors_ = std::make_unique<HybridDescriptorMap>();
                         (*descriptors_)[key] = merged;
                     }
                 } else if (existed_before_this_call) {
@@ -1567,20 +1598,33 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                     desc.has_writable() && !desc.is_writable()) {
                 Function* gfn = existing.get_getter()
                     ? dynamic_cast<Function*>(existing.get_getter()) : nullptr;
-                if (gfn && gfn->has_property("__param_map__") && current_context_) {
+                if (gfn && gfn->is_mapped_arguments_accessor() && current_context_) {
+                    // Capture before the call, and re-resolve after (below) as
+                    // defense-in-depth -- see the analogous comment in
+                    // get_property_descriptor.
+                    bool was_enumerable = existing.is_enumerable();
+                    bool was_configurable = existing.is_configurable();
                     Value cur = gfn->call(*current_context_, {}, Value(this));
-                    PropertyDescriptor data(cur);
-                    data.set_writable(false);
-                    data.set_enumerable(existing.is_enumerable());
-                    data.set_configurable(existing.is_configurable());
-                    if (desc.has_enumerable())   data.set_enumerable(desc.is_enumerable());
-                    if (desc.has_configurable()) data.set_configurable(desc.is_configurable());
-                    existing = data;
-                    uint32_t idx;
-                    if (is_array_index(key, &idx)) {
-                        if (idx >= elements_.size()) elements_.resize(idx + 1);
-                        elements_[idx] = cur;
+                    // Re-resolve after the call instead of writing through the
+                    // (possibly now-dangling) `existing` reference.
+                    auto* it2 = descriptors_->find(key);
+                    if (it2) {
+                        PropertyDescriptor data(cur);
+                        data.set_writable(false);
+                        data.set_enumerable(was_enumerable);
+                        data.set_configurable(was_configurable);
+                        if (desc.has_enumerable())   data.set_enumerable(desc.is_enumerable());
+                        if (desc.has_configurable()) data.set_configurable(desc.is_configurable());
+                        *it2 = data;
+                        uint32_t idx;
+                        if (is_array_index(key, &idx)) {
+                            if (idx >= elements_.size()) elements_.resize(idx + 1);
+                            elements_[idx] = cur;
+                        }
                     }
+                    // Whether or not the slot still existed, the mapping-sever
+                    // request has been handled (or the target vanished, which
+                    // makes it moot) -- either way this call is done.
                     return true;
                 }
             }
@@ -1630,7 +1674,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 bool is_param_mapped = false;
                 if (existing.has_getter()) {
                     Function* gfn = dynamic_cast<Function*>(existing.get_getter());
-                    if (gfn && gfn->has_property("__param_map__")) is_param_mapped = true;
+                    if (gfn && gfn->is_mapped_arguments_accessor()) is_param_mapped = true;
                 }
                 if (!is_param_mapped) {
                     if (!desc.has_getter() && existing.has_getter()) merged.set_getter(existing.get_getter());
@@ -2306,11 +2350,11 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
         // migrated -- either way the value now belongs directly in descriptors_.
         migrate_to_dictionary_mode();
         if (!descriptors_) {
-            descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+            descriptors_ = std::make_unique<HybridDescriptorMap>();
         }
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end()) {
-            it->second.set_value(value);
+        auto* it = descriptors_->find(key);
+        if (it) {
+            it->set_value(value);
         } else {
             (*descriptors_)[key] = PropertyDescriptor(value, PropertyAttributes::Default);
         }

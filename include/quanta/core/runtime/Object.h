@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <array>
 #include <string>
 #include <memory>
 #include <functional>
@@ -21,6 +22,7 @@
 namespace Quanta {
 
 class PropertyDescriptor;
+class HybridDescriptorMap;
 class Context;
 class Environment;
 class ASTNode;
@@ -93,7 +95,7 @@ private:
     // never reach this map.
     std::unique_ptr<std::unordered_map<std::string, Value>> sparse_overflow_;
 
-    std::unique_ptr<std::unordered_map<std::string, PropertyDescriptor>> descriptors_;
+    std::unique_ptr<HybridDescriptorMap> descriptors_;
 
     std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements_;
 
@@ -254,8 +256,6 @@ public:
     
     void mark_references() const;
     size_t memory_usage() const;
-    
-    const std::unordered_map<std::string, PropertyDescriptor>* get_descriptors() const { return descriptors_.get(); }
 
     // VM inline-cache fast path. A shape match alone doesn't prove "plain
     // data slot, no override" -- defineProperty can attach non-default
@@ -394,8 +394,122 @@ public:
     bool is_complete() const;
     void complete_with_defaults();
     PropertyDescriptor merge_with(const PropertyDescriptor& other) const;
-    
+
     std::string to_string() const;
+};
+
+// Replaces Object::descriptors_'s old unordered_map<string, PropertyDescriptor>.
+// Most objects that ever need this store 1-2 entries (a single accessor from
+// an object-literal getter, or a non-default-attribute override) -- paying
+// for a real hashtable (bucket-array malloc + per-node allocs + hashing the
+// same key on every op) for that common case dominated a real profile
+// (tests/benchmark/object_literals.js). kInlineCapacity entries are stored
+// inline (linear-scanned, no allocation beyond the map object itself);
+// exceeding that spills ALL entries into a heap unordered_map (this is also
+// where migrate_to_dictionary_mode() lands -- a real dictionary-mode object
+// can hold many entries, so the spilled path must stay hashtable-fast).
+//
+// Weaker guarantee than unordered_map: erase() may relocate OTHER, unerased
+// inline entries (compaction), and operator[]'s spillover relocates every
+// inline entry into the new heap map. No PropertyDescriptor*/& obtained from
+// this class may be held across another call into it, or across any call
+// that could run arbitrary JS (Function::call) -- Object.cpp's callers were
+// specifically audited for this (see the capture-before-call/re-find-after
+// pattern in get_property_descriptor/set_property_descriptor).
+class HybridDescriptorMap {
+public:
+    static constexpr size_t kInlineCapacity = 4;
+
+    PropertyDescriptor* find(const std::string& key) {
+        for (size_t i = 0; i < inline_count_; i++) {
+            if (inline_[i].key == key) return &inline_[i].desc;
+        }
+        if (overflow_) {
+            auto it = overflow_->find(key);
+            if (it != overflow_->end()) return &it->second;
+        }
+        return nullptr;
+    }
+    const PropertyDescriptor* find(const std::string& key) const {
+        return const_cast<HybridDescriptorMap*>(this)->find(key);
+    }
+    bool count(const std::string& key) const { return find(key) != nullptr; }
+
+    PropertyDescriptor& operator[](const std::string& key) {
+        if (PropertyDescriptor* existing = find(key)) return *existing;
+        if (!overflow_ && inline_count_ < kInlineCapacity) {
+            inline_[inline_count_].key = key;
+            return inline_[inline_count_++].desc;
+        }
+        if (!overflow_) {
+            // Spillover: move every inline entry into a fresh heap map, then
+            // fall through to insert the new key there too.
+            overflow_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+            for (size_t i = 0; i < inline_count_; i++) {
+                (*overflow_)[inline_[i].key] = inline_[i].desc;
+            }
+            inline_count_ = 0;
+        }
+        return (*overflow_)[key];
+    }
+
+    bool erase(const std::string& key) {
+        for (size_t i = 0; i < inline_count_; i++) {
+            if (inline_[i].key == key) {
+                // Swap-with-last to compact -- relocates the last entry's
+                // address if it isn't the one being erased.
+                inline_[i] = std::move(inline_[inline_count_ - 1]);
+                inline_count_--;
+                return true;
+            }
+        }
+        if (overflow_) return overflow_->erase(key) > 0;
+        return false;
+    }
+
+    // Early-exits when pred returns true, writing the matching key to
+    // *out_key. For scans that only need the first match (e.g. a prefix
+    // search walked once per object up a prototype chain), avoiding a full
+    // scan matters -- unlike GC tracing, which always visits every entry.
+    bool find_if(const std::function<bool(const std::string&, const PropertyDescriptor&)>& pred,
+                 std::string* out_key) const {
+        for (size_t i = 0; i < inline_count_; i++) {
+            if (pred(inline_[i].key, inline_[i].desc)) {
+                if (out_key) *out_key = inline_[i].key;
+                return true;
+            }
+        }
+        if (overflow_) {
+            for (const auto& kv : *overflow_) {
+                if (pred(kv.first, kv.second)) {
+                    if (out_key) *out_key = kv.first;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    void clear() {
+        inline_count_ = 0;
+        overflow_.reset();
+    }
+
+    // Plain accessors for Object::trace's GC-hot loop -- a direct span +
+    // overflow-map walk, no lambda/callback indirection in that path.
+    size_t inline_size() const { return inline_count_; }
+    const std::string& inline_key(size_t i) const { return inline_[i].key; }
+    const PropertyDescriptor& inline_value(size_t i) const { return inline_[i].desc; }
+    const std::unordered_map<std::string, PropertyDescriptor>* overflow() const { return overflow_.get(); }
+
+private:
+    struct Entry {
+        std::string key;
+        PropertyDescriptor desc;
+    };
+    std::array<Entry, kInlineCapacity> inline_;
+    size_t inline_count_ = 0;
+    std::unique_ptr<std::unordered_map<std::string, PropertyDescriptor>> overflow_;
 };
 
 /**
@@ -423,6 +537,11 @@ private:
     bool is_class_constructor_;  // Class constructors must be called with new
     bool is_strict_;       // Function runs in strict mode (e.g. class methods)
     bool is_param_default_;  // Created as a default param expression; uses param scope as outer env
+    // Set ONLY by setup_mapped_arguments() on the getter/setter closures it
+    // creates -- a C++-only trust bit (no public setter) so Object.cpp's
+    // mapped-arguments fast paths can never be fooled by a JS-settable
+    // property of the same name into invoking an attacker-authored Function.
+    bool is_mapped_arguments_accessor_ = false;
     uint32_t construct_slot_hint_ = 0;  // Class field count: pre-sizes new instances' shape slots
     // Lazy AST->bytecode result, shared by every call. vm_incompatible_ is the
     // negative cache: one failed compile routes this function through the
@@ -518,6 +637,7 @@ public:
     void set_is_strict(bool value) { is_strict_ = value; }
     bool is_param_default() const { return is_param_default_; }
     void set_is_param_default(bool v) { is_param_default_ = v; }
+    bool is_mapped_arguments_accessor() const { return is_mapped_arguments_accessor_; }
     void set_construct_slot_hint(uint32_t count) { construct_slot_hint_ = count; }
     const std::string& get_source_text() const { return source_text_; }
     void set_source_text(const std::string& s) { source_text_ = s; }

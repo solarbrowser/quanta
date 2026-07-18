@@ -63,7 +63,7 @@ ContextSurvivorGuard::~ContextSurvivorGuard() {
 }
 
 void Environment::gc_trace(Visitor& v) const {
-    for (const auto& b : bindings_) v.visit(b.second);
+    for (const auto& kv : slots_) v.visit(kv.second.value);
     v.visit_object(binding_object_);
     v.visit_environment(outer_environment_);
 }
@@ -903,13 +903,13 @@ Value Environment::get_binding_with_depth(const std::string& name, int depth) co
         if (type_ == Type::Object && binding_object_) {
             return binding_object_->get_property(name);
         } else {
-            auto it = bindings_.find(name);
-            if (it != bindings_.end()) {
-                return it->second;
+            auto it = slots_.find(name);
+            if (it != slots_.end()) {
+                return it->second.value;
             }
         }
     }
-    
+
     if (outer_environment_) {
         return outer_environment_->get_binding_with_depth(name, depth + 1);
     }
@@ -924,7 +924,7 @@ bool Environment::set_binding(const std::string& name, const Value& value) {
             return binding_object_->set_property(name, value);
         } else {
             if (is_mutable_binding(name)) {
-                bindings_[name] = value;
+                slots_[name].value = value;
                 return true;
             }
             return false;
@@ -951,20 +951,19 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
         }
         return binding_object_->get_property(name);
     }
-    auto it = bindings_.find(name);
-    if (it != bindings_.end()) return it->second;
+    auto it = slots_.find(name);
+    if (it != slots_.end()) return it->second.value;
     return Value();
 }
 
 Value* Environment::stable_binding_slot(const std::string& name) {
     if (type_ == Type::Object || is_with_environment_) return nullptr;
-    auto it = bindings_.find(name);
-    if (it == bindings_.end()) return nullptr;
-    auto d = deletable_flags_.find(name);
-    if (d != deletable_flags_.end() && d->second) return nullptr;
-    if (!is_mutable_binding(name)) return nullptr;
-    if (!is_initialized_binding(name)) return nullptr;
-    return &it->second;
+    auto it = slots_.find(name);
+    if (it == slots_.end()) return nullptr;
+    if (it->second.deletable) return nullptr;
+    if (!it->second.mutable_flag) return nullptr;
+    if (!it->second.initialized) return nullptr;
+    return &it->second.value;
 }
 
 bool Environment::set_binding_direct(const std::string& name, const Value& value, Context* ctx) {
@@ -979,7 +978,7 @@ bool Environment::set_binding_direct(const std::string& name, const Value& value
         return binding_object_->set_property(name, value);
     }
     if (is_mutable_binding(name)) {
-        bindings_[name] = value;
+        slots_[name].value = value;
         return true;
     }
     return false;
@@ -990,18 +989,17 @@ void Environment::force_set_binding(const std::string& name, const Value& value)
     if (type_ == Type::Object && binding_object_) {
         binding_object_->set_property(name, value);
     } else {
-        bindings_[name] = value;
-        mutable_flags_[name] = true;
-        initialized_flags_[name] = true;
+        auto& slot = slots_[name];
+        slot.value = value;
+        slot.mutable_flag = true;
+        slot.initialized = true;
     }
 }
 
 void Environment::create_uninitialized_binding(const std::string& name, bool is_mutable) {
     Collector::write_barrier_env(this);
     if (has_own_binding(name)) return;
-    bindings_[name] = Value();
-    mutable_flags_[name] = is_mutable;
-    initialized_flags_[name] = false;
+    slots_[name] = BindingSlot{Value(), is_mutable, false, false};
 }
 
 void Environment::create_global_function_binding(const std::string& name, const Value& value, bool configurable) {
@@ -1018,10 +1016,7 @@ void Environment::create_global_function_binding(const std::string& name, const 
         }
         binding_object_->set_property_descriptor(name, desc);
     } else {
-        bindings_[name] = value;
-        mutable_flags_[name] = true;
-        initialized_flags_[name] = true;
-        deletable_flags_[name] = true;
+        slots_[name] = BindingSlot{value, true, true, true};
     }
 }
 
@@ -1040,10 +1035,7 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
         PropertyDescriptor desc(value, attrs);
         return binding_object_->set_property_descriptor(name, desc);
     } else {
-        bindings_[name] = value;
-        mutable_flags_[name] = mutable_binding;
-        initialized_flags_[name] = true;
-        deletable_flags_[name] = deletable;
+        slots_[name] = BindingSlot{value, mutable_binding, true, deletable};
         return true;
     }
 }
@@ -1054,17 +1046,14 @@ bool Environment::delete_binding(const std::string& name) {
             return binding_object_->delete_property(name);
         } else {
             // ES1: Check if binding is deletable (DontDelete attribute)
-            auto it = deletable_flags_.find(name);
-            bool deletable = (it != deletable_flags_.end()) ? it->second : false;
+            auto it = slots_.find(name);
+            bool deletable = (it != slots_.end()) ? it->second.deletable : false;
 
             if (!deletable) {
                 return false;
             }
 
-            bindings_.erase(name);
-            mutable_flags_.erase(name);
-            initialized_flags_.erase(name);
-            deletable_flags_.erase(name);
+            slots_.erase(it);
             return true;
         }
     }
@@ -1073,23 +1062,24 @@ bool Environment::delete_binding(const std::string& name) {
 }
 
 bool Environment::is_mutable_binding(const std::string& name) const {
-    auto it = mutable_flags_.find(name);
-    return (it != mutable_flags_.end()) ? it->second : true;
+    auto it = slots_.find(name);
+    return (it != slots_.end()) ? it->second.mutable_flag : true;
 }
 
 bool Environment::has_mutable_flag(const std::string& name) const {
-    return mutable_flags_.find(name) != mutable_flags_.end();
+    return slots_.find(name) != slots_.end();
 }
 
 bool Environment::is_initialized_binding(const std::string& name) const {
-    auto it = initialized_flags_.find(name);
-    return (it != initialized_flags_.end()) ? it->second : false;
+    auto it = slots_.find(name);
+    return (it != slots_.end()) ? it->second.initialized : false;
 }
 
 void Environment::initialize_binding(const std::string& name, const Value& value) {
     Collector::write_barrier_env(this);
-    bindings_[name] = value;
-    initialized_flags_[name] = true;
+    auto& slot = slots_[name];
+    slot.value = value;
+    slot.initialized = true;
 }
 
 std::vector<std::string> Environment::get_binding_names() const {
@@ -1099,18 +1089,18 @@ std::vector<std::string> Environment::get_binding_names() const {
         auto keys = binding_object_->get_own_property_keys();
         names.insert(names.end(), keys.begin(), keys.end());
     } else {
-        for (const auto& pair : bindings_) {
+        for (const auto& pair : slots_) {
             names.push_back(pair.first);
         }
     }
-    
+
     return names;
 }
 
 std::string Environment::debug_string() const {
     std::ostringstream oss;
     oss << "Environment(type=" << static_cast<int>(type_)
-        << ", bindings=" << bindings_.size() << ")";
+        << ", bindings=" << slots_.size() << ")";
     return oss.str();
 }
 
@@ -1145,7 +1135,7 @@ bool Environment::has_own_binding(const std::string& name) const {
         }
         return true;
     } else {
-        return bindings_.find(name) != bindings_.end();
+        return slots_.find(name) != slots_.end();
     }
 }
 
