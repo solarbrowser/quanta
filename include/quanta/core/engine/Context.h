@@ -425,6 +425,11 @@ public:
     Environment(Object* binding_object, Environment* outer = nullptr);
     ~Environment() = default;
 
+    // Pooled: reuses freed blocks instead of round-tripping the allocator
+    // on every call (see Context's identical pattern in Context.cpp).
+    static void* operator new(size_t size);
+    static void operator delete(void* ptr);
+
     Type get_type() const { return type_; }
     Environment* get_outer() const { return outer_environment_; }
     Object* get_binding_object() const { return binding_object_; }

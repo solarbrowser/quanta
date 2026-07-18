@@ -855,6 +855,16 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     return stored;
 }
 
+bool Object::create_own_data_property(const std::string& key, const Value& value) {
+    Collector::write_barrier(this);
+    uint32_t index;
+    if (is_array_index(key, &index)) {
+        return set_element(index, value);
+    }
+    if (!is_extensible()) return false;
+    return store_in_overflow(key, value);
+}
+
 bool Object::set_property(const Value& key, const Value& value, PropertyAttributes attrs) {
     return set_property(key.to_property_key(), value, attrs);
 }

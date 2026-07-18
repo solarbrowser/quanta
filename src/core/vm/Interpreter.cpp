@@ -244,12 +244,29 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
             return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
         }
+        // `desc` already fully answers "is this an own property, and if so
+        // what's its value" (get_property_descriptor's own miss-path already
+        // did has_own_property+get_own_property internally) -- for the
+        // common Ordinary-object case, skip the redundant has_own_property
+        // below AND the final get_property() call, both of which would only
+        // re-derive this same answer. Restricted to Ordinary because Array/
+        // TypedArray/etc. have type-specific logic in get_property() (e.g.
+        // Array.length is computed live, not from a descriptor) that this
+        // shortcut must not bypass.
+        if (desc.has_value() && obj->get_type() == Object::ObjectType::Ordinary) {
+            if (cacheable) {
+                Shape* s = obj->get_shape();
+                int32_t idx = s ? s->find_slot(name) : -1;
+                if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+            }
+            return desc.get_value();
+        }
         // A prototype-only accessor (e.g. byteOffset) isn't own, but a
         // TypedArray's own numeric index (9.4.5.4) never checks the prototype.
         double numeric_index;
         bool is_integer_indexed_key = obj->is_typed_array() &&
             TypedArrayBase::canonical_numeric_index(name, numeric_index);
-        if (!is_integer_indexed_key && !obj->has_own_property(name)) {
+        if (!is_integer_indexed_key && !desc.has_value()) {
             // Prototype-chain read cache: skips this walk AND the
             // obj->get_property(name) call below entirely on a hit. Gated on
             // owner != nullptr -- run_script's ownerless chunk (see
@@ -1493,7 +1510,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t name_idx = read_u16(code, pc + 1);
                 pc += 3;
                 Object* obj = as_object_like(regs[obj_reg]);
-                if (obj) obj->set_property(chunk.names[name_idx], acc);
+                if (obj) obj->create_own_data_property(chunk.names[name_idx], acc);
                 CHECK_EXC();
                 break;
             }
@@ -1560,7 +1577,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                             fn->set_is_constructor(false);
                             fn->set_function_prototype(nullptr);
                         }
-                        if (obj) obj->set_property(key, acc);
+                        if (obj) obj->create_own_data_property(key, acc);
                     } else {
                         // Getter (1) / Setter (2): unconditional prototype strip
                         // (unlike Method, no is_constructor() guard -- mirrors
@@ -1626,7 +1643,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                         // plain data property, never [[Prototype]].
                         obj->set_property_descriptor(key, PropertyDescriptor(acc, PropertyAttributes::Default));
                     } else {
-                        obj->set_property(key, acc);
+                        obj->create_own_data_property(key, acc);
                     }
                 }
                 CHECK_EXC();

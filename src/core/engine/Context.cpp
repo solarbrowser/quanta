@@ -104,6 +104,15 @@ namespace {
 // exactly sizeof(Context) -- no per-block size bookkeeping needed.
 constexpr size_t kContextPoolCap = 512;
 thread_local std::vector<void*> g_context_pool;
+
+// Same pattern, separate pool -- Environment is likewise never subclassed
+// (see its class declaration, Context.h) and its actual reclamation
+// (Collector::release_env's pending_env_frees batch, flushed only outside
+// an open incremental major cycle) already defers past any point where a
+// recycled address could be mistaken for a stale MarkVisitor::seen_ entry,
+// so pooling adds no new hazard beyond what Context's own pool already has.
+constexpr size_t kEnvironmentPoolCap = 512;
+thread_local std::vector<void*> g_environment_pool;
 }
 
 void* Context::operator new(size_t size) {
@@ -119,6 +128,24 @@ void Context::operator delete(void* ptr) {
     if (!ptr) return;
     if (g_context_pool.size() < kContextPoolCap) {
         g_context_pool.push_back(ptr);
+        return;
+    }
+    ::operator delete(ptr);
+}
+
+void* Environment::operator new(size_t size) {
+    if (!g_environment_pool.empty()) {
+        void* p = g_environment_pool.back();
+        g_environment_pool.pop_back();
+        return p;
+    }
+    return ::operator new(size);
+}
+
+void Environment::operator delete(void* ptr) {
+    if (!ptr) return;
+    if (g_environment_pool.size() < kEnvironmentPoolCap) {
+        g_environment_pool.push_back(ptr);
         return;
     }
     ::operator delete(ptr);

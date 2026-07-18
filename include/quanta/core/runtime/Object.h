@@ -178,6 +178,13 @@ public:
     virtual bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool set_property(const Value& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool ordinary_set(const std::string& key, const Value& value);
+    // CreateDataProperty (spec 7.3.5): installs an own, Default-attrs data
+    // property WITHOUT consulting the prototype chain -- unlike set_property()
+    // (which implements [[Set]] semantics: inherited accessors, Proxy traps,
+    // non-writable checks), CreateDataProperty never looks at the prototype
+    // chain at all. Caller must already know `key` has no own property on
+    // `this` (true by construction right after Op::CreateObject).
+    bool create_own_data_property(const std::string& key, const Value& value);
     virtual bool delete_property(const std::string& key);
     void remove_own_property(const std::string& key); // force-remove ignoring configurable
     
