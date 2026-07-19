@@ -155,7 +155,7 @@ CXXFLAGS=(
     -O3
     -march=native
     -mtune=native
-    -DQUANTA_VERSION=\"0.9.0.71826\"
+    -DQUANTA_VERSION=\"0.9.0.71926\"
     -DPROMISE_STABILITY_FIXED
     -DNATIVE_BUILD
     -DUTF8PROC_STATIC

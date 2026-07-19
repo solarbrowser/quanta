@@ -87,6 +87,7 @@ private:
     uint16_t add_name(const std::string& name);
     uint16_t alloc_feedback_slot();
     uint16_t alloc_private_feedback();
+    uint16_t alloc_keyed_feedback();
 
     bool member_is_supported(const class MemberExpression* mem) const;
     bool emit_treewalker_delegate(const ASTNode* node);

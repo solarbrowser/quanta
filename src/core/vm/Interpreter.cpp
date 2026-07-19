@@ -428,6 +428,78 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     }
 }
 
+// Dedups on (shape, key): unlike learn_feedback (FeedbackSlot, one fixed
+// name per site), the same GetKeyed/SetKeyed site can legitimately learn
+// several different keys against the same shape (e.g. `obj[k]` in a loop
+// where k varies over a small bounded set) -- each (shape, key) pair is a
+// separate slot in the fixed budget.
+void learn_keyed(KeyedFeedback* fb, Shape* shape, const std::string& key, uint32_t slot_index) {
+    for (uint8_t i = 0; i < fb->count; i++) {
+        if (fb->entries[i].shape == shape && fb->entries[i].key == key) return;
+    }
+    if (fb->count < KeyedFeedback::kMaxEntries) {
+        fb->entries[fb->count++] = {shape, key, slot_index};
+    } else {
+        fb->mega = true;
+    }
+}
+
+// GetKeyed's own cache: get_named()'s FeedbackSlot-based cache can't be
+// reused directly here because GetNamed's `name` is a compile-time constant
+// per bytecode site, while GetKeyed's key comes from a register and can
+// differ on every execution of the SAME instruction -- a shape-only hit
+// would return the wrong property's value for a different key on an object
+// of the same shape. Entries validate both. Falls through to the ordinary,
+// unmodified get_named() slow path (fb=nullptr) on any miss -- own-property
+// only, no inherited-property (proto) cache here.
+Value get_keyed(Context& ctx, const Value& receiver, const std::string& key, KeyedFeedback* fb) {
+    Object* obj = as_object_like(receiver);
+    if (obj && fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+        !obj->has_descriptor_override(key)) {
+        Shape* shape = obj->get_shape();
+        for (uint8_t i = 0; i < fb->count; i++) {
+            if (fb->entries[i].shape == shape && fb->entries[i].key == key) {
+                const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                if (slot) return *slot;
+                break;
+            }
+        }
+    }
+    Value result = get_named(ctx, receiver, key, nullptr, nullptr);
+    if (!ctx.has_exception() && obj && fb && !fb->mega &&
+        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
+        Shape* s = obj->get_shape();
+        int32_t idx = s ? s->find_slot(key) : -1;
+        if (idx >= 0) learn_keyed(fb, s, key, static_cast<uint32_t>(idx));
+    }
+    return result;
+}
+
+// SetKeyed's own cache, symmetric to get_keyed above. Falls through to the
+// ordinary, unmodified set_named() slow path (fb=nullptr) on any miss.
+void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
+                const Value& value, KeyedFeedback* fb) {
+    Object* obj = as_object_like(receiver);
+    if (obj && fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+        !obj->has_descriptor_override(key)) {
+        Shape* shape = obj->get_shape();
+        for (uint8_t i = 0; i < fb->count; i++) {
+            if (fb->entries[i].shape == shape && fb->entries[i].key == key) {
+                Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                if (slot) { Collector::write_barrier(obj); *slot = value; return; }
+                break;
+            }
+        }
+    }
+    set_named(ctx, receiver, key, value, nullptr);
+    if (!ctx.has_exception() && obj && fb && !fb->mega &&
+        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
+        Shape* s = obj->get_shape();
+        int32_t idx = s ? s->find_slot(key) : -1;
+        if (idx >= 0) learn_keyed(fb, s, key, static_cast<uint32_t>(idx));
+    }
+}
+
 // Literal `.#name` access, mirroring the tree-walker's private member paths
 // (MemberExpression::evaluate / AssignmentExpression's private branch).
 // The IC caches the site's resolved qualified key: private fields live in
@@ -1454,7 +1526,8 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             }
             case Op::GetKeyed: {
                 uint8_t obj_reg = code[pc];
-                pc += 1;
+                uint16_t fb_idx = read_u16(code, pc + 1);
+                pc += 3;
                 const Value& recv = regs[obj_reg];
                 // Null/undefined check must run before ToPropertyKey on the key (spec order).
                 if (recv.is_null() || recv.is_undefined()) {
@@ -1464,14 +1537,15 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
-                acc = get_named(ctx, recv, key, nullptr, nullptr);
+                acc = get_keyed(ctx, recv, key, &chunk.keyed_feedback[fb_idx]);
                 CHECK_EXC();
                 break;
             }
             case Op::SetKeyed: {
                 uint8_t obj_reg = code[pc];
                 uint8_t key_reg = code[pc + 1];
-                pc += 2;
+                uint16_t fb_idx = read_u16(code, pc + 2);
+                pc += 4;
                 const Value& recv = regs[obj_reg];
                 if (recv.is_null() || recv.is_undefined()) {
                     ctx.throw_type_error(std::string("Cannot set properties of ") +
@@ -1481,7 +1555,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 }
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();
-                set_named(ctx, recv, key, acc, nullptr);
+                set_keyed(ctx, recv, key, acc, &chunk.keyed_feedback[fb_idx]);
                 CHECK_EXC();
                 break;
             }

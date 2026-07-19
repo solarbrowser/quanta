@@ -63,7 +63,7 @@ const OpInfo& op_info(Op op) {
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
         {"GetNamed", 5, 'g'}, {"SetNamed", 5, 'g'},
         {"GetPrivate", 5, 'g'}, {"SetPrivate", 5, 'g'},
-        {"GetKeyed", 1, 'r'}, {"SetKeyed", 2, 'r'},
+        {"GetKeyed", 3, 'f'}, {"SetKeyed", 4, 'x'},
         {"DeleteNamed", 3, 'l'}, {"DeleteKeyed", 1, 'r'},
         {"DefineOwn", 3, 'l'}, {"DefineElement", 2, 'r'},
         {"ToPropertyKeyStrict", 0, '-'}, {"DefineOwnKeyed", 2, 'r'},
@@ -158,6 +158,21 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t n = static_cast<uint16_t>(chunk.code[operand_pc]) |
                              (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
                 out << " n=" << n;
+                break;
+            }
+            case 'f': {
+                uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                   (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " fb=" << fb_idx;
+                break;
+            }
+            case 'x': {
+                uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
+                                   (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " fb=" << fb_idx;
                 break;
             }
             case 'l': {

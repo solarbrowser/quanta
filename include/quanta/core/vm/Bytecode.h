@@ -165,7 +165,7 @@ struct SourceEntry {
 // Once `mega` is set the site is permanently uncached (same as fb==nullptr).
 struct FeedbackSlot {
     struct Entry { Shape* shape = nullptr; uint32_t slot_index = 0; };
-    static constexpr uint8_t kMaxEntries = 4;
+    static constexpr uint8_t kMaxEntries = 8;
     std::array<Entry, kMaxEntries> entries{};
     uint8_t count = 0;
     bool mega = false;
@@ -216,6 +216,27 @@ struct PrivateFeedback {
     std::string qualified;  // empty until the slow path resolves a data field
 };
 
+// Inline cache for one GetKeyed/SetKeyed site. FeedbackSlot (GetNamed/
+// SetNamed) can cache on shape alone because the property name is a
+// compile-time constant for that one bytecode site; a GetKeyed/SetKeyed
+// site's key is read from a register and can differ on every execution of
+// the SAME instruction, so each entry must validate the key too, not just
+// the shape, before trusting a hit. No string interning exists yet in this
+// codebase, so `key` is a plain owned std::string (compared by value)
+// rather than a cheap pointer identity -- still avoids Shape::find_slot's
+// hashtable probe on a hit, but pays up to kMaxEntries string comparisons
+// instead of one pointer comparison. Own-property only -- no proto-entry
+// equivalent, inherited property reads through a keyed site always take
+// the slow path (deliberate: GetNamed's proto-cache wasn't judged worth
+// replicating here yet).
+struct KeyedFeedback {
+    struct Entry { Shape* shape = nullptr; std::string key; uint32_t slot_index = 0; };
+    static constexpr uint8_t kMaxEntries = 4;
+    std::array<Entry, kMaxEntries> entries{};
+    uint8_t count = 0;
+    bool mega = false;
+};
+
 // One try region: [start_pc, end_pc) -> handler_pc.
 struct HandlerEntry {
     uint32_t start_pc;
@@ -237,6 +258,7 @@ struct BytecodeChunk {
     std::vector<SourceEntry> positions;
     mutable std::vector<FeedbackSlot> feedback; // written as call sites warm up
     mutable std::vector<PrivateFeedback> private_feedback; // GetPrivate/SetPrivate sites
+    mutable std::vector<KeyedFeedback> keyed_feedback; // GetKeyed/SetKeyed sites
     // Per-name outer-variable cache for LdaLookup/StaLookup: a captured
     // chain is fixed per Function instance (and the chunk belongs to one),
     // so a resolved stable binding pointer stays valid for the chunk's

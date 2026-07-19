@@ -7,6 +7,7 @@
 #ifndef QUANTA_RUNTIME_SHAPE_H
 #define QUANTA_RUNTIME_SHAPE_H
 
+#include "quanta/core/runtime/SmallMapPool.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -67,8 +68,14 @@ private:
     uint32_t slot_count_ = 0;
     // Flattened own+inherited lookup table: rebuilt once per shape (at
     // transition time), not per access -- the whole point is O(1) find_slot.
-    std::unordered_map<std::string, uint32_t> slots_;
-    std::unordered_map<std::string, std::unique_ptr<Shape>> transitions_;
+    // Pooled allocator (SmallMapPool): find_slot/transition only ever return
+    // a by-value int32_t/Shape* copy, never a pointer/iterator into these
+    // maps, so swapping the allocator carries none of the pointer-caching
+    // risk Environment::slots_ had to be checked for.
+    std::unordered_map<std::string, uint32_t, std::hash<std::string>, std::equal_to<std::string>,
+                        SmallMapAllocator<std::pair<const std::string, uint32_t>>> slots_;
+    std::unordered_map<std::string, std::unique_ptr<Shape>, std::hash<std::string>, std::equal_to<std::string>,
+                        SmallMapAllocator<std::pair<const std::string, std::unique_ptr<Shape>>>> transitions_;
 };
 
 }

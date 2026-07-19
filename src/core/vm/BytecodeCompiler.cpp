@@ -2696,6 +2696,12 @@ uint16_t BytecodeCompiler::alloc_private_feedback() {
     return static_cast<uint16_t>(chunk_->private_feedback.size() - 1);
 }
 
+uint16_t BytecodeCompiler::alloc_keyed_feedback() {
+    if (chunk_->keyed_feedback.size() >= 0xFFFF) { failed_ = true; return 0; }
+    chunk_->keyed_feedback.push_back(KeyedFeedback{});
+    return static_cast<uint16_t>(chunk_->keyed_feedback.size() - 1);
+}
+
 bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
     if (mem->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
         static_cast<const Identifier*>(mem->get_object())->get_name() == "super") {
@@ -2817,11 +2823,13 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     emit_u8(static_cast<uint8_t>(key_reg));
     emit(Op::GetKeyed);  // key still in the accumulator after Star
     emit_u8(static_cast<uint8_t>(obj_reg));
+    emit_u16(alloc_keyed_feedback());
     size_t skip = emit_jump(skip_op);
     if (!compile_expression(expr->get_right())) return false;
     emit(Op::SetKeyed);
     emit_u8(static_cast<uint8_t>(obj_reg));
     emit_u8(static_cast<uint8_t>(key_reg));
+    emit_u16(alloc_keyed_feedback());
     if (!patch_jump(skip)) return false;
     free_temp(key_reg);
     free_temp(obj_reg);
@@ -3676,6 +3684,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 }
                 emit(Op::GetKeyed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
+                emit_u16(alloc_keyed_feedback());
             }
             free_temp(obj_reg);
             return !failed_;
@@ -3716,6 +3725,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 }
                 emit(Op::GetKeyed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
+                emit_u16(alloc_keyed_feedback());
             }
             free_temp(obj_reg);
             return !failed_;
@@ -3891,6 +3901,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                             emit_u8(static_cast<uint8_t>(key_reg));
                             emit(Op::GetKeyed);  // key still in the accumulator
                             emit_u8(static_cast<uint8_t>(obj_reg));
+                            emit_u16(alloc_keyed_feedback());
                         }
 
                         int old_temp = -1;
@@ -3911,6 +3922,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                             emit(Op::SetKeyed);
                             emit_u8(static_cast<uint8_t>(obj_reg));
                             emit_u8(static_cast<uint8_t>(key_reg));
+                            emit_u16(alloc_keyed_feedback());
                         }
                         if (is_post) {
                             emit(Op::Ldar);
@@ -4151,6 +4163,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     emit_u8(static_cast<uint8_t>(key_reg));
                     emit(Op::GetKeyed);
                     emit_u8(static_cast<uint8_t>(obj_reg));
+                    emit_u16(alloc_keyed_feedback());
                 }
                 int old_val = alloc_temp();
                 if (failed_) return false;
@@ -4178,6 +4191,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 emit(Op::SetKeyed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u8(static_cast<uint8_t>(key_reg));
+                emit_u16(alloc_keyed_feedback());
                 free_temp(key_reg);
             }
             free_temp(obj_reg);
@@ -4260,6 +4274,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     if (!compile_expression(mem_prop)) return false;
                     emit(Op::GetKeyed);
                     emit_u8(static_cast<uint8_t>(obj_reg));
+                    emit_u16(alloc_keyed_feedback());
                 }
                 int func_reg = alloc_temp();
                 if (failed_) return false;

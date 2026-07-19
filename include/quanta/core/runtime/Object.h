@@ -9,6 +9,7 @@
 
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Shape.h"
+#include "quanta/core/runtime/SmallMapPool.h"
 #include "quanta/core/vm/Bytecode.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -427,6 +428,15 @@ class HybridDescriptorMap {
 public:
     static constexpr size_t kInlineCapacity = 4;
 
+    // Pooled allocator (SmallMapPool): every consumer of overflow_ (find/
+    // find_if/Object::trace's GC loop) either returns a fresh copy or uses
+    // the pointer within the same call, never caches it across calls, so
+    // swapping the allocator carries none of the pointer-caching risk
+    // Environment::slots_ had to be checked for.
+    using OverflowMap = std::unordered_map<std::string, PropertyDescriptor, std::hash<std::string>,
+                                            std::equal_to<std::string>,
+                                            SmallMapAllocator<std::pair<const std::string, PropertyDescriptor>>>;
+
     PropertyDescriptor* find(const std::string& key) {
         for (size_t i = 0; i < inline_count_; i++) {
             if (inline_[i].key == key) return &inline_[i].desc;
@@ -451,7 +461,7 @@ public:
         if (!overflow_) {
             // Spillover: move every inline entry into a fresh heap map, then
             // fall through to insert the new key there too.
-            overflow_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+            overflow_ = std::make_unique<OverflowMap>();
             for (size_t i = 0; i < inline_count_; i++) {
                 (*overflow_)[inline_[i].key] = inline_[i].desc;
             }
@@ -507,7 +517,7 @@ public:
     size_t inline_size() const { return inline_count_; }
     const std::string& inline_key(size_t i) const { return inline_[i].key; }
     const PropertyDescriptor& inline_value(size_t i) const { return inline_[i].desc; }
-    const std::unordered_map<std::string, PropertyDescriptor>* overflow() const { return overflow_.get(); }
+    const OverflowMap* overflow() const { return overflow_.get(); }
 
 private:
     struct Entry {
@@ -516,7 +526,7 @@ private:
     };
     std::array<Entry, kInlineCapacity> inline_;
     size_t inline_count_ = 0;
-    std::unique_ptr<std::unordered_map<std::string, PropertyDescriptor>> overflow_;
+    std::unique_ptr<OverflowMap> overflow_;
 };
 
 /**

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(Quanta VERSION 0.0.2 LANGUAGES C CXX)
+project(Quanta VERSION 0.9.0.71926 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,7 +42,7 @@ if(MSVC)
         /EHsc          
         /std:c++20        
         /D_CRT_SECURE_NO_WARNINGS
-        /DQUANTA_VERSION="0.9.0.71826"
+        /DQUANTA_VERSION=\"0.9.0.71926\"
         /DPROMISE_STABILITY_FIXED
         /DNATIVE_BUILD
     )
