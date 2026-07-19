@@ -254,6 +254,13 @@ static bool contains_direct_eval(ASTNode* node) {
     }
 }
 
+bool BlockStatement::has_direct_eval_cached() const {
+    if (contains_eval_cached_ >= 0) return contains_eval_cached_ != 0;
+    bool found = contains_direct_eval(const_cast<BlockStatement*>(this));
+    contains_eval_cached_ = found ? 1 : 0;
+    return found;
+}
+
 Value FunctionDeclaration::evaluate(Context& ctx) {
     const std::string& function_name = id_->get_name();
 
@@ -310,7 +317,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     if (function_obj && !source_text_.empty()) {
         function_obj->set_source_text(source_text_);
     }
-    if (function_obj && contains_direct_eval(body_.get())) {
+    if (function_obj && body_->has_direct_eval_cached()) {
         function_obj->set_property("__contains_eval__", Value(true));
     }
 
@@ -1470,24 +1477,16 @@ Value FunctionExpression::evaluate(Context& ctx) {
         // later) keeps a tree-walker fallback -- which would need an owned body --
         // from ever hitting an un-materialized instance; materialize_from_decl_site()
         // is the backstop regardless.
-        std::vector<std::string> param_names;
-        param_names.reserve(params_.size());
-        for (const auto& p : params_) param_names.push_back(p->get_name()->get_name());
+        const std::vector<std::string>& param_names = get_cached_param_names();
         function = std::make_unique<Function>(name, param_names, nullptr, &ctx,
                                               /*create_prototype=*/!is_method_shorthand_);
-        // The vector<string> ctor sets length=param_names.size(); spec length is
-        // params before the first rest/default, matching the Parameter-vector ctor.
-        size_t spec_length = 0;
-        for (const auto& p : params_) {
-            if (p->is_rest() || p->has_default()) break;
-            spec_length++;
-        }
-        if (spec_length != params_.size()) {
-            PropertyDescriptor length_desc(Value(static_cast<double>(spec_length)), PropertyAttributes::Configurable);
-            function->set_property_descriptor("length", length_desc);
-        }
+        // The vector<string> ctor defaults declared_length_ to param_names.size();
+        // spec length is params before the first rest/default, matching the
+        // Parameter-vector ctor -- always set explicitly (cheap field write,
+        // no descriptor involved now that "length" is lazy).
+        function->set_declared_length(get_cached_spec_length());
         function->set_decl_site(this);
-        function->attach_precompiled_chunk(cached_chunk, enclosing_fn);
+        function->attach_precompiled_chunk(std::move(cached_chunk), enclosing_fn);
     } else {
         std::vector<std::unique_ptr<Parameter>> param_clones;
         for (const auto& param : params_) {
@@ -1498,7 +1497,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
         // building it at all.
         function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx,
                                               /*create_prototype=*/!is_method_shorthand_);
-        if (cached_chunk) function->attach_precompiled_chunk(cached_chunk, enclosing_fn);
+        if (cached_chunk) function->attach_precompiled_chunk(std::move(cached_chunk), enclosing_fn);
     }
 
     // NamedEvaluation (spec 15.2.5/15.5.3): give a named function expression an immutable
@@ -1517,18 +1516,8 @@ Value FunctionExpression::evaluate(Context& ctx) {
         // Outer variables resolve through Function's closure_environment_ (the real
         // lexical environment captured at creation time) -- no value snapshot needed here.
         bool is_strict = ctx.is_strict_mode();
-        if (!is_strict && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            BlockStatement* block = static_cast<BlockStatement*>(body_.get());
-            for (const auto& s : block->get_statements()) {
-                if (s->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
-                auto* es2 = static_cast<ExpressionStatement*>(s.get());
-                if (!es2->get_expression() || es2->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
-                auto* sl2 = static_cast<StringLiteral*>(es2->get_expression());
-                if (sl2->get_value() == "use strict" && !sl2->has_escapes()) {
-                    is_strict = true;
-                    break;
-                }
-            }
+        if (!is_strict && body_) {
+            is_strict = body_->has_use_strict_directive();
         }
 
         if (is_strict) {
@@ -1562,7 +1551,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
     if (function && !source_text_.empty()) {
         function->set_source_text(source_text_);
     }
-    if (function && contains_direct_eval(body_.get())) {
+    if (function && body_->has_direct_eval_cached()) {
         function->set_property("__contains_eval__", Value(true));
     }
 
@@ -3043,7 +3032,7 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
     }
 
     // Outer variables resolve through Function's closure_environment_ -- no value snapshot needed here.
-    bool has_eval = contains_direct_eval(body_.get());
+    bool has_eval = body_->has_direct_eval_cached();
 
     if (has_eval) {
         fn->set_property("__contains_eval__", Value(true));

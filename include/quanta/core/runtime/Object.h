@@ -560,6 +560,16 @@ private:
     // property of the same name into invoking an attacker-authored Function.
     bool is_mapped_arguments_accessor_ = false;
     uint32_t construct_slot_hint_ = 0;  // Class field count: pre-sizes new instances' shape slots
+    // "name"/"length" are lazy: no real descriptor/shape-slot is installed at
+    // construction (see get_property/get_property_descriptor/has_own_property
+    // overrides below) -- these track whether each has been explicitly
+    // deleted, since a never-installed and a deleted property must be told
+    // apart (the former still virtually reads as present, the latter must
+    // not). declared_length_ is the spec length (may differ from
+    // parameters_.size() for rest/default params -- see each constructor).
+    bool name_deleted_ = false;
+    bool length_deleted_ = false;
+    size_t declared_length_ = 0;
     // Lazy AST->bytecode result, shared by every call. vm_incompatible_ is the
     // negative cache: one failed compile routes this function through the
     // tree-walker forever (function-level fallback, see vm-architecture.md).
@@ -696,10 +706,22 @@ public:
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
     std::vector<std::string> get_own_property_keys() const override;
     std::vector<std::string> get_internal_property_keys() const override;
-    bool has_own_property(const std::string& key) const {
+    bool has_own_property(const std::string& key) const override {
         if (key == "prototype" && prototype_ != nullptr) return true;
+        // "name"/"length" are virtually present (own, just not materialized
+        // into descriptors_/shape yet) unless explicitly deleted -- see the
+        // lazy-installation comment on name_deleted_/length_deleted_ above.
+        if (key == "name" && !name_deleted_ && !(descriptors_ && descriptors_->count("name"))) return true;
+        if (key == "length" && !length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) return true;
         return Object::has_own_property(key);
     }
+    PropertyDescriptor get_property_descriptor(const std::string& key) const override;
+    bool delete_property(const std::string& key) override;
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) override;
+    // Spec length (ES6: params before the first rest/default) -- decoupled
+    // from parameters_.size(), which includes every param. See callers in
+    // FunctionExpression::evaluate's clone-elision path.
+    void set_declared_length(size_t len) { declared_length_ = len; }
 
     Object* get_function_prototype() const { return prototype_; }
     void set_function_prototype(Object* proto);

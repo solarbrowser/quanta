@@ -634,8 +634,10 @@ void BlockStatement::check_use_strict_directive(Context& ctx) {
 }
 
 bool BlockStatement::has_use_strict_directive() const {
+    if (use_strict_cached_ >= 0) return use_strict_cached_ != 0;
     // Scan the directive prologue -- all consecutive string-literal statements
     // at the top of the function body, not just the first one.
+    bool found = false;
     for (const auto& stmt : statements_) {
         if (stmt->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
         auto* expr_stmt = static_cast<ExpressionStatement*>(stmt.get());
@@ -644,10 +646,12 @@ bool BlockStatement::has_use_strict_directive() const {
         auto* sl = static_cast<StringLiteral*>(expr);
         // Per spec: directive is only valid when it has no escape sequences.
         if (sl->get_value() == "use strict" && !sl->has_escapes()) {
-            return true;
+            found = true;
+            break;
         }
     }
-    return false;
+    use_strict_cached_ = found ? 1 : 0;
+    return found;
 }
 
 bool BlockStatement::needs_own_scope() const {

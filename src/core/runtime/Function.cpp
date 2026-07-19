@@ -75,10 +75,10 @@ Function::Function(const std::string& name,
         prototype_->set_property_descriptor("constructor", ctor_desc);
     }
 
-    PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
-    this->set_property_descriptor("name", name_desc);
-    PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
-    this->set_property_descriptor("length", length_desc);
+    // "name"/"length" are lazy -- see the class-header comment on
+    // name_deleted_/length_deleted_/declared_length_. declared_length_
+    // mirrors this constructor's own former eager-descriptor value exactly.
+    declared_length_ = parameters_.size();
 
     // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
     // ObjectFactory::create_js_function would otherwise leave this null.
@@ -114,16 +114,14 @@ Function::Function(const std::string& name,
         prototype_->set_property_descriptor("constructor", ctor_desc2);
     }
 
-    PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
-    this->set_property_descriptor("name", name_desc);
-    // ES6: length = number of params before first rest or default
+    // "name"/"length" are lazy -- see the class-header comment. ES6: length =
+    // number of params before first rest or default.
     size_t formal_length = 0;
     for (const auto& param : parameter_objects_) {
         if (param->is_rest() || param->has_default()) break;
         formal_length++;
     }
-    PropertyDescriptor length_desc(Value(static_cast<double>(formal_length)), PropertyAttributes::Configurable);
-    this->set_property_descriptor("length", length_desc);
+    declared_length_ = formal_length;
 
     // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
     // ObjectFactory::create_js_function would otherwise leave this null.
@@ -145,11 +143,8 @@ Function::Function(const std::string& name,
         this->set_property_descriptor("prototype", prototype_desc);
     }
 
-    PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
-    this->set_property_descriptor("name", name_desc);
-
-    PropertyDescriptor length_desc(Value(static_cast<double>(0)), PropertyAttributes::Configurable);
-    this->set_property_descriptor("length", length_desc);
+    // "name"/"length" are lazy -- see the class-header comment. declared_length_
+    // defaults to 0 (already set by the in-class initializer).
 
 }
 
@@ -167,12 +162,8 @@ Function::Function(const std::string& name,
         this->set_property_descriptor("prototype", prototype_desc);
     }
 
-    PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
-    this->set_property_descriptor("name", name_desc);
-
-    PropertyDescriptor length_desc(Value(static_cast<double>(arity)), PropertyAttributes::Configurable);
-    this->set_property_descriptor("length", length_desc);
-
+    // "name"/"length" are lazy -- see the class-header comment.
+    declared_length_ = arity;
 }
 
 void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>& args, Object* arguments_obj) {
@@ -1039,6 +1030,73 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     return Value();
 }
 
+// "name"/"length" are lazy (see the class-header comment on
+// name_deleted_/length_deleted_/declared_length_): synthesizes the
+// spec-correct descriptor {value, writable:false, enumerable:false,
+// configurable:true} on demand, without ever touching descriptors_/shape --
+// mirrors get_property's own fallback so introspection (getOwnPropertyDescriptor,
+// hasOwnProperty via the caller, defineProperty's merge logic) sees a
+// descriptor consistent with what a plain read would return, at zero
+// allocation cost for the common (never introspected) case.
+PropertyDescriptor Function::get_property_descriptor(const std::string& key) const {
+    if (key == "name" && !name_deleted_ && !(descriptors_ && descriptors_->count("name"))) {
+        return PropertyDescriptor(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
+    }
+    if (key == "length" && !length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) {
+        return PropertyDescriptor(Value(static_cast<double>(declared_length_)), PropertyAttributes::Configurable);
+    }
+    return Object::get_property_descriptor(key);
+}
+
+// Configurable:true, so `delete` always succeeds. Two cases: never
+// materialized (nothing really stored, just flip the flag), or already
+// materialized (e.g. a builtin whose "length" was overridden post-construction
+// via set_property_descriptor, see that override below) -- there IS a real
+// descriptors_/shape entry to erase via Object::delete_property, but the
+// flag must ALSO be set afterward, or has_own_property/get_property_descriptor
+// would see "no real entry" post-erase and incorrectly treat the property as
+// virtually-present-again instead of genuinely, permanently gone.
+bool Function::delete_property(const std::string& key) {
+    if (key == "name") {
+        if (!name_deleted_ && !(descriptors_ && descriptors_->count("name"))) {
+            name_deleted_ = true;
+            return true;
+        }
+        bool ok = Object::delete_property(key);
+        if (ok) name_deleted_ = true;
+        return ok;
+    }
+    if (key == "length") {
+        if (!length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) {
+            length_deleted_ = true;
+            return true;
+        }
+        bool ok = Object::delete_property(key);
+        if (ok) length_deleted_ = true;
+        return ok;
+    }
+    return Object::delete_property(key);
+}
+
+// The one case that must NOT stay purely synthesized: any real definition
+// request (Object.defineProperty, or the ~56 call sites across the builtins
+// that construct a native function then immediately override its "length")
+// needs persistent state to redefine against. Materializes first (running
+// the exact same install Function's constructors used to run eagerly, shape
+// slot included) so the second call below finds an existing property and
+// takes Object::set_property_descriptor's normal "redefine" path -- callers
+// need no changes.
+bool Function::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    if (key == "name" && !name_deleted_ && !(descriptors_ && descriptors_->count("name"))) {
+        PropertyDescriptor mat(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
+        Object::set_property_descriptor("name", mat);
+    } else if (key == "length" && !length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) {
+        PropertyDescriptor mat(Value(static_cast<double>(declared_length_)), PropertyAttributes::Configurable);
+        Object::set_property_descriptor("length", mat);
+    }
+    return Object::set_property_descriptor(key, desc);
+}
+
 Value Function::get_property(const std::string& key) const {
     // Strict functions poison-pill their own `arguments`/`caller` properties
     // (spec: %ThrowTypeError% accessors); sloppy functions keep returning
@@ -1088,8 +1146,8 @@ Value Function::get_property(const std::string& key) const {
         if (const Value* slot = find_shape_slot("length")) {
             return *slot;
         }
-        if (!has_own_property("length")) return Value(0.0);
-        return Value(static_cast<double>(parameters_.size()));
+        if (length_deleted_) return Value(0.0);
+        return Value(static_cast<double>(declared_length_));
     }
     if (key == "prototype") {
         if (prototype_ != nullptr) return Value(prototype_);
@@ -1181,6 +1239,16 @@ std::vector<std::string> Function::get_own_property_keys() const {
     // even when the function also has integer-named static members (e.g. `static [1](){}`).
     // Only the STRING portion gets length/name/prototype pulled to its front here.
     auto all = Object::get_own_property_keys();
+    // "length"/"name" won't be in the base result when virtually present
+    // (lazy, not yet materialized) -- inject them so the priority loop below
+    // still surfaces them (Object.getOwnPropertyNames/Reflect.ownKeys must
+    // see them; they're non-enumerable so Object.keys/for-in still won't).
+    if (!length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) {
+        all.push_back("length");
+    }
+    if (!name_deleted_ && !(descriptors_ && descriptors_->count("name"))) {
+        all.push_back("name");
+    }
     std::vector<std::string> result;
     result.reserve(all.size());
 

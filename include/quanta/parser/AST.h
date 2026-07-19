@@ -773,6 +773,13 @@ private:
     std::vector<std::unique_ptr<ASTNode>> statements_;
     // Blocks without their own block-scoped bindings skip the per-evaluation Environment.
     mutable int8_t needs_scope_ = -1;
+    // Directive prologue never changes after parsing -- same tri-state idiom
+    // as needs_scope_ above.
+    mutable int8_t use_strict_cached_ = -1;
+    // Whether this block (as a closure body) syntactically contains a direct
+    // `eval(...)` call -- also parse-time-immutable, same tri-state idiom.
+    // Defined in language.cpp (contains_direct_eval is file-local there).
+    mutable int8_t contains_eval_cached_ = -1;
 
 public:
     BlockStatement(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)
@@ -785,6 +792,10 @@ public:
     // Side-effect-free query version of the same directive-prologue scan, for
     // callers that don't have (or don't want to mutate) a Context.
     bool has_use_strict_directive() const;
+    // Cached wrapper around contains_direct_eval(this) (language.cpp) -- a
+    // closure body's direct-eval-containment is fixed at parse time, so this
+    // avoids re-walking the whole body on every closure instantiation.
+    bool has_direct_eval_cached() const;
     bool needs_own_scope() const;
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1166,6 +1177,14 @@ private:
     bool is_decl_form_ = false; // `export default function fn(){}`: HoistableDeclaration, not NamedEvaluation
     bool is_method_shorthand_ = false; // `{m(){}}`/`get x(){}`: non-constructible, skip the .prototype build
 
+    // params_ never changes after parsing, so both are pure functions of it --
+    // computed once on first evaluate() (clone-elision path) instead of
+    // rebuilt on every closure instantiation. Mirrors BlockStatement's own
+    // needs_scope_ tri-state cache idiom.
+    mutable std::vector<std::string> cached_param_names_;
+    mutable bool param_cache_ready_ = false;
+    mutable size_t cached_spec_length_ = 0;
+
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
                       std::vector<std::unique_ptr<Parameter>> params,
@@ -1191,9 +1210,32 @@ public:
     void set_method_shorthand(bool v) { is_method_shorthand_ = v; }
     bool is_method_shorthand() const { return is_method_shorthand_; }
 
+    // Lazily computed, cached forever after (params_ is immutable post-parse).
+    const std::vector<std::string>& get_cached_param_names() const {
+        ensure_param_cache();
+        return cached_param_names_;
+    }
+    size_t get_cached_spec_length() const {
+        ensure_param_cache();
+        return cached_spec_length_;
+    }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
+
+private:
+    void ensure_param_cache() const {
+        if (param_cache_ready_) return;
+        cached_param_names_.reserve(params_.size());
+        for (const auto& p : params_) cached_param_names_.push_back(p->get_name()->get_name());
+        cached_spec_length_ = 0;
+        for (const auto& p : params_) {
+            if (p->is_rest() || p->has_default()) break;
+            cached_spec_length_++;
+        }
+        param_cache_ready_ = true;
+    }
 };
 
 class ArrowFunctionExpression : public ASTNode {
