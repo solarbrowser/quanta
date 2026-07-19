@@ -4486,6 +4486,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         emit_u16(key_name_idx);
                         emit_u16(display_name_idx);
                         emit_u8(is_method ? 0 : (is_getter ? 1 : 2));
+                        emit_u16(alloc_feedback_slot());
                     } else {
                         // NamedEvaluation step 6: unlike Method/Getter/Setter
                         // (always named), a plain Value property is only named
@@ -4502,6 +4503,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         emit(Op::DefineOwn);
                         emit_u8(static_cast<uint8_t>(obj_reg));
                         emit_u16(add_name(key));
+                        emit_u16(alloc_feedback_slot());
                     }
                 } else {
                     // Computed key (Value or Method only -- computed-key

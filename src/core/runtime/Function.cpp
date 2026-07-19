@@ -313,6 +313,11 @@ ASTNode* Function::ast_body() const {
     return decl_site_ ? decl_site_->get_body() : nullptr;
 }
 
+const std::vector<std::string>& Function::get_parameters() const {
+    if (decl_site_) return decl_site_->get_cached_param_names();
+    return parameters_;
+}
+
 void Function::materialize_from_decl_site() {
     if (body_ || !decl_site_) return;
     body_ = decl_site_->get_body()->clone();
@@ -322,12 +327,7 @@ void Function::materialize_from_decl_site() {
 }
 
 bool Function::has_closure_props() const {
-    for (const auto& key : get_internal_property_keys()) {
-        if (key.length() > 10 && key.substr(0, 10) == "__closure_" && key.substr(0, 16) != "__closure_const_") {
-            return true;
-        }
-    }
-    return false;
+    return has_closure_props_hint_;
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
@@ -340,7 +340,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     CallStack& stack = CallStack::instance();
     ASTNode* ast = ast_body();
     Position call_position = ast ? ast->get_start() : Position(1, 1, 0);
-    CallStackFrameGuard frame_guard(stack, get_name(), ctx.get_current_filename(), call_position, this);
+    CallStackFrameGuard frame_guard(stack, get_name(), &ctx.get_current_filename(), call_position, this);
 
     execution_count_++;
 
@@ -934,10 +934,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
         function_context.set_in_param_eval(false);
     } else {
-        for (size_t i = 0; i < parameters_.size(); ++i) {
+        const std::vector<std::string>& params = get_parameters();
+        for (size_t i = 0; i < params.size(); ++i) {
             Value arg_value = (i < args.size()) ? args[i] : Value();
             // ES1: Function parameters are mutable bindings
-            function_context.create_binding(parameters_[i], arg_value, true);
+            function_context.create_binding(params[i], arg_value, true);
         }
     }
     
@@ -1297,7 +1298,12 @@ bool Function::set_property(const std::string& key, const Value& value, Property
         return Object::set_property(key, value, attrs);
     }
 
-    return Object::set_property(key, value, attrs);
+    bool ok = Object::set_property(key, value, attrs);
+    if (ok && key.size() > 10 && key.compare(0, 10, "__closure_") == 0 &&
+        key.compare(0, 16, "__closure_const_") != 0) {
+        has_closure_props_hint_ = true;
+    }
+    return ok;
 }
 
 Value Function::construct(Context& ctx, const std::vector<Value>& args) {

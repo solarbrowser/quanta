@@ -428,6 +428,43 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     }
 }
 
+// CreateDataProperty shape-transition cache, shared by Op::DefineOwn and
+// Op::FinalizeStaticProperty's Method case -- both always install a STATIC
+// (compile-time-constant) key, exactly like SetNamed's own transition-cache
+// assumes (TransitionEntry has no key field). Op::FinalizeComputedProperty
+// is deliberately NOT covered -- its key varies per execution of the same
+// site, which the key-less TransitionEntry cannot safely validate (same
+// hazard KeyedFeedback solves for GetKeyed/SetKeyed).
+void define_own_cached(Object* obj, const std::string& key, const Value& value, FeedbackSlot* fb) {
+    if (!obj) return;
+    Collector::write_barrier(obj);
+    if (fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
+        !obj->has_descriptor_override(key) && obj->is_extensible()) {
+        Shape* shape = obj->get_shape();
+        uint64_t epoch = Object::proto_epoch();
+        for (uint8_t i = 0; i < fb->transition_count; i++) {
+            const auto& te = fb->transitions[i];
+            if (te.from_shape == shape && te.proto_epoch == epoch) {
+                obj->add_shape_property_cached(key, value, te.to_shape);
+                return;
+            }
+        }
+    }
+    Shape* shape_before = obj->get_shape();
+    bool was_new = fb && obj->get_type() == Object::ObjectType::Ordinary &&
+                    !obj->has_descriptor_override(key) &&
+                    shape_before && shape_before->find_slot(key) < 0;
+    obj->create_own_data_property(key, value);
+    if (was_new && fb && !fb->transition_mega &&
+        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
+        Shape* s = obj->get_shape();
+        int32_t idx = s ? s->find_slot(key) : -1;
+        if (idx >= 0) {
+            learn_transition(fb, shape_before, s, static_cast<uint32_t>(idx), Object::proto_epoch());
+        }
+    }
+}
+
 // Dedups on (shape, key): unlike learn_feedback (FeedbackSlot, one fixed
 // name per site), the same GetKeyed/SetKeyed site can legitimately learn
 // several different keys against the same shape (e.g. `obj[k]` in a loop
@@ -715,11 +752,21 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     // Route through the calling Function's own per-instance cache instead;
     // owner is null only for the ownerless top-level script chunk, which is
     // inherently single-instance, so chunk.lookup_cache stays fine there.
-    std::vector<BytecodeChunk::LookupCacheEntry>* lookup_cache_ptr = &chunk.lookup_cache;
+    // Raw pointer, not vector<LookupCacheEntry>*: chunk.lookup_cache and
+    // owner->instance_lookup_cache() use different allocators (the latter is
+    // pooled -- see its declaration), so they're different vector types.
+    // .data() returns the same LookupCacheEntry* either way. Safe to capture
+    // once here and reuse for the whole call: chunk.lookup_cache is only
+    // ever assigned at compile time (never resized during execution), and
+    // instance_lookup_cache_ is resized at most once ever per instance
+    // (chunk.names.size() is fixed for a given owner), always in this setup
+    // code before that call's own bytecode -- including recursive self-calls
+    // -- ever dispatches, so no reentrant call can invalidate this pointer.
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
     if (owner) {
         auto& instance_cache = owner->instance_lookup_cache();
         if (instance_cache.size() < chunk.names.size()) instance_cache.resize(chunk.names.size());
-        lookup_cache_ptr = &instance_cache;
+        lookup_cache_data = instance_cache.data();
     }
 
     // Op::LdaThis cache: `this`'s VALUE is immutable for the whole frame
@@ -1046,7 +1093,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 {
                     // Captured-chain fast path: the resolved binding address is
                     // stable for this chunk's lifetime (see lookup_cache).
-                    const auto& entry = (*lookup_cache_ptr)[name_idx];
+                    const auto& entry = lookup_cache_data[name_idx];
                     if (entry.slot) { acc = *entry.slot; break; }
                 }
                 // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
@@ -1063,7 +1110,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     CHECK_EXC();
                     if (env != entry_env) {
                         if (Value* slot = env->stable_binding_slot(name)) {
-                            (*lookup_cache_ptr)[name_idx] = {env, slot};
+                            lookup_cache_data[name_idx] = {env, slot};
                         }
                     }
                 } else if (ctx.has_binding(name)) {
@@ -1103,7 +1150,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t sta_name_idx = read_u16(code, pc);
                 pc += 2;
                 {
-                    const auto& entry = (*lookup_cache_ptr)[sta_name_idx];
+                    const auto& entry = lookup_cache_data[sta_name_idx];
                     if (entry.slot) {
                         // The barrier records "env gained a reference" for the
                         // remembered set -- storing a non-heap value can't.
@@ -1154,7 +1201,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                     } else if (ok && env != entry_env) {
                         if (Value* slot = env->stable_binding_slot(name)) {
-                            (*lookup_cache_ptr)[sta_name_idx] = {env, slot};
+                            lookup_cache_data[sta_name_idx] = {env, slot};
                         }
                     }
                 }
@@ -1612,9 +1659,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             case Op::DefineOwn: {
                 uint8_t obj_reg = code[pc];
                 uint16_t name_idx = read_u16(code, pc + 1);
-                pc += 3;
+                uint16_t fb_idx = read_u16(code, pc + 3);
+                pc += 5;
                 Object* obj = as_object_like(regs[obj_reg]);
-                if (obj) obj->create_own_data_property(chunk.names[name_idx], acc);
+                define_own_cached(obj, chunk.names[name_idx], acc, &chunk.feedback[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -1661,7 +1709,8 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t key_name_idx = read_u16(code, pc + 1);
                 uint16_t display_name_idx = read_u16(code, pc + 3);
                 uint8_t kind = code[pc + 5];
-                pc += 6;
+                uint16_t fb_idx = read_u16(code, pc + 6);
+                pc += 8;
                 Object* obj = as_object_like(regs[obj_reg]);
                 if (acc.is_function()) {
                     Function* fn = acc.as_function();
@@ -1681,7 +1730,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                             fn->set_is_constructor(false);
                             fn->set_function_prototype(nullptr);
                         }
-                        if (obj) obj->create_own_data_property(key, acc);
+                        if (obj) define_own_cached(obj, key, acc, &chunk.feedback[fb_idx]);
                     } else {
                         // Getter (1) / Setter (2): unconditional prototype strip
                         // (unlike Method, no is_constructor() guard -- mirrors

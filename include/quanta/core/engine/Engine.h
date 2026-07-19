@@ -68,6 +68,11 @@ private:
     // Survivor pool: function contexts kept alive until after microtask drain,
     // so Promise callbacks can use context_ (creation context) for closure lookups
     std::vector<Context*> survivor_contexts_;
+    // Same pattern for escaped Environments whose owning Context/block scope
+    // already exited (see Collector::finish_major_cycle's environment-survivor
+    // prune loop) -- without this, an escaped Environment (any closure that
+    // captures an outer variable) would never be freed at all.
+    std::vector<Environment*> survivor_environments_;
     
     std::unordered_map<std::string, Value> default_exports_registry_;
     
@@ -116,6 +121,11 @@ public:
     // a context not currently in EventLoop use may still be reachable
     // through a closure, which only a mark pass can confirm.
     void add_survivor_context(Context* ctx);
+
+    // Same pattern for escaped Environments (see survivor_environments_).
+    const std::vector<Environment*>& get_survivor_environments() const { return survivor_environments_; }
+    std::vector<Environment*>& mutable_survivor_environments() { return survivor_environments_; }
+    void add_survivor_environment(Environment* env);
 
     // Drains microtasks, then drives any pending timers to exhaustion (real wall-clock wait), repeating until both queues are empty.
     void run_event_loop_to_completion(Context& ctx);

@@ -126,9 +126,23 @@ void Object::migrate_to_dictionary_mode() {
     shape_slots_.clear();
 }
 
+namespace {
+// Rounds up to the next power of two -- the exact tier plain push_back
+// growth would reach anyway, so reserve() and incremental growth request
+// the same small, bounded set of byte sizes from SmallMapPool instead of
+// one distinct class per exact property count a real program happens to use.
+size_t next_slot_tier(size_t n) {
+    if (n <= 1) return n;
+    size_t tier = 1;
+    while (tier < n) tier <<= 1;
+    return tier;
+}
+}
+
 void Object::reserve_property_slots(size_t count) {
-    shape_slots_.reserve(count);
-    property_insertion_order_.reserve(count);
+    size_t tier = next_slot_tier(count);
+    shape_slots_.reserve(tier);
+    property_insertion_order_.reserve(tier);
 }
 
 void Object::bump_array_length(double candidate) {

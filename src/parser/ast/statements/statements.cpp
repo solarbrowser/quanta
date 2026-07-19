@@ -768,6 +768,7 @@ Value BlockStatement::evaluate(Context& ctx) {
         if (own_scope) {
             ctx.set_lexical_environment(old_lexical_env);
             if (!block_env_ptr->is_escaped()) Collector::release_env(block_env_ptr);
+            else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(block_env_ptr);
         }
         throw;
     }
@@ -776,6 +777,7 @@ Value BlockStatement::evaluate(Context& ctx) {
     if (own_scope) {
         ctx.set_lexical_environment(old_lexical_env);
         if (!block_env_ptr->is_escaped()) Collector::release_env(block_env_ptr);
+        else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(block_env_ptr);
     }
 
     if (exiting) {

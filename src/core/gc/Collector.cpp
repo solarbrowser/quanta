@@ -17,6 +17,7 @@
 #include "quanta/core/runtime/MapSet.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -68,6 +69,10 @@ public:
     // (e.g. a live Function's closure_context_) -- see finish_major_cycle's
     // survivor-pruning step.
     bool context_seen(Context* ctx) const { return seen_.count(ctx) > 0; }
+
+    // Same as context_seen, but for Environment survivors (see
+    // finish_major_cycle's environment-survivor prune loop).
+    bool environment_seen(Environment* env) const { return seen_.count(env) > 0; }
 
     // Contexts are not cells: no mark bit, and most of their mutable state
     // (pending exception, return value, microtask keep-alives) has no write
@@ -660,6 +665,36 @@ void finish_major_cycle(MarkVisitor& v) {
     remembered_envs().clear();
     for (Environment* e : pending_env_frees()) delete e;
     pending_env_frees().clear();
+
+    // Escaped-Environment survivor prune, mirroring the Context-survivor
+    // loop above -- must run after the remembered-set cleanup and
+    // pending_env_frees() deletion just above (not right after the Context
+    // loop): an escaped survivor Environment can also be sitting in
+    // remembered_envs() this same cycle (its bindings were written to
+    // before it lost its last reference), and freeing it earlier would
+    // leave that loop dereferencing freed memory. No EventLoop-style
+    // force-keep branch is needed here (unlike Context survivors):
+    // generator/async continuations only ever hold a Context*
+    // (Generator.h/Async.h's generator_context_), never a raw Environment*,
+    // so a force-kept Context's own gc_trace() already transitively visits
+    // its lexical_environment_/variable_environment_ before this runs.
+    for (Engine* engine : Engine::all_engines()) {
+        std::vector<Environment*>& env_survivors = engine->mutable_survivor_environments();
+        // In-place erase-remove instead of building a fresh vector every
+        // cycle: the survivor list is dominated by long-lived, still-alive
+        // entries that get re-confirmed (not removed) on most cycles, so
+        // reallocating an N-sized vector every single major cycle (as a
+        // rebuild-into-a-new-vector approach would) is a real, avoidable
+        // cost under high collection frequency (e.g. QUANTA_GC_STRESS).
+        env_survivors.erase(
+            std::remove_if(env_survivors.begin(), env_survivors.end(),
+                [&v](Environment* env) {
+                    if (v.environment_seen(env)) return false;
+                    delete env;
+                    return true;
+                }),
+            env_survivors.end());
+    }
 
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {

@@ -20,16 +20,16 @@ class ASTNode;
 
 struct CallStackFrame {
     std::string function_name;
-    std::string filename;
+    const std::string* filename;
     Position position;
     Function* function_ptr;
     ASTNode* call_site;
-    
-    CallStackFrame(const std::string& name, const std::string& file, const Position& pos,
+
+    CallStackFrame(const std::string& name, const std::string* file, const Position& pos,
                Function* func = nullptr, ASTNode* call = nullptr)
-        : function_name(name), filename(file), position(pos), 
+        : function_name(name), filename(file), position(pos),
           function_ptr(func), call_site(call) {}
-    
+
     std::string to_string() const;
 };
 
@@ -50,8 +50,8 @@ public:
     static CallStack& instance();
     static void set_instance(CallStack* stack);
     
-    void push_frame(const std::string& function_name, 
-                   const std::string& filename, 
+    void push_frame(const std::string& function_name,
+                   const std::string* filename,
                    const Position& position,
                    Function* function_ptr = nullptr,
                    ASTNode* call_site = nullptr);
@@ -89,7 +89,7 @@ private:
     
 public:
     CallStackFrameGuard(CallStack& stack, const std::string& function_name,
-                   const std::string& filename, const Position& position,
+                   const std::string* filename, const Position& position,
                    Function* function_ptr = nullptr, ASTNode* call_site = nullptr)
         : stack_(stack) {
         stack_.push_frame(function_name, filename, position, function_ptr, call_site);

@@ -339,6 +339,12 @@ void Engine::add_survivor_context(Context* ctx) {
     Heap::note_extra_bytes(sizeof(Context));
 }
 
+void Engine::add_survivor_environment(Environment* env) {
+    if (!env) return;
+    survivor_environments_.push_back(env);
+    Heap::note_extra_bytes(sizeof(Environment));
+}
+
 void Engine::run_event_loop_to_completion(Context& ctx) {
     Collector::safepoint();
     if (ctx.has_pending_microtasks()) {

@@ -185,8 +185,12 @@ Context::Context(Engine* engine, Context* parent, Type type)
 
 Context::~Context() {
     call_stack_.clear();
-    if (owned_env_ && !owned_env_->is_escaped()) {
-        Collector::release_env(owned_env_);
+    if (owned_env_) {
+        if (!owned_env_->is_escaped()) {
+            Collector::release_env(owned_env_);
+        } else if (engine_) {
+            engine_->add_survivor_environment(owned_env_);
+        }
     }
 }
 
@@ -1245,9 +1249,14 @@ void Context::pop_block_scope() {
         Environment* popped = lexical_environment_;
         lexical_environment_ = popped->get_outer();
         // Captured chains were pinned via mark_escaped(); an unescaped env is
-        // dead the moment it's popped.
+        // dead the moment it's popped. An escaped one (e.g. a for-loop's
+        // per-iteration `let` scope captured by a closure) can't be freed
+        // yet -- hand it to the survivor pool instead (see ~Context's
+        // identical pattern).
         if (!popped->is_escaped()) {
             Collector::release_env(popped);
+        } else if (engine_) {
+            engine_->add_survivor_environment(popped);
         }
     }
 }

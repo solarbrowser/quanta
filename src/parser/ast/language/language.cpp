@@ -1265,7 +1265,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     ctx.create_binding_force("this", Value(constructor_fn.get()));
                     // Push constructor onto call stack so inner class declarations inherit outer brands.
                     {
-                        CallStackFrameGuard frame_guard(CallStack::instance(), class_name, "", Position(), constructor_fn.get());
+                        CallStackFrameGuard frame_guard(CallStack::instance(), class_name, nullptr, Position(), constructor_fn.get());
                         val = cf->get_value()->evaluate(ctx);
                     }
                     ctx.set_this_binding(saved_this_binding);
@@ -1477,11 +1477,16 @@ Value FunctionExpression::evaluate(Context& ctx) {
         // later) keeps a tree-walker fallback -- which would need an owned body --
         // from ever hitting an un-materialized instance; materialize_from_decl_site()
         // is the backstop regardless.
-        const std::vector<std::string>& param_names = get_cached_param_names();
-        function = std::make_unique<Function>(name, param_names, nullptr, &ctx,
+        // Empty vector, not param_names: parameters_ stays unused for this
+        // instance -- get_parameters() borrows FunctionExpression's own
+        // cached_param_names_ via decl_site_ instead (set below), avoiding a
+        // per-instance vector copy. get_cached_spec_length() below populates
+        // that cache as a side effect (shares ensure_param_cache() with
+        // get_cached_param_names()), so it's already ready by the time
+        // anything could read it through decl_site_.
+        function = std::make_unique<Function>(name, std::vector<std::string>{}, nullptr, &ctx,
                                               /*create_prototype=*/!is_method_shorthand_);
-        // The vector<string> ctor defaults declared_length_ to param_names.size();
-        // spec length is params before the first rest/default, matching the
+        // Spec length is params before the first rest/default, matching the
         // Parameter-vector ctor -- always set explicitly (cheap field write,
         // no descriptor involved now that "length" is lazy).
         function->set_declared_length(get_cached_spec_length());

@@ -68,8 +68,8 @@ std::string CallStackFrame::to_string() const {
         oss << "<anonymous>";
     }
     
-    if (!filename.empty()) {
-        oss << " (" << filename;
+    if (filename && !filename->empty()) {
+        oss << " (" << *filename;
         if (position.line > 0) {
             oss << ":" << position.line;
             if (position.column > 0) {
@@ -78,7 +78,7 @@ std::string CallStackFrame::to_string() const {
         }
         oss << ")";
     }
-    
+
     return oss.str();
 }
 
@@ -95,7 +95,7 @@ void CallStack::set_instance(CallStack* stack) {
 }
 
 void CallStack::push_frame(const std::string& function_name,
-                          const std::string& filename,
+                          const std::string* filename,
                           const Position& position,
                           Function* function_ptr,
                           ASTNode* call_site) {
@@ -118,7 +118,7 @@ void CallStack::clear() {
 
 const CallStackFrame& CallStack::top() const {
     if (frames_.empty()) {
-        static CallStackFrame empty_frame("", "", Position());
+        static CallStackFrame empty_frame("", nullptr, Position());
         return empty_frame;
     }
     return frames_.back();
@@ -126,7 +126,7 @@ const CallStackFrame& CallStack::top() const {
 
 const CallStackFrame& CallStack::at(size_t index) const {
     if (index >= frames_.size()) {
-        static CallStackFrame empty_frame("", "", Position());
+        static CallStackFrame empty_frame("", nullptr, Position());
         return empty_frame;
     }
     return frames_[index];
@@ -170,7 +170,8 @@ std::string CallStack::current_filename() const {
     if (frames_.empty()) {
         return "<unknown>";
     }
-    return frames_.back().filename.empty() ? "<unknown>" : frames_.back().filename;
+    const std::string* f = frames_.back().filename;
+    return (f && !f->empty()) ? *f : "<unknown>";
 }
 
 Position CallStack::current_position() const {
@@ -197,8 +198,8 @@ std::string CallStack::format_frame(const CallStackFrame& frame, size_t index) c
         oss << "<anonymous>";
     }
     
-    if (!frame.filename.empty()) {
-        oss << " (" << frame.filename;
+    if (frame.filename && !frame.filename->empty()) {
+        oss << " (" << *frame.filename;
         if (frame.position.line > 0) {
             oss << ":" << frame.position.line;
             if (frame.position.column > 0) {

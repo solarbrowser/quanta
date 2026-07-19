@@ -105,8 +105,10 @@ enum class Op : uint8_t {
     SetKeyed,     // r_obj r_key
     DeleteNamed,  // r_obj n -- acc = delete r_obj.name
     DeleteKeyed,  // r_obj -- key in acc; acc = delete r_obj[key]
-    DefineOwn,    // r_obj n -- literal property: CreateDataProperty, never a
-                  // proto setter / inherited read-only check
+    DefineOwn,    // r_obj n fb -- literal property: CreateDataProperty, never
+                  // a proto setter / inherited read-only check; fb is a
+                  // shape-transition cache (see FeedbackSlot::TransitionEntry),
+                  // safe here only because n is compile-time-constant
     DefineElement, // r_obj r_key -- array literal element (set_element)
 
     // Object-literal computed-key support (distinct from the generic
@@ -127,8 +129,10 @@ enum class Op : uint8_t {
     // forget, and load-bearing (a Method installed without it stays wrongly
     // constructible via `new`) -- can't be split from installation by a
     // future edit. acc holds the just-CreateClosure'd function.
-    FinalizeStaticProperty,   // r_obj key_name_idx display_name_idx kind
-                              // kind: 0=Method 1=Getter 2=Setter
+    FinalizeStaticProperty,   // r_obj key_name_idx display_name_idx kind fb
+                              // kind: 0=Method 1=Getter 2=Setter -- fb is a
+                              // shape-transition cache, used only for kind==0
+                              // (Method); key_name_idx is compile-time-constant
     FinalizeComputedProperty, // r_obj r_key r_raw_key kind
                               // kind: 0=ValueNoName 1=ValueWithName 2=Method
     SetFunctionNameIfUnnamed, // name_idx -- static-key Value property whose

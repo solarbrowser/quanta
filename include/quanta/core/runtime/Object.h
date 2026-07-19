@@ -88,7 +88,13 @@ private:
     // needs non-default attributes, or any delete, moves everything into
     // descriptors_ and sets shape_ to nullptr -- see migrate_to_dictionary_mode.
     Shape* shape_ = Shape::root();
-    std::vector<Value> shape_slots_;
+    // Pooled (SmallMapPool): reserve_property_slots() rounds requests up to
+    // a power-of-two tier first (see Object.cpp) so this and
+    // property_insertion_order_ below request only a small, bounded set of
+    // distinct byte sizes -- matching what plain push_back growth already
+    // produces, and keeping the pool's shared size-class list from growing
+    // unboundedly with every distinct property count a real program uses.
+    std::vector<Value, SmallMapAllocator<Value>> shape_slots_;
 
     // Sparse array-index overflow: elements_ is dense from 0, so an index
     // far beyond its size (or set on a non-Array) falls back here instead
@@ -102,7 +108,8 @@ private:
 
     // Creation order across shape-mode, sparse-overflow, and descriptor-tracked
     // properties alike (none of those on their own preserve insertion order).
-    std::vector<std::string> property_insertion_order_;
+    // Pooled -- see shape_slots_'s comment above.
+    std::vector<std::string, SmallMapAllocator<std::string>> property_insertion_order_;
 
 public:
     // GC cell protocol: every Object (and subclass) lives in the active
@@ -428,6 +435,12 @@ class HybridDescriptorMap {
 public:
     static constexpr size_t kInlineCapacity = 4;
 
+    // Pooled: fixed sizeof (no virtuals, no variable-length tail), never
+    // GC-managed (always reached via Object::descriptors_'s unique_ptr on
+    // the plain C++ heap) -- a single, permanent SmallMapPool size class.
+    static void* operator new(std::size_t sz) { return SmallMapPool::take(sz); }
+    static void operator delete(void* p, std::size_t sz) noexcept { SmallMapPool::give(sz, p); }
+
     // Pooled allocator (SmallMapPool): every consumer of overflow_ (find/
     // find_if/Object::trace's GC loop) either returns a fresh copy or uses
     // the pointer within the same call, never caches it across calls, so
@@ -579,8 +592,13 @@ private:
     bool vm_incompatible_ = false;
     // Per-instance lookup cache, used in place of BytecodeChunk::lookup_cache
     // when bytecode_chunk_ is shared -- instances differ in captured
-    // environment, so a chunk-level cache would serve stale results.
-    mutable std::vector<BytecodeChunk::LookupCacheEntry> instance_lookup_cache_;
+    // environment, so a chunk-level cache would serve stale results. Pooled
+    // (unlike chunk.lookup_cache, deliberately left on the default allocator
+    // -- see Interpreter.cpp's lookup_cache_data comment): a fresh instance
+    // is resized exactly once, on its first call, and this is the dominant
+    // allocation for single-use clone-elided closures.
+    mutable std::vector<BytecodeChunk::LookupCacheEntry,
+        SmallMapAllocator<BytecodeChunk::LookupCacheEntry>> instance_lookup_cache_;
     // Compiled-chunk cache for closures declared in this function's own body,
     // keyed by the declaration-site AST node (stable: body_ clones once at
     // construction, never again). A present key with a null chunk means
@@ -607,6 +625,17 @@ private:
     // -1 unknown, 0 body never mentions the function's own name (skip the
     // per-call self-reference binding), 1 mentions it.
     mutable int8_t self_name_state_ = -1;
+    // Set eagerly the moment a genuine (non-const-marker) __closure_ property
+    // is installed (see Function::set_property) -- has_closure_props()
+    // becomes an O(1) check instead of scanning every own property key on
+    // demand, which used to run on EVERY first call to EVERY function: fresh,
+    // single-use closures never benefit from closure_props_state_'s cache
+    // above (there's no second call to pay it off). Monotonic: only ever
+    // flips false->true, never reset -- if the property is later deleted
+    // (astronomically unlikely for this mangled internal name), the flag
+    // stays stale-true, which only costs one redundant scan in
+    // Function::call's own install-check below, not a correctness issue.
+    bool has_closure_props_hint_ = false;
 
     // Tree-walker insurance for borrowed-AST instances: clones body_ AND
     // parameter_objects_ from decl_site_ (both or neither -- a body-only
@@ -646,10 +675,13 @@ public:
 
     const std::string& get_name() const { return name_; }
     void set_name(const std::string& name);
-    const std::vector<std::string>& get_parameters() const { return parameters_; }
+    // Out-of-line: clone-elided instances borrow decl_site_'s cached param
+    // names instead of owning a copy -- needs FunctionExpression, only
+    // forward-declared here (see ast_body()'s identical rationale).
+    const std::vector<std::string>& get_parameters() const;
     const std::vector<std::unique_ptr<class Parameter>>& get_parameter_objects() const { return parameter_objects_; }
     const ASTNode* get_body() const { return ast_body(); }
-    size_t get_arity() const { return parameters_.size(); }
+    size_t get_arity() const { return get_parameters().size(); }
     bool is_native() const { return is_native_; }
     bool is_constructor() const { return is_constructor_; }
     void set_is_constructor(bool value) { is_constructor_ = value; }
@@ -670,7 +702,8 @@ public:
     void set_source_text(const std::string& s) { source_text_ = s; }
 
     // Lazily sized by the caller (Interpreter.cpp) to chunk.names.size().
-    std::vector<BytecodeChunk::LookupCacheEntry>& instance_lookup_cache() const { return instance_lookup_cache_; }
+    std::vector<BytecodeChunk::LookupCacheEntry,
+        SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>& instance_lookup_cache() const { return instance_lookup_cache_; }
 
     // Adopts an already-compiled (possibly shared) chunk instead of letting
     // Function::call compile its own. `owner` must be pinned (see body_owner_).

@@ -65,9 +65,9 @@ const OpInfo& op_info(Op op) {
         {"GetPrivate", 5, 'g'}, {"SetPrivate", 5, 'g'},
         {"GetKeyed", 3, 'f'}, {"SetKeyed", 4, 'x'},
         {"DeleteNamed", 3, 'l'}, {"DeleteKeyed", 1, 'r'},
-        {"DefineOwn", 3, 'l'}, {"DefineElement", 2, 'r'},
+        {"DefineOwn", 5, 'g'}, {"DefineElement", 2, 'r'},
         {"ToPropertyKeyStrict", 0, '-'}, {"DefineOwnKeyed", 2, 'r'},
-        {"FinalizeStaticProperty", 6, 'm'}, {"FinalizeComputedProperty", 4, 'p'},
+        {"FinalizeStaticProperty", 8, 's'}, {"FinalizeComputedProperty", 4, 'p'},
         {"SetFunctionNameIfUnnamed", 2, 'n'},
         {"CreateObject", 2, 'h'}, {"CreateArray", 2, 'h'},
         {"Jump", 2, 'o'}, {"JumpIfTrue", 2, 'o'}, {"JumpIfFalse", 2, 'o'},
@@ -197,6 +197,20 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " '" << chunk.names[key_idx] << "'"
                     << " '" << chunk.names[disp_idx] << "'"
                     << " kind=" << static_cast<int>(chunk.code[operand_pc + 5]);
+                break;
+            }
+            case 's': {
+                uint16_t key_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                uint16_t disp_idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
+                                     (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
+                uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 6]) |
+                                   (static_cast<uint16_t>(chunk.code[operand_pc + 7]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.names[key_idx] << "'"
+                    << " '" << chunk.names[disp_idx] << "'"
+                    << " kind=" << static_cast<int>(chunk.code[operand_pc + 5])
+                    << " fb=" << fb_idx;
                 break;
             }
             case 'p': {
