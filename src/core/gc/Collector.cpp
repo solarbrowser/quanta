@@ -10,6 +10,7 @@
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/runtime/SmallMapPool.h"
 #include "quanta/core/engine/builtins/AtomicsBuiltin.h"
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/BigInt.h"
@@ -281,7 +282,12 @@ private:
     std::vector<Heap::ProbeResult> gray_;
     std::vector<Context*> context_work_;
     std::vector<Environment*> environment_work_;
-    std::unordered_set<const void*> seen_;
+    // Pooled: cleared (not reallocated) at the start of every cycle, but a
+    // cycle whose working set outgrows the current bucket count still
+    // triggers a real rehash/growth allocation -- a real, measured cost
+    // for a set repopulated on every minor/major cycle.
+    std::unordered_set<const void*, std::hash<const void*>, std::equal_to<const void*>,
+                        SmallMapAllocator<const void*>> seen_;
 
     std::vector<WeakMap*> pending_weak_maps_;
     std::vector<WeakSet*> pending_weak_sets_;
@@ -422,7 +428,13 @@ std::vector<Environment*>& pending_env_frees() {
 void flush_pending_env_frees() {
     auto& pending = pending_env_frees();
     if (pending.empty()) return;
-    std::unordered_set<Environment*> dead(pending.begin(), pending.end());
+    // Pooled: this set is rebuilt from scratch on every flush (every
+    // completed GC cycle, or every 8192 pending frees mid-cycle) -- a real,
+    // measured malloc source (SmallMapPool.h's other consumers already
+    // route through the same pool for exactly this "small map rebuilt
+    // often" pattern).
+    std::unordered_set<Environment*, std::hash<Environment*>, std::equal_to<Environment*>,
+                        SmallMapAllocator<Environment*>> dead(pending.begin(), pending.end());
     auto& rem = remembered_envs();
     rem.erase(std::remove_if(rem.begin(), rem.end(),
                              [&](Environment* e) { return dead.count(e) > 0; }),

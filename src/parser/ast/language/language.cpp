@@ -1460,6 +1460,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
     }
 
     std::unique_ptr<Function> function;
+    bool clone_elided = false;
     if (is_async_ && is_generator_) {
         std::vector<std::unique_ptr<Parameter>> gen_params;
         for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
@@ -1492,6 +1493,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
         function->set_declared_length(get_cached_spec_length());
         function->set_decl_site(this);
         function->attach_precompiled_chunk(std::move(cached_chunk), enclosing_fn);
+        clone_elided = true;
     } else {
         std::vector<std::unique_ptr<Parameter>> param_clones;
         for (const auto& param : params_) {
@@ -1553,7 +1555,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
         }
     }
 
-    if (function && !source_text_.empty()) {
+    if (function && !clone_elided && !source_text_.empty()) {
         function->set_source_text(source_text_);
     }
     if (function && body_->has_direct_eval_cached()) {

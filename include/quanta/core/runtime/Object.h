@@ -698,7 +698,10 @@ public:
     void set_is_param_default(bool v) { is_param_default_ = v; }
     bool is_mapped_arguments_accessor() const { return is_mapped_arguments_accessor_; }
     void set_construct_slot_hint(uint32_t count) { construct_slot_hint_ = count; }
-    const std::string& get_source_text() const { return source_text_; }
+    // Out-of-line: clone-elided instances borrow decl_site_'s own source
+    // text instead of owning a copy -- see get_parameters()'s identical
+    // rationale. Needs FunctionExpression, only forward-declared here.
+    const std::string& get_source_text() const;
     void set_source_text(const std::string& s) { source_text_ = s; }
 
     // Lazily sized by the caller (Interpreter.cpp) to chunk.names.size().

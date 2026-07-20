@@ -12,7 +12,7 @@ namespace Quanta {
 
 namespace {
 struct SizeClassPool {
-    static constexpr size_t kPerClassCap = 256;
+    static constexpr size_t kPerClassCap = 16384;
     std::vector<std::pair<size_t, std::vector<void*>>> classes;
 
     void* take(size_t bytes) {

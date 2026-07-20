@@ -102,7 +102,7 @@ void Context::gc_trace(Visitor& v) const {
 namespace {
 // Freed Context blocks awaiting reuse. Never subclassed, so every block is
 // exactly sizeof(Context) -- no per-block size bookkeeping needed.
-constexpr size_t kContextPoolCap = 512;
+constexpr size_t kContextPoolCap = 16384;
 thread_local std::vector<void*> g_context_pool;
 
 // Same pattern, separate pool -- Environment is likewise never subclassed
@@ -111,7 +111,7 @@ thread_local std::vector<void*> g_context_pool;
 // an open incremental major cycle) already defers past any point where a
 // recycled address could be mistaken for a stale MarkVisitor::seen_ entry,
 // so pooling adds no new hazard beyond what Context's own pool already has.
-constexpr size_t kEnvironmentPoolCap = 512;
+constexpr size_t kEnvironmentPoolCap = 16384;
 thread_local std::vector<void*> g_environment_pool;
 }
 

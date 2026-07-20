@@ -318,6 +318,11 @@ const std::vector<std::string>& Function::get_parameters() const {
     return parameters_;
 }
 
+const std::string& Function::get_source_text() const {
+    if (decl_site_) return decl_site_->get_source_text();
+    return source_text_;
+}
+
 void Function::materialize_from_decl_site() {
     if (body_ || !decl_site_) return;
     body_ = decl_site_->get_body()->clone();
@@ -1450,9 +1455,10 @@ std::string Function::to_string() const {
     if (is_native_) {
         return "function " + display_name + "() { [native code] }";
     }
-    if (!source_text_.empty()) {
+    const std::string& src = get_source_text();
+    if (!src.empty()) {
         // Trim trailing whitespace -- source_text_ may include a trailing newline.
-        std::string s = source_text_;
+        std::string s = src;
         while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t'))
             s.pop_back();
         return s;
