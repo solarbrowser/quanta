@@ -80,6 +80,35 @@ private:
     void emit_read_local(const std::string& name);
     void emit_write_local(const std::string& name, bool is_declaration);
 
+    // Op::LdaEnvSlot/StaEnvSlot/StaEnvSlotInit eligibility: recorded only for
+    // a name declared EXACTLY ONCE in the whole function (global_decl_count_
+    // == 1 -- see compile()), at the point its owning scope's binding list
+    // (env_locals/env_params, or one loop_envs[i]) is finalized. `slot` is a
+    // best-effort predicted position (<4) within that scope's first-4
+    // bindings -- Function::call() can insert extra bindings (self-name
+    // recursion, class __closure_* self-reference, __super__, arguments)
+    // into the SAME environment before env_locals/env_params seeding runs,
+    // which this compiler cannot see, so the predicted position can be
+    // wrong. That's why Interpreter.cpp's handlers re-validate by name
+    // before trusting it (Environment::inline_slot) -- a wrong prediction
+    // only costs the fast path, never correctness. `depth` is the
+    // env_depth_ value that will be active while this declaration's scope
+    // is the current one; emit_read_local/emit_write_local only take the
+    // slot path when the access site's CURRENT env_depth_ matches, which is
+    // exactly when ctx.get_lexical_environment() is guaranteed (by the
+    // LIFO-balanced EnterLoopEnv/ExitLoopEnv nesting) to be that scope's
+    // Environment -- no chain walk needed to find it.
+    struct EnvSlotInfo { uint8_t slot; int depth; };
+    std::unordered_map<std::string, int> global_decl_count_;
+    std::unordered_map<std::string, EnvSlotInfo> env_slot_info_;
+    // Shared by every loop_envs.push_back call site (setup_loop_env, plain
+    // blocks, catch clauses, switch): records slot info for each var at its
+    // position in THIS scope's list, capped at the first 4, only for names
+    // globally_decl_count_ == 1. Call with `depth` = the env_depth_ value
+    // that will be active once this scope's EnterLoopEnv has run (i.e.
+    // after the caller's env_depth_++).
+    void record_env_slot_info(const std::vector<BytecodeChunk::LoopEnvVar>& vars, int depth);
+
     void emit(Op op);
     void emit_u8(uint8_t v);
     void emit_u16(uint16_t v);

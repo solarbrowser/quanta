@@ -1308,6 +1308,76 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
+            // Guarded direct-slot variants (see BytecodeCompiler.h's
+            // EnvSlotInfo and Environment::inline_slot for why the
+            // predicted slot needs re-validation). On a guard miss these
+            // fall through to IDENTICAL code to LdaEnv/StaEnv/StaEnvInit --
+            // a miss only costs the fast path, never correctness.
+            case Op::LdaEnvSlot: {
+                uint8_t slot = code[pc];
+                pc += 1;
+                const std::string& name = chunk.names[read_u16(code, pc)];
+                pc += 2;
+                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                    if (!e->slot.initialized) {
+                        ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                        CHECK_EXC();
+                        break;
+                    }
+                    acc = e->slot.value;
+                    break;
+                }
+                if (ctx.is_in_tdz(name)) {
+                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    CHECK_EXC();
+                    break;
+                }
+                Environment* env = ctx.find_binding_env(name);
+                if (env) {
+                    acc = env->get_binding_direct(name, &ctx);
+                } else {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                }
+                CHECK_EXC();
+                break;
+            }
+            case Op::StaEnvSlot: {
+                uint8_t slot = code[pc];
+                pc += 1;
+                const std::string& name = chunk.names[read_u16(code, pc)];
+                pc += 2;
+                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                    if (e->slot.mutable_flag) e->slot.value = acc;
+                    break;
+                }
+                if (ctx.is_in_tdz(name)) {
+                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    CHECK_EXC();
+                    break;
+                }
+                Environment* env = ctx.find_binding_env(name);
+                if (env) {
+                    env->set_binding_direct(name, acc, &ctx);
+                } else {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                }
+                CHECK_EXC();
+                break;
+            }
+            case Op::StaEnvSlotInit: {
+                uint8_t slot = code[pc];
+                pc += 1;
+                const std::string& name = chunk.names[read_u16(code, pc)];
+                pc += 2;
+                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                    e->slot.value = acc;
+                    e->slot.initialized = true;
+                    break;
+                }
+                ctx.get_lexical_environment()->initialize_binding(name, acc);
+                break;
+            }
+
             case Op::BindEnvLocals: {
                 Environment* env = ctx.get_lexical_environment();
                 for (const auto& loc : chunk.env_locals) {
@@ -1708,7 +1778,14 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint8_t obj_reg = code[pc];
                 uint16_t key_name_idx = read_u16(code, pc + 1);
                 uint16_t display_name_idx = read_u16(code, pc + 3);
-                uint8_t kind = code[pc + 5];
+                uint8_t raw_kind = code[pc + 5];
+                // Bit 0x4: the compiler proved this method's body never
+                // references `super`, so the __super_constructor__ write
+                // below (needed only for super resolution, see member.cpp)
+                // was skipped entirely -- see BytecodeCompiler.cpp's
+                // method_references_super. Getter/Setter never set this bit.
+                uint8_t kind = raw_kind & 0x3;
+                bool super_free = (raw_kind & 0x4) != 0;
                 uint16_t fb_idx = read_u16(code, pc + 6);
                 pc += 8;
                 Object* obj = as_object_like(regs[obj_reg]);
@@ -1725,20 +1802,25 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     if (kind == 0) {
                         // Method: spec 14.3.9 -- non-generator methods are not
                         // constructors and have no .prototype.
-                        fn->set_property("__super_constructor__", Value(true));
+                        if (!super_free) fn->set_property("__super_constructor__", Value(true));
                         if (fn->is_constructor()) {
                             fn->set_is_constructor(false);
                             fn->set_function_prototype(nullptr);
                         }
                         if (obj) define_own_cached(obj, key, acc, &chunk.feedback[fb_idx]);
                     } else {
-                        // Getter (1) / Setter (2): unconditional prototype strip
-                        // (unlike Method, no is_constructor() guard -- mirrors
-                        // literals.cpp's own asymmetry), then fetch-existing-
-                        // descriptor-and-merge so a getter+setter pair sharing a
-                        // key installs correctly regardless of what else runs
-                        // between them.
-                        fn->set_function_prototype(nullptr);
+                        // Getter (1) / Setter (2): spec 14.4.13/14.4.14 --
+                        // GetterMethod/SetterMethod never had a .prototype to
+                        // begin with (create_prototype=false at creation, same
+                        // as a shorthand Method), so is_constructor() is
+                        // already false here; skip the strip entirely instead
+                        // of paying set_function_prototype's real (if no-op)
+                        // descriptor-erase + Shape::find_slot + a linear scan
+                        // over property_insertion_order_ on every getter/
+                        // setter. Then fetch-existing-descriptor-and-merge so
+                        // a getter+setter pair sharing a key installs
+                        // correctly regardless of what else runs between them.
+                        if (fn->is_constructor()) fn->set_function_prototype(nullptr);
                         if (obj) {
                             PropertyDescriptor desc = obj->has_own_property(key)
                                 ? obj->get_property_descriptor(key) : PropertyDescriptor();
@@ -1756,7 +1838,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint8_t obj_reg = code[pc];
                 uint8_t key_reg = code[pc + 1];
                 uint8_t raw_key_reg = code[pc + 2];
-                uint8_t kind = code[pc + 3];
+                uint8_t raw_kind = code[pc + 3];
+                // See FinalizeStaticProperty's identical bit-0x4 comment.
+                uint8_t kind = raw_kind & 0x3;
+                bool super_free = (raw_kind & 0x4) != 0;
                 pc += 4;
                 Object* obj = as_object_like(regs[obj_reg]);
                 if (kind != 0 && acc.is_function()) {
@@ -1782,7 +1867,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 if (kind == 2 && acc.is_function()) {
                     // Method finalize (spec 14.3.9), same as FinalizeStaticProperty.
                     Function* fn = acc.as_function();
-                    fn->set_property("__super_constructor__", Value(true));
+                    if (!super_free) fn->set_property("__super_constructor__", Value(true));
                     if (fn->is_constructor()) {
                         fn->set_is_constructor(false);
                         fn->set_function_prototype(nullptr);

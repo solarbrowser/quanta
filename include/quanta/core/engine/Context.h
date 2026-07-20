@@ -549,6 +549,18 @@ public:
     // non-deletable declarative binding (unordered_map nodes never move).
     // Backbone of the VM's outer-variable cache; null when any guard fails.
     Value* stable_binding_slot(const std::string& name);
+    // Guarded direct-index access to slots_'s inline array, backing
+    // Op::LdaEnvSlot/StaEnvSlot/StaEnvSlotInit. The compiler's predicted
+    // index can be wrong (see BytecodeCompiler.h's EnvSlotInfo for why), so
+    // this re-validates by name: returns null unless inline_entries[index]
+    // is in_use AND its key equals `name`. A null return means "fall back
+    // to the name-based path," never "this binding doesn't exist."
+    SlotMap::InlineEntry* inline_slot(size_t index, const std::string& name) {
+        if (index >= SlotMap::kInlineCapacity) return nullptr;
+        SlotMap::InlineEntry& e = slots_.inline_entries[index];
+        if (e.in_use && e.key == name) return &e;
+        return nullptr;
+    }
     bool set_binding_direct(const std::string& name, const Value& value, Context* ctx = nullptr);
     Environment* find_binding_env(const std::string& name);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);

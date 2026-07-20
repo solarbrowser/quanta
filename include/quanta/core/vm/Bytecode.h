@@ -69,6 +69,15 @@ enum class Op : uint8_t {
     StaEnv,       // n
     StaEnvInit,   // n -- current environment only, no chain walk
 
+    // Guarded direct-slot variants of LdaEnv/StaEnv/StaEnvInit: read/write
+    // slot s of the current Environment's inline SlotMap directly, falling
+    // back to the name-walk path on a guard miss (see BytecodeCompiler.h's
+    // EnvSlotInfo and Environment::inline_slot). n is kept on all three:
+    // needed for the guard compare and as the fallback's own operand.
+    LdaEnvSlot,     // s n
+    StaEnvSlot,     // s n
+    StaEnvSlotInit, // s n
+
     BindEnvLocals,  // create env_locals bindings (deferred past parameter
                     // resolution when env_params_tdz -- see BytecodeChunk)
 

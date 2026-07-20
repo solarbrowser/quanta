@@ -2124,6 +2124,39 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (!env_mode || !compiler.env_names_.insert(rest_name).second) return nullptr;
     }
 
+    // Slot-index eligibility bookkeeping for Op::LdaEnvSlot/StaEnvSlot/
+    // StaEnvSlotInit (BytecodeCompiler.h's EnvSlotInfo doc comment has the
+    // full rationale). global_decl_count_ covers every name that could ever
+    // become an Environment binding in this function -- body declarations,
+    // params, rest -- so uniqueness is checked function-wide, matching the
+    // fact that Environment::find_binding_env's chain walk (the path being
+    // bypassed) is itself function-wide, not per-scope.
+    if (env_mode) {
+        for (const auto& info : declared) compiler.global_decl_count_[info.name]++;
+        for (const auto& p : param_names) compiler.global_decl_count_[p]++;
+        if (has_rest) compiler.global_decl_count_[rest_name]++;
+    }
+    // flat_slot_counter mirrors the actual runtime seeding order of the
+    // function's own (depth-0) Environment: params first (in param_names
+    // order -- seeded either by VM::run from chunk.env_params in full-env
+    // mode, or by this function's own selective-mode StaEnvInit loop below,
+    // both in the same order), then env_locals (in push order, right
+    // below), then a rest slot if present.
+    size_t flat_slot_counter = 0;
+    if (env_mode) {
+        for (const auto& p : param_names) {
+            bool resident = !selective || env_resident.count(p) > 0;
+            if (!resident) continue;
+            if (flat_slot_counter < 4) {
+                auto cit = compiler.global_decl_count_.find(p);
+                if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
+                    compiler.env_slot_info_[p] = {static_cast<uint8_t>(flat_slot_counter), 0};
+                }
+            }
+            flat_slot_counter++;
+        }
+    }
+
     // Nested lexical names and catch parameters get their own environment
     // elsewhere -- only direct top-level names get a function-entry binding.
     std::unordered_set<std::string> direct_lexical_names;
@@ -2154,6 +2187,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             if (!info.is_catch_param &&
                 (!info.is_lexical || direct_lexical_names.count(info.name))) {
                 compiler.chunk_->env_locals.push_back({info.name, info.is_lexical, info.is_const});
+                if (flat_slot_counter < 4) {
+                    auto cit = compiler.global_decl_count_.find(info.name);
+                    if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
+                        compiler.env_slot_info_[info.name] = {static_cast<uint8_t>(flat_slot_counter), 0};
+                    }
+                }
+                flat_slot_counter++;
             }
         } else {
             if (!compiler.declare_local(info.name)) return nullptr;
@@ -2183,8 +2223,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             if (!env_resident.count(param_names[i])) continue;
             compiler.emit(Op::Ldar);
             compiler.emit_u8(static_cast<uint8_t>(i));
-            compiler.emit(Op::StaEnvInit);
-            compiler.emit_u16(compiler.add_name(param_names[i]));
+            compiler.emit_write_local(param_names[i], /*is_declaration=*/true);
         }
     }
     // Non-rest parameters' function-entry bindings are data-driven from the
@@ -2193,6 +2232,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // since CreateRestArray/DestructureBind below fills it, not run().
     if (has_rest) {
         compiler.chunk_->env_locals.push_back({rest_name, false, false});
+        if (flat_slot_counter < 4) {
+            auto cit = compiler.global_decl_count_.find(rest_name);
+            if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
+                compiler.env_slot_info_[rest_name] = {static_cast<uint8_t>(flat_slot_counter), 0};
+            }
+        }
+        flat_slot_counter++;
     }
 
     // Parameter lists with initializers follow spec FDI ordering (see
@@ -2245,8 +2291,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 compiler.emit(Op::DestructureBind);
                 compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->destructuring_patterns.size() - 1));
             } else if (params_tdz) {
-                compiler.emit(Op::StaEnvInit);
-                compiler.emit_u16(compiler.add_name(pname));
+                compiler.emit_write_local(pname, /*is_declaration=*/true);
             } else {
                 compiler.emit_write_local(pname, false);
             }
@@ -2454,8 +2499,23 @@ int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extr
                               }),
                vars.end());
     if (vars.empty() && !needs_own_env) return -1;
+    record_env_slot_info(vars, env_depth_ + 1);
     chunk_->loop_envs.push_back(std::move(vars));
     return static_cast<int>(chunk_->loop_envs.size() - 1);
+}
+
+void BytecodeCompiler::record_env_slot_info(const std::vector<BytecodeChunk::LoopEnvVar>& vars, int depth) {
+    // Must match Environment::SlotMap::kInlineCapacity (Context.h) -- not
+    // included here to avoid coupling this file to the full Environment
+    // definition just for one constant.
+    constexpr size_t kInlineCapacity = 4;
+    for (size_t pos = 0; pos < vars.size() && pos < kInlineCapacity; pos++) {
+        const std::string& name = vars[pos].name;
+        auto it = global_decl_count_.find(name);
+        if (it != global_decl_count_.end() && it->second == 1) {
+            env_slot_info_[name] = EnvSlotInfo{static_cast<uint8_t>(pos), depth};
+        }
+    }
 }
 
 std::vector<std::string> BytecodeCompiler::take_pending_labels() {
@@ -2630,6 +2690,13 @@ void BytecodeCompiler::free_temp(int reg) {
 
 void BytecodeCompiler::emit_read_local(const std::string& name) {
     if (env_names_.count(name)) {
+        auto it = env_slot_info_.find(name);
+        if (it != env_slot_info_.end() && it->second.depth == env_depth_) {
+            emit(Op::LdaEnvSlot);
+            emit_u8(it->second.slot);
+            emit_u16(add_name(name));
+            return;
+        }
         emit(Op::LdaEnv);
         emit_u16(add_name(name));
         return;
@@ -2647,6 +2714,13 @@ void BytecodeCompiler::emit_read_local(const std::string& name) {
 
 void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declaration) {
     if (env_names_.count(name)) {
+        auto it = env_slot_info_.find(name);
+        if (it != env_slot_info_.end() && it->second.depth == env_depth_) {
+            emit(is_declaration ? Op::StaEnvSlotInit : Op::StaEnvSlot);
+            emit_u8(it->second.slot);
+            emit_u16(add_name(name));
+            return;
+        }
         emit(is_declaration ? Op::StaEnvInit : Op::StaEnv);
         emit_u16(add_name(name));
         return;
@@ -2897,6 +2971,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     }
                 }
                 if (env_mode_ && (!env_vars.empty() || needs_own_env)) {
+                    record_env_slot_info(env_vars, env_depth_ + 1);
                     chunk_->loop_envs.push_back(std::move(env_vars));
                     block_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
@@ -3308,6 +3383,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (env_mode_) {
                         std::vector<BytecodeChunk::LoopEnvVar> vars;
                         vars.push_back({clause->get_parameter_name(), false, false, false});
+                        record_env_slot_info(vars, env_depth_ + 1);
                         chunk_->loop_envs.push_back(std::move(vars));
                         catch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                         emit(Op::EnterLoopEnv);
@@ -3438,6 +3514,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     }
                 }
                 if (env_mode_ && (!env_vars.empty() || needs_own_env)) {
+                    record_env_slot_info(env_vars, env_depth_ + 1);
                     chunk_->loop_envs.push_back(std::move(env_vars));
                     switch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
@@ -4447,6 +4524,41 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                        t == ASTNode::Type::CLASS_DECLARATION;
             };
 
+            // Op::FinalizeStaticProperty/FinalizeComputedProperty's method
+            // branch unconditionally writes a "__super_constructor__" marker
+            // property, needed only so a `super.x`/`super()` inside the
+            // method body can resolve -- but that write pays a full
+            // Object::set_property() [[Set]] (Proxy check + a two-pass walk
+            // up Function.prototype/Object.prototype, both already dictionary-
+            // mode) on every single method creation, even for the overwhelming
+            // majority of shorthand methods that never reference `super` at
+            // all. Reuse collect_closure_names (the same whole-body scanner
+            // already trusted for the enclosing function's own full_env
+            // decision, `all_names.count("super")` above) on just this
+            // method's body to prove "no super anywhere in here" at compile
+            // time, and skip the write entirely when proven -- correct
+            // because collect_closure_names's IDENTIFIER case captures a bare
+            // `super` reference regardless of nesting depth (arrows correctly
+            // inherit the enclosing method's super binding and must count;
+            // an ordinary nested function can never legally contain `super`
+            // at all, so recursing into one is harmless, never a false-clear).
+            auto method_references_super = [](const ASTNode* fn_node) {
+                if (!fn_node || fn_node->get_type() != ASTNode::Type::FUNCTION_EXPRESSION) {
+                    return true;  // unknown shape: conservative, keep the write
+                }
+                const auto* fe = static_cast<const FunctionExpression*>(fn_node);
+                std::unordered_set<std::string> names;
+                bool saw_eval = false, saw_class = false, unknown = false;
+                collect_closure_names(fe->get_body(), /*inside_closure=*/true, names,
+                                      saw_eval, saw_class, unknown, /*suspendable=*/false);
+                return names.count("super") > 0;
+            };
+            // kind's low 2 bits are the existing 0/1/2 (Method/Getter/Setter);
+            // bit 0x4 is new: "method body proved super-free, the
+            // __super_constructor__ write was skipped" (Interpreter.cpp masks
+            // it off before comparing against 0/1/2).
+            constexpr uint8_t kSuperFreeFlag = 0x4;
+
             for (const auto& prop : lit->get_properties()) {
                 bool is_method = prop->type == ObjectLiteral::PropertyType::Method;
                 bool is_getter = prop->type == ObjectLiteral::PropertyType::Getter;
@@ -4485,7 +4597,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         emit_u8(static_cast<uint8_t>(obj_reg));
                         emit_u16(key_name_idx);
                         emit_u16(display_name_idx);
-                        emit_u8(is_method ? 0 : (is_getter ? 1 : 2));
+                        uint8_t kind_byte = is_method ? 0 : (is_getter ? 1 : 2);
+                        if (is_method && !method_references_super(prop->value.get())) {
+                            kind_byte |= kSuperFreeFlag;
+                        }
+                        emit_u8(kind_byte);
                         emit_u16(alloc_feedback_slot());
                     } else {
                         // NamedEvaluation step 6: unlike Method/Getter/Setter
@@ -4530,6 +4646,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
                     uint8_t kind = is_method ? 2
                                  : (is_anon_fn_def(prop->value.get()) ? 1 : 0);
+                    if (is_method && !method_references_super(prop->value.get())) {
+                        kind |= kSuperFreeFlag;
+                    }
                     emit(Op::FinalizeComputedProperty);
                     emit_u8(static_cast<uint8_t>(obj_reg));
                     emit_u8(static_cast<uint8_t>(key_reg));

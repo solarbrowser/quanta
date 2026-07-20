@@ -51,6 +51,7 @@ const OpInfo& op_info(Op op) {
         {"LdaLookup", 2, 'n'}, {"LdaLookupTypeof", 2, 'n'}, {"StaLookup", 2, 'n'},
         {"CheckLookupResolvable", 2, 'n'}, {"StaLookupChecked", 3, 'l'},
         {"LdaEnv", 2, 'n'}, {"StaEnv", 2, 'n'}, {"StaEnvInit", 2, 'n'},
+        {"LdaEnvSlot", 3, 'e'}, {"StaEnvSlot", 3, 'e'}, {"StaEnvSlotInit", 3, 'e'},
         {"BindEnvLocals", 0, '-'},
         {"EnterLoopEnv", 2, 'z'}, {"AdvanceLoopEnv", 2, 'z'}, {"ExitLoopEnv", 0, '-'},
         {"SaveEnv", 0, '-'}, {"RestoreEnv", 0, '-'}, {"PopEnvSave", 0, '-'},
@@ -179,6 +180,13 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
                                     (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.names[name_idx] << "'";
+                break;
+            }
+            case 'e': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                out << " slot" << static_cast<int>(chunk.code[operand_pc])
                     << " '" << chunk.names[name_idx] << "'";
                 break;
             }
