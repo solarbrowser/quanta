@@ -93,6 +93,11 @@ void Object::add_shape_property_cached(const std::string& key, const Value& valu
     if (used_as_prototype()) bump_proto_epoch();
 }
 
+void Object::install_new_accessor_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    if (!descriptors_) descriptors_ = std::make_unique<HybridDescriptorMap>();
+    (*descriptors_)[key] = desc;
+}
+
 bool Object::set_shape_slot(const std::string& key, const Value& value) {
     if (!shape_) return false;
     if (Value* existing = find_shape_slot(key)) { *existing = value; return true; }

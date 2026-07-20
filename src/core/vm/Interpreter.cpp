@@ -465,6 +465,52 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
     }
 }
 
+// FinalizeStaticProperty's Getter/Setter shape-transition cache, mirroring
+// define_own_cached above. Only offered to a genuinely new own key (a
+// getter+setter pair sharing a key routes its second accessor through the
+// slow-path merge below instead). A cache hit hand-writes the descriptor
+// itself (install_new_accessor_descriptor), never re-entering
+// set_property_descriptor -- that would see the shape slot already present
+// and take the "merge" branch instead of "brand new".
+void define_accessor_cached(Object* obj, const std::string& key, Function* fn, bool is_getter, FeedbackSlot* fb) {
+    if (!obj) return;
+    Collector::write_barrier(obj);
+    if (fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
+        !obj->has_descriptor_override(key) && obj->is_extensible() && !obj->has_own_property(key)) {
+        Shape* shape = obj->get_shape();
+        uint64_t epoch = Object::proto_epoch();
+        for (uint8_t i = 0; i < fb->transition_count; i++) {
+            const auto& te = fb->transitions[i];
+            if (te.from_shape == shape && te.proto_epoch == epoch) {
+                obj->add_shape_property_cached(key, Value(), te.to_shape);
+                PropertyDescriptor desc;
+                if (is_getter) desc.set_getter(fn); else desc.set_setter(fn);
+                desc.set_enumerable(true);
+                desc.set_configurable(true);
+                obj->install_new_accessor_descriptor(key, desc);
+                return;
+            }
+        }
+    }
+    PropertyDescriptor desc = obj->has_own_property(key)
+        ? obj->get_property_descriptor(key) : PropertyDescriptor();
+    if (is_getter) desc.set_getter(fn); else desc.set_setter(fn);
+    desc.set_enumerable(true);
+    desc.set_configurable(true);
+    Shape* shape_before = obj->get_shape();
+    bool was_new = fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
+                   !obj->has_descriptor_override(key) && shape_before && !obj->has_own_property(key);
+    obj->set_property_descriptor(key, desc);
+    if (was_new && fb && !fb->transition_mega &&
+        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
+        Shape* s = obj->get_shape();
+        int32_t idx = s ? s->find_slot(key) : -1;
+        if (idx >= 0) {
+            learn_transition(fb, shape_before, s, static_cast<uint32_t>(idx), Object::proto_epoch());
+        }
+    }
+}
+
 // Dedups on (shape, key): unlike learn_feedback (FeedbackSlot, one fixed
 // name per site), the same GetKeyed/SetKeyed site can legitimately learn
 // several different keys against the same shape (e.g. `obj[k]` in a loop
@@ -1817,18 +1863,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                         // of paying set_function_prototype's real (if no-op)
                         // descriptor-erase + Shape::find_slot + a linear scan
                         // over property_insertion_order_ on every getter/
-                        // setter. Then fetch-existing-descriptor-and-merge so
-                        // a getter+setter pair sharing a key installs
+                        // setter. define_accessor_cached handles the fetch-
+                        // existing-descriptor-and-merge case internally, so a
+                        // getter+setter pair sharing a key still installs
                         // correctly regardless of what else runs between them.
                         if (fn->is_constructor()) fn->set_function_prototype(nullptr);
-                        if (obj) {
-                            PropertyDescriptor desc = obj->has_own_property(key)
-                                ? obj->get_property_descriptor(key) : PropertyDescriptor();
-                            if (kind == 1) desc.set_getter(fn); else desc.set_setter(fn);
-                            desc.set_enumerable(true);
-                            desc.set_configurable(true);
-                            obj->set_property_descriptor(key, desc);
-                        }
+                        if (obj) define_accessor_cached(obj, key, fn, kind == 1, &chunk.feedback[fb_idx]);
                     }
                 }
                 CHECK_EXC();

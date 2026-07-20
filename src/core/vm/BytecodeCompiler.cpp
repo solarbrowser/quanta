@@ -1229,6 +1229,227 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
     }
 }
 
+// True if `name` appears as a plain Identifier anywhere in `node` except
+// inside `region` (skipped by pointer identity). Proves a nested lexical
+// never escapes its own block, safe to keep register-resident. A separate
+// function rather than an exclusion param on collect_closure_names: that
+// function's contract is relied on everywhere else in this file, and
+// threading a new param through its ~40 call sites risks a silent
+// regression. No inside_closure tracking needed here -- any reference
+// outside region is an escape, closure or not. Unknown node types
+// conservatively count as an escape.
+bool references_outside(const ASTNode* node, const ASTNode* region, const std::string& name) {
+    if (!node || node == region) return false;
+    auto walk_params = [&](const std::vector<std::unique_ptr<Parameter>>& ps) {
+        for (const auto& p : ps) {
+            if (p->has_default() && references_outside(p->get_default_value(), region, name)) return true;
+            if (p->has_destructuring() && references_outside(p->get_destructuring_pattern(), region, name)) return true;
+        }
+        return false;
+    };
+    switch (node->get_type()) {
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::REGEX_LITERAL:
+        case ASTNode::Type::EMPTY_STATEMENT:
+        case ASTNode::Type::BREAK_STATEMENT:
+        case ASTNode::Type::CONTINUE_STATEMENT:
+            return false;
+        case ASTNode::Type::IDENTIFIER:
+            return static_cast<const Identifier*>(node)->get_name() == name;
+        case ASTNode::Type::FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const FunctionExpression*>(node);
+            return walk_params(n->get_params()) || references_outside(n->get_body(), region, name);
+        }
+        case ASTNode::Type::FUNCTION_DECLARATION: {
+            const auto* n = static_cast<const FunctionDeclaration*>(node);
+            return walk_params(n->get_params()) || references_outside(n->get_body(), region, name);
+        }
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const ArrowFunctionExpression*>(node);
+            return walk_params(n->get_params()) || references_outside(n->get_body(), region, name);
+        }
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const AsyncFunctionExpression*>(node);
+            return walk_params(n->get_params()) || references_outside(n->get_body(), region, name);
+        }
+        case ASTNode::Type::CLASS_DECLARATION:
+            return true;  // opaque to this scan, same conservative treatment as collect_closure_names
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements())
+                if (references_outside(stmt.get(), region, name)) return true;
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return references_outside(n->get_test(), region, name) ||
+                   references_outside(n->get_consequent(), region, name) ||
+                   references_outside(n->get_alternate(), region, name);
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            return references_outside(n->get_test(), region, name) ||
+                   references_outside(n->get_body(), region, name);
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            return references_outside(n->get_body(), region, name) ||
+                   references_outside(n->get_test(), region, name);
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            return references_outside(n->get_init(), region, name) ||
+                   references_outside(n->get_test(), region, name) ||
+                   references_outside(n->get_update(), region, name) ||
+                   references_outside(n->get_body(), region, name);
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            return references_outside(n->get_left(), region, name) ||
+                   references_outside(n->get_right(), region, name) ||
+                   references_outside(n->get_body(), region, name);
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            return references_outside(n->get_left(), region, name) ||
+                   references_outside(n->get_right(), region, name) ||
+                   references_outside(n->get_body(), region, name);
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (references_outside(n->get_try_block(), region, name)) return true;
+            if (const ASTNode* cc = n->get_catch_clause())
+                if (references_outside(static_cast<const CatchClause*>(cc)->get_body(), region, name)) return true;
+            return references_outside(n->get_finally_block(), region, name);
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (references_outside(n->get_discriminant(), region, name)) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (references_outside(cc->get_test(), region, name)) return true;
+                for (const auto& st : cc->get_consequent())
+                    if (references_outside(st.get(), region, name)) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return references_outside(static_cast<const LabeledStatement*>(node)->get_statement(), region, name);
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return references_outside(static_cast<const ExpressionStatement*>(node)->get_expression(), region, name);
+        case ASTNode::Type::RETURN_STATEMENT:
+            return references_outside(static_cast<const ReturnStatement*>(node)->get_argument(), region, name);
+        case ASTNode::Type::THROW_STATEMENT:
+            return references_outside(static_cast<const ThrowStatement*>(node)->get_expression(), region, name);
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations())
+                if (references_outside(d->get_init(), region, name)) return true;
+            return false;
+        }
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            if (references_outside(n->get_source(), region, name)) return true;
+            for (const auto& t : n->get_targets())
+                if (references_outside(t.get(), region, name)) return true;
+            for (const auto& pm : n->get_property_mappings()) {
+                if (pm.variable_name == name) return true;
+                if (pm.computed_key && references_outside(pm.computed_key.get(), region, name)) return true;
+            }
+            for (const auto& dv : n->get_default_values())
+                if (references_outside(dv.expr.get(), region, name)) return true;
+            if (n->get_nested_rest_pattern())
+                return references_outside(n->get_nested_rest_pattern(), region, name);
+            return false;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return references_outside(n->get_left(), region, name) ||
+                   references_outside(n->get_right(), region, name);
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return references_outside(static_cast<const UnaryExpression*>(node)->get_operand(), region, name);
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            return references_outside(n->get_left(), region, name) ||
+                   references_outside(n->get_right(), region, name);
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            return references_outside(n->get_left(), region, name) ||
+                   references_outside(n->get_right(), region, name);
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            return references_outside(n->get_test(), region, name) ||
+                   references_outside(n->get_consequent(), region, name) ||
+                   references_outside(n->get_alternate(), region, name);
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            if (references_outside(n->get_callee(), region, name)) return true;
+            for (const auto& arg : n->get_arguments())
+                if (references_outside(arg.get(), region, name)) return true;
+            return false;
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (references_outside(n->get_constructor(), region, name)) return true;
+            for (const auto& arg : n->get_arguments())
+                if (references_outside(arg.get(), region, name)) return true;
+            return false;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* n = static_cast<const MemberExpression*>(node);
+            if (references_outside(n->get_object(), region, name)) return true;
+            return n->is_computed() && references_outside(n->get_property(), region, name);
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            if (references_outside(n->get_object(), region, name)) return true;
+            return n->is_computed() && references_outside(n->get_property(), region, name);
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return references_outside(static_cast<const SpreadElement*>(node)->get_argument(), region, name);
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements())
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION &&
+                    references_outside(el.expression.get(), region, name)) return true;
+            return false;
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& prop : n->get_properties()) {
+                if (prop->computed && prop->key && references_outside(prop->key.get(), region, name)) return true;
+                if (prop->value && references_outside(prop->value.get(), region, name)) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements())
+                if (references_outside(el.get(), region, name)) return true;
+            return false;
+        }
+        case ASTNode::Type::YIELD_EXPRESSION: {
+            const auto* n = static_cast<const YieldExpression*>(node);
+            return n->get_argument() && references_outside(n->get_argument(), region, name);
+        }
+        case ASTNode::Type::AWAIT_EXPRESSION: {
+            const auto* n = static_cast<const AwaitExpression*>(node);
+            return n->get_argument() && references_outside(n->get_argument(), region, name);
+        }
+        default:
+            return true;  // unrecognized node: conservative, same as collect_closure_names's `unknown`
+    }
+}
+
 }
 
 bool BytecodeCompiler::references_identifier(const ASTNode* node, const std::string& name) {
@@ -1869,72 +2090,92 @@ bool is_named_evaluation_rhs(const ASTNode* node) {
            t == ASTNode::Type::CLASS_DECLARATION;
 }
 
-// Recursively collects for-header lexical names (`for (let i = ...; ...)`,
-// C-style only -- for-of/for-in headers use a different, already-safe
-// mechanism). These are the only nested lexicals whose register inclusion
-// selective env_mode allows: their per-iteration scope means an outer
-// reference to the same name is a different binding, not a leak, and this
-// is where the register refinement's real performance win comes from
-// (arith_loop/properties). Every OTHER nested lexical (block/switch/catch)
-// stays env-resident unconditionally, since a register isn't block-scoped
-// and would otherwise leak past the owning block (see scope-lex-const.js).
-void collect_for_header_names(const ASTNode* node, std::unordered_set<std::string>& out) {
+// Maps each nested lexical/class declaration to its "declaring region": a
+// plain block/if-branch/while-body/etc is its own BlockStatement; a
+// C-style `for (let i=...)` header is the WHOLE ForStatement (test/update/
+// body legitimately see it, not an escape); a switch-case lexical is the
+// WHOLE SwitchStatement (spec: one shared BlockDeclarationInstantiation).
+// `var` is never a candidate (function-scoped). for-of/for-in headers get
+// no entry (region_of.find fails -> caller keeps them env-resident,
+// unchanged from today -- extending this there is future work). Catch
+// parameters aren't visited (handled separately by the caller: Annex B's
+// `catch(e){var e;}` needs two independently-mutable same-named bindings,
+// which no register can model).
+void collect_lexical_regions(const ASTNode* node, const ASTNode* current_region,
+                              std::unordered_map<std::string, const ASTNode*>& out) {
     if (!node) return;
     switch (node->get_type()) {
+        case ASTNode::Type::CLASS_DECLARATION: {
+            const auto* cd = static_cast<const ClassDeclaration*>(node);
+            if (!cd->is_expression() && cd->get_id() && !cd->get_id()->get_name().empty()) {
+                out.emplace(cd->get_id()->get_name(), current_region);
+            }
+            return;
+        }
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* decl = static_cast<const VariableDeclaration*>(node);
+            if (decl->get_kind() == VariableDeclarator::Kind::VAR) return;
+            for (const auto& d : decl->get_declarations()) {
+                if (d->get_id() && !d->get_id()->get_name().empty()) {
+                    out.emplace(d->get_id()->get_name(), current_region);
+                }
+            }
+            return;
+        }
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements()) collect_lexical_regions(stmt.get(), node, out);
+            return;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            collect_lexical_regions(n->get_consequent(), current_region, out);
+            collect_lexical_regions(n->get_alternate(), current_region, out);
+            return;
+        }
+        case ASTNode::Type::WHILE_STATEMENT:
+            collect_lexical_regions(static_cast<const WhileStatement*>(node)->get_body(), current_region, out);
+            return;
+        case ASTNode::Type::DO_WHILE_STATEMENT:
+            collect_lexical_regions(static_cast<const DoWhileStatement*>(node)->get_body(), current_region, out);
+            return;
         case ASTNode::Type::FOR_STATEMENT: {
             const auto* n = static_cast<const ForStatement*>(node);
             if (n->get_init() && n->get_init()->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
                 const auto* vd = static_cast<const VariableDeclaration*>(n->get_init());
                 if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
                     for (const auto& d : vd->get_declarations()) {
-                        if (d->get_id()) out.insert(d->get_id()->get_name());
+                        if (d->get_id()) out.emplace(d->get_id()->get_name(), node);
                     }
                 }
             }
-            collect_for_header_names(n->get_body(), out);
+            collect_lexical_regions(n->get_body(), current_region, out);
             return;
         }
-        case ASTNode::Type::BLOCK_STATEMENT: {
-            const auto* n = static_cast<const BlockStatement*>(node);
-            for (const auto& stmt : n->get_statements()) collect_for_header_names(stmt.get(), out);
-            return;
-        }
-        case ASTNode::Type::IF_STATEMENT: {
-            const auto* n = static_cast<const IfStatement*>(node);
-            collect_for_header_names(n->get_consequent(), out);
-            collect_for_header_names(n->get_alternate(), out);
-            return;
-        }
-        case ASTNode::Type::WHILE_STATEMENT:
-            collect_for_header_names(static_cast<const WhileStatement*>(node)->get_body(), out);
-            return;
-        case ASTNode::Type::DO_WHILE_STATEMENT:
-            collect_for_header_names(static_cast<const DoWhileStatement*>(node)->get_body(), out);
-            return;
         case ASTNode::Type::FOR_OF_STATEMENT:
-            collect_for_header_names(static_cast<const ForOfStatement*>(node)->get_body(), out);
+            collect_lexical_regions(static_cast<const ForOfStatement*>(node)->get_body(), current_region, out);
             return;
         case ASTNode::Type::FOR_IN_STATEMENT:
-            collect_for_header_names(static_cast<const ForInStatement*>(node)->get_body(), out);
+            collect_lexical_regions(static_cast<const ForInStatement*>(node)->get_body(), current_region, out);
             return;
         case ASTNode::Type::TRY_STATEMENT: {
             const auto* n = static_cast<const TryStatement*>(node);
-            collect_for_header_names(n->get_try_block(), out);
+            collect_lexical_regions(n->get_try_block(), current_region, out);
             if (const ASTNode* cc = n->get_catch_clause())
-                collect_for_header_names(static_cast<const CatchClause*>(cc)->get_body(), out);
-            collect_for_header_names(n->get_finally_block(), out);
+                collect_lexical_regions(static_cast<const CatchClause*>(cc)->get_body(), current_region, out);
+            collect_lexical_regions(n->get_finally_block(), current_region, out);
             return;
         }
         case ASTNode::Type::SWITCH_STATEMENT: {
             const auto* n = static_cast<const SwitchStatement*>(node);
             for (const auto& c : n->get_cases()) {
                 for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent())
-                    collect_for_header_names(s.get(), out);
+                    collect_lexical_regions(s.get(), node, out);
             }
             return;
         }
         case ASTNode::Type::LABELED_STATEMENT:
-            collect_for_header_names(static_cast<const LabeledStatement*>(node)->get_statement(), out);
+            collect_lexical_regions(static_cast<const LabeledStatement*>(node)->get_statement(), current_region, out);
             return;
         default:
             return;
@@ -2093,14 +2334,21 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (!prescan_declarations(body, declared_pre)) return nullptr;
         std::unordered_map<std::string, int> decl_count;
         for (const auto& info : declared_pre) decl_count[info.name]++;
-        std::unordered_set<std::string> for_header_names;
-        collect_for_header_names(body, for_header_names);
+        // See collect_lexical_regions/references_outside's doc comments.
+        std::unordered_map<std::string, const ASTNode*> region_of;
+        collect_lexical_regions(body, nullptr, region_of);
         for (const auto& info : declared_pre) {
             if (info.is_catch_param) {
                 env_resident.insert(info.name);
-            } else if (info.is_lexical && !direct_pre.count(info.name) &&
-                       (decl_count[info.name] > 1 || !for_header_names.count(info.name))) {
-                env_resident.insert(info.name);
+            } else if (info.is_lexical && !direct_pre.count(info.name)) {
+                if (decl_count[info.name] > 1 || env_resident.count(info.name) > 0) {
+                    env_resident.insert(info.name);  // shadow-duplicated or closure-captured
+                } else {
+                    auto it = region_of.find(info.name);
+                    if (it == region_of.end() || references_outside(body, it->second, info.name)) {
+                        env_resident.insert(info.name);  // escapes its own scope -- keep it honest
+                    }
+                }
             }
         }
         // Nothing ended up captured: the whole function is register-pure
@@ -2410,15 +2658,29 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     }
     std::unordered_map<std::string, int> decl_count;
     for (const auto& info : declared) decl_count[info.name]++;
-    std::unordered_set<std::string> for_header_names;
-    for (const auto& st : statements) collect_for_header_names(st.get(), for_header_names);
+    // Same region-escape analysis as compile()'s selective env_mode scan
+    // (see collect_lexical_regions/references_outside's doc comments) --
+    // applied across every top-level statement, since a script has no
+    // single BlockStatement root to scan from.
+    std::unordered_map<std::string, const ASTNode*> region_of;
+    for (const auto& st : statements) collect_lexical_regions(st.get(), nullptr, region_of);
+    auto escapes_script = [&](const ASTNode* region, const std::string& name) {
+        for (const auto& st : statements) {
+            if (references_outside(st.get(), region, name)) return true;
+        }
+        return false;
+    };
     std::unordered_set<std::string> env_resident;
     for (const auto& info : declared) {
         if (!info.is_lexical && !info.is_catch_param) continue;  // nested var: global
-        if (!for_header_names.count(info.name) || info.is_catch_param || !refine ||
-            closure_names.count(info.name) || decl_count[info.name] > 1 ||
-            top_names.count(info.name)) {
+        if (info.is_catch_param || !refine || closure_names.count(info.name) ||
+            decl_count[info.name] > 1 || top_names.count(info.name)) {
             env_resident.insert(info.name);
+        } else {
+            auto it = region_of.find(info.name);
+            if (it == region_of.end() || escapes_script(it->second, info.name)) {
+                env_resident.insert(info.name);
+            }
         }
     }
 

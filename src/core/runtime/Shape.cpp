@@ -11,7 +11,7 @@ namespace Quanta {
 Shape::Shape(Shape* parent, const std::string& key, uint32_t slot_index)
     : parent_(parent), added_key_(key), slot_count_(slot_index + 1) {
     if (parent_) slots_ = parent_->slots_;
-    slots_[key] = slot_index;
+    slots_.set(key, slot_index);
 }
 
 Shape* Shape::root() {
@@ -20,19 +20,15 @@ Shape* Shape::root() {
 }
 
 Shape* Shape::transition(const std::string& key) {
-    auto it = transitions_.find(key);
-    if (it != transitions_.end()) return it->second.get();
+    if (Shape* existing = transitions_.find(key)) return existing;
     if (slot_count_ >= kMaxSlots) return nullptr;
     if (transitions_.size() >= kMaxTransitions) return nullptr;
     auto child = std::unique_ptr<Shape>(new Shape(this, key, slot_count_));
-    Shape* raw = child.get();
-    transitions_.emplace(key, std::move(child));
-    return raw;
+    return transitions_.insert(key, std::move(child));
 }
 
 int32_t Shape::find_slot(const std::string& key) const {
-    auto it = slots_.find(key);
-    return it != slots_.end() ? static_cast<int32_t>(it->second) : -1;
+    return slots_.find(key);
 }
 
 std::vector<std::string> Shape::keys_in_order() const {

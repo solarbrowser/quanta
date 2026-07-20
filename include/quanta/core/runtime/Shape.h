@@ -8,6 +8,7 @@
 #define QUANTA_RUNTIME_SHAPE_H
 
 #include "quanta/core/runtime/SmallMapPool.h"
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -66,16 +67,100 @@ private:
     Shape* parent_ = nullptr;
     std::string added_key_;
     uint32_t slot_count_ = 0;
-    // Flattened own+inherited lookup table: rebuilt once per shape (at
-    // transition time), not per access -- the whole point is O(1) find_slot.
-    // Pooled allocator (SmallMapPool): find_slot/transition only ever return
-    // a by-value int32_t/Shape* copy, never a pointer/iterator into these
-    // maps, so swapping the allocator carries none of the pointer-caching
-    // risk Environment::slots_ had to be checked for.
-    std::unordered_map<std::string, uint32_t, std::hash<std::string>, std::equal_to<std::string>,
-                        SmallMapAllocator<std::pair<const std::string, uint32_t>>> slots_;
-    std::unordered_map<std::string, std::unique_ptr<Shape>, std::hash<std::string>, std::equal_to<std::string>,
-                        SmallMapAllocator<std::pair<const std::string, std::unique_ptr<Shape>>>> transitions_;
+
+    // Slot table (key -> flattened slot index), same inline+overflow idiom
+    // as HybridDescriptorMap (Object.h). No migration/erase needed --
+    // find_slot always returns by value, no address-stability to protect.
+    // Explicitly copyable (unlike HybridDescriptorMap's owning Object): the
+    // constructor below copies a parent's whole table before appending its
+    // own key.
+    struct SlotMap {
+        static constexpr size_t kInlineCapacity = 4;
+        struct Entry { std::string key; uint32_t value = 0; bool in_use = false; };
+        std::array<Entry, kInlineCapacity> inline_entries;
+        using OverflowMap = std::unordered_map<std::string, uint32_t, std::hash<std::string>,
+                                                std::equal_to<std::string>,
+                                                SmallMapAllocator<std::pair<const std::string, uint32_t>>>;
+        std::unique_ptr<OverflowMap> overflow;
+
+        SlotMap() = default;
+        SlotMap(const SlotMap& other)
+            : inline_entries(other.inline_entries),
+              overflow(other.overflow ? std::make_unique<OverflowMap>(*other.overflow) : nullptr) {}
+        SlotMap& operator=(const SlotMap& other) {
+            if (this == &other) return *this;
+            inline_entries = other.inline_entries;
+            overflow = other.overflow ? std::make_unique<OverflowMap>(*other.overflow) : nullptr;
+            return *this;
+        }
+        SlotMap(SlotMap&&) = default;
+        SlotMap& operator=(SlotMap&&) = default;
+
+        int32_t find(const std::string& key) const {
+            for (const auto& e : inline_entries) {
+                if (e.in_use && e.key == key) return static_cast<int32_t>(e.value);
+            }
+            if (overflow) {
+                auto it = overflow->find(key);
+                if (it != overflow->end()) return static_cast<int32_t>(it->second);
+            }
+            return -1;
+        }
+        void set(const std::string& key, uint32_t value) {
+            for (auto& e : inline_entries) {
+                if (e.in_use && e.key == key) { e.value = value; return; }
+            }
+            for (auto& e : inline_entries) {
+                if (!e.in_use) { e.key = key; e.value = value; e.in_use = true; return; }
+            }
+            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            (*overflow)[key] = value;
+        }
+    };
+    SlotMap slots_;
+
+    // Transition table (key -> child Shape*), same idiom, sized 8 not 4
+    // (root shapes fan out wider than typical slot counts -- object_literals.js's
+    // computed-key benchmark alone drives 8 children of root). Never
+    // copyable. Entries own unique_ptr<Shape>, never Shape by value: Shape*
+    // is cached permanently elsewhere (FeedbackSlot, Object::shape_), so
+    // only the pointer may move between inline/overflow, never the pointee.
+    struct TransitionMap {
+        static constexpr size_t kInlineCapacity = 8;
+        struct Entry { std::string key; std::unique_ptr<Shape> value; bool in_use = false; };
+        std::array<Entry, kInlineCapacity> inline_entries;
+        using OverflowMap = std::unordered_map<std::string, std::unique_ptr<Shape>, std::hash<std::string>,
+                                                std::equal_to<std::string>,
+                                                SmallMapAllocator<std::pair<const std::string, std::unique_ptr<Shape>>>>;
+        std::unique_ptr<OverflowMap> overflow;
+
+        Shape* find(const std::string& key) const {
+            for (const auto& e : inline_entries) {
+                if (e.in_use && e.key == key) return e.value.get();
+            }
+            if (overflow) {
+                auto it = overflow->find(key);
+                if (it != overflow->end()) return it->second.get();
+            }
+            return nullptr;
+        }
+        size_t size() const {
+            size_t n = 0;
+            for (const auto& e : inline_entries) if (e.in_use) n++;
+            if (overflow) n += overflow->size();
+            return n;
+        }
+        Shape* insert(const std::string& key, std::unique_ptr<Shape> child) {
+            Shape* raw = child.get();
+            for (auto& e : inline_entries) {
+                if (!e.in_use) { e.key = key; e.value = std::move(child); e.in_use = true; return raw; }
+            }
+            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            (*overflow)[key] = std::move(child);
+            return raw;
+        }
+    };
+    TransitionMap transitions_;
 };
 
 }
