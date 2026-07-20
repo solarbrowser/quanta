@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/SmallMapPool.h"
+#include <array>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -404,11 +405,99 @@ public:
         bool deletable = false;     // ES1 DontDelete: absent -> not deletable
     };
 
+    // Like HybridDescriptorMap's inline array (Object.h), but can't copy its
+    // migrate-to-overflow-when-full step: stable_binding_slot() hands out a
+    // raw Value* that BytecodeChunk::lookup_cache and
+    // Function::instance_lookup_cache_ cache PERMANENTLY (Op::LdaLookup/
+    // StaLookup trust it for the owning chunk/Function's whole lifetime), and
+    // migration would silently invalidate that pointer. So: inline and
+    // overflow entries, once populated, NEVER move. Erasing an inline entry
+    // tombstones it in place instead of compacting (compaction would relocate
+    // a survivor). Tombstones ARE reused by later inserts -- safe because
+    // stable_binding_slot() refuses deletable bindings, the only kind that
+    // can ever be erased, so a tombstoned slot never has a live cached
+    // pointer. Re-audit lookup_cache/instance_lookup_cache_ before relaxing
+    // any of this.
+    struct SlotMap {
+        static constexpr size_t kInlineCapacity = 4;
+        struct InlineEntry {
+            std::string key;
+            BindingSlot slot;
+            bool in_use = false;
+        };
+        std::array<InlineEntry, kInlineCapacity> inline_entries;
+        using OverflowMap = std::unordered_map<std::string, BindingSlot, std::hash<std::string>,
+                                                std::equal_to<std::string>,
+                                                SmallMapAllocator<std::pair<const std::string, BindingSlot>>>;
+        std::unique_ptr<OverflowMap> overflow;
+
+        BindingSlot* find(const std::string& name) {
+            for (auto& e : inline_entries) {
+                if (e.in_use && e.key == name) return &e.slot;
+            }
+            if (overflow) {
+                auto it = overflow->find(name);
+                if (it != overflow->end()) return &it->second;
+            }
+            return nullptr;
+        }
+        const BindingSlot* find(const std::string& name) const {
+            return const_cast<SlotMap*>(this)->find(name);
+        }
+
+        // Insert-if-absent-then-return-reference, mirroring unordered_map::
+        // operator[]'s semantics (the call sites all rely on this).
+        BindingSlot& get_or_create(const std::string& name) {
+            if (BindingSlot* existing = find(name)) return *existing;
+            for (auto& e : inline_entries) {
+                if (!e.in_use) {
+                    e.key = name;
+                    e.slot = BindingSlot{};
+                    e.in_use = true;
+                    return e.slot;
+                }
+            }
+            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            return (*overflow)[name];
+        }
+
+        // Tombstones (never compacts -- see class doc comment). Overflow
+        // erase is ordinary unordered_map::erase: safe unchanged, since
+        // erasing one node never moves another node's address.
+        bool erase(const std::string& name) {
+            for (auto& e : inline_entries) {
+                if (e.in_use && e.key == name) {
+                    e.in_use = false;
+                    e.slot = BindingSlot{};
+                    e.key.clear();
+                    return true;
+                }
+            }
+            return overflow && overflow->erase(name) > 0;
+        }
+
+        size_t size() const {
+            size_t n = 0;
+            for (const auto& e : inline_entries) if (e.in_use) n++;
+            if (overflow) n += overflow->size();
+            return n;
+        }
+
+        template <typename Fn>
+        void for_each(Fn&& fn) const {
+            for (const auto& e : inline_entries) {
+                if (e.in_use) fn(e.key, e.slot);
+            }
+            if (overflow) {
+                for (const auto& kv : *overflow) fn(kv.first, kv.second);
+            }
+        }
+    };
+
 private:
     Type type_;
     Environment* outer_environment_;
-    std::unordered_map<std::string, BindingSlot, std::hash<std::string>, std::equal_to<std::string>,
-                        SmallMapAllocator<std::pair<const std::string, BindingSlot>>> slots_;
+    SlotMap slots_;
     std::unordered_set<std::string> lexical_names_;
     std::unordered_set<std::string> const_binding_names_; // tracks const declarations in Object envs
     Object* binding_object_;
