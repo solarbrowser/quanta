@@ -641,9 +641,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // Track uninitialized this for derived constructors (for super[expr] check).
     // `extends null` is still ConstructorKind "derived": this stays uninitialized
     // (its super() always throws TypeError, so it can never become initialized).
-    {
+    if (is_class_constructor_) {
         Value scp = get_property("__super_constructor__");
-        if (is_class_constructor_ && !has_own_property("__default_ctor__") &&
+        if (!has_own_property("__default_ctor__") &&
             (scp.is_function() || has_property("__super_is_null__"))) {
             function_context.set_this_needs_super(true);
             function_context.set_super_called(false);
@@ -690,7 +690,13 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // super.x and #private access delegate to the tree-walker's own evaluate()
     // (BytecodeCompiler::emit_treewalker_delegate) and resolve these via
     // normal environment lookup, same as the tree-walker path below.
-    if (this->has_property("__super_constructor__")) {
+    if (super_marker_state_ < 0) {
+        super_marker_state_ = 0;
+        if (this->has_property("__super_constructor__")) super_marker_state_ |= 1;
+        if (this->has_property("__super_is_null__")) super_marker_state_ |= 2;
+        if (this->has_property("__private_brands__")) super_marker_state_ |= 4;
+    }
+    if (super_marker_state_ & 1) {
         Value super_constructor = this->get_property("__super_constructor__");
         if (!super_constructor.is_undefined() && !super_constructor.is_null()) {
             function_context.create_binding("__super__", super_constructor, false);
@@ -700,10 +706,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
     }
-    if (this->has_property("__super_is_null__")) {
+    if (super_marker_state_ & 2) {
         function_context.create_binding("__super_is_null__", Value(true), false);
     }
-    if (!vm_register_fast && this->has_property("__private_brands__")) {
+    if (!vm_register_fast && (super_marker_state_ & 4)) {
         Value brands = this->get_property("__private_brands__");
         if (!brands.is_undefined() && !brands.is_null()) {
             function_context.create_binding("__eval_private_names__", brands, false);

@@ -2687,6 +2687,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     BytecodeCompiler compiler({}, /*env_mode=*/true, &env_resident);
     if (compiler.failed_) return nullptr;
     compiler.script_mode_ = true;
+    // Same global_decl_count_ bookkeeping as compile()'s param/declared/rest
+    // loop above -- without it, script-level nested lexicals never qualify
+    // for LdaEnvSlot/StaEnvSlot (the uniqueness check always misses).
+    for (const auto& info : declared) compiler.global_decl_count_[info.name]++;
     for (const auto& info : declared) {
         if (!info.is_lexical && !info.is_catch_param) continue;
         if (env_resident.count(info.name)) {

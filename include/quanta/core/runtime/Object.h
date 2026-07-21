@@ -632,6 +632,11 @@ private:
     // -1 unknown, 0 body never mentions the function's own name (skip the
     // per-call self-reference binding), 1 mentions it.
     mutable int8_t self_name_state_ = -1;
+    // -1 unknown, else bitmask: bit0=__super_constructor__, bit1=__super_is_null__,
+    // bit2=__private_brands__ present. Same monotonic-cache precedent as
+    // closure_props_state_ above -- these markers are installed once at
+    // creation time and never removed afterward.
+    mutable int8_t super_marker_state_ = -1;
     // Set eagerly the moment a genuine (non-const-marker) __closure_ property
     // is installed (see Function::set_property) -- has_closure_props()
     // becomes an O(1) check instead of scanning every own property key on
