@@ -83,7 +83,8 @@ bool key_is_canonical_index(const std::string& s, size_t& out_index) {
 // Forward decl: defined below, needed here since get_primitive_named's new
 // prototype-property cache reuses the same (shape, slot_index) learn helper
 // GetNamed's own receiver-shape cache uses.
-void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index);
+void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index,
+                     uint64_t no_override_epoch = Object::descriptor_epoch());
 
 // Mirrors MemberExpression::evaluate's primitive-receiver branch.
 Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name,
@@ -187,12 +188,20 @@ void set_primitive_named(Context& ctx, const Value& prim, const std::string& nam
 // converging on one shape after their last field is added), and inserting a
 // duplicate would burn through the fixed budget without ever caching an
 // actually-distinct shape, tripping mega early for no benefit.
-void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index) {
+void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, uint64_t no_override_epoch) {
     for (uint8_t i = 0; i < fb->count; i++) {
-        if (fb->entries[i].shape == shape) return;
+        if (fb->entries[i].shape == shape) {
+            // Refresh, not no-op: a caller re-deriving this same shape has
+            // just re-confirmed "no override" too (same precondition every
+            // call site here shares), so the entry's epoch stamp needs to
+            // move forward or it stays permanently stale after the first
+            // unrelated descriptor_epoch bump anywhere in the program.
+            fb->entries[i].no_override_epoch = no_override_epoch;
+            return;
+        }
     }
     if (fb->count < FeedbackSlot::kMaxEntries) {
-        fb->entries[fb->count++] = {shape, slot_index};
+        fb->entries[fb->count++] = {shape, slot_index, no_override_epoch};
     } else {
         fb->mega = true;
     }
@@ -265,15 +274,38 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         return Value(static_cast<double>(obj->get_length()));
     }
 
+    Shape* obj_shape = obj->get_shape();
+    bool ordinary = obj->get_type() == Object::ObjectType::Ordinary;
+    uint64_t cur_epoch = Object::descriptor_epoch();
+
+    // Fast path: a previously-learned entry for this exact shape already
+    // confirmed "no descriptors_ override for this key" -- if the global
+    // descriptor epoch hasn't moved since, trust that without rescanning
+    // descriptors_ at all (skip find_descriptor_override entirely). Safe
+    // even though descriptors_ is per-object, not per-shape: ANY object
+    // anywhere gaining a new override bumps the epoch, invalidating this
+    // for every shape, not just the one that changed -- see
+    // Object::descriptor_epoch_'s doc comment.
+    if (fb && !fb->mega && ordinary && obj_shape) {
+        for (uint8_t i = 0; i < fb->count; i++) {
+            if (fb->entries[i].shape == obj_shape) {
+                if (fb->entries[i].no_override_epoch == cur_epoch) {
+                    const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                    if (slot) return *slot;
+                }
+                break;
+            }
+        }
+    }
+
     // Single descriptors_ lookup, reused below for both the cacheable-gate
     // and the accessor branch -- has_descriptor_override()+
     // get_property_descriptor() back to back would otherwise re-scan the
     // same map for the same key with no mutation in between.
     PropertyDescriptor* override_desc = obj->find_descriptor_override(name);
-    bool cacheable = fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
-                      !override_desc;
+    bool cacheable = fb && !fb->mega && ordinary && !override_desc;
     if (cacheable) {
-        Shape* shape = obj->get_shape();
+        Shape* shape = obj_shape;
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == shape) {
                 const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
@@ -304,7 +336,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             if (cacheable) {
                 Shape* s = obj->get_shape();
                 int32_t idx = s ? s->find_slot(name) : -1;
-                if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+                if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx), cur_epoch);
             }
             return desc.get_value();
         }
@@ -363,7 +395,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     if (cacheable) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
-        if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+        if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx), cur_epoch);
     }
     return result;
 }
@@ -379,7 +411,24 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     if (!obj) { set_primitive_named(ctx, receiver, name, value); return; }
 
     Collector::write_barrier(obj);
-    if (fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+    bool ordinary_recv = obj->get_type() == Object::ObjectType::Ordinary;
+    // Same epoch-trusting fast path as get_named's own -- skips
+    // has_descriptor_override entirely on a hit. See Object::
+    // descriptor_epoch_'s doc comment for why a global epoch is safe here
+    // even though descriptors_ is per-object.
+    if (fb && !fb->mega && ordinary_recv) {
+        Shape* shape = obj->get_shape();
+        for (uint8_t i = 0; i < fb->count; i++) {
+            if (fb->entries[i].shape == shape) {
+                if (fb->entries[i].no_override_epoch == Object::descriptor_epoch()) {
+                    Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                    if (slot) { *slot = value; return; }
+                }
+                break;
+            }
+        }
+    }
+    if (fb && !fb->mega && ordinary_recv &&
         !obj->has_descriptor_override(name)) {
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {

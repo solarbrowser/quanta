@@ -502,6 +502,151 @@ bool contains_closure(const ASTNode* node) {
     }
 }
 
+// Same traversal as contains_closure above, but for the three closure kinds
+// closure_needs_outer_environment can actually reason about (plain function
+// expressions/declarations, arrows -- never generator/async), asks it
+// instead of unconditionally returning true. Class bodies, generator/async
+// closures stay exactly as conservative as contains_closure already treats
+// them (opaque, unconditional true) -- this function is deliberately NOT a
+// replacement for contains_closure (which still unconditionally gates
+// whether the existing env_resident/collect_closure_names scan even runs,
+// see compile()'s own doc comment on why env_mode2 alone uses this one).
+bool contains_capturing_closure(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const FunctionExpression*>(node);
+            if (n->is_generator() || n->is_async()) return true;
+            return closure_needs_outer_environment(n->get_params(), n->get_body(), false);
+        }
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const ArrowFunctionExpression*>(node);
+            return closure_needs_outer_environment(n->get_params(), n->get_body(), true);
+        }
+        case ASTNode::Type::FUNCTION_DECLARATION: {
+            const auto* n = static_cast<const FunctionDeclaration*>(node);
+            if (n->is_generator() || n->is_async()) return true;
+            return closure_needs_outer_environment(n->get_params(), n->get_body(), false);
+        }
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
+        case ASTNode::Type::CLASS_DECLARATION:
+            return true;
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements()) {
+                if (contains_capturing_closure(stmt.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return contains_capturing_closure(n->get_test()) || contains_capturing_closure(n->get_consequent()) ||
+                   contains_capturing_closure(n->get_alternate());
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            return contains_capturing_closure(n->get_test()) || contains_capturing_closure(n->get_body());
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            return contains_capturing_closure(n->get_body()) || contains_capturing_closure(n->get_test());
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            return contains_capturing_closure(n->get_init()) || contains_capturing_closure(n->get_test()) ||
+                   contains_capturing_closure(n->get_update()) || contains_capturing_closure(n->get_body());
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            return contains_capturing_closure(n->get_right()) || contains_capturing_closure(n->get_body());
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            return contains_capturing_closure(n->get_right()) || contains_capturing_closure(n->get_body());
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (contains_capturing_closure(n->get_try_block())) return true;
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                if (contains_capturing_closure(static_cast<const CatchClause*>(cc)->get_body())) return true;
+            }
+            return contains_capturing_closure(n->get_finally_block());
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (contains_capturing_closure(n->get_discriminant())) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (cc->get_test() && contains_capturing_closure(cc->get_test())) return true;
+                for (const auto& s : cc->get_consequent()) {
+                    if (contains_capturing_closure(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_capturing_closure(static_cast<const LabeledStatement*>(node)->get_statement());
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return contains_capturing_closure(static_cast<const ExpressionStatement*>(node)->get_expression());
+        case ASTNode::Type::RETURN_STATEMENT: {
+            const auto* n = static_cast<const ReturnStatement*>(node);
+            return n->get_argument() && contains_capturing_closure(n->get_argument());
+        }
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations()) {
+                if (d->get_init() && contains_capturing_closure(d->get_init())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return contains_capturing_closure(n->get_left()) || contains_capturing_closure(n->get_right());
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return contains_capturing_closure(static_cast<const UnaryExpression*>(node)->get_operand());
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            return contains_capturing_closure(n->get_left()) || contains_capturing_closure(n->get_right());
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            return contains_capturing_closure(n->get_test()) || contains_capturing_closure(n->get_consequent()) ||
+                   contains_capturing_closure(n->get_alternate());
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            if (contains_capturing_closure(n->get_callee())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (contains_capturing_closure(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* n = static_cast<const MemberExpression*>(node);
+            return contains_capturing_closure(n->get_object()) ||
+                   (n->is_computed() && contains_capturing_closure(n->get_property()));
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& prop : n->get_properties()) {
+                if (prop->computed && prop->key && contains_capturing_closure(prop->key.get())) return true;
+                if (prop->value && contains_capturing_closure(prop->value.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el && contains_capturing_closure(el.get())) return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
 bool has_spread(const std::vector<std::unique_ptr<ASTNode>>& nodes) {
     for (const auto& n : nodes) {
         if (n && n->get_type() == ASTNode::Type::SPREAD_ELEMENT) return true;
@@ -2933,7 +3078,16 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
     // Suspendable bodies and delegated expressions always keep env_mode on:
     // emit_treewalker_delegate requires it to delegate at all.
-    bool env_mode2 = full_env || has_closures || !env_resident.empty() || suspendable || has_delegated_expr;
+    // has_closures itself (above) stays a coarse "does the body create ANY
+    // closure" test on purpose -- it still gates whether env_resident gets
+    // computed at all. Here, for the actual env_mode decision, a closure
+    // that provably captures nothing of this function's own scope shouldn't
+    // force env_mode by itself; has_capturing_closure re-asks the same
+    // per-closure question closure_needs_outer_environment already answers
+    // for escape analysis. env_resident staying empty is still required too,
+    // so two independent analyses have to agree before env_mode can drop.
+    bool has_capturing_closure = contains_capturing_closure(body);
+    bool env_mode2 = full_env || has_capturing_closure || !env_resident.empty() || suspendable || has_delegated_expr;
 
     const bool env_mode = env_mode2;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);

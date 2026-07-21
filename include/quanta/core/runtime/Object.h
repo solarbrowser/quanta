@@ -71,6 +71,22 @@ public:
 private:
     static void bump_proto_epoch() { ++proto_epoch_; }
 
+    // Same idea as proto_epoch_ for a different question: has ANY object
+    // anywhere gained a NEW descriptors_ entry (getter/setter install,
+    // defineProperty, dictionary-mode migration)? get_named/set_named's
+    // own-property cache trusts a learned "no descriptor override for this
+    // key" answer only while this hasn't moved since it was validated --
+    // descriptors_ is per-OBJECT, not per-shape, so two instances sharing a
+    // shape can disagree; bumping globally on ANY object's change is always
+    // safe (worst case, an unrelated object's change forces one extra real
+    // check), just occasionally more conservative than a per-object signal
+    // would be.
+    static thread_local uint64_t descriptor_epoch_;
+public:
+    static uint64_t descriptor_epoch() { return descriptor_epoch_; }
+private:
+    static void bump_descriptor_epoch() { ++descriptor_epoch_; }
+
     struct ObjectHeader {
         Object* prototype;
         ObjectType type;

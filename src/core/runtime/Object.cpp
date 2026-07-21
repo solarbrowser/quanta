@@ -26,6 +26,7 @@ namespace Quanta {
 thread_local Context* Object::current_context_ = nullptr;
 
 thread_local uint64_t Object::proto_epoch_ = 0;
+thread_local uint64_t Object::descriptor_epoch_ = 0;
 
 thread_local std::unordered_map<std::string, std::string> Object::interned_keys_;
 
@@ -98,6 +99,7 @@ void Object::add_shape_property_cached(const std::string& key, const Value& valu
 }
 
 void Object::install_new_accessor_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    bump_descriptor_epoch();
     if (!descriptors_) descriptors_ = std::make_unique<HybridDescriptorMap>();
     (*descriptors_)[key] = desc;
 }
@@ -114,6 +116,7 @@ bool Object::set_shape_slot(const std::string& key, const Value& value) {
 
 void Object::migrate_to_dictionary_mode() {
     if (!shape_) return;
+    bump_descriptor_epoch();
     if (!descriptors_) {
         descriptors_ = std::make_unique<HybridDescriptorMap>();
     }
@@ -722,6 +725,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             if (it) {
                 it->set_value(length_value);
             } else {
+                bump_descriptor_epoch();
                 (*descriptors_)["length"] = PropertyDescriptor(length_value, PropertyAttributes::Writable);
             }
         }
@@ -869,6 +873,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     // Non-default attrs overwrite the Default-attrs entry the dictionary-mode
     // fallback inside store_in_overflow may have just created.
     if (attrs != PropertyAttributes::Default) {
+        bump_descriptor_epoch();
         if (!descriptors_) {
             descriptors_ = std::make_unique<HybridDescriptorMap>();
         }
@@ -1339,6 +1344,12 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     // any of which affects blocker status; a failed call bumping too is
     // safe, just an occasional over-invalidation.
     if (used_as_prototype()) bump_proto_epoch();
+    // Same reasoning for descriptor_epoch_: this function is the only place
+    // an own defineProperty call can introduce a descriptors_ override,
+    // rare enough in practice that bumping unconditionally here (rather
+    // than at each of its several descriptors_ write sites) costs nothing
+    // measurable.
+    bump_descriptor_epoch();
 
     // Runs before the configurability checks below: an out-of-range length throws
     // RangeError even when the descriptor also conflicts with length's non-configurability.
