@@ -1,0 +1,56 @@
+# IDE and Editor files
+.vscode/
+.vs/
+.history/
+.cache/
+*.code-workspace
+
+# Temporary files
+*.bak
+*.tmp
+*.swp
+*.swo
+*.backup
+
+# Compiled binaries and libraries
+*.o
+*.obj
+*.exe
+*.a
+*.lib
+*.so
+*.dll
+
+# Build directories and artifacts
+build/
+build-cmake/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+build.ninja
+Makefile.minimal
+
+# Test files
+test_*.js
+debug_*.js
+*.test.js
+demo.js
+example*.js
+test262/
+tests/
+*.js
+neo/
+/logs/
+conformance/
+
+# other
+.eshostrc
+*.py
+*.ps1
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
