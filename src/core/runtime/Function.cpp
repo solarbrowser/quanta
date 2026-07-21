@@ -31,11 +31,15 @@ namespace Quanta {
 thread_local Object* Function::s_throw_type_error_ = nullptr;
 
 // A closure pins its captured environment chain: pop_block_scope deletes
-// unescaped block envs, so the capture must mark the chain first.
-static Environment* capture_closure_environment(Context* closure_context) {
+// unescaped block envs, so the capture must mark the chain first -- unless
+// the caller has already proven (closure_needs_outer_environment) that
+// nothing inside this specific closure can ever observe it, in which case
+// mark_escaped_now=false defers that decision to an explicit, later
+// Function::mark_closure_environment_escaped() call (or none at all).
+static Environment* capture_closure_environment(Context* closure_context, bool mark_escaped_now = true) {
     if (!closure_context) return nullptr;
     Environment* env = closure_context->get_lexical_environment();
-    if (env) env->mark_escaped();
+    if (env && mark_escaped_now) env->mark_escaped();
     return env;
 }
 
@@ -57,7 +61,7 @@ Function::Function(const std::string& name,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), parameters_(params),
       body_(std::move(body)), closure_context_(closure_context),
-      closure_environment_(capture_closure_environment(closure_context)),
+      closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -94,7 +98,7 @@ Function::Function(const std::string& name,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context),
-      closure_environment_(capture_closure_environment(closure_context)),
+      closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
@@ -1232,6 +1236,10 @@ void Function::set_closure_environment(Environment* env) {
     closure_environment_ = env;
 }
 
+void Function::mark_closure_environment_escaped() const {
+    if (closure_environment_) closure_environment_->mark_escaped();
+}
+
 void Function::set_name(const std::string& name) {
     name_ = name;
     // Force-update the name in descriptors (bypasses writable check)
@@ -1488,6 +1496,12 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
                                              Context* closure_context,
                                              bool create_prototype) {
     auto func = std::make_unique<Function>(name, params, std::move(body), closure_context, create_prototype);
+    // This factory's callers (class methods, top-level function
+    // declarations, the native Function constructor) aren't analyzed for
+    // closure_needs_outer_environment -- preserve the old unconditional
+    // pin. FunctionExpression::evaluate's own hot path calls the Function
+    // constructors directly instead of through here, so it can decide.
+    func->mark_closure_environment_escaped();
     Object* func_proto = get_function_prototype();
     if (func_proto) {
         func->set_prototype(func_proto);
@@ -1504,6 +1518,9 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
                                              Context* closure_context,
                                              bool create_prototype) {
     auto func = std::make_unique<Function>(name, std::move(params), std::move(body), closure_context, create_prototype);
+    // Same as the other overload above: this factory's callers aren't
+    // analyzed, preserve the old unconditional pin.
+    func->mark_closure_environment_escaped();
     Object* func_proto = get_function_prototype();
     if (func_proto) {
         func->set_prototype(func_proto);

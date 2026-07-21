@@ -176,6 +176,16 @@ private:
     bool failed_ = false;
 };
 
+// Whether a closure literal (params + body) needs its captured environment
+// kept alive at all -- see BytecodeCompiler.cpp's collect_free_names doc
+// comment for the full contract. Used at closure-creation sites (see
+// FunctionExpression::evaluate) to decide whether pinning the enclosing
+// scope's Environment (Function::capture_closure_environment's mark_escaped)
+// is actually necessary, instead of doing it unconditionally for every
+// closure regardless of whether anything inside it can ever observe it.
+bool closure_needs_outer_environment(const std::vector<std::unique_ptr<Parameter>>& params,
+                                      const ASTNode* body, bool is_arrow);
+
 }
 
 #endif

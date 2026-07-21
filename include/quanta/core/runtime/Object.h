@@ -706,6 +706,14 @@ public:
     class Context* get_closure_context() const { return closure_context_; }
     class Environment* get_closure_environment() const { return closure_environment_; }
     void set_closure_environment(class Environment* env);
+    // The constructor captures closure_environment_'s POINTER unconditionally
+    // (Function::call's fallback chain needs it regardless) but no longer
+    // marks it escaped by itself -- callers that can't prove the closure is
+    // capture-free (see closure_needs_outer_environment) call this
+    // explicitly, preserving today's behavior exactly. A missed call here
+    // only risks the environment being freed while still referenced --
+    // never called when in doubt, see every non-optimized creation site.
+    void mark_closure_environment_escaped() const;
     void set_is_arrow(bool value) { is_arrow_ = value; }
     bool is_class_constructor() const { return is_class_constructor_; }
     void set_is_class_constructor(bool value) { is_class_constructor_ = value; }

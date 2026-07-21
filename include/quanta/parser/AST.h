@@ -1184,6 +1184,12 @@ private:
     mutable std::vector<std::string> cached_param_names_;
     mutable bool param_cache_ready_ = false;
     mutable size_t cached_spec_length_ = 0;
+    // -1 unknown, 0 needs the outer environment kept alive, 1 doesn't --
+    // see closure_needs_outer_environment's doc comment (BytecodeCompiler.h).
+    // Resolved once per literal site, reused by every instantiation (the
+    // same closure body is scanned whether this expression runs once or
+    // 100000 times).
+    mutable int8_t needs_outer_env_state_ = -1;
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
@@ -1219,6 +1225,12 @@ public:
         ensure_param_cache();
         return cached_spec_length_;
     }
+    // Raw cache slot for closure_needs_outer_environment's result (computed
+    // in FunctionExpression::evaluate, which already links against
+    // BytecodeCompiler -- kept out of this parser-only header to avoid a
+    // parser->VM include). -1 unknown, 0 needs env, 1 doesn't.
+    int8_t get_needs_outer_env_state() const { return needs_outer_env_state_; }
+    void set_needs_outer_env_state(int8_t v) const { needs_outer_env_state_ = v; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

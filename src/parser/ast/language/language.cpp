@@ -1461,14 +1461,25 @@ Value FunctionExpression::evaluate(Context& ctx) {
 
     std::unique_ptr<Function> function;
     bool clone_elided = false;
+    // Resolved once per literal site (needs_outer_env_state_ cache), reused
+    // by every instantiation -- see closure_needs_outer_environment's doc
+    // comment (BytecodeCompiler.h) for the full contract. Only consulted
+    // below for the non-suspendable branches; generator/async bodies always
+    // keep the old unconditional pin regardless.
+    if (get_needs_outer_env_state() < 0) {
+        set_needs_outer_env_state(closure_needs_outer_environment(params_, body_.get(), /*is_arrow=*/false) ? 1 : 0);
+    }
+    bool needs_outer_env = get_needs_outer_env_state() != 0;
     if (is_async_ && is_generator_) {
         std::vector<std::unique_ptr<Parameter>> gen_params;
         for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
         function = std::make_unique<AsyncGeneratorFunction>(name, std::move(gen_params), body_->clone(), &ctx);
+        function->mark_closure_environment_escaped();  // suspendable body: not analyzed, preserve the old pin
     } else if (is_generator_) {
         std::vector<std::unique_ptr<Parameter>> gen_params;
         for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
         function = std::make_unique<GeneratorFunction>(name, std::move(gen_params), body_->clone(), &ctx);
+        function->mark_closure_environment_escaped();  // suspendable body: not analyzed, preserve the old pin
     } else if (cached_chunk && enclosing_fn && !cached_chunk->needs_arguments && VM::enabled()) {
         // Clone elision: borrow the stable declaration-site AST instead of
         // cloning body_/params_, pinning enclosing_fn (the AST's real owner,
@@ -1494,6 +1505,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
         function->set_decl_site(this);
         function->attach_precompiled_chunk(std::move(cached_chunk), enclosing_fn);
         clone_elided = true;
+        if (needs_outer_env) function->mark_closure_environment_escaped();
     } else {
         std::vector<std::unique_ptr<Parameter>> param_clones;
         for (const auto& param : params_) {
@@ -1505,6 +1517,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
         function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx,
                                               /*create_prototype=*/!is_method_shorthand_);
         if (cached_chunk) function->attach_precompiled_chunk(std::move(cached_chunk), enclosing_fn);
+        if (needs_outer_env) function->mark_closure_environment_escaped();
     }
 
     // NamedEvaluation (spec 15.2.5/15.5.3): give a named function expression an immutable

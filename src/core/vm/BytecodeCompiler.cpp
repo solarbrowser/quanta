@@ -1229,6 +1229,371 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
     }
 }
 
+// Collects a BlockStatement's OWN direct (non-nested) let/const/class names
+// into `out` -- used to push exactly one lexical scope frame per block,
+// mirroring collect_direct_lexical_decls' scope boundary (a name declared in
+// a nested block must NOT be visible to a sibling block or the outer body).
+void collect_direct_lexical_names(const BlockStatement* block, std::unordered_set<std::string>& out) {
+    for (const auto& stmt : block->get_statements()) {
+        if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+            const auto* cd = static_cast<const ClassDeclaration*>(stmt.get());
+            if (!cd->is_expression() && cd->get_id() && !cd->get_id()->get_name().empty()) {
+                out.insert(cd->get_id()->get_name());
+            }
+        } else if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            const auto* decl = static_cast<const VariableDeclaration*>(stmt.get());
+            if (decl->get_kind() == VariableDeclarator::Kind::VAR) continue;
+            for (const auto& d : decl->get_declarations()) {
+                if (d->get_id() && !d->get_id()->get_name().empty()) out.insert(d->get_id()->get_name());
+            }
+        }
+    }
+}
+
+// Free-variable scanner for closure_needs_outer_environment: same node
+// coverage as collect_closure_names, but a separate function since it
+// answers a stricter question -- of the names this closure's body touches,
+// which are NOT bound anywhere in its own scope. `scope_stack` holds one
+// frame per active scope (function-level params/var/function at the
+// bottom, one more per block/for-header/catch/switch entered); a name is
+// free only if no frame has it. `in_arrow`: true once inside a nested
+// arrow -- this/arguments/super/new.target are an ordinary function's own
+// per-call binding (no environment needed) but an arrow must reach them
+// through its captured environment. Anything this scanner can't reason
+// about precisely (destructuring, a pattern-target assignment, eval,
+// class, suspendable nested functions, spread, unrecognized nodes) sets
+// `unknown`, treated as "needs the environment" -- same bailout
+// philosophy as collect_closure_names, applied more eagerly since this
+// scanner's answer has no runtime fallback if wrong.
+void collect_free_names(const ASTNode* node,
+                         std::vector<std::unordered_set<std::string>>& scope_stack,
+                         bool in_arrow,
+                         std::unordered_set<std::string>& free_out,
+                         bool& saw_eval, bool& saw_class, bool& unknown) {
+    if (!node || unknown) return;
+    auto is_bound = [&](const std::string& name) {
+        for (const auto& frame : scope_stack) {
+            if (frame.count(name)) return true;
+        }
+        return false;
+    };
+    // Pushes a fresh function-level frame (own params + own hoisted var/
+    // function names, via prescan_declarations -- which itself never
+    // descends into a nested closure's body, so this frame is exactly this
+    // nested function's own function-scope, nothing more) and recurses into
+    // its body with the SAME scope_stack (outer frames stay visible
+    // beneath, a real closure chain) plus this new frame on top.
+    auto recurse_into_function = [&](const std::vector<std::unique_ptr<Parameter>>& params,
+                                      const ASTNode* body, bool nested_is_arrow) {
+        for (const auto& p : params) {
+            if (p->has_destructuring() || p->has_default()) { unknown = true; return; }
+        }
+        std::vector<DeclInfo> declared;
+        if (!prescan_declarations(body, declared)) { unknown = true; return; }
+        std::unordered_set<std::string> frame;
+        for (const auto& p : params) frame.insert(p->get_name()->get_name());
+        for (const auto& info : declared) {
+            if (!info.is_lexical) frame.insert(info.name);  // var/function: function-wide
+        }
+        scope_stack.push_back(std::move(frame));
+        collect_free_names(body, scope_stack, in_arrow || nested_is_arrow, free_out, saw_eval, saw_class, unknown);
+        scope_stack.pop_back();
+    };
+    switch (node->get_type()) {
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::REGEX_LITERAL:
+        case ASTNode::Type::EMPTY_STATEMENT:
+        case ASTNode::Type::BREAK_STATEMENT:
+        case ASTNode::Type::CONTINUE_STATEMENT:
+            return;
+        case ASTNode::Type::IDENTIFIER: {
+            const std::string& n = static_cast<const Identifier*>(node)->get_name();
+            if (n == "eval") { saw_eval = true; return; }
+            if (n == "this" || n == "arguments" || n == "super" || n == "new.target") {
+                if (in_arrow) free_out.insert(n);  // must reach the defining scope's own binding
+                return;  // ordinary function/method: own per-call binding, no environment needed
+            }
+            if (!is_bound(n)) free_out.insert(n);
+            return;
+        }
+        case ASTNode::Type::FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const FunctionExpression*>(node);
+            if (n->is_generator() || n->is_async()) { unknown = true; return; }
+            recurse_into_function(n->get_params(), n->get_body(), false);
+            return;
+        }
+        case ASTNode::Type::FUNCTION_DECLARATION: {
+            const auto* n = static_cast<const FunctionDeclaration*>(node);
+            recurse_into_function(n->get_params(), n->get_body(), false);
+            return;
+        }
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const ArrowFunctionExpression*>(node);
+            recurse_into_function(n->get_params(), n->get_body(), true);
+            return;
+        }
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
+            unknown = true;
+            return;
+        case ASTNode::Type::CLASS_DECLARATION:
+            saw_class = true;
+            return;
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            std::unordered_set<std::string> frame;
+            collect_direct_lexical_names(n, frame);
+            scope_stack.push_back(std::move(frame));
+            for (const auto& stmt : n->get_statements())
+                collect_free_names(stmt.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            scope_stack.pop_back();
+            return;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            collect_free_names(n->get_test(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_consequent(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_alternate(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            collect_free_names(n->get_test(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_body(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            collect_free_names(n->get_body(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_test(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            std::unordered_set<std::string> frame;
+            bool has_frame = false;
+            if (n->get_init() && n->get_init()->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                const auto* vd = static_cast<const VariableDeclaration*>(n->get_init());
+                if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                    has_frame = true;
+                    for (const auto& d : vd->get_declarations()) {
+                        if (d->get_id()) frame.insert(d->get_id()->get_name());
+                    }
+                }
+            }
+            if (has_frame) scope_stack.push_back(std::move(frame));
+            collect_free_names(n->get_init(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_test(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_update(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_body(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            if (has_frame) scope_stack.pop_back();
+            return;
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT:
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const ASTNode* left = node->get_type() == ASTNode::Type::FOR_OF_STATEMENT
+                ? static_cast<const ForOfStatement*>(node)->get_left()
+                : static_cast<const ForInStatement*>(node)->get_left();
+            const ASTNode* right = node->get_type() == ASTNode::Type::FOR_OF_STATEMENT
+                ? static_cast<const ForOfStatement*>(node)->get_right()
+                : static_cast<const ForInStatement*>(node)->get_right();
+            const ASTNode* body = node->get_type() == ASTNode::Type::FOR_OF_STATEMENT
+                ? static_cast<const ForOfStatement*>(node)->get_body()
+                : static_cast<const ForInStatement*>(node)->get_body();
+            std::unordered_set<std::string> frame;
+            bool has_frame = false;
+            if (left->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                const auto* vd = static_cast<const VariableDeclaration*>(left);
+                if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                    has_frame = true;
+                    for (const auto& d : vd->get_declarations()) {
+                        if (d->get_id()) frame.insert(d->get_id()->get_name());
+                    }
+                }
+            } else if (left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                unknown = true;
+                return;
+            }
+            collect_free_names(right, scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            if (has_frame) scope_stack.push_back(std::move(frame));
+            collect_free_names(body, scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            if (has_frame) scope_stack.pop_back();
+            return;
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            collect_free_names(n->get_try_block(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                const auto* clause = static_cast<const CatchClause*>(cc);
+                if (clause->get_destructuring_pattern()) { unknown = true; return; }
+                std::unordered_set<std::string> frame;
+                if (!clause->get_parameter_name().empty()) frame.insert(clause->get_parameter_name());
+                scope_stack.push_back(std::move(frame));
+                collect_free_names(clause->get_body(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+                scope_stack.pop_back();
+            }
+            collect_free_names(n->get_finally_block(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            collect_free_names(n->get_discriminant(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            std::unordered_set<std::string> frame;
+            for (const auto& c : n->get_cases()) {
+                for (const auto& st : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                    if (st->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                        const auto* decl = static_cast<const VariableDeclaration*>(st.get());
+                        if (decl->get_kind() != VariableDeclarator::Kind::VAR) {
+                            for (const auto& d : decl->get_declarations()) {
+                                if (d->get_id()) frame.insert(d->get_id()->get_name());
+                            }
+                        }
+                    } else if (st->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                        const auto* cd = static_cast<const ClassDeclaration*>(st.get());
+                        if (!cd->is_expression() && cd->get_id() && !cd->get_id()->get_name().empty()) {
+                            frame.insert(cd->get_id()->get_name());
+                        }
+                    }
+                }
+            }
+            scope_stack.push_back(std::move(frame));
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                collect_free_names(cc->get_test(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+                for (const auto& st : cc->get_consequent())
+                    collect_free_names(st.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            }
+            scope_stack.pop_back();
+            return;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            collect_free_names(static_cast<const LabeledStatement*>(node)->get_statement(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            collect_free_names(static_cast<const ExpressionStatement*>(node)->get_expression(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::RETURN_STATEMENT:
+            collect_free_names(static_cast<const ReturnStatement*>(node)->get_argument(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::THROW_STATEMENT:
+            collect_free_names(static_cast<const ThrowStatement*>(node)->get_expression(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations()) {
+                if (!d->get_id()) { unknown = true; return; }  // destructuring declarator
+                collect_free_names(d->get_init(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            }
+            return;
+        }
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT:
+            unknown = true;
+            return;
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            if (n->get_left()->get_type() == ASTNode::Type::ARRAY_LITERAL ||
+                n->get_left()->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+                unknown = true;
+                return;
+            }
+            collect_free_names(n->get_left(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_right(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            collect_free_names(static_cast<const UnaryExpression*>(node)->get_operand(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            collect_free_names(n->get_left(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_right(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            collect_free_names(n->get_left(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_right(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            collect_free_names(n->get_test(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_consequent(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            collect_free_names(n->get_alternate(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            if (has_spread(n->get_arguments())) { unknown = true; return; }
+            collect_free_names(n->get_callee(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            for (const auto& arg : n->get_arguments())
+                collect_free_names(arg.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (has_spread(n->get_arguments())) { unknown = true; return; }
+            collect_free_names(n->get_constructor(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            for (const auto& arg : n->get_arguments())
+                collect_free_names(arg.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* n = static_cast<const MemberExpression*>(node);
+            collect_free_names(n->get_object(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            if (n->is_computed())
+                collect_free_names(n->get_property(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            collect_free_names(n->get_object(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            if (n->is_computed())
+                collect_free_names(n->get_property(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            unknown = true;
+            return;
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements())
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION)
+                    collect_free_names(el.expression.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            if (object_literal_is_complex(n)) { unknown = true; return; }
+            for (const auto& prop : n->get_properties()) {
+                if (prop->computed && prop->key)
+                    collect_free_names(prop->key.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+                if (prop->value)
+                    collect_free_names(prop->value.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            }
+            return;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            if (has_spread(n->get_elements())) { unknown = true; return; }
+            for (const auto& el : n->get_elements())
+                collect_free_names(el.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
+            return;
+        }
+        case ASTNode::Type::YIELD_EXPRESSION:
+        case ASTNode::Type::AWAIT_EXPRESSION:
+            unknown = true;
+            return;
+        default:
+            unknown = true;
+            return;
+    }
+}
+
 // True if any name in `vars` could be observably captured by a closure
 // anywhere in `roots` -- spec 14.7.4.3/14.7.5.6's CreatePerIterationEnvironment
 // (Op::AdvanceLoopEnv) exists ONLY to support this; with no such closure, one
@@ -1478,6 +1843,33 @@ bool BytecodeCompiler::references_identifier(const ASTNode* node, const std::str
     bool saw_eval = false, saw_class = false, unknown = false;
     collect_closure_names(node, /*inside_closure=*/true, names, saw_eval, saw_class, unknown);
     return saw_eval || saw_class || unknown || names.count(name) > 0;
+}
+
+// Whether a closure literal (params + body) needs its captured environment
+// kept alive at all -- false only when collect_free_names (above, still
+// callable from here despite its anonymous namespace) positively proves
+// every name the body touches resolves within its own scope. External
+// linkage (declared in BytecodeCompiler.h): called from FunctionExpression::
+// evaluate, which caches the result per AST node instead of recomputing it
+// on every instantiation.
+bool closure_needs_outer_environment(const std::vector<std::unique_ptr<Parameter>>& params,
+                                      const ASTNode* body, bool is_arrow) {
+    for (const auto& p : params) {
+        if (p->has_destructuring() || p->has_default()) return true;
+    }
+    std::vector<DeclInfo> declared;
+    if (!prescan_declarations(body, declared)) return true;
+    std::vector<std::unordered_set<std::string>> scope_stack;
+    std::unordered_set<std::string> frame;
+    for (const auto& p : params) frame.insert(p->get_name()->get_name());
+    for (const auto& info : declared) {
+        if (!info.is_lexical) frame.insert(info.name);
+    }
+    scope_stack.push_back(std::move(frame));
+    std::unordered_set<std::string> free_names;
+    bool saw_eval = false, saw_class = false, unknown = false;
+    collect_free_names(body, scope_stack, is_arrow, free_names, saw_eval, saw_class, unknown);
+    return saw_eval || saw_class || unknown || !free_names.empty();
 }
 
 namespace {
@@ -3439,6 +3831,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 if (env_mode_ && (!env_vars.empty() || needs_own_env)) {
                     record_env_slot_info(env_vars, env_depth_ + 1);
                     chunk_->loop_envs.push_back(std::move(env_vars));
+                    // A plain block never emits AdvanceLoopEnv (entered/exited
+                    // once, no per-iteration refresh) -- this entry only needs
+                    // to keep loop_env_needs_fresh_ the same size as
+                    // chunk_->loop_envs so OTHER indices into it stay valid.
+                    loop_env_needs_fresh_.push_back(true);
                     block_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
                     emit_u16(static_cast<uint16_t>(block_env_idx));
@@ -3855,6 +4252,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                         vars.push_back({clause->get_parameter_name(), false, false, false});
                         record_env_slot_info(vars, env_depth_ + 1);
                         chunk_->loop_envs.push_back(std::move(vars));
+                        // A catch clause never emits AdvanceLoopEnv either
+                        // (same reasoning as the plain-block case above) --
+                        // keep loop_env_needs_fresh_ in lockstep regardless.
+                        loop_env_needs_fresh_.push_back(true);
                         catch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                         emit(Op::EnterLoopEnv);
                         emit_u16(static_cast<uint16_t>(catch_env_idx));
@@ -3986,6 +4387,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 if (env_mode_ && (!env_vars.empty() || needs_own_env)) {
                     record_env_slot_info(env_vars, env_depth_ + 1);
                     chunk_->loop_envs.push_back(std::move(env_vars));
+                    // A switch body never emits AdvanceLoopEnv either (runs
+                    // once, no per-iteration refresh) -- keep
+                    // loop_env_needs_fresh_ in lockstep regardless.
+                    loop_env_needs_fresh_.push_back(true);
                     switch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
                     emit_u16(static_cast<uint16_t>(switch_env_idx));
