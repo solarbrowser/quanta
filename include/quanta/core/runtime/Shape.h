@@ -8,6 +8,7 @@
 #define QUANTA_RUNTIME_SHAPE_H
 
 #include "quanta/core/runtime/SmallMapPool.h"
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -46,20 +47,43 @@ public:
     // rather than grow the tree further.
     Shape* transition(const std::string& key);
 
+    // Like transition(), but reserves TWO consecutive slots (getter, then
+    // setter) for `key` instead of one, and marks the slot accessor-kind --
+    // see Object::add_accessor_shape_property_cached. Memoized in a
+    // SEPARATE tree (accessor_transitions_) from transition()'s: the same
+    // (parent shape, key) pair transitioning once as plain data and once as
+    // an accessor must never collide on the same cached child.
+    Shape* transition_accessor(const std::string& key);
+
     // O(1): the slot index for `key` across this shape's full property set
     // (own key plus everything inherited from parent_), or -1 if absent.
     int32_t find_slot(const std::string& key) const;
+
+    // True if `key` names an accessor-kind slot (its value at find_slot(key)
+    // is a getter Value; the paired setter Value lives at find_slot(key)+1).
+    bool is_accessor_slot(const std::string& key) const { return slots_.is_accessor(key); }
 
     uint32_t slot_count() const { return slot_count_; }
 
     // Keys in insertion order (root-to-here), for Object.keys()/for-in over
     // a shape-mode object. O(slot_count) -- an enumeration op, not the
-    // property get/set hot path.
+    // property get/set hot path. Flattened from properties_in_order() so an
+    // accessor's second (setter) physical slot never surfaces as its own
+    // blank/duplicate entry.
     std::vector<std::string> keys_in_order() const;
+
+    // One entry per LOGICAL property (unlike keys_in_order()/slot_count(),
+    // which are physical-slot-indexed) -- an accessor property still yields
+    // exactly one PropertyInfo here even though it occupies two slots.
+    // migrate_to_dictionary_mode() is the only consumer: it needs to know,
+    // per key, where its value(s) live AND whether to read them as a plain
+    // value or as a getter/setter pair.
+    struct PropertyInfo { std::string key; uint32_t slot_index; bool is_accessor; };
+    std::vector<PropertyInfo> properties_in_order() const;
 
 private:
     Shape() = default;
-    Shape(Shape* parent, const std::string& key, uint32_t slot_index);
+    Shape(Shape* parent, const std::string& key, uint32_t slot_index, bool is_accessor = false);
 
     static constexpr uint32_t kMaxTransitions = 128;
     static constexpr uint32_t kMaxSlots = 128;
@@ -67,6 +91,9 @@ private:
     Shape* parent_ = nullptr;
     std::string added_key_;
     uint32_t slot_count_ = 0;
+    // True if THIS shape's own link (added_key_) reserved two slots (getter
+    // then setter) instead of one -- see transition_accessor().
+    bool is_accessor_added_ = false;
 
     // Slot table (key -> flattened slot index), same inline+overflow idiom
     // as HybridDescriptorMap (Object.h). No migration/erase needed --
@@ -76,11 +103,15 @@ private:
     // own key.
     struct SlotMap {
         static constexpr size_t kInlineCapacity = 4;
-        struct Entry { std::string key; uint32_t value = 0; bool in_use = false; };
+        // is_accessor: true if `value` is the FIRST of a 2-slot getter/setter
+        // pair (see Shape's own is_accessor_added_ doc comment) rather than a
+        // single plain-data slot index.
+        struct Entry { std::string key; uint32_t value = 0; bool in_use = false; bool is_accessor = false; };
+        using OverflowEntry = std::pair<uint32_t, bool>; // (slot index, is_accessor)
         std::array<Entry, kInlineCapacity> inline_entries;
-        using OverflowMap = std::unordered_map<std::string, uint32_t, std::hash<std::string>,
+        using OverflowMap = std::unordered_map<std::string, OverflowEntry, std::hash<std::string>,
                                                 std::equal_to<std::string>,
-                                                SmallMapAllocator<std::pair<const std::string, uint32_t>>>;
+                                                SmallMapAllocator<std::pair<const std::string, OverflowEntry>>>;
         std::unique_ptr<OverflowMap> overflow;
 
         SlotMap() = default;
@@ -102,19 +133,29 @@ private:
             }
             if (overflow) {
                 auto it = overflow->find(key);
-                if (it != overflow->end()) return static_cast<int32_t>(it->second);
+                if (it != overflow->end()) return static_cast<int32_t>(it->second.first);
             }
             return -1;
         }
-        void set(const std::string& key, uint32_t value) {
+        bool is_accessor(const std::string& key) const {
+            for (const auto& e : inline_entries) {
+                if (e.in_use && e.key == key) return e.is_accessor;
+            }
+            if (overflow) {
+                auto it = overflow->find(key);
+                if (it != overflow->end()) return it->second.second;
+            }
+            return false;
+        }
+        void set(const std::string& key, uint32_t value, bool is_accessor = false) {
             for (auto& e : inline_entries) {
-                if (e.in_use && e.key == key) { e.value = value; return; }
+                if (e.in_use && e.key == key) { e.value = value; e.is_accessor = is_accessor; return; }
             }
             for (auto& e : inline_entries) {
-                if (!e.in_use) { e.key = key; e.value = value; e.in_use = true; return; }
+                if (!e.in_use) { e.key = key; e.value = value; e.in_use = true; e.is_accessor = is_accessor; return; }
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
-            (*overflow)[key] = value;
+            (*overflow)[key] = {value, is_accessor};
         }
     };
     SlotMap slots_;
@@ -161,6 +202,9 @@ private:
         }
     };
     TransitionMap transitions_;
+    // Separate memoization tree for transition_accessor() -- see its own
+    // doc comment for why this must not share transitions_.
+    TransitionMap accessor_transitions_;
 };
 
 }

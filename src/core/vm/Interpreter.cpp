@@ -534,47 +534,55 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
 // FinalizeStaticProperty's Getter/Setter shape-transition cache, mirroring
 // define_own_cached above. Only offered to a genuinely new own key (a
 // getter+setter pair sharing a key routes its second accessor through the
-// slow-path merge below instead). A cache hit hand-writes the descriptor
-// itself (install_new_accessor_descriptor), never re-entering
-// set_property_descriptor -- that would see the shape slot already present
-// and take the "merge" branch instead of "brand new".
+// slow-path merge below instead, same as before). Unlike the old design,
+// a brand-new single accessor (getter XOR setter, default attrs, not an
+// array index) now lives entirely in a pair of shape_slots_ entries via
+// Shape::transition_accessor -- descriptors_ is never touched for this
+// case at all (see Object::add_accessor_shape_property_cached and
+// Object::has_descriptor_override's shape-accessor-slot check). A cache
+// hit skips transition_accessor's own hash lookup; a cache miss still
+// calls it directly (not the general/slow path) since it's the same O(1)
+// memoized operation transition() already is for plain data properties.
 void define_accessor_cached(Object* obj, const std::string& key, Function* fn, bool is_getter, FeedbackSlot* fb) {
     if (!obj) return;
     Collector::write_barrier(obj);
-    if (fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
-        !obj->has_descriptor_override(key) && obj->is_extensible() && !obj->has_own_property(key)) {
-        Shape* shape = obj->get_shape();
-        uint64_t epoch = Object::proto_epoch();
-        for (uint8_t i = 0; i < fb->transition_count; i++) {
-            const auto& te = fb->transitions[i];
-            if (te.from_shape == shape && te.proto_epoch == epoch) {
-                obj->add_shape_property_cached(key, Value(), te.to_shape);
-                PropertyDescriptor desc;
-                if (is_getter) desc.set_getter(fn); else desc.set_setter(fn);
-                desc.set_enumerable(true);
-                desc.set_configurable(true);
-                obj->install_new_accessor_descriptor(key, desc);
-                return;
+    size_t unused_idx;
+    bool fast_path_eligible = obj->get_type() == Object::ObjectType::Ordinary &&
+        obj->is_extensible() && !obj->has_own_property(key) && !key_is_canonical_index(key, unused_idx);
+
+    if (fast_path_eligible) {
+        Value getter_v = is_getter ? Value(fn) : Value();
+        Value setter_v = is_getter ? Value() : Value(fn);
+        if (fb && !fb->transition_mega) {
+            Shape* shape = obj->get_shape();
+            uint64_t epoch = Object::proto_epoch();
+            for (uint8_t i = 0; i < fb->transition_count; i++) {
+                const auto& te = fb->transitions[i];
+                if (te.from_shape == shape && te.proto_epoch == epoch) {
+                    obj->add_accessor_shape_property_cached(key, getter_v, setter_v, te.to_shape);
+                    return;
+                }
             }
         }
+        Shape* shape_before = obj->get_shape();
+        Shape* to_shape = shape_before ? shape_before->transition_accessor(key) : nullptr;
+        if (to_shape) {
+            obj->add_accessor_shape_property_cached(key, getter_v, setter_v, to_shape);
+            if (fb && !fb->transition_mega) {
+                learn_transition(fb, shape_before, to_shape, 0, Object::proto_epoch());
+            }
+            return;
+        }
+        // transition_accessor refused (kMaxSlots/kMaxTransitions exceeded)
+        // -- fall through to the general path below.
     }
+
     PropertyDescriptor desc = obj->has_own_property(key)
         ? obj->get_property_descriptor(key) : PropertyDescriptor();
     if (is_getter) desc.set_getter(fn); else desc.set_setter(fn);
     desc.set_enumerable(true);
     desc.set_configurable(true);
-    Shape* shape_before = obj->get_shape();
-    bool was_new = fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
-                   !obj->has_descriptor_override(key) && shape_before && !obj->has_own_property(key);
     obj->set_property_descriptor(key, desc);
-    if (was_new && fb && !fb->transition_mega &&
-        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
-        Shape* s = obj->get_shape();
-        int32_t idx = s ? s->find_slot(key) : -1;
-        if (idx >= 0) {
-            learn_transition(fb, shape_before, s, static_cast<uint32_t>(idx), Object::proto_epoch());
-        }
-    }
 }
 
 // Dedups on (shape, key): unlike learn_feedback (FeedbackSlot, one fixed

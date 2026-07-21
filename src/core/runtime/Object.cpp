@@ -80,7 +80,15 @@ bool Object::has_shape_slot(const std::string& key) const {
 }
 
 bool Object::has_descriptor_override(const std::string& key) const {
-    return descriptors_ && descriptors_->count(key) > 0;
+    // An accessor living in shape_slots_ (see add_accessor_shape_property_cached)
+    // has no descriptors_ entry at all, but every IC fast path across the VM
+    // (get_keyed/set_keyed/define_own_cached/SetNamed's transition caches,
+    // etc.) already treats "has_descriptor_override -> take the slow/general
+    // path" as its ONE guard for "don't trust a raw shape-slot value" --
+    // folding the shape-accessor check in here makes all of those sites
+    // correct for free, with no changes to any of them.
+    return (descriptors_ && descriptors_->count(key) > 0) ||
+           (shape_ && shape_->is_accessor_slot(key));
 }
 
 PropertyDescriptor* Object::find_descriptor_override(const std::string& key) const {
@@ -98,10 +106,16 @@ void Object::add_shape_property_cached(const std::string& key, const Value& valu
     if (used_as_prototype()) bump_proto_epoch();
 }
 
-void Object::install_new_accessor_descriptor(const std::string& key, const PropertyDescriptor& desc) {
-    bump_descriptor_epoch();
-    if (!descriptors_) descriptors_ = std::make_unique<HybridDescriptorMap>();
-    (*descriptors_)[key] = desc;
+void Object::add_accessor_shape_property_cached(const std::string& key, const Value& getter,
+                                                 const Value& setter, Shape* to_shape) {
+    shape_ = to_shape;
+    shape_slots_.push_back(getter);
+    shape_slots_.push_back(setter);
+    header_.property_count++;
+    property_insertion_order_.push_back(key);
+    update_hash_code();
+    // Mirrors add_shape_property_cached's own bump -- see its comment.
+    if (used_as_prototype()) bump_proto_epoch();
 }
 
 bool Object::set_shape_slot(const std::string& key, const Value& value) {
@@ -114,24 +128,43 @@ bool Object::set_shape_slot(const std::string& key, const Value& value) {
     return true;
 }
 
+namespace {
+Object* as_object_like(const Value& v) {
+    if (v.is_function()) return v.as_function();
+    if (v.is_object()) return v.as_object();
+    return nullptr;
+}
+}
+
 void Object::migrate_to_dictionary_mode() {
     if (!shape_) return;
     bump_descriptor_epoch();
     if (!descriptors_) {
         descriptors_ = std::make_unique<HybridDescriptorMap>();
     }
-    auto keys = shape_->keys_in_order();
-    for (size_t i = 0; i < keys.size(); i++) {
-        auto* it = descriptors_->find(keys[i]);
+    for (const auto& prop : shape_->properties_in_order()) {
+        if (prop.is_accessor) {
+            // add_accessor_shape_property_cached never writes descriptors_,
+            // so a real entry here can only mean something else (e.g. a
+            // later attribute change) already migrated this exact key --
+            // in which case that entry is authoritative and must not be
+            // clobbered by the (now stale) shape-slot pair.
+            if (!descriptors_->find(prop.key)) {
+                Object* getter = as_object_like(shape_slots_[prop.slot_index]);
+                Object* setter = as_object_like(shape_slots_[prop.slot_index + 1]);
+                (*descriptors_)[prop.key] = PropertyDescriptor(getter, setter);
+            }
+            continue;
+        }
+        auto* it = descriptors_->find(prop.key);
         if (it) {
-            // Non-default attrs (or an accessor pair) already live here; the shape
-            // slot was only the value mirror (or a placeholder for accessors).
-            // Overwriting would reset attributes and destroy getters/setters.
+            // Non-default attrs already live here; the shape slot was only
+            // the value mirror. Overwriting would reset attributes.
             if (it->is_data_descriptor()) {
-                it->set_value(shape_slots_[i]);
+                it->set_value(shape_slots_[prop.slot_index]);
             }
         } else {
-            (*descriptors_)[keys[i]] = PropertyDescriptor(shape_slots_[i], PropertyAttributes::Default);
+            (*descriptors_)[prop.key] = PropertyDescriptor(shape_slots_[prop.slot_index], PropertyAttributes::Default);
         }
     }
     shape_ = nullptr;
@@ -554,6 +587,21 @@ Value Object::get_property(const std::string& key) const {
                 }
             }
         }
+        // Same reasoning for an accessor living in current's shape_slots_
+        // (add_accessor_shape_property_cached) instead of descriptors_ --
+        // must still invoke with original_receiver, not current, as `this`.
+        if (current->shape_ && current->shape_->is_accessor_slot(key)) {
+            int32_t idx = current->shape_->find_slot(key);
+            Object* getter = as_object_like(current->shape_slots_[idx]);
+            Function* getter_fn = getter ? dynamic_cast<Function*>(getter) : nullptr;
+            if (getter_fn && current_context_) {
+                Value recv = original_receiver->is_function()
+                    ? Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)))
+                    : Value(const_cast<Object*>(original_receiver));
+                return getter_fn->call(*current_context_, {}, recv);
+            }
+            return Value(); // setter-only accessor: undefined, don't fall through to get_own_property
+        }
         result = current->get_own_property(key);
         if (!result.is_undefined()) {
             return result;
@@ -633,6 +681,23 @@ Value Object::get_own_property(const std::string& key) const {
             }
             return Value(); // accessor with no getter
         }
+    }
+
+    // An accessor installed via the object-literal/class fast path
+    // (add_accessor_shape_property_cached) has no descriptors_ entry at
+    // all -- its getter/setter Values live directly in this pair of shape
+    // slots. Must be checked before find_shape_slot() below, which would
+    // otherwise return the raw getter Value instead of its call result.
+    if (shape_ && shape_->is_accessor_slot(key)) {
+        int32_t idx = shape_->find_slot(key);
+        Object* getter = as_object_like(shape_slots_[idx]);
+        if (getter && current_context_) {
+            Function* getter_fn = dynamic_cast<Function*>(getter);
+            if (getter_fn) {
+                return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
+            }
+        }
+        return Value(); // setter-only accessor: undefined
     }
 
     if (const Value* slot = find_shape_slot(key)) {
@@ -1318,6 +1383,19 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
             }
             return *it;
         }
+    }
+
+    // Not in descriptors_: a getter/setter installed via the object-literal/
+    // class fast path (add_accessor_shape_property_cached) lives entirely
+    // in shape_slots_ instead -- synthesize the descriptor from its pair of
+    // slots. Default-attrs accessor by construction (that fast path is the
+    // only writer, and it's only ever taken for the spec's own {enumerable:
+    // true, configurable: true} accessor default).
+    if (shape_ && shape_->is_accessor_slot(key)) {
+        int32_t idx = shape_->find_slot(key);
+        Object* getter = as_object_like(shape_slots_[idx]);
+        Object* setter = as_object_like(shape_slots_[idx + 1]);
+        return PropertyDescriptor(getter, setter);
     }
 
     // Property not in descriptor map but exists (e.g. plain overflow-stored data property):

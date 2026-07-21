@@ -316,12 +316,15 @@ public:
     // checked (Ordinary, extensible, no descriptor override, shape lacks key).
     void add_shape_property_cached(const std::string& key, const Value& value, Shape* to_shape);
 
-    // Companion to add_shape_property_cached for a getter/setter install:
-    // writes the descriptor directly, never through set_property_descriptor
-    // (which would now see has_own_property(key) true and take the "merge"
-    // branch instead of "brand new"). Caller guarantees key has no existing
-    // descriptor.
-    void install_new_accessor_descriptor(const std::string& key, const PropertyDescriptor& desc);
+    // Accessor sibling of add_shape_property_cached: `to_shape` must come
+    // from Shape::transition_accessor(key), reserving two consecutive
+    // shape_slots_ entries (getter, then setter -- either may be Value(),
+    // an absent half). Never touches descriptors_ at all -- this is the
+    // whole point (see get_property_descriptor's shape-accessor-slot
+    // branch for the read side). Caller guarantees key has no existing own
+    // property and this object is Ordinary/extensible.
+    void add_accessor_shape_property_cached(const std::string& key, const Value& getter,
+                                             const Value& setter, Shape* to_shape);
 
     Value get_internal_property(const std::string& key) const;
     void set_internal_property(const std::string& key, const Value& value);
