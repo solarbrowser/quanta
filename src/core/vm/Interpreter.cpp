@@ -253,8 +253,25 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     Object* obj = as_object_like(receiver);
     if (!obj) return get_primitive_named(ctx, receiver, name, fb);
 
+    // Array.length is always live-computed from elements_ (never reliably
+    // mirrored in a shape slot -- push/index-growth never syncs one, only
+    // an explicit `arr.length = N` assignment does), so it can never be
+    // cached as a shape-slot value. Skip the whole descriptor dance below
+    // and go straight to it, same as Object::get_property's own Array
+    // branch -- but a defineProperty override (e.g. non-writable length)
+    // still must win, so that rare case still falls through.
+    if (obj->get_type() == Object::ObjectType::Array && name == "length" &&
+        !obj->has_descriptor_override(name)) {
+        return Value(static_cast<double>(obj->get_length()));
+    }
+
+    // Single descriptors_ lookup, reused below for both the cacheable-gate
+    // and the accessor branch -- has_descriptor_override()+
+    // get_property_descriptor() back to back would otherwise re-scan the
+    // same map for the same key with no mutation in between.
+    PropertyDescriptor* override_desc = obj->find_descriptor_override(name);
     bool cacheable = fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
-                      !obj->has_descriptor_override(name);
+                      !override_desc;
     if (cacheable) {
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
@@ -268,7 +285,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // An own accessor must run before get_property()'s type-specific
     // shortcuts, which don't know about one installed via defineProperty.
     if (obj->get_type() != Object::ObjectType::Proxy) {
-        PropertyDescriptor desc = obj->get_property_descriptor(name);
+        PropertyDescriptor desc = override_desc ? *override_desc : obj->get_property_descriptor(name);
         if (desc.is_accessor_descriptor()) {
             if (!desc.has_getter()) return Value();
             Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());

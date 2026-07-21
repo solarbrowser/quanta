@@ -287,6 +287,11 @@ public:
     // Out-of-line: descriptors_'s value type (PropertyDescriptor) is only
     // forward-declared this early in the header.
     bool has_descriptor_override(const std::string& key) const;
+    // Single descriptors_ lookup shared by get_named's cacheable-gate and
+    // accessor branch -- calling has_descriptor_override() then
+    // get_property_descriptor() back to back re-scans the same map for the
+    // same key with no mutation in between.
+    PropertyDescriptor* find_descriptor_override(const std::string& key) const;
 
     // SetNamed's transition-cache fast path: adds `key` using an
     // already-resolved destination shape, skipping both Shape::transition(key)'s

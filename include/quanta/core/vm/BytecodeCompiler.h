@@ -101,12 +101,19 @@ private:
     struct EnvSlotInfo { uint8_t slot; int depth; };
     std::unordered_map<std::string, int> global_decl_count_;
     std::unordered_map<std::string, EnvSlotInfo> env_slot_info_;
+    // Names declared more than once (global_decl_count_ > 1) whose every
+    // declaring region is still provably safe to slot-index, because all of
+    // them are pairwise disjoint (siblings -- neither nested in the other),
+    // e.g. two separate top-level `for (let i...)` loops reusing "i". See
+    // compute_sibling_safe_names's doc comment for why disjointness alone
+    // (without also re-proving escape-safety) is sufficient here.
+    std::unordered_set<std::string> sibling_safe_names_;
     // Shared by every loop_envs.push_back call site (setup_loop_env, plain
     // blocks, catch clauses, switch): records slot info for each var at its
     // position in THIS scope's list, capped at the first 4, only for names
-    // globally_decl_count_ == 1. Call with `depth` = the env_depth_ value
-    // that will be active once this scope's EnterLoopEnv has run (i.e.
-    // after the caller's env_depth_++).
+    // globally_decl_count_ == 1 (or sibling_safe_names_). Call with `depth` =
+    // the env_depth_ value that will be active once this scope's
+    // EnterLoopEnv has run (i.e. after the caller's env_depth_++).
     void record_env_slot_info(const std::vector<BytecodeChunk::LoopEnvVar>& vars, int depth);
 
     void emit(Op op);

@@ -2182,6 +2182,165 @@ void collect_lexical_regions(const ASTNode* node, const ASTNode* current_region,
     }
 }
 
+// Multi-region variant of collect_lexical_regions above: that function's
+// plain out.emplace() silently keeps only the FIRST region for a repeated
+// name (env_resident's escape check only ever needs one region to prove
+// "escapes or doesn't"). This variant instead records EVERY declaring
+// region per name, plus each newly-introduced region's immediate enclosing
+// region (parent_of) -- the raw material compute_sibling_safe_names needs
+// to prove two same-named declarations are non-overlapping siblings, not
+// one nested inside the other. Structurally identical traversal to
+// collect_lexical_regions; kept as a separate function rather than
+// generalizing that one, matching this file's own precedent (references_
+// outside is a separate function from collect_closure_names for the same
+// reason -- an existing, relied-upon contract shouldn't grow a parameter
+// for one new caller).
+void collect_lexical_regions_multi(
+        const ASTNode* node, const ASTNode* current_region,
+        std::unordered_map<std::string, std::vector<const ASTNode*>>& out,
+        std::unordered_map<const ASTNode*, const ASTNode*>& parent_of) {
+    if (!node) return;
+    switch (node->get_type()) {
+        case ASTNode::Type::CLASS_DECLARATION: {
+            const auto* cd = static_cast<const ClassDeclaration*>(node);
+            if (!cd->is_expression() && cd->get_id() && !cd->get_id()->get_name().empty()) {
+                out[cd->get_id()->get_name()].push_back(current_region);
+            }
+            return;
+        }
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* decl = static_cast<const VariableDeclaration*>(node);
+            if (decl->get_kind() == VariableDeclarator::Kind::VAR) return;
+            for (const auto& d : decl->get_declarations()) {
+                if (d->get_id() && !d->get_id()->get_name().empty()) {
+                    out[d->get_id()->get_name()].push_back(current_region);
+                }
+            }
+            return;
+        }
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            parent_of[node] = current_region;
+            for (const auto& stmt : n->get_statements())
+                collect_lexical_regions_multi(stmt.get(), node, out, parent_of);
+            return;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            collect_lexical_regions_multi(n->get_consequent(), current_region, out, parent_of);
+            collect_lexical_regions_multi(n->get_alternate(), current_region, out, parent_of);
+            return;
+        }
+        case ASTNode::Type::WHILE_STATEMENT:
+            collect_lexical_regions_multi(static_cast<const WhileStatement*>(node)->get_body(),
+                                           current_region, out, parent_of);
+            return;
+        case ASTNode::Type::DO_WHILE_STATEMENT:
+            collect_lexical_regions_multi(static_cast<const DoWhileStatement*>(node)->get_body(),
+                                           current_region, out, parent_of);
+            return;
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            parent_of[node] = current_region;
+            if (n->get_init() && n->get_init()->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                const auto* vd = static_cast<const VariableDeclaration*>(n->get_init());
+                if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                    for (const auto& d : vd->get_declarations()) {
+                        if (d->get_id()) out[d->get_id()->get_name()].push_back(node);
+                    }
+                }
+            }
+            collect_lexical_regions_multi(n->get_body(), current_region, out, parent_of);
+            return;
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT:
+            collect_lexical_regions_multi(static_cast<const ForOfStatement*>(node)->get_body(),
+                                           current_region, out, parent_of);
+            return;
+        case ASTNode::Type::FOR_IN_STATEMENT:
+            collect_lexical_regions_multi(static_cast<const ForInStatement*>(node)->get_body(),
+                                           current_region, out, parent_of);
+            return;
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            collect_lexical_regions_multi(n->get_try_block(), current_region, out, parent_of);
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                collect_lexical_regions_multi(static_cast<const CatchClause*>(cc)->get_body(),
+                                               current_region, out, parent_of);
+            }
+            collect_lexical_regions_multi(n->get_finally_block(), current_region, out, parent_of);
+            return;
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            parent_of[node] = current_region;
+            for (const auto& c : n->get_cases()) {
+                for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent())
+                    collect_lexical_regions_multi(s.get(), node, out, parent_of);
+            }
+            return;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            collect_lexical_regions_multi(static_cast<const LabeledStatement*>(node)->get_statement(),
+                                           current_region, out, parent_of);
+            return;
+        default:
+            return;
+    }
+}
+
+// Walks up from `node` via parent_of looking for `ancestor`. nullptr (the
+// implicit function/script root) is a valid terminal parent, never itself
+// looked up.
+bool is_ancestor_region(const ASTNode* ancestor, const ASTNode* node,
+                         const std::unordered_map<const ASTNode*, const ASTNode*>& parent_of) {
+    for (const ASTNode* cur = node; cur;) {
+        auto it = parent_of.find(cur);
+        cur = (it != parent_of.end()) ? it->second : nullptr;
+        if (cur == ancestor) return true;
+    }
+    return false;
+}
+
+// Which repeated-name lexicals (global_decl_count_ > 1, normally refused by
+// record_env_slot_info's guard) are still safe to slot-index: those whose
+// declaring regions are ALL pairwise disjoint (siblings -- neither nested in
+// the other), e.g. two separate top-level `for(let i...)` loops reusing "i".
+// Deliberately skips re-checking escape-to-outside (references_outside):
+// compilation is single-pass AST order, so one sibling's accesses always
+// finish compiling (bytes already emitted) before the next sibling's
+// record_env_slot_info call overwrites env_slot_info_[name] -- no
+// retroactive corruption is possible. An escaping access sits at a
+// different env_depth_ than any of these regions, so emit_read_local/
+// emit_write_local's own (unchanged) depth check already falls back to
+// LdaEnv/StaEnv there, same as any other guard miss. `roots`: one function
+// body for compile(), every top-level statement for compile_script() (no
+// single BlockStatement root there) -- scanned into shared maps so a name
+// repeated ACROSS statements is still compared.
+std::unordered_set<std::string> compute_sibling_safe_names(
+        const std::vector<const ASTNode*>& roots) {
+    std::unordered_map<std::string, std::vector<const ASTNode*>> regions;
+    std::unordered_map<const ASTNode*, const ASTNode*> parent_of;
+    for (const ASTNode* root : roots) collect_lexical_regions_multi(root, nullptr, regions, parent_of);
+    std::unordered_set<std::string> safe;
+    for (const auto& entry : regions) {
+        const auto& list = entry.second;
+        if (list.size() < 2) continue;
+        bool all_disjoint = true;
+        for (size_t i = 0; i < list.size() && all_disjoint; i++) {
+            for (size_t j = i + 1; j < list.size(); j++) {
+                if (list[i] == list[j] || is_ancestor_region(list[i], list[j], parent_of) ||
+                    is_ancestor_region(list[j], list[i], parent_of)) {
+                    all_disjoint = false;
+                    break;
+                }
+            }
+        }
+        if (all_disjoint) safe.insert(entry.first);
+    }
+    return safe;
+}
+
 // Masks the active optional-chain collector// Masks the active optional-chain collector while compiling a subexpression
 // that is NOT part of the chain's spine (computed keys, call arguments):
 // a nested `a?.b` inside must short-circuit only itself, not the outer chain.
@@ -2383,6 +2542,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         for (const auto& info : declared) compiler.global_decl_count_[info.name]++;
         for (const auto& p : param_names) compiler.global_decl_count_[p]++;
         if (has_rest) compiler.global_decl_count_[rest_name]++;
+        compiler.sibling_safe_names_ = compute_sibling_safe_names({body});
     }
     // flat_slot_counter mirrors the actual runtime seeding order of the
     // function's own (depth-0) Environment: params first (in param_names
@@ -2691,6 +2851,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     // loop above -- without it, script-level nested lexicals never qualify
     // for LdaEnvSlot/StaEnvSlot (the uniqueness check always misses).
     for (const auto& info : declared) compiler.global_decl_count_[info.name]++;
+    {
+        std::vector<const ASTNode*> roots;
+        roots.reserve(statements.size());
+        for (const auto& st : statements) roots.push_back(st.get());
+        compiler.sibling_safe_names_ = compute_sibling_safe_names(roots);
+    }
     for (const auto& info : declared) {
         if (!info.is_lexical && !info.is_catch_param) continue;
         if (env_resident.count(info.name)) {
@@ -2778,7 +2944,8 @@ void BytecodeCompiler::record_env_slot_info(const std::vector<BytecodeChunk::Loo
     for (size_t pos = 0; pos < vars.size() && pos < kInlineCapacity; pos++) {
         const std::string& name = vars[pos].name;
         auto it = global_decl_count_.find(name);
-        if (it != global_decl_count_.end() && it->second == 1) {
+        if (it != global_decl_count_.end() &&
+            (it->second == 1 || sibling_safe_names_.count(name))) {
             env_slot_info_[name] = EnvSlotInfo{static_cast<uint8_t>(pos), depth};
         }
     }

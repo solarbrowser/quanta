@@ -82,6 +82,10 @@ bool Object::has_descriptor_override(const std::string& key) const {
     return descriptors_ && descriptors_->count(key) > 0;
 }
 
+PropertyDescriptor* Object::find_descriptor_override(const std::string& key) const {
+    return descriptors_ ? descriptors_->find(key) : nullptr;
+}
+
 void Object::add_shape_property_cached(const std::string& key, const Value& value, Shape* to_shape) {
     shape_ = to_shape;
     shape_slots_.push_back(value);
