@@ -1,13 +1,3 @@
-> ⚠️ Notice
->
-> Development of Quanta is temporarily paused for approximately one month.
-> This is a planned break to refocus, study for exams and clear my head.
-> The project is NOT abandoned.
-> Updates will resume after the break.
->
-> Thank you for your patience & understanding.
-> COMING BACK AT 4/10/2026
-
 # Quanta
 
 Quanta is an experimental ECMAScript (or JS) engine focused on both **memory efficiency** and **execution speed**.  
@@ -15,15 +5,7 @@ Quanta is an experimental ECMAScript (or JS) engine focused on both **memory eff
 
 ## Specification Support
 
-> Tested with Kangax compatibility tables
-
-| ECMAScript Version | Support |
-|--------------------|--------|
-| ES1-ES5            | ~100%  |
-| ES6                | ~99%   |
-| ES2016+            | ~85%   |
-
-## Test262
+### Test262
   
 You can review executed tests here: [quanta.js.org](https://quanta.js.org/test262/test262.html)
 
@@ -42,8 +24,8 @@ You can reach all the documentation files from [here](https://quanta.js.org/doce
   
 Quanta uses **Clang++** across all platforms.
 
-#### Windows
 <details>
+<summary><strong>Windows</strong></summary>
 
 ```bash
 # Install LLVM and add to PATH
@@ -55,8 +37,8 @@ build-windows.bat
 ```
 </details>
 
-#### Linux
 <details>
+<summary><strong>Linux</strong></summary>
 
 ```bash
 # Ubuntu/Debian
@@ -76,8 +58,8 @@ make -j$(nproc)
 ```
 </details>
 
-#### macOS
 <details>
+<summary><strong>macOS</strong></summary>
 
 ```bash
 xcode-select --install
@@ -90,17 +72,18 @@ make -j$(nproc)
 ```
 </details>
 
-### Build Outputs
 <details>
+<summary><strong>Build Outputs</strong></summary>
 
-- **Windows**: `build/bin/quanta.exe`
-- **Linux/macOS**: `build/bin/quanta`
-- **Static Library**: `build/libquanta.a`
-- **Logs**: `build/build.log`, `build/errors.log`
+- **Windows:** `build/bin/quanta.exe`  
+- **Linux/macOS:** `build/bin/quanta`  
+- **Static Library:** `build/libquanta.a`  
+- **Logs:** `build/build.log`, `build/errors.log`  
+</details>
 
-### Usage
+
 <details>
-<summary><strong>Usae</strong></summary>
+<summary><strong>Usage</strong></summary>
 
 ```bash
 # Run a JavaScript file
