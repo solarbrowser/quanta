@@ -540,7 +540,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             if (this_value.is_undefined() || this_value.is_null()) {
                 Object* global = fast_ctx.get_global_object();
                 if (global) fast_this = Value(global);
-            } else {
+            } else if (!this_value.is_object() && !this_value.is_function()) {
+                // box_primitive_this_sloppy's own first check is exactly this --
+                // skip the cross-TU call for the common already-object `this`
+                // (every ordinary method call), not just primitives.
                 fast_this = ObjectFactory::box_primitive_this_sloppy(fast_ctx, this_value);
             }
         }
@@ -628,7 +631,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             if (global) {
                 actual_this = Value(global);
             }
-        } else {
+        } else if (!this_value.is_object() && !this_value.is_function()) {
+            // Same cross-TU-call skip as the register-fast path above: an
+            // already-object `this` (the common case) needs no boxing.
             actual_this = ObjectFactory::box_primitive_this_sloppy(function_context, this_value);
         }
     }

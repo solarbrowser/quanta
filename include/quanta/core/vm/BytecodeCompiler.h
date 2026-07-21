@@ -129,7 +129,15 @@ private:
     bool emit_treewalker_delegate(const ASTNode* node);
 
     int setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body,
-                       bool force_own_env = false);
+                       bool force_own_env = false,
+                       const std::vector<const ASTNode*>& extra_capture_roots = {});
+    // Parallel to chunk_->loop_envs (same index): whether AdvanceLoopEnv's
+    // per-iteration fresh-Environment dance is actually needed for that
+    // scope, per loop_vars_may_be_captured's closure-capture proof -- see
+    // its doc comment. false means every AdvanceLoopEnv emission site for
+    // this scope should be skipped (mutate the one binding in place).
+    std::vector<bool> loop_env_needs_fresh_;
+    bool loop_env_needs_fresh(int idx) const { return loop_env_needs_fresh_[static_cast<size_t>(idx)]; }
 
     size_t emit_jump(Op op);
     bool patch_jump(size_t operand_pos);

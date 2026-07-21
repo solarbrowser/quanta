@@ -1229,6 +1229,27 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
     }
 }
 
+// True if any name in `vars` could be observably captured by a closure
+// anywhere in `roots` -- spec 14.7.4.3/14.7.5.6's CreatePerIterationEnvironment
+// (Op::AdvanceLoopEnv) exists ONLY to support this; with no such closure, one
+// binding mutated in place each iteration is behaviorally identical. Reuses
+// collect_closure_names' own contract (eval/class/unknown-node bailouts all
+// count as "captured", same conservative default it already uses elsewhere).
+bool loop_vars_may_be_captured(const std::vector<const ASTNode*>& roots,
+                                const std::vector<BytecodeChunk::LoopEnvVar>& vars) {
+    if (vars.empty()) return false;
+    std::unordered_set<std::string> refs;
+    bool saw_eval = false, saw_class = false, unknown = false;
+    for (const ASTNode* root : roots) {
+        collect_closure_names(root, /*inside_closure=*/false, refs, saw_eval, saw_class, unknown);
+    }
+    if (saw_eval || saw_class || unknown) return true;
+    for (const auto& v : vars) {
+        if (refs.count(v.name)) return true;
+    }
+    return false;
+}
+
 // True if `name` appears as a plain Identifier anywhere in `node` except
 // inside `region` (skipped by pointer identity). Proves a nested lexical
 // never escapes its own block, safe to keep register-resident. A separate
@@ -2918,7 +2939,8 @@ BytecodeCompiler::BytecodeCompiler(const std::vector<std::string>& param_names, 
 }
 
 int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body,
-                                      bool force_own_env) {
+                                      bool force_own_env,
+                                      const std::vector<const ASTNode*>& extra_capture_roots) {
     if (!env_mode_) return -1;
     std::vector<BytecodeChunk::LoopEnvVar> vars = std::move(extra_vars);
     bool needs_own_env = force_own_env;
@@ -2932,6 +2954,15 @@ int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extr
                vars.end());
     if (vars.empty() && !needs_own_env) return -1;
     record_env_slot_info(vars, env_depth_ + 1);
+    // force_own_env (destructuring for-of/for-in) needs a genuinely fresh
+    // binding every iteration independent of closure capture: Op::
+    // DestructureBind's create_lexical_binding silently no-ops re-declaring
+    // an already-bound name (see compile_for_each_loop's own doc comment),
+    // so without a fresh env each iteration keeps writing into iteration 1's
+    // now-permanent binding instead of a new one.
+    std::vector<const ASTNode*> capture_roots = extra_capture_roots;
+    capture_roots.push_back(body);
+    loop_env_needs_fresh_.push_back(force_own_env || loop_vars_may_be_captured(capture_roots, vars));
     chunk_->loop_envs.push_back(std::move(vars));
     return static_cast<int>(chunk_->loop_envs.size() - 1);
 }
@@ -3001,7 +3032,8 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     } else if (declare_fresh && env_mode_ && env_names_.count(var_name)) {
         extra_vars.push_back({var_name, true, is_const, false});
     }
-    int loop_env_idx = setup_loop_env(std::move(extra_vars), body, /*force_own_env=*/destr && is_lexical);
+    int loop_env_idx = setup_loop_env(std::move(extra_vars), body, /*force_own_env=*/destr && is_lexical,
+                                       {left, right});
     if (loop_env_idx >= 0) {
         emit(Op::EnterLoopEnv);
         emit_u16(static_cast<uint16_t>(loop_env_idx));
@@ -3020,12 +3052,13 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     emit(Op::Star);
     emit_u8(static_cast<uint8_t>(iterator_reg));
 
-    if (loop_env_idx >= 0) {
+    if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
         // Spec 14.7.5.6 ForIn/OfBodyEvaluation step 1: CreatePerIterationEnvironment
         // runs once more right after head evaluation (the object/iterable
         // expression, where a closure may capture the still-TDZ binding),
         // before the first per-iteration binding write -- same reasoning as
-        // the C-style FOR_STATEMENT fix above.
+        // the C-style FOR_STATEMENT fix above. Skipped when no closure
+        // anywhere in left/right/body can observe it.
         emit(Op::AdvanceLoopEnv);
         emit_u16(static_cast<uint16_t>(loop_env_idx));
     }
@@ -3056,7 +3089,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     for (size_t pos : scope.continue_patches) {
         if (!patch_jump(pos)) return false;  // continue lands on the advance step
     }
-    if (loop_env_idx >= 0) {
+    if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
         emit(Op::AdvanceLoopEnv);
         emit_u16(static_cast<uint16_t>(loop_env_idx));
     }
@@ -3503,7 +3536,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::WHILE_STATEMENT: {
             const auto* stmt = static_cast<const WhileStatement*>(node);
-            int loop_env_idx = setup_loop_env({}, stmt->get_body());
+            int loop_env_idx = setup_loop_env({}, stmt->get_body(), false, {stmt->get_test()});
             if (loop_env_idx >= 0) {
                 emit(Op::EnterLoopEnv);
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
@@ -3527,8 +3560,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 for (size_t pos : scope.continue_patches) {
                     if (!patch_jump(pos)) return false;  // continue lands on the advance step
                 }
-                emit(Op::AdvanceLoopEnv);
-                emit_u16(static_cast<uint16_t>(loop_env_idx));
+                if (loop_env_needs_fresh(loop_env_idx)) {
+                    emit(Op::AdvanceLoopEnv);
+                    emit_u16(static_cast<uint16_t>(loop_env_idx));
+                }
             }
             if (!emit_jump_back(Op::Jump, loop_start)) return false;
             if (!patch_jump(exit_jump)) return false;
@@ -3541,7 +3576,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::DO_WHILE_STATEMENT: {
             const auto* stmt = static_cast<const DoWhileStatement*>(node);
-            int loop_env_idx = setup_loop_env({}, stmt->get_body());
+            int loop_env_idx = setup_loop_env({}, stmt->get_body(), false, {stmt->get_test()});
             if (loop_env_idx >= 0) {
                 emit(Op::EnterLoopEnv);
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
@@ -3557,7 +3592,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             for (size_t pos : scope.continue_patches) {
                 if (!patch_jump(pos)) return false;  // continue lands on the advance step / test
             }
-            if (loop_env_idx >= 0) {
+            if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
                 emit(Op::AdvanceLoopEnv);
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
             }
@@ -3583,7 +3618,8 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     }
                 }
             }
-            int loop_env_idx = setup_loop_env(std::move(header_vars), stmt->get_body());
+            int loop_env_idx = setup_loop_env(std::move(header_vars), stmt->get_body(), false,
+                                               {stmt->get_init(), stmt->get_test(), stmt->get_update()});
             if (loop_env_idx >= 0) {
                 emit(Op::EnterLoopEnv);
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
@@ -3596,12 +3632,13 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (!compile_expression(stmt->get_init())) return false;
                 }
             }
-            if (loop_env_idx >= 0) {
+            if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
                 // Spec 14.7.4.3 ForBodyEvaluation step 1: CreatePerIterationEnvironment
                 // runs once more right after the init, before the first test --
                 // a closure created during init (e.g. a second declarator's
                 // initializer) must NOT alias the environment the first test/
-                // body/update mutate.
+                // body/update mutate. Skipped when no closure anywhere in this
+                // for-statement can observe it -- see loop_vars_may_be_captured.
                 emit(Op::AdvanceLoopEnv);
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
             }
@@ -3621,7 +3658,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             for (size_t pos : scope.continue_patches) {
                 if (!patch_jump(pos)) return false;  // continue lands on the advance step / update
             }
-            if (loop_env_idx >= 0) {
+            if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
                 emit(Op::AdvanceLoopEnv);
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
             }
