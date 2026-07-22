@@ -24,6 +24,20 @@ namespace Quanta {
 
 class PropertyDescriptor;
 class HybridDescriptorMap;
+struct RareExtras;
+
+// Fixed-position header for Object::butterfly_ -- always exactly 2
+// Value-widths so it sits at a capacity-independent offset from the
+// butterfly pointer (`reinterpret_cast<ButterflyHeader*>(butterfly_) - 1`).
+// Never accessed as a Value, never GC-traced (plain counters).
+struct ButterflyHeader {
+    uint32_t elements_length = 0;
+    uint32_t elements_capacity = 0;
+    uint32_t shape_capacity = 0;
+    uint32_t reserved = 0;
+};
+static_assert(sizeof(ButterflyHeader) == 2 * sizeof(Value), "must be exactly 2 Value-widths");
+
 class Context;
 class Environment;
 class ASTNode;
@@ -95,37 +109,53 @@ private:
         uint32_t hash_code;
     } header_;
 
-    std::vector<Value> elements_;
-
     // Named (non-index) fast-path properties: shape describes the layout
-    // (which keys, in what slot), shape_slots_ holds this instance's own
-    // values at those slots. Every plain object starts at Shape::root()
-    // (no properties) and transitions as keys are added. A property that
-    // needs non-default attributes, or any delete, moves everything into
-    // descriptors_ and sets shape_ to nullptr -- see migrate_to_dictionary_mode.
+    // (which keys, in what slot), the positive side of butterfly_ holds
+    // this instance's own values at those slots. Every plain object starts
+    // at Shape::root() (no properties) and transitions as keys are added.
+    // A property that needs non-default attributes, or any delete, moves
+    // everything into descriptors_ and sets shape_ to nullptr -- see
+    // migrate_to_dictionary_mode.
     Shape* shape_ = Shape::root();
-    // Pooled (SmallMapPool): reserve_property_slots() rounds requests up to
-    // a power-of-two tier first (see Object.cpp) so this and
-    // property_insertion_order_ below request only a small, bounded set of
-    // distinct byte sizes -- matching what plain push_back growth already
-    // produces, and keeping the pool's shared size-class list from growing
-    // unboundedly with every distinct property count a real program uses.
-    std::vector<Value, SmallMapAllocator<Value>> shape_slots_;
 
-    // Sparse array-index overflow: elements_ is dense from 0, so an index
-    // far beyond its size (or set on a non-Array) falls back here instead
-    // of growing elements_ to match. Numeric keys only -- named properties
-    // never reach this map.
-    std::unique_ptr<std::unordered_map<std::string, Value>> sparse_overflow_;
+    // Single allocation backing both dense array elements and shape-slot
+    // values, one pointer instead of two std::vectors' own ptr+size+capacity
+    // (the shape-slot count is already available from the shared `shape_`).
+    // Layout, low to high address:
+    //   [element[capacity-1]]...[element[0]] [ButterflyHeader] [shape slot 0]...[shape slot N-1]
+    //                                                           ^ butterfly_ points here
+    // `butterfly_[i]` is shape slot i; `butterfly_[-3-i]` is element i (the
+    // header occupies the two slots right before butterfly_). nullptr until
+    // the object needs either kind of storage.
+    Value* butterfly_ = nullptr;
 
-    std::unique_ptr<HybridDescriptorMap> descriptors_;
+    // Sparse array-index overflow, deleted-element tombstones, non-default-
+    // attribute/accessor descriptors, and their enumeration order (see
+    // RareExtras below) -- nullptr for most objects (plain shape-mode data).
+    std::unique_ptr<RareExtras> extras_;
 
-    std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements_;
-
-    // Creation order across shape-mode, sparse-overflow, and descriptor-tracked
-    // properties alike (none of those on their own preserve insertion order).
-    // Pooled -- see shape_slots_'s comment above.
-    std::vector<std::string, SmallMapAllocator<std::string>> property_insertion_order_;
+    // butterfly_ helpers. Trivial ones inline; growth/free in Object.cpp.
+    ButterflyHeader* butterfly_header() const {
+        return reinterpret_cast<ButterflyHeader*>(butterfly_) - 1;
+    }
+    uint32_t elements_capacity() const { return butterfly_ ? butterfly_header()->elements_capacity : 0; }
+    uint32_t elements_length() const { return butterfly_ ? butterfly_header()->elements_length : 0; }
+    uint32_t shape_capacity() const { return butterfly_ ? butterfly_header()->shape_capacity : 0; }
+    Value* shape_slot_ptr(uint32_t i) const { return butterfly_ + i; }
+    Value* element_ptr(uint32_t i) const { return butterfly_ - 3 - i; }
+    // Amortized-doubling growth (like std::vector) so at least `needed`
+    // shape slots resp. elements exist. New slots are NOT zero-initialized
+    // -- callers must fill every newly-visible slot before it's traced or read.
+    void ensure_shape_capacity(uint32_t needed);
+    void ensure_elements_capacity(uint32_t needed);
+    // std::vector<Value>::resize(new_length) equivalent.
+    void resize_elements(uint32_t new_length);
+    // Common core of both: allocates a new block sized for the given
+    // capacities, copies both regions' existing contents across (at their
+    // OLD capacities -- the caller has already established the new ones
+    // are >=), frees the old block, and repoints butterfly_.
+    void realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shape_capacity);
+    void free_butterfly();
 
 public:
     // GC cell protocol: every Object (and subclass) lives in the active
@@ -139,7 +169,7 @@ public:
 
     Object(ObjectType type = ObjectType::Ordinary);
     explicit Object(Object* prototype, ObjectType type = ObjectType::Ordinary);
-    virtual ~Object() = default;
+    virtual ~Object();
 
     // Reports every cell reference this object holds to the collector.
     // The base walks prototype + property/element storage; subclasses with
@@ -152,8 +182,11 @@ public:
     friend class Function;
     Object(const Object& other) = delete;
     Object& operator=(const Object& other) = delete;
-    Object(Object&& other) noexcept = default;
-    Object& operator=(Object&& other) noexcept = default;
+    // Never actually invoked (every Object lives behind a GC pointer) --
+    // deleted rather than defaulted now that butterfly_ is a raw owned
+    // pointer a default move would shallow-copy (double-free risk).
+    Object(Object&& other) = delete;
+    Object& operator=(Object&& other) = delete;
 
     ObjectType get_type() const { return header_.type; }
     void set_type(ObjectType type) { header_.type = type; }
@@ -216,7 +249,7 @@ public:
 
     // fp: unchecked array access
     inline Value get_element_unchecked(uint32_t index) const {
-        return elements_[index];
+        return *element_ptr(index);
     }
 
     bool set_element(uint32_t index, const Value& value);
@@ -281,7 +314,7 @@ public:
     bool to_boolean() const;
     
     size_t property_count() const { return header_.property_count; }
-    size_t element_count() const { return elements_.size(); }
+    size_t element_count() const { return elements_length(); }
     std::string debug_string() const;
     uint32_t hash() const { return header_.hash_code; }
     
@@ -295,10 +328,10 @@ public:
     // the slot value.
     Shape* get_shape() const { return shape_; }
     const Value* get_shape_slot_unchecked(uint32_t index) const {
-        return index < shape_slots_.size() ? &shape_slots_[index] : nullptr;
+        return index < shape_capacity() ? shape_slot_ptr(index) : nullptr;
     }
     Value* get_shape_slot_unchecked(uint32_t index) {
-        return index < shape_slots_.size() ? &shape_slots_[index] : nullptr;
+        return index < shape_capacity() ? shape_slot_ptr(index) : nullptr;
     }
     // Out-of-line: descriptors_'s value type (PropertyDescriptor) is only
     // forward-declared this early in the header.
@@ -376,6 +409,29 @@ private:
     bool is_array_index(const std::string& key, uint32_t* index = nullptr) const;
     void update_hash_code();
     PropertyDescriptor create_data_descriptor(const Value& value, PropertyAttributes attrs) const;
+
+    // RareExtras accessors: "peek" forms return nullptr without allocating
+    // extras_ (mirrors the old field's bare `if (sparse_overflow_)` check);
+    // "ensure" forms allocate extras_ (and the specific sub-member) on
+    // first use, matching the old `if (!sparse_overflow_) sparse_overflow_
+    // = std::make_unique<...>();` pattern.
+    std::unordered_map<std::string, Value>* sparse_overflow() const;
+    std::unordered_map<std::string, Value>& ensure_sparse_overflow();
+    std::unordered_set<uint32_t>* deleted_elements() const;
+    std::unordered_set<uint32_t>& ensure_deleted_elements();
+    HybridDescriptorMap* descriptors() const;
+    HybridDescriptorMap& ensure_descriptors();
+    // Enumeration order for extras-resident (sparse/dictionary-mode)
+    // properties only -- shape-resident property order comes from
+    // Shape::properties_in_order() instead, see get_own_property_keys.
+    void push_extra_property_order(const std::string& key);
+    void erase_extra_property_order(const std::string& key);
+    // Shared by get_own_property_keys/get_own_property_keys_unfiltered:
+    // merges shape-resident and extras-resident property order by logical-
+    // clock snapshot, since a plain concatenation can misorder the two.
+    // Named (non-index) keys only; numeric/element keys are handled
+    // separately by both callers.
+    void collect_named_keys_in_order(std::vector<std::string>& out) const;
 };
 
 /**
@@ -571,6 +627,26 @@ private:
     std::array<Entry, kInlineCapacity> inline_;
     size_t inline_count_ = 0;
     std::unique_ptr<OverflowMap> overflow_;
+};
+
+// Everything an object needs only rarely: sparse array-index overflow,
+// deleted-element tombstones, non-default-attribute/accessor descriptors,
+// and the enumeration order of whichever of those a given object actually
+// has (shape-resident properties order via Shape::properties_in_order()
+// instead). Bundled behind one Object::extras_ pointer instead of four
+// separate fields.
+struct RareExtras {
+    std::unique_ptr<std::unordered_map<std::string, Value>> sparse_overflow;
+    std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements;
+    std::unique_ptr<HybridDescriptorMap> descriptors;
+    // (key, logical-insertion-clock) for extras-resident properties.
+    // defineProperty can add one of these while the object is still
+    // shape-mode for everything else, so plain concatenation would get
+    // chronological order wrong; the clock (shape_->slot_count() at
+    // insertion time, or next_order_snapshot once fully dictionary-mode)
+    // lets get_own_property_keys interleave the two correctly.
+    std::vector<std::pair<std::string, uint32_t>> extra_property_order;
+    uint32_t next_order_snapshot = 0;
 };
 
 /**
@@ -791,8 +867,9 @@ public:
         // "name"/"length" are virtually present (own, just not materialized
         // into descriptors_/shape yet) unless explicitly deleted -- see the
         // lazy-installation comment on name_deleted_/length_deleted_ above.
-        if (key == "name" && !name_deleted_ && !(descriptors_ && descriptors_->count("name"))) return true;
-        if (key == "length" && !length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) return true;
+        auto* d = descriptors();
+        if (key == "name" && !name_deleted_ && !(d && d->count("name"))) return true;
+        if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) return true;
         return Object::has_own_property(key);
     }
     PropertyDescriptor get_property_descriptor(const std::string& key) const override;

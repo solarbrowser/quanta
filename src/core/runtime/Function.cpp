@@ -1060,10 +1060,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 // descriptor consistent with what a plain read would return, at zero
 // allocation cost for the common (never introspected) case.
 PropertyDescriptor Function::get_property_descriptor(const std::string& key) const {
-    if (key == "name" && !name_deleted_ && !(descriptors_ && descriptors_->count("name"))) {
+    auto* d = descriptors();
+    if (key == "name" && !name_deleted_ && !(d && d->count("name"))) {
         return PropertyDescriptor(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
     }
-    if (key == "length" && !length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) {
+    if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         return PropertyDescriptor(Value(static_cast<double>(declared_length_)), PropertyAttributes::Configurable);
     }
     return Object::get_property_descriptor(key);
@@ -1078,8 +1079,9 @@ PropertyDescriptor Function::get_property_descriptor(const std::string& key) con
 // would see "no real entry" post-erase and incorrectly treat the property as
 // virtually-present-again instead of genuinely, permanently gone.
 bool Function::delete_property(const std::string& key) {
+    auto* d = descriptors();
     if (key == "name") {
-        if (!name_deleted_ && !(descriptors_ && descriptors_->count("name"))) {
+        if (!name_deleted_ && !(d && d->count("name"))) {
             name_deleted_ = true;
             return true;
         }
@@ -1088,7 +1090,7 @@ bool Function::delete_property(const std::string& key) {
         return ok;
     }
     if (key == "length") {
-        if (!length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) {
+        if (!length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
             length_deleted_ = true;
             return true;
         }
@@ -1108,10 +1110,11 @@ bool Function::delete_property(const std::string& key) {
 // takes Object::set_property_descriptor's normal "redefine" path -- callers
 // need no changes.
 bool Function::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
-    if (key == "name" && !name_deleted_ && !(descriptors_ && descriptors_->count("name"))) {
+    auto* d = descriptors();
+    if (key == "name" && !name_deleted_ && !(d && d->count("name"))) {
         PropertyDescriptor mat(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
         Object::set_property_descriptor("name", mat);
-    } else if (key == "length" && !length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) {
+    } else if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         PropertyDescriptor mat(Value(static_cast<double>(declared_length_)), PropertyAttributes::Configurable);
         Object::set_property_descriptor("length", mat);
     }
@@ -1131,8 +1134,8 @@ Value Function::get_property(const std::string& key) const {
         return Value();
     }
     if (key == "name") {
-        if (descriptors_) {
-            auto* it = descriptors_->find("name");
+        if (auto* d = descriptors()) {
+            auto* it = d->find("name");
             if (it) {
                 if (it->is_data_descriptor()) {
                     Value v = it->get_value();
@@ -1152,8 +1155,9 @@ Value Function::get_property(const std::string& key) const {
         return Value(name_ == "<arrow>" ? std::string("") : name_);
     }
     if (key == "length") {
-        if (descriptors_ && descriptors_->count("length")) {
-            PropertyDescriptor desc = (*descriptors_)["length"];
+        auto* d = descriptors();
+        if (d && d->count("length")) {
+            PropertyDescriptor desc = (*d)["length"];
             if (desc.is_data_descriptor()) return desc.get_value();
             if (desc.is_accessor_descriptor()) {
                 Object* getter = desc.get_getter();
@@ -1183,8 +1187,8 @@ Value Function::get_property(const std::string& key) const {
     }
     // A setter-only own accessor must return undefined here, not fall through to an
     // inherited getter for the same key.
-    if (descriptors_) {
-        auto* it = descriptors_->find(key);
+    if (auto* d = descriptors()) {
+        auto* it = d->find(key);
         if (it && it->is_accessor_descriptor()) {
             return Value();
         }
@@ -1202,8 +1206,8 @@ Value Function::get_property(const std::string& key) const {
     }
 
     while (current) {
-        if (current->descriptors_) {
-            auto* desc_it = current->descriptors_->find(key);
+        if (auto* d = current->descriptors()) {
+            auto* desc_it = d->find(key);
             if (desc_it) {
                 const PropertyDescriptor& desc = *desc_it;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
@@ -1244,8 +1248,8 @@ void Function::set_name(const std::string& name) {
     name_ = name;
     // Force-update the name in descriptors (bypasses writable check)
     // But don't overwrite if the descriptor was explicitly set to a function (e.g. static name())
-    if (descriptors_) {
-        auto* it = descriptors_->find("name");
+    if (auto* d = descriptors()) {
+        auto* it = d->find("name");
         if (it && it->is_data_descriptor()) {
             if (!it->get_value().is_function()) {
                 *it = PropertyDescriptor(Value(name_), it->get_attributes());
@@ -1268,10 +1272,11 @@ std::vector<std::string> Function::get_own_property_keys() const {
     // (lazy, not yet materialized) -- inject them so the priority loop below
     // still surfaces them (Object.getOwnPropertyNames/Reflect.ownKeys must
     // see them; they're non-enumerable so Object.keys/for-in still won't).
-    if (!length_deleted_ && !(descriptors_ && descriptors_->count("length")) && !has_shape_slot("length")) {
+    auto* d = descriptors();
+    if (!length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         all.push_back("length");
     }
-    if (!name_deleted_ && !(descriptors_ && descriptors_->count("name"))) {
+    if (!name_deleted_ && !(d && d->count("name"))) {
         all.push_back("name");
     }
     std::vector<std::string> result;
@@ -1302,10 +1307,12 @@ std::vector<std::string> Function::get_own_property_keys() const {
 bool Function::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
     Collector::write_barrier(this);
     if (key == "prototype") {
-        if (attrs == PropertyAttributes::Default && descriptors_) {
-            auto* it = descriptors_->find("prototype");
-            if (it && it->is_data_descriptor() && !it->is_writable()) {
-                return false;
+        if (attrs == PropertyAttributes::Default) {
+            if (auto* d = descriptors()) {
+                auto* it = d->find("prototype");
+                if (it && it->is_data_descriptor() && !it->is_writable()) {
+                    return false;
+                }
             }
         }
         if (value.is_object()) {

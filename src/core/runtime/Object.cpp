@@ -40,24 +40,32 @@ void Object::operator delete(void* p) noexcept {
 
 void Object::trace(Visitor& v) {
     v.visit_object(header_.prototype);
-    for (const auto& val : elements_) v.visit(val);
-    for (const auto& val : shape_slots_) v.visit(val);
-    if (sparse_overflow_) {
-        for (const auto& entry : *sparse_overflow_) v.visit(entry.second);
+    // Only the LOGICALLY valid extent of each region -- butterfly_'s
+    // capacity beyond elements_length()/shape_->slot_count() is unused
+    // slack (from amortized-doubling growth), never initialized, and must
+    // never be interpreted as a Value.
+    uint32_t elen = elements_length();
+    for (uint32_t i = 0; i < elen; i++) v.visit(*element_ptr(i));
+    if (shape_) {
+        uint32_t scount = shape_->slot_count();
+        for (uint32_t i = 0; i < scount; i++) v.visit(*shape_slot_ptr(i));
     }
-    if (descriptors_) {
-        for (size_t i = 0; i < descriptors_->inline_size(); i++) {
-            const PropertyDescriptor& d = descriptors_->inline_value(i);
-            if (d.has_value()) v.visit(d.get_value());
-            v.visit_object(d.get_getter());
-            v.visit_object(d.get_setter());
+    if (auto* so = sparse_overflow()) {
+        for (const auto& entry : *so) v.visit(entry.second);
+    }
+    if (auto* d = descriptors()) {
+        for (size_t i = 0; i < d->inline_size(); i++) {
+            const PropertyDescriptor& desc = d->inline_value(i);
+            if (desc.has_value()) v.visit(desc.get_value());
+            v.visit_object(desc.get_getter());
+            v.visit_object(desc.get_setter());
         }
-        if (const auto* ov = descriptors_->overflow()) {
+        if (const auto* ov = d->overflow()) {
             for (const auto& entry : *ov) {
-                const PropertyDescriptor& d = entry.second;
-                if (d.has_value()) v.visit(d.get_value());
-                v.visit_object(d.get_getter());
-                v.visit_object(d.get_setter());
+                const PropertyDescriptor& desc = entry.second;
+                if (desc.has_value()) v.visit(desc.get_value());
+                v.visit_object(desc.get_getter());
+                v.visit_object(desc.get_setter());
             }
         }
     }
@@ -66,17 +74,53 @@ void Object::trace(Visitor& v) {
 Value* Object::find_shape_slot(const std::string& key) {
     if (!shape_) return nullptr;
     int32_t slot = shape_->find_slot(key);
-    return slot >= 0 ? &shape_slots_[slot] : nullptr;
+    return slot >= 0 ? shape_slot_ptr(static_cast<uint32_t>(slot)) : nullptr;
 }
 
 const Value* Object::find_shape_slot(const std::string& key) const {
     if (!shape_) return nullptr;
     int32_t slot = shape_->find_slot(key);
-    return slot >= 0 ? &shape_slots_[slot] : nullptr;
+    return slot >= 0 ? shape_slot_ptr(static_cast<uint32_t>(slot)) : nullptr;
 }
 
 bool Object::has_shape_slot(const std::string& key) const {
     return shape_ && shape_->find_slot(key) >= 0;
+}
+
+std::unordered_map<std::string, Value>* Object::sparse_overflow() const {
+    return extras_ ? extras_->sparse_overflow.get() : nullptr;
+}
+std::unordered_map<std::string, Value>& Object::ensure_sparse_overflow() {
+    if (!extras_) extras_ = std::make_unique<RareExtras>();
+    if (!extras_->sparse_overflow) extras_->sparse_overflow = std::make_unique<std::unordered_map<std::string, Value>>();
+    return *extras_->sparse_overflow;
+}
+std::unordered_set<uint32_t>* Object::deleted_elements() const {
+    return extras_ ? extras_->deleted_elements.get() : nullptr;
+}
+std::unordered_set<uint32_t>& Object::ensure_deleted_elements() {
+    if (!extras_) extras_ = std::make_unique<RareExtras>();
+    if (!extras_->deleted_elements) extras_->deleted_elements = std::make_unique<std::unordered_set<uint32_t>>();
+    return *extras_->deleted_elements;
+}
+HybridDescriptorMap* Object::descriptors() const {
+    return extras_ ? extras_->descriptors.get() : nullptr;
+}
+HybridDescriptorMap& Object::ensure_descriptors() {
+    if (!extras_) extras_ = std::make_unique<RareExtras>();
+    if (!extras_->descriptors) extras_->descriptors = std::make_unique<HybridDescriptorMap>();
+    return *extras_->descriptors;
+}
+void Object::push_extra_property_order(const std::string& key) {
+    if (!extras_) extras_ = std::make_unique<RareExtras>();
+    uint32_t snapshot = shape_ ? shape_->slot_count() : extras_->next_order_snapshot++;
+    extras_->extra_property_order.push_back({key, snapshot});
+}
+void Object::erase_extra_property_order(const std::string& key) {
+    if (!extras_) return;
+    auto& order = extras_->extra_property_order;
+    order.erase(std::remove_if(order.begin(), order.end(),
+        [&](const auto& p) { return p.first == key; }), order.end());
 }
 
 bool Object::has_descriptor_override(const std::string& key) const {
@@ -87,19 +131,22 @@ bool Object::has_descriptor_override(const std::string& key) const {
     // path" as its ONE guard for "don't trust a raw shape-slot value" --
     // folding the shape-accessor check in here makes all of those sites
     // correct for free, with no changes to any of them.
-    return (descriptors_ && descriptors_->count(key) > 0) ||
+    HybridDescriptorMap* d = descriptors();
+    return (d && d->count(key) > 0) ||
            (shape_ && shape_->is_accessor_slot(key));
 }
 
 PropertyDescriptor* Object::find_descriptor_override(const std::string& key) const {
-    return descriptors_ ? descriptors_->find(key) : nullptr;
+    HybridDescriptorMap* d = descriptors();
+    return d ? d->find(key) : nullptr;
 }
 
 void Object::add_shape_property_cached(const std::string& key, const Value& value, Shape* to_shape) {
     shape_ = to_shape;
-    shape_slots_.push_back(value);
+    uint32_t new_count = to_shape->slot_count();
+    ensure_shape_capacity(new_count);
+    *shape_slot_ptr(new_count - 1) = value;
     header_.property_count++;
-    property_insertion_order_.push_back(key);
     update_hash_code();
     // Mirrors store_in_overflow's own bump for the equivalent slow-path
     // branch -- this object may itself be used as another chain's prototype.
@@ -109,10 +156,11 @@ void Object::add_shape_property_cached(const std::string& key, const Value& valu
 void Object::add_accessor_shape_property_cached(const std::string& key, const Value& getter,
                                                  const Value& setter, Shape* to_shape) {
     shape_ = to_shape;
-    shape_slots_.push_back(getter);
-    shape_slots_.push_back(setter);
+    uint32_t new_count = to_shape->slot_count();
+    ensure_shape_capacity(new_count);
+    *shape_slot_ptr(new_count - 2) = getter;
+    *shape_slot_ptr(new_count - 1) = setter;
     header_.property_count++;
-    property_insertion_order_.push_back(key);
     update_hash_code();
     // Mirrors add_shape_property_cached's own bump -- see its comment.
     if (used_as_prototype()) bump_proto_epoch();
@@ -124,7 +172,9 @@ bool Object::set_shape_slot(const std::string& key, const Value& value) {
     Shape* next = shape_->transition(key);
     if (!next) return false;
     shape_ = next;
-    shape_slots_.push_back(value);
+    uint32_t new_count = next->slot_count();
+    ensure_shape_capacity(new_count);
+    *shape_slot_ptr(new_count - 1) = value;
     return true;
 }
 
@@ -139,9 +189,7 @@ Object* as_object_like(const Value& v) {
 void Object::migrate_to_dictionary_mode() {
     if (!shape_) return;
     bump_descriptor_epoch();
-    if (!descriptors_) {
-        descriptors_ = std::make_unique<HybridDescriptorMap>();
-    }
+    HybridDescriptorMap& descs = ensure_descriptors();
     for (const auto& prop : shape_->properties_in_order()) {
         if (prop.is_accessor) {
             // add_accessor_shape_property_cached never writes descriptors_,
@@ -149,26 +197,35 @@ void Object::migrate_to_dictionary_mode() {
             // later attribute change) already migrated this exact key --
             // in which case that entry is authoritative and must not be
             // clobbered by the (now stale) shape-slot pair.
-            if (!descriptors_->find(prop.key)) {
-                Object* getter = as_object_like(shape_slots_[prop.slot_index]);
-                Object* setter = as_object_like(shape_slots_[prop.slot_index + 1]);
-                (*descriptors_)[prop.key] = PropertyDescriptor(getter, setter);
+            if (!descs.find(prop.key)) {
+                Object* getter = as_object_like(*shape_slot_ptr(prop.slot_index));
+                Object* setter = as_object_like(*shape_slot_ptr(prop.slot_index + 1));
+                descs[prop.key] = PropertyDescriptor(getter, setter);
             }
             continue;
         }
-        auto* it = descriptors_->find(prop.key);
+        auto* it = descs.find(prop.key);
         if (it) {
             // Non-default attrs already live here; the shape slot was only
             // the value mirror. Overwriting would reset attributes.
             if (it->is_data_descriptor()) {
-                it->set_value(shape_slots_[prop.slot_index]);
+                it->set_value(*shape_slot_ptr(prop.slot_index));
             }
         } else {
-            (*descriptors_)[prop.key] = PropertyDescriptor(shape_slots_[prop.slot_index], PropertyAttributes::Default);
+            descs[prop.key] = PropertyDescriptor(*shape_slot_ptr(prop.slot_index), PropertyAttributes::Default);
         }
     }
+    // extras_ becomes the sole order authority once shape_ goes null below;
+    // each property keeps its own slot_index as its clock (not the current
+    // slot_count(), which would collapse them all to one snapshot).
+    for (const auto& prop : shape_->properties_in_order()) {
+        extras_->extra_property_order.push_back({prop.key, prop.slot_index});
+    }
+    extras_->next_order_snapshot = shape_->slot_count();
+    // Leftover butterfly shape-slot capacity is left allocated (not shrunk,
+    // unlike the old shape_slots_.clear()) -- shape_ == nullptr already
+    // tells every real consumer not to trust it.
     shape_ = nullptr;
-    shape_slots_.clear();
 }
 
 namespace {
@@ -185,9 +242,83 @@ size_t next_slot_tier(size_t n) {
 }
 
 void Object::reserve_property_slots(size_t count) {
-    size_t tier = next_slot_tier(count);
-    shape_slots_.reserve(tier);
-    property_insertion_order_.reserve(tier);
+    ensure_shape_capacity(static_cast<uint32_t>(next_slot_tier(count)));
+}
+
+void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shape_capacity) {
+    const size_t new_bytes = static_cast<size_t>(new_elements_capacity) * sizeof(Value) +
+                              sizeof(ButterflyHeader) +
+                              static_cast<size_t>(new_shape_capacity) * sizeof(Value);
+    // Pooled: doubling growth converges same-shaped objects onto a handful
+    // of common byte sizes; plain new/delete here measurably regressed
+    // object-literal-heavy workloads straight to malloc/free.
+    char* new_block = static_cast<char*>(SmallMapPool::take(new_bytes));
+    Value* new_butterfly = reinterpret_cast<Value*>(new_block + new_elements_capacity * sizeof(Value) +
+                                                      sizeof(ButterflyHeader));
+    ButterflyHeader* new_header = reinterpret_cast<ButterflyHeader*>(new_butterfly) - 1;
+
+    uint32_t old_elements_length = 0;
+    if (butterfly_) {
+        ButterflyHeader* old_header = butterfly_header();
+        old_elements_length = old_header->elements_length;
+        uint32_t old_elements_cap = old_header->elements_capacity;
+        uint32_t old_shape_cap = old_header->shape_capacity;
+        // Both regions' OLD capacities are <= their new ones (callers only
+        // ever grow) -- copy each region's full old extent across at its
+        // same per-slot index, just at new addresses either side of the
+        // (possibly relocated) header.
+        for (uint32_t i = 0; i < old_shape_cap; i++) {
+            *(new_butterfly + i) = *shape_slot_ptr(i);
+        }
+        for (uint32_t i = 0; i < old_elements_cap; i++) {
+            *(new_butterfly - 3 - i) = *element_ptr(i);
+        }
+        free_butterfly();
+    }
+
+    new_header->elements_length = old_elements_length;
+    new_header->elements_capacity = new_elements_capacity;
+    new_header->shape_capacity = new_shape_capacity;
+    new_header->reserved = 0;
+    butterfly_ = new_butterfly;
+}
+
+void Object::free_butterfly() {
+    if (!butterfly_) return;
+    size_t elem_cap = elements_capacity();
+    size_t shape_cap = shape_capacity();
+    char* base = reinterpret_cast<char*>(butterfly_) - sizeof(ButterflyHeader) -
+                 elem_cap * sizeof(Value);
+    size_t bytes = elem_cap * sizeof(Value) + sizeof(ButterflyHeader) + shape_cap * sizeof(Value);
+    SmallMapPool::give(bytes, static_cast<void*>(base));
+    butterfly_ = nullptr;
+}
+
+void Object::ensure_shape_capacity(uint32_t needed) {
+    uint32_t cur = shape_capacity();
+    if (needed <= cur) return;
+    uint32_t new_cap = cur == 0 ? 4 : cur;
+    while (new_cap < needed) new_cap *= 2;
+    realloc_butterfly(elements_capacity(), new_cap);
+}
+
+void Object::ensure_elements_capacity(uint32_t needed) {
+    uint32_t cur = elements_capacity();
+    if (needed <= cur) return;
+    uint32_t new_cap = cur == 0 ? 4 : cur;
+    while (new_cap < needed) new_cap *= 2;
+    realloc_butterfly(new_cap, shape_capacity());
+}
+
+void Object::resize_elements(uint32_t new_length) {
+    uint32_t old_length = elements_length();
+    if (new_length > old_length) {
+        ensure_elements_capacity(new_length);
+        for (uint32_t i = old_length; i < new_length; i++) {
+            *element_ptr(i) = Value();
+        }
+    }
+    if (butterfly_) butterfly_header()->elements_length = new_length;
 }
 
 void Object::bump_array_length(double candidate) {
@@ -195,15 +326,15 @@ void Object::bump_array_length(double candidate) {
         if (candidate > slot->to_number()) {
             Value new_len(candidate);
             *slot = new_len;
-            if (descriptors_) {
-                auto* dit = descriptors_->find("length");
+            if (auto* d = descriptors()) {
+                auto* dit = d->find("length");
                 if (dit) dit->set_value(new_len);
             }
         }
         return;
     }
-    if (descriptors_) {
-        auto* dit = descriptors_->find("length");
+    if (auto* d = descriptors()) {
+        auto* dit = d->find("length");
         if (dit && candidate > dit->get_value().to_number()) {
             dit->set_value(Value(candidate));
         }
@@ -244,8 +375,12 @@ Object::Object(ObjectType type) {
     header_.hash_code = reinterpret_cast<uintptr_t>(this) & 0xFFFFFFFF;
 
     if (type == ObjectType::Array) {
-        elements_.reserve(8);
+        ensure_elements_capacity(8);
     }
+}
+
+Object::~Object() {
+    free_butterfly();
 }
 
 Object::Object(Object* prototype, ObjectType type) : Object(type) {
@@ -306,10 +441,8 @@ void Object::add_private_field(const std::string& key, const Value& value) {
         }
         return;
     }
-    if (!sparse_overflow_) {
-        sparse_overflow_ = std::make_unique<std::unordered_map<std::string, Value>>();
-    }
-    if (sparse_overflow_->find(key) != sparse_overflow_->end()) {
+    auto& overflow = ensure_sparse_overflow();
+    if (overflow.find(key) != overflow.end()) {
         // PrivateFieldAdd/PrivateMethodOrAccessorAdd: an existing entry is a TypeError
         // (e.g. the same instance re-entering construction via a return-override trick).
         if (current_context_) {
@@ -317,27 +450,28 @@ void Object::add_private_field(const std::string& key, const Value& value) {
         }
         return;
     }
-    (*sparse_overflow_)[key] = value;
-    property_insertion_order_.push_back(key);
+    overflow[key] = value;
+    push_extra_property_order(key);
 }
 
 Value* Object::private_field_slot(const std::string& key) {
-    if (!sparse_overflow_) return nullptr;
-    auto it = sparse_overflow_->find(key);
-    return it != sparse_overflow_->end() ? &it->second : nullptr;
+    auto* so = sparse_overflow();
+    if (!so) return nullptr;
+    auto it = so->find(key);
+    return it != so->end() ? &it->second : nullptr;
 }
 
 std::string Object::find_private_slot_key(const std::string& prefix) const {
     // Raw prefix scan over private storage -- get_own_property_keys hides
     // qualified slots, so resumed-async private resolution can't use it.
-    if (sparse_overflow_) {
-        for (const auto& p : *sparse_overflow_) {
+    if (auto* so = sparse_overflow()) {
+        for (const auto& p : *so) {
             if (p.first.compare(0, prefix.size(), prefix) == 0) return p.first;
         }
     }
-    if (descriptors_) {
+    if (auto* d = descriptors()) {
         std::string found;
-        bool has_match = descriptors_->find_if(
+        bool has_match = d->find_if(
             [&](const std::string& k, const PropertyDescriptor&) {
                 return k.compare(0, prefix.size(), prefix) == 0;
             }, &found);
@@ -349,8 +483,8 @@ std::string Object::find_private_slot_key(const std::string& prefix) const {
 bool Object::get_private_slot_descriptor(const std::string& key, PropertyDescriptor& out) const {
     // Raw descriptor read for a private slot (accessors included); never fires
     // Proxy traps or exotic overrides (e.g. deferred namespace evaluation).
-    if (descriptors_) {
-        auto* it = descriptors_->find(key);
+    if (auto* d = descriptors()) {
+        auto* it = d->find(key);
         if (it) { out = *it; return true; }
     }
     return false;
@@ -359,12 +493,12 @@ bool Object::get_private_slot_descriptor(const std::string& key, PropertyDescrip
 Value Object::get_private_slot_value(const std::string& key) const {
     // Raw read of a private slot (mirrors has_private_slot's storage order);
     // never fires Proxy traps or accessors.
-    if (sparse_overflow_) {
-        auto it = sparse_overflow_->find(key);
-        if (it != sparse_overflow_->end()) return it->second;
+    if (auto* so = sparse_overflow()) {
+        auto it = so->find(key);
+        if (it != so->end()) return it->second;
     }
-    if (descriptors_) {
-        auto* it = descriptors_->find(key);
+    if (auto* d = descriptors()) {
+        auto* it = d->find(key);
         if (it && it->is_data_descriptor()) return it->get_value();
     }
     return Value();
@@ -373,12 +507,12 @@ Value Object::get_private_slot_value(const std::string& key) const {
 void Object::set_private_slot_value(const std::string& key, const Value& value) {
     // Raw write of an EXISTING private slot; never fires Proxy traps.
     Collector::write_barrier(this);
-    if (sparse_overflow_) {
-        auto it = sparse_overflow_->find(key);
-        if (it != sparse_overflow_->end()) { it->second = value; return; }
+    if (auto* so = sparse_overflow()) {
+        auto it = so->find(key);
+        if (it != so->end()) { it->second = value; return; }
     }
-    if (descriptors_) {
-        auto* it = descriptors_->find(key);
+    if (auto* d = descriptors()) {
+        auto* it = d->find(key);
         if (it && it->is_data_descriptor()) {
             it->set_value(value);
         }
@@ -387,11 +521,11 @@ void Object::set_private_slot_value(const std::string& key, const Value& value) 
 
 bool Object::has_private_slot(const std::string& key) const {
     // Check if object has a private field/method without the # filter
-    if (descriptors_) {
-        if (descriptors_->find(key)) return true;
+    if (auto* d = descriptors()) {
+        if (d->find(key)) return true;
     }
-    if (sparse_overflow_) {
-        if (sparse_overflow_->find(key) != sparse_overflow_->end()) return true;
+    if (auto* so = sparse_overflow()) {
+        if (so->find(key) != so->end()) return true;
     }
     return false;
 }
@@ -411,19 +545,21 @@ bool Object::has_own_property(const std::string& key) const {
         return const_cast<Proxy*>(static_cast<const Proxy*>(this))->has_trap(make_prop_key_value(key));
     }
 
-    if (descriptors_) {
-        if (descriptors_->find(key)) {
+    if (auto* d = descriptors()) {
+        if (d->find(key)) {
             return true;
         }
     }
 
     uint32_t index;
     if (is_array_index(key, &index)) {
-        if (index < elements_.size() && !(deleted_elements_ && deleted_elements_->count(index) > 0)) {
+        auto* de = deleted_elements();
+        if (index < elements_length() && !(de && de->count(index) > 0)) {
             return true;
         }
         // Not in elements_ (or a hole there) -- may still live in sparse_overflow_.
-        return sparse_overflow_ && sparse_overflow_->count(key) > 0;
+        auto* so = sparse_overflow();
+        return so && so->count(key) > 0;
     }
 
     return has_shape_slot(key);
@@ -492,7 +628,8 @@ Value Object::get_property(const std::string& key) const {
         
         if (key == "length") {
             // defineProperty can shadow "length" with an own property; that wins.
-            if (descriptors_ && descriptors_->count(key)) return get_own_property(key);
+            auto* d = descriptors();
+            if (d && d->count(key)) return get_own_property(key);
             if (has_shape_slot(key)) return get_own_property(key);
             return Value(static_cast<double>(typed_array->length()));
         }
@@ -572,8 +709,8 @@ Value Object::get_property(const std::string& key) const {
             return static_cast<Proxy*>(current)->get_trap(Value(key), receiver_val);
         }
         // Inherited accessors must be called with the original receiver as `this`, not the prototype.
-        if (current->descriptors_) {
-            auto* desc_it = current->descriptors_->find(key);
+        if (auto* d = current->descriptors()) {
+            auto* desc_it = d->find(key);
             if (desc_it) {
                 const PropertyDescriptor& desc = *desc_it;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
@@ -592,7 +729,7 @@ Value Object::get_property(const std::string& key) const {
         // must still invoke with original_receiver, not current, as `this`.
         if (current->shape_ && current->shape_->is_accessor_slot(key)) {
             int32_t idx = current->shape_->find_slot(key);
-            Object* getter = as_object_like(current->shape_slots_[idx]);
+            Object* getter = as_object_like(*current->shape_slot_ptr(idx));
             Function* getter_fn = getter ? dynamic_cast<Function*>(getter) : nullptr;
             if (getter_fn && current_context_) {
                 Value recv = original_receiver->is_function()
@@ -616,8 +753,8 @@ Value Object::get_own_property(const std::string& key) const {
     uint32_t index;
     if (is_array_index(key, &index)) {
         // Check descriptors first (handles accessor properties like get "0"(){...})
-        if (descriptors_) {
-            auto* desc_it = descriptors_->find(key);
+        if (auto* d = descriptors()) {
+            auto* desc_it = d->find(key);
             if (desc_it) {
                 const PropertyDescriptor& desc = *desc_it;
                 if (desc.is_accessor_descriptor()) {
@@ -643,13 +780,14 @@ Value Object::get_own_property(const std::string& key) const {
         if (header_.type == ObjectType::TypedArray || header_.type == ObjectType::Arguments) {
             return get_element(index);
         }
-        bool is_hole = deleted_elements_ && deleted_elements_->count(index) > 0;
-        if (index < elements_.size() && !is_hole) {
-            return elements_[index];
+        auto* de = deleted_elements();
+        bool is_hole = de && de->count(index) > 0;
+        if (index < elements_length() && !is_hole) {
+            return (*element_ptr(index));
         }
-        if (sparse_overflow_) {
-            auto it = sparse_overflow_->find(key);
-            if (it != sparse_overflow_->end()) return it->second;
+        if (auto* so = sparse_overflow()) {
+            auto it = so->find(key);
+            if (it != so->end()) return it->second;
         }
         return Value();
     }
@@ -657,8 +795,8 @@ Value Object::get_own_property(const std::string& key) const {
 
     // Check accessor descriptors BEFORE shape: shape stores Value() placeholder for them.
     // Data descriptors are checked AFTER shape since shape holds the live value for those.
-    if (descriptors_) {
-        auto* desc_it = descriptors_->find(key);
+    if (auto* d = descriptors()) {
+        auto* desc_it = d->find(key);
         if (desc_it && desc_it->is_accessor_descriptor()) {
             const PropertyDescriptor& desc = *desc_it;
             if (desc.has_getter()) {
@@ -690,7 +828,7 @@ Value Object::get_own_property(const std::string& key) const {
     // otherwise return the raw getter Value instead of its call result.
     if (shape_ && shape_->is_accessor_slot(key)) {
         int32_t idx = shape_->find_slot(key);
-        Object* getter = as_object_like(shape_slots_[idx]);
+        Object* getter = as_object_like(*shape_slot_ptr(idx));
         if (getter && current_context_) {
             Function* getter_fn = dynamic_cast<Function*>(getter);
             if (getter_fn) {
@@ -704,8 +842,8 @@ Value Object::get_own_property(const std::string& key) const {
         return *slot;
     }
 
-    if (descriptors_) {
-        auto* desc_it = descriptors_->find(key);
+    if (auto* d = descriptors()) {
+        auto* desc_it = d->find(key);
         if (desc_it && desc_it->is_data_descriptor()) {
             return desc_it->get_value();
         }
@@ -713,9 +851,9 @@ Value Object::get_own_property(const std::string& key) const {
 
     // Overflow-stored own properties (has_own_property already reports them;
     // the array-index path above checks sparse_overflow_ too).
-    if (sparse_overflow_) {
-        auto it = sparse_overflow_->find(key);
-        if (it != sparse_overflow_->end()) return it->second;
+    if (auto* so = sparse_overflow()) {
+        auto it = so->find(key);
+        if (it != so->end()) return it->second;
     }
 
     return Value();
@@ -754,8 +892,8 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         double length_double;
         if (!array_set_length_coerce(current_context_, value, length_double)) return false;
 
-        if (descriptors_) {
-            auto* it = descriptors_->find("length");
+        if (auto* d = descriptors()) {
+            auto* it = d->find("length");
             if (it && it->has_writable() && !it->is_writable()) {
                 return false;
             }
@@ -763,16 +901,16 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 
         uint32_t new_length = static_cast<uint32_t>(length_double);
 
-        uint32_t old_length = static_cast<uint32_t>(elements_.size());
+        uint32_t old_length = static_cast<uint32_t>(elements_length());
 
         if (new_length < old_length) {
-            elements_.resize(new_length);
-            if (sparse_overflow_) {
-                auto it = sparse_overflow_->begin();
-                while (it != sparse_overflow_->end()) {
+            resize_elements(new_length);
+            if (auto* so = sparse_overflow()) {
+                auto it = so->begin();
+                while (it != so->end()) {
                     uint32_t idx;
                     if (is_array_index(it->first, &idx) && idx >= new_length) {
-                        it = sparse_overflow_->erase(it);
+                        it = so->erase(it);
                     } else {
                         ++it;
                     }
@@ -783,21 +921,19 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 
         if (!set_shape_slot("length", length_value)) {
             migrate_to_dictionary_mode();
-            if (!descriptors_) {
-                descriptors_ = std::make_unique<HybridDescriptorMap>();
-            }
-            auto* it = descriptors_->find("length");
+            HybridDescriptorMap& descs = ensure_descriptors();
+            auto* it = descs.find("length");
             if (it) {
                 it->set_value(length_value);
             } else {
                 bump_descriptor_epoch();
-                (*descriptors_)["length"] = PropertyDescriptor(length_value, PropertyAttributes::Writable);
+                descs["length"] = PropertyDescriptor(length_value, PropertyAttributes::Writable);
             }
         }
         // get_property_descriptor() checks descriptors_ first -- keep it in sync or it
         // keeps reporting the pre-update length.
-        if (descriptors_) {
-            auto* it = descriptors_->find("length");
+        if (auto* d = descriptors()) {
+            auto* it = d->find("length");
             if (it) {
                 it->set_value(length_value);
             }
@@ -811,8 +947,9 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         // Array only: plain-object literals ({0: x, ...}) also reach set_property() for
         // CreateDataProperty-style init and must not trigger this.
         // Check if own property at this index is an accessor -- must call setter or return false.
-        if (has_own_property(key) && descriptors_ && descriptors_->count(key)) {
-            const PropertyDescriptor& own_pd = (*descriptors_)[key];
+        auto* d0 = descriptors();
+        if (has_own_property(key) && d0 && d0->count(key)) {
+            const PropertyDescriptor& own_pd = (*d0)[key];
             if (own_pd.is_accessor_descriptor()) {
                 Object* setter = own_pd.get_setter();
                 if (!setter) return false;
@@ -912,12 +1049,13 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             return false;
         }
 
-        if (has_shape_slot(key) || (descriptors_ && descriptors_->count(key))) {
+        auto* d = descriptors();
+        if (has_shape_slot(key) || (d && d->count(key))) {
             if (has_shape_slot(key)) {
                 set_shape_slot(key, value);
             }
-            if (descriptors_) {
-                auto* dit = descriptors_->find(key);
+            if (d) {
+                auto* dit = d->find(key);
                 if (dit && dit->is_data_descriptor()) {
                     dit->set_value(value);
                 }
@@ -939,10 +1077,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     // fallback inside store_in_overflow may have just created.
     if (attrs != PropertyAttributes::Default) {
         bump_descriptor_epoch();
-        if (!descriptors_) {
-            descriptors_ = std::make_unique<HybridDescriptorMap>();
-        }
-        (*descriptors_)[key] = PropertyDescriptor(value, attrs);
+        ensure_descriptors()[key] = PropertyDescriptor(value, attrs);
     }
 
     return stored;
@@ -997,15 +1132,13 @@ void Object::remove_own_property(const std::string& key) {
     // See proto_epoch()'s doc comment; bumped up front like
     // set_property_descriptor, not at each return point below.
     if (used_as_prototype()) bump_proto_epoch();
-    if (descriptors_) descriptors_->erase(key);
+    if (auto* d = descriptors()) d->erase(key);
 
     uint32_t index;
     if (is_array_index(key, &index)) {
-        if (sparse_overflow_) {
-            sparse_overflow_->erase(key);
-            property_insertion_order_.erase(
-                std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
-                property_insertion_order_.end());
+        if (auto* so = sparse_overflow()) {
+            so->erase(key);
+            erase_extra_property_order(key);
         }
         return;
     }
@@ -1014,11 +1147,9 @@ void Object::remove_own_property(const std::string& key) {
         // A shape's slot layout is shared across every object with that shape --
         // a single object can't drop one slot without migrating to its own dictionary.
         migrate_to_dictionary_mode();
-        descriptors_->erase(key);
+        ensure_descriptors().erase(key);
     }
-    property_insertion_order_.erase(
-        std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
-        property_insertion_order_.end());
+    erase_extra_property_order(key);
 }
 
 bool Object::delete_property(const std::string& key) {
@@ -1040,7 +1171,8 @@ bool Object::delete_property(const std::string& key) {
     if (is_array_index(key, &index)) {
         // Mapped arguments accessor: descriptor erase alone makes the property gone,
         // even if delete_element finds no physical elements_ slot to clear.
-        bool had_descriptor = descriptors_ && descriptors_->erase(key) > 0;
+        auto* d0 = descriptors();
+        bool had_descriptor = d0 && d0->erase(key) > 0;
         bool deleted = delete_element(index);
         return deleted || had_descriptor;
     }
@@ -1049,13 +1181,11 @@ bool Object::delete_property(const std::string& key) {
         // A shape's slot layout is shared across every object with that shape --
         // a single object can't drop one slot without migrating to its own dictionary.
         migrate_to_dictionary_mode();
-        descriptors_->erase(key);
+        ensure_descriptors().erase(key);
 
         // Mirrors the push in store_in_overflow -- without this, a set/delete/set
         // cycle on the same key would grow property_insertion_order_ unboundedly.
-        property_insertion_order_.erase(
-            std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
-            property_insertion_order_.end());
+        erase_extra_property_order(key);
 
         header_.property_count--;
         update_hash_code();
@@ -1064,9 +1194,10 @@ bool Object::delete_property(const std::string& key) {
 
     // Fallback: property may only exist in descriptors (e.g. Function "prototype" intercepted
     // by Function::set_property without storing in shape/overflow)
-    if (descriptors_) {
-        if (descriptors_->find(key)) {
-            descriptors_->erase(key);
+    if (auto* d = descriptors()) {
+        if (d->find(key)) {
+            d->erase(key);
+            erase_extra_property_order(key);
             if (header_.property_count > 0) header_.property_count--;
             update_hash_code();
             return true;
@@ -1084,8 +1215,9 @@ Value Object::get_element(uint32_t index) const {
         return static_cast<const TypedArrayBase*>(this)->get_element(static_cast<size_t>(index));
     }
     // Arguments: check all descriptors (accessor AND data) since they hold live bindings.
-    if (header_.type == ObjectType::Arguments && descriptors_) {
-        auto* it = descriptors_->find(std::to_string(index));
+    if (header_.type == ObjectType::Arguments) {
+      if (auto* d = descriptors()) {
+        auto* it = d->find(std::to_string(index));
         if (it) {
             if (it->is_accessor_descriptor() && it->has_getter()) {
                 Object* getter = it->get_getter();
@@ -1096,12 +1228,14 @@ Value Object::get_element(uint32_t index) const {
             }
             if (it->is_data_descriptor()) return it->get_value();
         }
+      }
     }
 
     // For all other types: check descriptors_ for both accessor and data properties.
     // Data descriptor values are kept in sync by set_element, so prefer them over elements_.
-    if (header_.type != ObjectType::Arguments && descriptors_) {
-        auto* it = descriptors_->find(std::to_string(index));
+    if (header_.type != ObjectType::Arguments) {
+      if (auto* d = descriptors()) {
+        auto* it = d->find(std::to_string(index));
         if (it) {
             if (it->is_accessor_descriptor()) {
                 if (it->has_getter()) {
@@ -1115,25 +1249,27 @@ Value Object::get_element(uint32_t index) const {
             }
             if (it->is_data_descriptor()) return it->get_value();
         }
+      }
     }
 
-    bool is_hole = deleted_elements_ && deleted_elements_->count(index) > 0;
-    if (index < elements_.size() && !is_hole) {
-        return elements_[index];
+    auto* de = deleted_elements();
+    bool is_hole = de && de->count(index) > 0;
+    if (index < elements_length() && !is_hole) {
+        return (*element_ptr(index));
     }
 
     // For non-Arguments/TypedArray (includes Array holes/out-of-bounds): check
     // data descriptors, overflow, and walk the prototype chain.
     if (header_.type != ObjectType::Arguments && header_.type != ObjectType::TypedArray) {
         std::string key = std::to_string(index);
-        if (descriptors_) {
-            auto* it = descriptors_->find(key);
+        if (auto* d = descriptors()) {
+            auto* it = d->find(key);
             if (it && it->is_data_descriptor())
                 return it->get_value();
         }
-        if (sparse_overflow_) {
-            auto it = sparse_overflow_->find(key);
-            if (it != sparse_overflow_->end()) return it->second;
+        if (auto* so = sparse_overflow()) {
+            auto it = so->find(key);
+            if (it != so->end()) return it->second;
         }
         Object* proto = get_prototype();
         return proto ? proto->get_property(key) : Value();
@@ -1151,8 +1287,8 @@ bool Object::set_element(uint32_t index, const Value& value) {
             ->set_element(static_cast<size_t>(index), value);
     }
     // Check descriptors_ for all types: respect accessor setters and writable flags.
-    if (descriptors_) {
-        auto* it = descriptors_->find(std::to_string(index));
+    if (auto* d = descriptors()) {
+        auto* it = d->find(std::to_string(index));
         if (it) {
             if (it->is_accessor_descriptor()) {
                 Object* setter = it->get_setter();
@@ -1169,13 +1305,14 @@ bool Object::set_element(uint32_t index, const Value& value) {
             }
         }
     }
-    bool is_new_element = index >= elements_.size() ||
-                          (deleted_elements_ && deleted_elements_->count(index) > 0);
+    auto* de0 = deleted_elements();
+    bool is_new_element = index >= elements_length() ||
+                          (de0 && de0->count(index) > 0);
     if (is_new_element && !is_extensible()) {
         return false;
     }
 
-    if (__builtin_expect(index >= elements_.size(), 0)) {
+    if (__builtin_expect(index >= elements_length(), 0)) {
         if (__builtin_expect(index > 10000000, 0)) {
             // Too sparse to grow the dense elements_ vector -- store in sparse_overflow_
             // instead (get_element()/has_own_property() already fall back to it), still
@@ -1185,19 +1322,14 @@ bool Object::set_element(uint32_t index, const Value& value) {
             }
             return store_in_overflow(std::to_string(index), value);
         }
-        size_t old_size = elements_.size();
+        size_t old_size = elements_length();
         size_t new_size = index + 1;
-        if (new_size > elements_.capacity()) {
-            elements_.reserve(new_size * 2);
-        }
-        elements_.resize(new_size, Value());
+        resize_elements(static_cast<uint32_t>(new_size));
         // Mark intermediate positions as holes
         if (new_size > old_size + 1) {
-            if (!deleted_elements_) {
-                deleted_elements_ = std::make_unique<std::unordered_set<uint32_t>>();
-            }
+            auto& de = ensure_deleted_elements();
             for (size_t i = old_size; i < index; ++i) {
-                deleted_elements_->insert(static_cast<uint32_t>(i));
+                de.insert(static_cast<uint32_t>(i));
             }
         }
 
@@ -1207,18 +1339,15 @@ bool Object::set_element(uint32_t index, const Value& value) {
         }
     }
 
-    elements_[index] = value;
-    if (deleted_elements_) deleted_elements_->erase(index);
+    (*element_ptr(index)) = value;
+    if (auto* de = deleted_elements()) de->erase(index);
     return true;
 }
 
 bool Object::delete_element(uint32_t index) {
-    if (index < elements_.size()) {
-        elements_[index] = Value();
-        if (!deleted_elements_) {
-            deleted_elements_ = std::make_unique<std::unordered_set<uint32_t>>();
-        }
-        deleted_elements_->insert(index);
+    if (index < elements_length()) {
+        (*element_ptr(index)) = Value();
+        ensure_deleted_elements().insert(index);
         return true;
     }
     return false;
@@ -1229,30 +1358,52 @@ static bool is_symbol_key(const std::string& key) {
     return key.find("Symbol.") == 0 || key.find("@@sym:") == 0;
 }
 
+void Object::collect_named_keys_in_order(std::vector<std::string>& raw_keys) const {
+    // Merges shape-resident properties (Shape::properties_in_order()) with
+    // extras-resident ones by logical-clock snapshot -- the two can
+    // genuinely interleave chronologically, since set_property_descriptor
+    // can add an extras-resident key while shape_ stays valid for the rest.
+    std::vector<Shape::PropertyInfo> shape_props;
+    if (shape_) shape_props = shape_->properties_in_order();
+    size_t shape_idx = 0;
+    auto emit_shape_before = [&](uint32_t snapshot) {
+        while (shape_idx < shape_props.size() && shape_props[shape_idx].slot_index < snapshot) {
+            raw_keys.push_back(shape_props[shape_idx].key);
+            shape_idx++;
+        }
+    };
+    if (extras_) {
+        auto* so = sparse_overflow();
+        auto* d = descriptors();
+        // Raw insertion order isn't always clock order: migration appends a
+        // batch of migrated keys with possibly lower snapshots after
+        // entries already present. Stable-sort a copy to restore it.
+        std::vector<std::pair<std::string, uint32_t>> sorted_extras = extras_->extra_property_order;
+        std::stable_sort(sorted_extras.begin(), sorted_extras.end(),
+            [](const auto& a, const auto& b) { return a.second < b.second; });
+        for (const auto& [key, snapshot] : sorted_extras) {
+            emit_shape_before(snapshot);
+            bool present = (so && so->count(key) > 0) || (d && d->count(key) > 0);
+            if (!present) continue;
+            bool already = false;
+            for (const auto& k : raw_keys) {
+                if (k == key) { already = true; break; }
+            }
+            if (!already) raw_keys.push_back(key);
+        }
+    }
+    emit_shape_before(UINT32_MAX);
+}
+
 std::vector<std::string> Object::get_own_property_keys() const {
     // ES6 [[OwnPropertyKeys]]: indices ascending, then strings, then symbols, each in creation order.
     // Step 1: Collect ALL keys in their original storage order (preserves insertion order)
     std::vector<std::string> raw_keys;
-
-    // Overflow and descriptor-only properties, in creation order via property_insertion_order_
-    // -- sparse_overflow_ and shape_slots_ are unordered/positional and have no enumeration
-    // order of their own.
-    for (const auto& key : property_insertion_order_) {
-        bool in_overflow = (sparse_overflow_ && sparse_overflow_->count(key) > 0) || has_shape_slot(key);
-        bool in_descriptors = descriptors_ && descriptors_->count(key) > 0;
-        if (!in_overflow && !in_descriptors) continue;
-        bool already = false;
-        for (const auto& k : raw_keys) {
-            if (k == key) { already = true; break; }
-        }
-        if (!already) {
-            raw_keys.push_back(key);
-        }
-    }
+    collect_named_keys_in_order(raw_keys);
 
     // Elements (numeric array slots)
-    for (uint32_t i = 0; i < elements_.size(); ++i) {
-        if (!elements_[i].is_undefined()) {
+    for (uint32_t i = 0; i < elements_length(); ++i) {
+        if (!(*element_ptr(i)).is_undefined()) {
             std::string key = std::to_string(i);
             bool already = false;
             for (const auto& k : raw_keys) {
@@ -1317,13 +1468,7 @@ std::vector<std::string> Object::get_own_property_keys_unfiltered() const {
     // ("[[...]]" internal slots, qualified/brand private storage). For engine
     // bookkeeping walks (class setup metadata propagation) only.
     std::vector<std::string> keys;
-    for (const auto& key : property_insertion_order_) {
-        bool present = (sparse_overflow_ && sparse_overflow_->count(key) > 0) ||
-                       has_shape_slot(key) ||
-                       (descriptors_ && descriptors_->count(key) > 0);
-        if (!present) continue;
-        if (std::find(keys.begin(), keys.end(), key) == keys.end()) keys.push_back(key);
-    }
+    collect_named_keys_in_order(keys);
     return keys;
 }
 
@@ -1343,8 +1488,8 @@ std::vector<std::string> Object::get_enumerable_keys() const {
 
 std::vector<uint32_t> Object::get_element_indices() const {
     std::vector<uint32_t> indices;
-    for (uint32_t i = 0; i < elements_.size(); ++i) {
-        if (!elements_[i].is_undefined()) {
+    for (uint32_t i = 0; i < elements_length(); ++i) {
+        if (!(*element_ptr(i)).is_undefined()) {
             indices.push_back(i);
         }
     }
@@ -1353,8 +1498,8 @@ std::vector<uint32_t> Object::get_element_indices() const {
 
 PropertyDescriptor Object::get_property_descriptor(const std::string& key) const {
     // Check descriptor map first (takes precedence over shape attrs)
-    if (descriptors_) {
-        auto* it = descriptors_->find(key);
+    if (auto* d = descriptors()) {
+        auto* it = d->find(key);
         if (it) {
             // ES6 9.4.4: mapped arguments slots appear as DATA descriptors to callers.
             // Internally we use accessor descriptors for the param aliasing, but expose
@@ -1393,8 +1538,8 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
     // true, configurable: true} accessor default).
     if (shape_ && shape_->is_accessor_slot(key)) {
         int32_t idx = shape_->find_slot(key);
-        Object* getter = as_object_like(shape_slots_[idx]);
-        Object* setter = as_object_like(shape_slots_[idx + 1]);
+        Object* getter = as_object_like(*shape_slot_ptr(idx));
+        Object* setter = as_object_like(*shape_slot_ptr(idx + 1));
         return PropertyDescriptor(getter, setter);
     }
 
@@ -1445,9 +1590,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         return false;
     }
 
-    if (!descriptors_) {
-        descriptors_ = std::make_unique<HybridDescriptorMap>();
-    }
+    HybridDescriptorMap& descs = ensure_descriptors();
 
     // Early non-configurable check -- runs BEFORE elements_ is written.
     // Covers both descriptors_-stored and externally-stored (e.g. Array.length) properties.
@@ -1484,8 +1627,8 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         // ES6 9.4.4.3: if Arguments has a live param-mapped accessor for this index,
         // {value:V} updates the binding and keeps the mapping active (do not replace the accessor).
         // Only sever when desc explicitly sets writable:false.
-        if (header_.type == ObjectType::Arguments && desc.has_value() && descriptors_) {
-            auto* it = descriptors_->find(key);
+        if (header_.type == ObjectType::Arguments && desc.has_value()) {
+            auto* it = descs.find(key);
             if (it && it->is_accessor_descriptor()) {
                 Function* gfn = it->get_getter()
                     ? dynamic_cast<Function*>(it->get_getter()) : nullptr;
@@ -1500,7 +1643,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                             // comment in get_property_descriptor) -- `gfn` being
                             // provably genuine means `setter_fn` can no longer
                             // run attacker JS here, but keep the safe pattern.
-                            it = descriptors_->find(key);
+                            it = descs.find(key);
                             still_valid = (it && it->is_accessor_descriptor());
                         }
                     }
@@ -1517,8 +1660,8 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                             *it = data;
                             uint32_t idx;
                             if (is_array_index(key, &idx)) {
-                                if (idx >= elements_.size()) elements_.resize(idx + 1);
-                                elements_[idx] = desc.get_value();
+                                if (idx >= elements_length()) resize_elements(idx + 1);
+                                (*element_ptr(idx)) = desc.get_value();
                             }
                         }
                         return true;
@@ -1547,21 +1690,19 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             }
             // cap growth to avoid huge upfront allocation on a sparse high index
             if (desc.has_value() && index <= 10000000) {
-                if (index >= elements_.size()) {
-                    size_t old_size = elements_.size();
-                    elements_.resize(index + 1);
+                if (index >= elements_length()) {
+                    size_t old_size = elements_length();
+                    resize_elements(static_cast<uint32_t>(index + 1));
                     // Mark intermediate positions as holes, matching set_element().
                     if (index > old_size) {
-                        if (!deleted_elements_) {
-                            deleted_elements_ = std::make_unique<std::unordered_set<uint32_t>>();
-                        }
+                        auto& de = ensure_deleted_elements();
                         for (size_t i = old_size; i < index; ++i) {
-                            deleted_elements_->insert(static_cast<uint32_t>(i));
+                            de.insert(static_cast<uint32_t>(i));
                         }
                     }
                 }
-                elements_[index] = desc.get_value();
-                if (deleted_elements_) deleted_elements_->erase(index);
+                (*element_ptr(index)) = desc.get_value();
+                if (auto* de = deleted_elements()) de->erase(index);
                 // ArraySetLength side effect: defining index N on an Array bumps length to N+1
                 // if N >= current length (15.4.5.1 step 4.e.ii).
                 if (header_.type == ObjectType::Array) {
@@ -1615,14 +1756,15 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 }
                 coerced_value = Value(length_double);
                 // Shrink stops at the first non-configurable element; final length = that index+1.
-                if (length_double < elements_.size()) {
-                    size_t old_size = elements_.size();
+                if (length_double < elements_length()) {
+                    size_t old_size = elements_length();
                     size_t requested_size = static_cast<size_t>(length_double);
                     size_t actual_size = old_size;
+                    auto* de = deleted_elements();
                     for (size_t i = old_size; i-- > requested_size; ) {
-                        bool is_hole = deleted_elements_ && deleted_elements_->count(static_cast<uint32_t>(i));
-                        if (!is_hole && descriptors_) {
-                            auto* dit = descriptors_->find(std::to_string(i));
+                        bool is_hole = de && de->count(static_cast<uint32_t>(i));
+                        if (!is_hole) {
+                            auto* dit = descs.find(std::to_string(i));
                             if (dit && !dit->is_configurable()) {
                                 length_shrink_blocked = true;
                                 actual_size = i + 1;
@@ -1631,11 +1773,9 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                         }
                         actual_size = i;
                     }
-                    elements_.resize(actual_size);
-                    if (descriptors_) {
-                        for (size_t i = actual_size; i < old_size; ++i) {
-                            descriptors_->erase(std::to_string(i));
-                        }
+                    resize_elements(static_cast<uint32_t>(actual_size));
+                    for (size_t i = actual_size; i < old_size; ++i) {
+                        descs.erase(std::to_string(i));
                     }
                     if (length_shrink_blocked) coerced_value = Value(static_cast<double>(actual_size));
                 }
@@ -1647,9 +1787,8 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 if (has_shape_slot(key)) {
                     set_shape_slot(key, coerced_value);
                     // get_property_descriptor() checks descriptors_ first -- keep it in sync.
-                    if (descriptors_) {
-                        auto* it = descriptors_->find(key);
-                        if (it) it->set_value(coerced_value);
+                    if (auto* it = descs.find(key)) {
+                        it->set_value(coerced_value);
                     }
                     // A bare value write must not silently drop an explicit attribute
                     // change (e.g. defineProperty({value, configurable:true}) on a
@@ -1660,15 +1799,14 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                         if (desc.has_writable())     merged.set_writable(desc.is_writable());
                         if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
                         if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
-                        if (!descriptors_) descriptors_ = std::make_unique<HybridDescriptorMap>();
-                        (*descriptors_)[key] = merged;
+                        descs[key] = merged;
                     }
                 } else if (existed_before_this_call) {
                     set_property(key, coerced_value, desc.get_attributes());
                 } else {
                     // [[DefineOwnProperty]] creates own property directly, bypassing inherited setters
                     store_in_overflow(key, coerced_value);
-                    (*descriptors_)[key] = desc;
+                    descs[key] = desc;
                 }
             }
             if (length_shrink_blocked) {
@@ -1699,8 +1837,8 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     // dictionary-mode objects. A brand-new property must still take the create
     // path (WEC=false spec default), not inherit those placeholder attrs.
     if (is_attr_only) {
-        if (existed_before_this_call && descriptors_->count(key)) {
-            PropertyDescriptor& existing = (*descriptors_)[key];
+        if (existed_before_this_call && descs.count(key)) {
+            PropertyDescriptor& existing = descs[key];
             // Non-configurable property enforcement -- only when configurable was explicitly set to false
             // and only when called from a live JS context (not during engine initialization)
             if (current_context_ && existing.has_configurable() && !existing.is_configurable()) {
@@ -1729,7 +1867,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                     Value cur = gfn->call(*current_context_, {}, Value(this));
                     // Re-resolve after the call instead of writing through the
                     // (possibly now-dangling) `existing` reference.
-                    auto* it2 = descriptors_->find(key);
+                    auto* it2 = descs.find(key);
                     if (it2) {
                         PropertyDescriptor data(cur);
                         data.set_writable(false);
@@ -1740,8 +1878,8 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                         *it2 = data;
                         uint32_t idx;
                         if (is_array_index(key, &idx)) {
-                            if (idx >= elements_.size()) elements_.resize(idx + 1);
-                            elements_[idx] = cur;
+                            if (idx >= elements_length()) resize_elements(idx + 1);
+                            (*element_ptr(idx)) = cur;
                         }
                     }
                     // Whether or not the slot still existed, the mapping-sever
@@ -1765,15 +1903,15 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             if (desc.has_writable())     merged.set_writable(desc.is_writable());
             if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
             if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
-            (*descriptors_)[key] = merged;
-            property_insertion_order_.push_back(key);
+            descs[key] = merged;
+            push_extra_property_order(key);
         }
     } else {
         // When replacing with a data/accessor descriptor that doesn't specify all attribute
         // flags, merge the unspecified ones from the existing descriptor so we don't silently
         // reset writable/enumerable/configurable to their defaults.
-        if (existed_before_this_call && descriptors_->count(key)) {
-            PropertyDescriptor& existing = (*descriptors_)[key];
+        if (existed_before_this_call && descs.count(key)) {
+            PropertyDescriptor& existing = descs[key];
             // Enforce non-configurable constraints (same as ObjectBuiltin.cpp user-space check,
             // but also catches C++ callers like JSON.parse's CreateDataProperty).
             if (current_context_ && existing.has_configurable() && !existing.is_configurable()) {
@@ -1803,7 +1941,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                     if (!desc.has_setter() && existing.has_setter()) merged.set_setter(existing.get_setter());
                 }
             }
-            (*descriptors_)[key] = merged;
+            descs[key] = merged;
         } else {
             // No existing descriptor entry. For a property already in shape/overflow,
             // preserve the unspecified attributes (shape default is WEC=true) so that
@@ -1814,11 +1952,11 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 if (!desc.has_writable()     && current.has_writable())     merged.set_writable(current.is_writable());
                 if (!desc.has_enumerable()   && current.has_enumerable())   merged.set_enumerable(current.is_enumerable());
                 if (!desc.has_configurable() && current.has_configurable()) merged.set_configurable(current.is_configurable());
-                (*descriptors_)[key] = merged;
+                descs[key] = merged;
             } else {
-                (*descriptors_)[key] = desc;
+                descs[key] = desc;
             }
-            property_insertion_order_.push_back(key);
+            push_extra_property_order(key);
         }
     }
 
@@ -1844,7 +1982,7 @@ uint32_t Object::get_length() const {
         if (!length_val.is_symbol() && !length_val.is_undefined() && !length_val.is_null()) {
             double n = length_val.to_number();
             if (!std::isnan(n) && n >= 0) {
-                if (std::isinf(n)) return static_cast<uint32_t>(elements_.size()); // Infinity: use actual size
+                if (std::isinf(n)) return static_cast<uint32_t>(elements_length()); // Infinity: use actual size
                 return static_cast<uint32_t>(std::min(n, (double)UINT32_MAX));
             }
             return 0; // NaN or negative: ToLength = 0
@@ -1857,7 +1995,7 @@ uint32_t Object::get_length() const {
         && header_.type != ObjectType::TypedArray) {
         return 0;
     }
-    return static_cast<uint32_t>(elements_.size());
+    return static_cast<uint32_t>(elements_length());
 }
 
 void Object::set_length(uint32_t length) {
@@ -1867,8 +2005,8 @@ void Object::set_length(uint32_t length) {
     set_property_descriptor("length", length_desc);
 
     // Resize elements array if this is actually an Array
-    if (header_.type == ObjectType::Array && length < elements_.size()) {
-        elements_.resize(length);
+    if (header_.type == ObjectType::Array && length < elements_length()) {
+        resize_elements(length);
     }
 }
 
@@ -1894,7 +2032,7 @@ void Object::unshift(const Value& value) {
     uint32_t length = get_length();
 
     for (uint32_t i = length; i > 0; --i) {
-        if (i < elements_.size()) {
+        if (i < elements_length()) {
             Value element = get_element(i - 1);
             set_element(i, element);
         }
@@ -2448,14 +2586,12 @@ bool Object::is_array_index(const std::string& key, uint32_t* index) const {
 bool Object::store_in_overflow(const std::string& key, const Value& value) {
     uint32_t index;
     if (is_array_index(key, &index)) {
-        if (!sparse_overflow_) {
-            sparse_overflow_ = std::make_unique<std::unordered_map<std::string, Value>>();
-        }
-        bool is_new_property = sparse_overflow_->find(key) == sparse_overflow_->end();
-        (*sparse_overflow_)[key] = value;
+        auto& overflow = ensure_sparse_overflow();
+        bool is_new_property = overflow.find(key) == overflow.end();
+        overflow[key] = value;
         if (is_new_property) {
             header_.property_count++;
-            property_insertion_order_.push_back(key);
+            push_extra_property_order(key);
         }
         update_hash_code();
         if (used_as_prototype()) bump_proto_epoch();
@@ -2465,29 +2601,32 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
     // Callers must not seed descriptors_ for this key before calling (see
     // set_property), or a brand-new key would look pre-existing here and skip
     // insertion-order tracking.
-    bool is_new_property = !has_shape_slot(key) && !(descriptors_ && descriptors_->count(key) > 0);
+    auto* d0 = descriptors();
+    bool is_new_property = !has_shape_slot(key) && !(d0 && d0->count(key) > 0);
 
-    if (!set_shape_slot(key, value)) {
+    bool went_to_shape = set_shape_slot(key, value);
+    if (!went_to_shape) {
         // Either the transition cap was hit on a new key, or this object already
         // migrated -- either way the value now belongs directly in descriptors_.
         migrate_to_dictionary_mode();
-        if (!descriptors_) {
-            descriptors_ = std::make_unique<HybridDescriptorMap>();
-        }
-        auto* it = descriptors_->find(key);
+        HybridDescriptorMap& descs = ensure_descriptors();
+        auto* it = descs.find(key);
         if (it) {
             it->set_value(value);
         } else {
-            (*descriptors_)[key] = PropertyDescriptor(value, PropertyAttributes::Default);
+            descs[key] = PropertyDescriptor(value, PropertyAttributes::Default);
         }
     }
 
     if (is_new_property) {
         header_.property_count++;
-        // shape_slots_/descriptors_ are positional/unordered -- property_insertion_order_
-        // is what get_own_property_keys() relies on for spec creation-order enumeration.
-        // Mirrored back out in delete_property/remove_own_property above.
-        property_insertion_order_.push_back(key);
+        // Shape-resident properties get their order from Shape::properties_
+        // in_order() instead -- only extras-resident (migrated/descriptor)
+        // ones need their own tracking here. Mirrored back out in
+        // delete_property/remove_own_property above.
+        if (!went_to_shape) {
+            push_extra_property_order(key);
+        }
     }
 
     update_hash_code();
@@ -2499,18 +2638,20 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
 }
 
 void Object::clear_properties() {
-    elements_.clear();
+    resize_elements(0);
 
-    if (sparse_overflow_) {
-        sparse_overflow_->clear();
+    if (auto* so = sparse_overflow()) {
+        so->clear();
     }
     shape_ = Shape::root();
-    shape_slots_.clear();
-    if (descriptors_) {
-        descriptors_->clear();
+    // shape butterfly region cleared implicitly by clear_properties' shape_ reset below
+    if (auto* d = descriptors()) {
+        d->clear();
     }
-
-    property_insertion_order_.clear();
+    if (extras_) {
+        extras_->extra_property_order.clear();
+        extras_->next_order_snapshot = 0;
+    }
 
     header_.property_count = 0;
 
@@ -2535,10 +2676,10 @@ std::string Object::to_string() const {
 
     if (header_.type == ObjectType::Array) {
         std::ostringstream oss;
-        for (uint32_t i = 0; i < elements_.size(); ++i) {
+        for (uint32_t i = 0; i < elements_length(); ++i) {
             if (i > 0) oss << ",";
-            if (!elements_[i].is_undefined()) {
-                oss << elements_[i].to_string();
+            if (!(*element_ptr(i)).is_undefined()) {
+                oss << (*element_ptr(i)).to_string();
             }
         }
         return oss.str();
