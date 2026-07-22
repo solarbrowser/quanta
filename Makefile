@@ -9,7 +9,7 @@ C_RED = \033[91m
 C_CYAN = \033[96m
 
 CXX = clang++
-CXXFLAGS = -std=c++20 -Wall -O3 -fPIC -march=native -mtune=native
+CXXFLAGS = -std=c++20 -Wall -O3 -march=native -mtune=native
 CXXFLAGS += -DQUANTA_VERSION=\"0.9.0.71926\"
 CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC
 CXXFLAGS += -funroll-loops -finline-functions
@@ -21,6 +21,10 @@ CXXFLAGS += -pthread
 LTO_FLAGS = -fuse-ld=lld -flto=thin
 
 DEBUG_FLAGS = -g -DDEBUG -O0
+
+# On top of the default -O3 set, not -O0/DEBUG_FLAGS: some GC-rooting bugs
+# only reproduce under -O3's register allocation, never under -O0/-O1.
+ASAN_FLAGS = -g -fsanitize=address,undefined -fno-omit-frame-pointer
 
 PCRE2_DIR = third_party/pcre2/src
 PCRE2_CFLAGS = -O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -I$(PCRE2_DIR) -march=native -fomit-frame-pointer
@@ -130,7 +134,10 @@ LIBQUANTA = $(BUILD_DIR)/libquanta.a
 CONSOLE_MAIN = console.cpp
 
 # Main targets
-.PHONY: all clean debug release setup-pcre2 heap-test shape-test
+.PHONY: all clean debug release asan setup-pcre2 heap-test shape-test
+
+# Bare `make` builds release directly (no separate opt-in step needed).
+.DEFAULT_GOAL := release
 
 setup-pcre2:
 	@if [ ! -f "$(PCRE2_DIR)/pcre2.h.generic" ]; then \
@@ -219,9 +226,22 @@ $(OBJ_DIR)/utf8proc/utf8proc.o: $(UTF8PROC_DIR)/utf8proc.c
 debug: CXXFLAGS += $(DEBUG_FLAGS)
 debug: all
 
-# Release build (same optimization set as the default build -- just strips asserts)
+# Release build: strips asserts on top of the default optimization set.
 release: CXXFLAGS += -DNDEBUG
 release: all
+
+# ASan+UBSan build for GC/memory-safety verification. Run the resulting
+# binary with ASAN_OPTIONS=detect_stack_use_after_return=0 -- ASan's fake-
+# stack relocates locals off the real stack, which our conservative GC
+# stack scan can't see, causing false-positive premature collections
+# (confirmed: both the "inc is not a function" and object-literal SEGV
+# bugs vanish with this option set, at 15x their normal repro iteration
+# count). Real release builds never have ASan, so this is a test-harness
+# setting, not a product bug.
+asan: CXXFLAGS += $(ASAN_FLAGS)
+asan: all
+	@echo ""
+	@echo "  [NOTE] Run with: ASAN_OPTIONS=detect_stack_use_after_return=0 $(BIN_DIR)/quanta$(EXE_EXT) <script.js>"
 
 # GC heap unit tests (standalone; compiles only the gc/ sources)
 HEAP_TEST_SRCS = tests/gc/heap_test.cpp \

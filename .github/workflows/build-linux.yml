@@ -1,0 +1,42 @@
+name: Build (Linux)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'build.sh'
+      - 'src/**'
+      - 'include/**'
+      - 'console.cpp'
+      - '.github/workflows/build-linux.yml'
+  pull_request:
+    paths:
+      - 'build.sh'
+      - 'src/**'
+      - 'include/**'
+      - 'console.cpp'
+      - '.github/workflows/build-linux.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install clang + lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+
+      - name: Build
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Smoke test
+        run: |
+          echo 'console.log(1 + 2)' > /tmp/smoke.js
+          build/bin/quanta /tmp/smoke.js

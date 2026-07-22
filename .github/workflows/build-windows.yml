@@ -1,0 +1,40 @@
+name: Build (Windows)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'build-windows.bat'
+      - 'src/**'
+      - 'include/**'
+      - 'console.cpp'
+      - '.github/workflows/build-windows.yml'
+  pull_request:
+    paths:
+      - 'build-windows.bat'
+      - 'src/**'
+      - 'include/**'
+      - 'console.cpp'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install LLVM/Clang
+        run: choco install llvm -y --no-progress
+
+      - name: Build
+        shell: cmd
+        run: build-windows.bat
+
+      - name: Smoke test
+        shell: cmd
+        run: |
+          echo console.log(1 + 2) > smoke.js
+          build\bin\quanta.exe smoke.js

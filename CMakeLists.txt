@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.15)
+
+# Clang-only flags below (-fvectorize, -fslp-vectorize) break the third-party
+# C libraries under GCC, so default to clang/clang++ -- still overridable.
+if(NOT DEFINED CMAKE_C_COMPILER)
+    set(CMAKE_C_COMPILER clang)
+endif()
+if(NOT DEFINED CMAKE_CXX_COMPILER)
+    set(CMAKE_CXX_COMPILER clang++)
+endif()
+
 project(Quanta VERSION 0.9.0.71926 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -19,13 +29,6 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-
-# Include directories
-include_directories(
-    ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/lexer/include
-    ${CMAKE_SOURCE_DIR}/parser/include
-)
 
 # Compiler flags
 if(MSVC)
@@ -67,7 +70,7 @@ else()
         -pthread
     )
     add_compile_definitions(
-        QUANTA_VERSION="0.9.0.71826"
+        QUANTA_VERSION="0.9.0.71926"
         PROMISE_STABILITY_FIXED
         NATIVE_BUILD
         UTF8PROC_STATIC
@@ -277,15 +280,7 @@ install(TARGETS quanta quantalib
     ARCHIVE DESTINATION lib
 )
 
-install(DIRECTORY core/include/quanta
-    DESTINATION include
-)
-
-install(DIRECTORY lexer/include/quanta
-    DESTINATION include
-)
-
-install(DIRECTORY parser/include/quanta
+install(DIRECTORY include/quanta
     DESTINATION include
 )
 

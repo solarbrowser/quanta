@@ -21,7 +21,8 @@ namespace Quanta {
 // all allocation happens on the main thread, so the fast path takes no locks.
 class Heap {
 public:
-    // 16B steps to 256, coarser above; Tier-1 cap fits AsyncGenerator (2272B).
+    // 16B steps to 256, coarser above; Tier-1 cap sized well above the
+    // largest CellKind::Object subtype (currently Function, under 1KB).
     static constexpr uint32_t kSizeClasses[] = {
         16, 32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256,
         320, 384, 448, 512, 640, 768, 1024, 1280, 1536,

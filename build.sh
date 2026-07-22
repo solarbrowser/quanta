@@ -5,84 +5,8 @@ set -uo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 NC='\033[0m'
-
-print_header() {
-    echo -e "${BLUE}===============================================================${NC}"
-    echo -e "${BLUE}  $1${NC}"
-    echo -e "${BLUE}===============================================================${NC}"
-}
-
-print_success() {
-    echo -e "${GREEN}[OK] $1${NC}"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR] $1${NC}"
-}
-
-print_info() {
-    echo -e "${YELLOW}[INFO] $1${NC}"
-}
-
-fail() {
-    print_error "$1"
-    echo
-    echo "Recent errors:"
-    if [[ -s "$ERROR_LOG" ]]; then
-        tail -n 20 "$ERROR_LOG"
-    else
-        echo "(no compiler output captured)"
-    fi
-    echo
-    echo "[${SECONDS}s] BUILD FAILED" >> "$LOG_FILE"
-    exit 1
-}
-
-setup_pcre2() {
-    local pcre2_src="third_party/pcre2/src"
-    local pcre2_configs="third_party/pcre2_configs"
-
-    if [[ ! -f "$pcre2_src/pcre2.h.generic" ]]; then
-        print_info "Initializing PCRE2 submodule..."
-        git submodule update --init --recursive third_party/pcre2 || fail "Failed to initialize PCRE2 submodule"
-    fi
-
-    if [[ ! -f "third_party/utf8proc/utf8proc.c" ]]; then
-        print_info "Initializing utf8proc submodule..."
-        git submodule update --init --recursive third_party/utf8proc || fail "Failed to initialize utf8proc submodule"
-    fi
-
-    if [[ ! -f "$pcre2_src/config.h" ]]; then
-        cp "$pcre2_configs/config.h" "$pcre2_src/config.h"
-        print_success "Installed config.h from pcre2_configs"
-    fi
-
-    if [[ ! -f "$pcre2_src/pcre2.h" ]]; then
-        cp "$pcre2_src/pcre2.h.generic" "$pcre2_src/pcre2.h"
-        print_success "Generated pcre2.h"
-    fi
-
-    if [[ ! -f "$pcre2_src/pcre2_chartables.c" ]]; then
-        cp "$pcre2_src/pcre2_chartables.c.dist" "$pcre2_src/pcre2_chartables.c"
-        print_success "Generated pcre2_chartables.c"
-    fi
-}
-
-compile_cpp() {
-    local src="$1"
-    local out="$2"
-
-    clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" -c "$src" -o "$out" 2>>"$ERROR_LOG" || return 1
-}
-
-compile_c() {
-    local src="$1"
-    local out="$2"
-
-    clang "${PCRE2FLAGS[@]}" -c "$src" -o "$out" 2>>"$ERROR_LOG" || return 1
-}
+DIVIDER="────────────────────────────────────────────────────────────"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -97,57 +21,240 @@ mkdir -p "$BUILD_DIR" "$OBJ_DIR" "$BIN_DIR"
 : > "$ERROR_LOG"
 printf '[%(%Y-%m-%d %H:%M:%S)T] Build started\n' -1 > "$LOG_FILE"
 
+WARNING_COUNT=0
+COMPILED_FILES=0
+BUILD_START=$(date +%s.%N)
+
+JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+JOB_DIR=$(mktemp -d)
+JOB_SEQ=0
+trap 'rm -rf "$JOB_DIR"' EXIT
+
+fail() {
+    echo -e "${RED}✗ $1${NC}" >&2
+    echo "[${SECONDS}s] BUILD FAILED: $1" >> "$LOG_FILE"
+    exit 1
+}
+
+show_error() {
+    local errfile="$1"
+    echo
+    echo -e "${RED}✗ Compile failed${NC}"
+    echo
+    local first
+    first=$(grep -m1 -E ': error:' "$errfile")
+    if [[ -n "$first" ]]; then
+        echo "${first%%: error:*}"
+        echo
+        echo "error:${first#*: error:}"
+    else
+        sed -n '1,10p' "$errfile"
+    fi
+    echo
+}
+
+fail_compile() {
+    local src="$1" errfile="$2"
+    show_error "$errfile"
+    echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
+    exit 1
+}
+
+# Runs a compiler invocation, folding its stderr into ERROR_LOG (and counting
+# warnings) regardless of outcome; on failure, prints the clean error block
+# and exits -- $1/$2 are the source name and a scratch file for this call's
+# own stderr, everything after is the actual command.
+run_compile() {
+    local src="$1" errfile="$2"
+    shift 2
+    "$@" 2>"$errfile"
+    local rc=$?
+    if [[ -s "$errfile" ]]; then
+        WARNING_COUNT=$((WARNING_COUNT + $(grep -c 'warning:' "$errfile" || true)))
+        cat "$errfile" >> "$ERROR_LOG"
+    fi
+    if [[ $rc -ne 0 ]]; then
+        fail_compile "$src" "$errfile"
+    fi
+    rm -f "$errfile"
+}
+
+# Runs "$@" (after the source name) in the background, capturing its exit
+# code and stderr under $JOB_DIR for later, serial collection -- keeps
+# ERROR_LOG writes and the warning/file counters race-free across a whole
+# pool of concurrent compiles. Blocks (via `wait -n`) once $JOBS are in flight.
+launch_job() {
+    local src="$1"
+    shift
+    JOB_SEQ=$((JOB_SEQ + 1))
+    local id="$JOB_SEQ"
+    echo "$src" > "$JOB_DIR/$id.src"
+    ( "$@" 2>"$JOB_DIR/$id.err"; echo $? > "$JOB_DIR/$id.rc" ) &
+    if (( $(jobs -rp | wc -l) >= JOBS )); then
+        wait -n
+    fi
+}
+
+# Waits for every job launched since the last collect_jobs, then serially
+# folds each one's stderr into ERROR_LOG, sums warnings, and -- if any job
+# failed -- reports the first failure with the same clean error block as a
+# non-parallel run and exits.
+collect_jobs() {
+    wait
+    local f id rc src fail_src fail_err
+    for f in "$JOB_DIR"/*.rc; do
+        [[ -e "$f" ]] || continue
+        id="${f##*/}"; id="${id%.rc}"
+        rc=$(<"$f")
+        src=$(<"$JOB_DIR/$id.src")
+        if [[ -s "$JOB_DIR/$id.err" ]]; then
+            WARNING_COUNT=$((WARNING_COUNT + $(grep -c 'warning:' "$JOB_DIR/$id.err" || true)))
+            cat "$JOB_DIR/$id.err" >> "$ERROR_LOG"
+        fi
+        COMPILED_FILES=$((COMPILED_FILES + 1))
+        if [[ "$rc" != "0" && -z "${fail_src:-}" ]]; then
+            fail_src="$src"
+            fail_err="$JOB_DIR/$id.err"
+            rm -f "$f" "$JOB_DIR/$id.src"
+        else
+            rm -f "$f" "$JOB_DIR/$id.src" "$JOB_DIR/$id.err"
+        fi
+    done
+    if [[ -n "${fail_src:-}" ]]; then
+        fail_compile "$fail_src" "$fail_err"
+    fi
+}
+
+compile_group() {
+    local obj_subdir="$1"
+    local -n arr_ref="$2"
+    shift 2
+    local src obj
+    for src in "$@"; do
+        obj="$OBJ_DIR/$obj_subdir/$(basename "${src%.cpp}").o"
+        launch_job "$src" clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" -c "$src" -o "$obj"
+        arr_ref+=("$obj")
+    done
+    collect_jobs
+}
+
+setup_pcre2() {
+    local pcre2_src="third_party/pcre2/src"
+    local pcre2_configs="third_party/pcre2_configs"
+
+    if [[ ! -f "$pcre2_src/pcre2.h.generic" ]]; then
+        git submodule update --init --recursive third_party/pcre2 || fail "Failed to initialize PCRE2 submodule"
+    fi
+    if [[ ! -f "third_party/utf8proc/utf8proc.c" ]]; then
+        git submodule update --init --recursive third_party/utf8proc || fail "Failed to initialize utf8proc submodule"
+    fi
+    if [[ ! -f "$pcre2_src/config.h" ]]; then
+        cp "$pcre2_configs/config.h" "$pcre2_src/config.h"
+    fi
+    if [[ ! -f "$pcre2_src/pcre2.h" ]]; then
+        cp "$pcre2_src/pcre2.h.generic" "$pcre2_src/pcre2.h"
+    fi
+    if [[ ! -f "$pcre2_src/pcre2_chartables.c" ]]; then
+        cp "$pcre2_src/pcre2_chartables.c.dist" "$pcre2_src/pcre2_chartables.c"
+    fi
+}
+
+phase() {
+    local name="$1"; shift
+    PHASE_NUM=$((PHASE_NUM + 1))
+    local t0 t1 elapsed
+    t0=$(date +%s.%N)
+    "$@"
+    t1=$(date +%s.%N)
+    elapsed=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')
+    printf "[%d/%d] %-28s ${GREEN}✓${NC} %ss\n" "$PHASE_NUM" "$TOTAL_PHASES" "$name" "$elapsed"
+}
+
+phase_configure() {
+    if ! command -v clang++ >/dev/null 2>&1; then fail "clang++ not found in PATH"; fi
+    if ! command -v clang >/dev/null 2>&1; then fail "clang not found in PATH"; fi
+    CLANG_VERSION="$(clang++ --version | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+    if command -v ld.lld >/dev/null 2>&1 || command -v lld >/dev/null 2>&1; then
+        LTO_FLAGS=(-fuse-ld=lld -flto=thin)
+    else
+        LTO_FLAGS=()
+    fi
+    setup_pcre2
+    mkdir -p \
+        "$OBJ_DIR/core/engine" "$OBJ_DIR/core/engine/builtins" "$OBJ_DIR/core/gc" \
+        "$OBJ_DIR/core/modules" "$OBJ_DIR/core/runtime" "$OBJ_DIR/core/vm" \
+        "$OBJ_DIR/lexer" "$OBJ_DIR/parser" "$OBJ_DIR/parser/ast" \
+        "$OBJ_DIR/pcre2" "$OBJ_DIR/utf8proc"
+}
+
+phase_thirdparty() {
+    local src obj
+    for src in "${PCRE2_SOURCES[@]}"; do
+        obj="$OBJ_DIR/pcre2/$(basename "${src%.c}").o"
+        launch_job "$src" clang "${PCRE2FLAGS[@]}" -c "$src" -o "$obj"
+        PCRE2_OBJECTS+=("$obj")
+    done
+    obj="$OBJ_DIR/utf8proc/utf8proc.o"
+    launch_job "third_party/utf8proc/utf8proc.c" clang "${UTF8PROC_FLAGS[@]}" \
+        -c third_party/utf8proc/utf8proc.c -o "$obj"
+    UTF8PROC_OBJECTS+=("$obj")
+    collect_jobs
+}
+
+phase_engine() {
+    compile_group core/engine CORE_ENGINE_OBJECTS "${CORE_ENGINE_SOURCES[@]}"
+    compile_group core/engine/builtins BUILTIN_OBJECTS "${BUILTIN_SOURCES[@]}"
+    compile_group core/modules CORE_MODULE_OBJECTS "${CORE_MODULE_SOURCES[@]}"
+}
+
+phase_gc() {
+    compile_group core/gc CORE_GC_OBJECTS "${CORE_GC_SOURCES[@]}"
+}
+
+phase_runtime() {
+    compile_group core/runtime CORE_RUNTIME_OBJECTS "${CORE_RUNTIME_SOURCES[@]}"
+}
+
+phase_frontend() {
+    compile_group lexer LEXER_OBJECTS "${LEXER_SOURCES[@]}"
+    compile_group parser PARSER_OBJECTS "${PARSER_SOURCES[@]}"
+    compile_group parser/ast AST_OBJECTS "${AST_SOURCES[@]}"
+}
+
+phase_vm() {
+    compile_group core/vm CORE_VM_OBJECTS "${CORE_VM_SOURCES[@]}"
+}
+
+phase_link() {
+    local errfile
+    errfile=$(mktemp)
+    run_compile "console.cpp (link)" "$errfile" clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" "${LTO_FLAGS[@]}" \
+        -DMAIN_EXECUTABLE -o "$BIN_DIR/quanta" console.cpp \
+        "${CORE_ENGINE_OBJECTS[@]}" "${BUILTIN_OBJECTS[@]}" "${CORE_GC_OBJECTS[@]}" \
+        "${CORE_MODULE_OBJECTS[@]}" "${CORE_RUNTIME_OBJECTS[@]}" "${CORE_VM_OBJECTS[@]}" \
+        "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}" \
+        "${PCRE2_OBJECTS[@]}" "${UTF8PROC_OBJECTS[@]}" \
+        "${LIBS[@]}" "${STACK_FLAGS[@]}"
+}
+
 # ./build.sh heap-test -> build and run the GC heap unit tests, nothing else
 if [[ "${1:-}" == "heap-test" ]]; then
-    print_header "GC heap unit tests"
+    errfile=$(mktemp)
     if ! clang++ -std=c++20 -Wall -g -O1 -fsanitize=address,undefined -Iinclude \
         -o "$BIN_DIR/heap-test" \
         tests/gc/heap_test.cpp \
         src/core/gc/Heap.cpp src/core/gc/HeapBlock.cpp src/core/gc/BlockAllocator.cpp \
-        2>>"$ERROR_LOG"; then
-        fail "heap-test compilation failed"
+        2>"$errfile"; then
+        show_error "$errfile"
+        exit 1
     fi
-    ASAN_OPTIONS=detect_leaks=0 "$BIN_DIR/heap-test" || fail "heap-test reported failures"
-    print_success "heap-test passed"
+    rm -f "$errfile"
+    if ! ASAN_OPTIONS=detect_leaks=0 "$BIN_DIR/heap-test"; then
+        fail "heap-test reported failures"
+    fi
+    echo -e "${GREEN}✓${NC} heap-test passed"
     exit 0
 fi
-
-print_header "Building Quanta with Clang"
-
-if ! command -v clang++ >/dev/null 2>&1; then
-    fail "clang++ not found in PATH"
-fi
-
-if ! command -v clang >/dev/null 2>&1; then
-    fail "clang not found in PATH"
-fi
-
-CLANG_VERSION="$(clang++ --version | head -n 1)"
-print_success "$CLANG_VERSION detected"
-echo "[$(date '+%H:%M:%S')] Clang: $CLANG_VERSION" >> "$LOG_FILE"
-
-if command -v ld.lld >/dev/null 2>&1 || command -v lld >/dev/null 2>&1; then
-    LTO_FLAGS=(-fuse-ld=lld -flto=thin)
-    print_info "LLD detected; ThinLTO enabled"
-else
-    LTO_FLAGS=()
-    print_info "LLD not found; building without ThinLTO"
-fi
-
-setup_pcre2
-
-mkdir -p \
-    "$OBJ_DIR/core/engine" \
-    "$OBJ_DIR/core/engine/builtins" \
-    "$OBJ_DIR/core/gc" \
-    "$OBJ_DIR/core/modules" \
-    "$OBJ_DIR/core/runtime" \
-    "$OBJ_DIR/core/vm" \
-    "$OBJ_DIR/lexer" \
-    "$OBJ_DIR/parser" \
-    "$OBJ_DIR/parser/ast" \
-    "$OBJ_DIR/pcre2" \
-    "$OBJ_DIR/utf8proc"
 
 CXXFLAGS=(
     -std=c++20
@@ -159,6 +266,7 @@ CXXFLAGS=(
     -DPROMISE_STABILITY_FIXED
     -DNATIVE_BUILD
     -DUTF8PROC_STATIC
+    -DNDEBUG
     -funroll-loops
     -finline-functions
     -fvectorize
@@ -240,7 +348,7 @@ mapfile -d '' AST_SOURCES < <(find src/parser/ast -name '*.cpp' -print0 2>/dev/n
 shopt -u nullglob
 
 TOTAL_FILES=$((
-    ${#PCRE2_SOURCES[@]} +
+    ${#PCRE2_SOURCES[@]} + 1 +
     ${#CORE_ENGINE_SOURCES[@]} +
     ${#BUILTIN_SOURCES[@]} +
     ${#CORE_GC_SOURCES[@]} +
@@ -252,8 +360,6 @@ TOTAL_FILES=$((
     ${#AST_SOURCES[@]}
 ))
 
-COMPILED_FILES=0
-FAILED_FILES=0
 PCRE2_OBJECTS=()
 UTF8PROC_OBJECTS=()
 CORE_ENGINE_OBJECTS=()
@@ -266,211 +372,37 @@ LEXER_OBJECTS=()
 PARSER_OBJECTS=()
 AST_OBJECTS=()
 
-echo
-print_header "Compilation Phase"
+TOTAL_PHASES=8
+PHASE_NUM=0
 
-echo "[0/5] Compiling PCRE2..."
-echo "[$(date '+%H:%M:%S')] === PCRE2 ===" >> "$LOG_FILE"
-for src in "${PCRE2_SOURCES[@]}"; do
-    obj="$OBJ_DIR/pcre2/$(basename "${src%.c}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_c "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "PCRE2 compilation failed at $src"
-    fi
-    PCRE2_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-print_success "PCRE2 + JIT compiled"
+echo "$DIVIDER"
+phase "Configure project"   phase_configure
+phase "Compile third-party" phase_thirdparty
+phase "Compile engine"      phase_engine
+phase "Compile GC"          phase_gc
+phase "Compile runtime"     phase_runtime
+phase "Compile front-end"   phase_frontend
+phase "Compile VM"          phase_vm
+phase "Link executable"     phase_link
+echo "$DIVIDER"
 
-echo
-echo "[0/5] Compiling utf8proc..."
-echo "[$(date '+%H:%M:%S')] === UTF8PROC ===" >> "$LOG_FILE"
-obj="$OBJ_DIR/utf8proc/utf8proc.o"
-if ! clang "${UTF8PROC_FLAGS[@]}" -c third_party/utf8proc/utf8proc.c -o "$obj" 2>>"$ERROR_LOG"; then
-    echo "[$(date '+%H:%M:%S')] ERROR compiling utf8proc.c" >> "$LOG_FILE"
-    fail "utf8proc compilation failed"
-fi
-UTF8PROC_OBJECTS+=("$obj")
-print_success "utf8proc compiled"
+BUILD_END=$(date +%s.%N)
+TOTAL_TIME=$(awk -v a="$BUILD_START" -v b="$BUILD_END" 'BEGIN{printf "%.2f", b-a}')
+SIZE_MB=$(( $(stat -c '%s' "$BIN_DIR/quanta") / 1048576 ))
+PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 
+echo -e "${GREEN}✓ Build completed successfully${NC}"
 echo
-echo "[1/5] Compiling core engine modules..."
-echo "[$(date '+%H:%M:%S')] === CORE ENGINE ===" >> "$LOG_FILE"
-for src in "${CORE_ENGINE_SOURCES[@]}"; do
-    obj="$OBJ_DIR/core/engine/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    CORE_ENGINE_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
+printf "Profile   : release\n"
+printf "Platform  : %s\n" "$PLATFORM"
+printf "Compiler  : clang %s\n" "$CLANG_VERSION"
+printf "Jobs      : %s (parallel)\n" "$JOBS"
+printf "Time      : %ss\n" "$TOTAL_TIME"
+printf "Binary    : %s (%sMB)\n" "$BIN_DIR/quanta" "$SIZE_MB"
+printf "Files     : %d/%d\n" "$COMPILED_FILES" "$TOTAL_FILES"
+printf "Warnings  : %d\n" "$WARNING_COUNT"
+printf "Errors    : 0\n"
+printf "Logs      : %s, %s\n" "$LOG_FILE" "$ERROR_LOG"
 
-echo
-echo "[1/5] Compiling builtin modules..."
-echo "[$(date '+%H:%M:%S')] === BUILTINS ===" >> "$LOG_FILE"
-for src in "${BUILTIN_SOURCES[@]}"; do
-    obj="$OBJ_DIR/core/engine/builtins/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    BUILTIN_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-
-echo
-echo "[1/5] Compiling garbage collector..."
-echo "[$(date '+%H:%M:%S')] === GARBAGE COLLECTOR ===" >> "$LOG_FILE"
-for src in "${CORE_GC_SOURCES[@]}"; do
-    obj="$OBJ_DIR/core/gc/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    CORE_GC_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-
-echo
-echo "[1/5] Compiling core modules..."
-echo "[$(date '+%H:%M:%S')] === CORE MODULES ===" >> "$LOG_FILE"
-for src in "${CORE_MODULE_SOURCES[@]}"; do
-    obj="$OBJ_DIR/core/modules/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    CORE_MODULE_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-
-echo
-echo "[2/5] Compiling runtime library..."
-echo "[$(date '+%H:%M:%S')] === RUNTIME ===" >> "$LOG_FILE"
-for src in "${CORE_RUNTIME_SOURCES[@]}"; do
-    obj="$OBJ_DIR/core/runtime/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    CORE_RUNTIME_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-
-echo
-echo "[3/5] Compiling lexer..."
-echo "[$(date '+%H:%M:%S')] === LEXER ===" >> "$LOG_FILE"
-for src in "${LEXER_SOURCES[@]}"; do
-    obj="$OBJ_DIR/lexer/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    LEXER_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-
-echo
-echo "[4/5] Compiling parser..."
-echo "[$(date '+%H:%M:%S')] === PARSER ===" >> "$LOG_FILE"
-for src in "${PARSER_SOURCES[@]}"; do
-    obj="$OBJ_DIR/parser/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    PARSER_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-
-echo
-echo "[4/5] Compiling parser/ast modules..."
-echo "[$(date '+%H:%M:%S')] === PARSER AST ===" >> "$LOG_FILE"
-for src in "${AST_SOURCES[@]}"; do
-    obj="$OBJ_DIR/parser/ast/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    AST_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-
-echo
-echo "[5/5] Compiling VM modules..."
-echo "[$(date '+%H:%M:%S')] === VM ===" >> "$LOG_FILE"
-for src in "${CORE_VM_SOURCES[@]}"; do
-    obj="$OBJ_DIR/core/vm/$(basename "${src%.cpp}").o"
-    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
-    if ! compile_cpp "$src" "$obj"; then
-        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
-        ((FAILED_FILES++))
-        fail "Compilation failed at $src"
-    fi
-    CORE_VM_OBJECTS+=("$obj")
-    ((COMPILED_FILES++))
-done
-
-echo
-print_header "Linking Phase"
-echo "[LINK] Creating executable with ThinLTO..."
-echo "[$(date '+%H:%M:%S')] === LINKING ===" >> "$LOG_FILE"
-
-if ! clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" "${LTO_FLAGS[@]}" -DMAIN_EXECUTABLE \
-    -o "$BIN_DIR/quanta" \
-    console.cpp \
-    "${CORE_ENGINE_OBJECTS[@]}" \
-    "${BUILTIN_OBJECTS[@]}" \
-    "${CORE_GC_OBJECTS[@]}" \
-    "${CORE_MODULE_OBJECTS[@]}" \
-    "${CORE_RUNTIME_OBJECTS[@]}" \
-    "${CORE_VM_OBJECTS[@]}" \
-    "${LEXER_OBJECTS[@]}" \
-    "${PARSER_OBJECTS[@]}" \
-    "${AST_OBJECTS[@]}" \
-    "${PCRE2_OBJECTS[@]}" \
-    "${UTF8PROC_OBJECTS[@]}" \
-    "${LIBS[@]}" \
-    "${STACK_FLAGS[@]}" \
-    2>>"$ERROR_LOG"; then
-    fail "Linking failed"
-fi
-
-print_success "Executable created"
-echo "[$(date '+%H:%M:%S')] Linking successful" >> "$LOG_FILE"
-
-echo
-print_header "Build Success"
-echo
-echo "  [OK] Files compiled: $COMPILED_FILES / $TOTAL_FILES"
-echo "  [OK] Output: $BIN_DIR/quanta"
-if [[ -f "$BIN_DIR/quanta" ]]; then
-    SIZE_MB=$(( $(stat -c '%s' "$BIN_DIR/quanta") / 1048576 ))
-    echo "  [OK] Size: ${SIZE_MB}MB"
-fi
-echo "  [OK] Optimizations: O3 + ThinLTO + AVX2"
-echo
-echo "  Build log: $LOG_FILE"
-echo "  Error log: $ERROR_LOG"
-echo
 echo "[$(date '+%H:%M:%S')] BUILD SUCCESSFUL" >> "$LOG_FILE"
 echo "[$(date '+%H:%M:%S')] Compiled files: $COMPILED_FILES/$TOTAL_FILES" >> "$LOG_FILE"

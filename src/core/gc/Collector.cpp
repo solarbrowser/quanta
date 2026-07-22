@@ -354,9 +354,13 @@ void main_thread_stack_bounds(const char** lo, const char** hi) {
 
 __attribute__((no_sanitize("address")))
 void scan_stacks(MarkVisitor& v) {
-    // Spill callee-saved registers into a scanned stack local.
+    // Spill registers into a struct scanned explicitly below -- relying on
+    // it falling inside [sp, main_hi] by luck of stack layout missed a
+    // register-resident pointer under some compilers/flags (observed with
+    // ASan's stack redzones reordering locals enough to exclude it).
     ucontext_t spilled_registers;
     getcontext(&spilled_registers);
+    scan_range(v, &spilled_registers, &spilled_registers + 1);
 
     const char* main_lo;
     const char* main_hi;
