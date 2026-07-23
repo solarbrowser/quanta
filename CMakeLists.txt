@@ -235,6 +235,7 @@ target_include_directories(quantalib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${PCRE2_DIR}
     ${UTF8PROC_DIR}
+    ${CMAKE_SOURCE_DIR}/third_party/minicoro
 )
 
 target_compile_definitions(quantalib PUBLIC UTF8PROC_STATIC)

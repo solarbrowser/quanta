@@ -67,7 +67,7 @@ PCRE2_SRCS = \
     $(PCRE2_DIR)/pcre2_xclass.c
 PCRE2_OBJS = $(PCRE2_SRCS:$(PCRE2_DIR)/%.c=$(OBJ_DIR)/pcre2/%.o)
 
-INCLUDES = -Iinclude -I$(PCRE2_DIR) -I$(UTF8PROC_DIR)
+INCLUDES = -Iinclude -I$(PCRE2_DIR) -I$(UTF8PROC_DIR) -Ithird_party/minicoro
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
 

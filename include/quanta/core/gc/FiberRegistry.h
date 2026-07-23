@@ -46,7 +46,7 @@ public:
     static void unregister_fiber(const void* owner);
     static void for_each(const std::function<void(const Record&)>& fn);
 
-    // Caller-side suspension points: pushed right before swapcontext into a
+    // Caller-side suspension points: pushed right before mco_resume into a
     // fiber, popped when it returns. Tells the scanner how deep the
     // suspended host stack's live region reaches.
     static void push_enter_sp(const void* sp);

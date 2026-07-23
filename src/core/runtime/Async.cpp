@@ -58,17 +58,15 @@ AsyncExecutor::AsyncExecutor(ASTNode* body,
       exec_context_owned_(std::move(exec_ctx)),
       exec_context_(exec_context_owned_.get()),
       engine_(engine),
-      fiber_stack_(FiberStackPool::acquire(STACK_SIZE)),
       body_(body),
       owner_fn_(owner_fn) {
-    getcontext(&fiber_->fiber_ctx);
-    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_;
-    fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
-    fiber_->fiber_ctx.uc_link = nullptr;
-    uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
-    makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
-                (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_, STACK_SIZE, fiber_.get(), nullptr,
+    mco_desc desc = mco_desc_init(fiber_entry, STACK_SIZE);
+    desc.user_data = this;
+    desc.alloc_cb = fiber_alloc_cb;
+    desc.dealloc_cb = fiber_dealloc_cb;
+    mco_create(&fiber_->co, &desc);
+    FiberRegistry::register_fiber(this, static_cast<char*>(fiber_->co->stack_base),
+        fiber_->co->stack_size, fiber_.get(), nullptr,
         [this](Visitor& v) {
             v.visit_object(outer_promise_);
             v.visit_context(exec_context_);
@@ -80,12 +78,11 @@ AsyncExecutor::AsyncExecutor(ASTNode* body,
 
 AsyncExecutor::~AsyncExecutor() {
     FiberRegistry::unregister_fiber(this);
-    if (fiber_stack_) FiberStackPool::release(fiber_stack_, STACK_SIZE);
+    if (fiber_->co) mco_destroy(fiber_->co);
 }
 
-void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
-    uintptr_t ptr = ((uintptr_t)hi << 32) | (uintptr_t)lo;
-    auto* self = reinterpret_cast<AsyncExecutor*>(ptr);
+void AsyncExecutor::fiber_entry(mco_coro* co) {
+    auto* self = static_cast<AsyncExecutor*>(mco_get_user_data(co));
 
     Context* ctx = self->exec_context_;
     try {
@@ -140,7 +137,7 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
     EventLoop::instance().release_context(ctx);
 
     // Return control to whoever called run()/resume()
-    swapcontext(&self->fiber_->fiber_ctx, &self->fiber_->caller_ctx);
+    mco_yield(self->fiber_->co);
 }
 
 void AsyncExecutor::run() {
@@ -148,7 +145,7 @@ void AsyncExecutor::run() {
     current_ = this;
     {
         FiberEnterScope enter_scope;
-        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);  // enter or re-enter fiber
+        mco_resume(fiber_->co);  // enter or re-enter fiber
     }
     current_ = prev;
 }
@@ -429,7 +426,7 @@ AsyncAwaitExpression::AsyncAwaitExpression(std::unique_ptr<ASTNode> expression)
 Value AsyncAwaitExpression::evaluate(Context& ctx) {
     AsyncExecutor* exec = AsyncExecutor::get_current();
 
-    if (exec && exec->fiber_stack_) {
+    if (exec && exec->fiber_->co) {
         // Fiber-based path: no replay, just suspend/resume
 
         Value expr_val = expression_ ? expression_->evaluate(ctx) : Value();
@@ -481,7 +478,7 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
         }
 
         // Suspend fiber -- return control to the microtask runner
-        swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
+        mco_yield(exec->fiber_->co);
 
         // Resumed by resume() -- await_result_ holds the settled value
         if (exec->await_is_throw_) {
@@ -531,16 +528,14 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body,
     : Object(ObjectType::Custom), context_owned_(std::move(ctx)),
       generator_context_(context_owned_.get()),
       outer_context_(outer_ctx),
-      body_(body), owner_fn_(owner_fn), state_(State::SuspendedStart),
-      fiber_stack_(FiberStackPool::acquire(STACK_SIZE)) {
-    getcontext(&fiber_->fiber_ctx);
-    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_;
-    fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
-    fiber_->fiber_ctx.uc_link = nullptr;
-    uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
-    makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
-                (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_, STACK_SIZE, fiber_.get(), this);
+      body_(body), owner_fn_(owner_fn), state_(State::SuspendedStart) {
+    mco_desc desc = mco_desc_init(fiber_entry, STACK_SIZE);
+    desc.user_data = this;
+    desc.alloc_cb = fiber_alloc_cb;
+    desc.dealloc_cb = fiber_dealloc_cb;
+    mco_create(&fiber_->co, &desc);
+    FiberRegistry::register_fiber(this, static_cast<char*>(fiber_->co->stack_base),
+                                   fiber_->co->stack_size, fiber_.get(), this);
     if (s_async_generator_prototype_) {
         set_prototype(s_async_generator_prototype_);
     }
@@ -548,16 +543,15 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body,
 
 AsyncGenerator::~AsyncGenerator() {
     FiberRegistry::unregister_fiber(this);
-    if (fiber_stack_) FiberStackPool::release(fiber_stack_, STACK_SIZE);
+    if (fiber_->co) mco_destroy(fiber_->co);
     // Closures born inside the generator body share this context via their
     // closure_context_; a swept generator must not tear it down under them.
     // Contexts stay engine-lifetime until they become traced cells themselves.
     context_owned_.release();
 }
 
-void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
-    uintptr_t ptr = ((uintptr_t)hi << 32) | (uintptr_t)lo;
-    auto* self = reinterpret_cast<AsyncGenerator*>(ptr);
+void AsyncGenerator::fiber_entry(mco_coro* co) {
+    auto* self = static_cast<AsyncGenerator*>(mco_get_user_data(co));
 
     Context* ctx = self->generator_context_;
     try {
@@ -605,7 +599,7 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
 
     // Direct-assigned traced fields: re-gray for an open incremental cycle.
     Collector::write_barrier(self);
-    swapcontext(&self->fiber_->fiber_ctx, &self->fiber_->caller_ctx);
+    mco_yield(self->fiber_->co);
 }
 
 void AsyncGenerator::enter_fiber() {
@@ -613,7 +607,7 @@ void AsyncGenerator::enter_fiber() {
     current_ = this;
     {
         FiberEnterScope enter_scope;
-        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+        mco_resume(fiber_->co);
     }
     current_ = prev;
     handle_suspension();

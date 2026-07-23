@@ -12,7 +12,6 @@
 #include <vector>
 #include <functional>
 #include <unordered_map>
-#include <ucontext.h>
 #include "quanta/core/runtime/FiberState.h"
 
 namespace Quanta {
@@ -84,12 +83,10 @@ private:
 public:
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
 private:
-    char* fiber_stack_;  // FiberStackPool'dan; dtor iade eder
-
     static thread_local Generator* current_generator_;
     static thread_local size_t current_yield_counter_;
 
-    static void fiber_entry(uint32_t lo, uint32_t hi);
+    static void fiber_entry(mco_coro* co);
     void run_body();
 
 public:

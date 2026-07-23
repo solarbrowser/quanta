@@ -1573,9 +1573,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
     if (pre_iter_env) ctx.set_lexical_environment(pre_iter_env);
 
     if (is_await_) {
-        // AsyncExecutor::current_ is thread-local and survives AsyncGenerator::enter_fiber's ucontext swap, so it can still point at an unrelated outer exec -- check the async-generator fiber first to avoid swapcontext-ing into the wrong coroutine.
+        // AsyncExecutor::current_ is thread-local and survives AsyncGenerator::enter_fiber's mco_resume, so it can still point at an unrelated outer exec -- check the async-generator fiber first to avoid yielding into the wrong coroutine.
         AsyncGenerator* async_gen = AsyncGenerator::get_current();
-        bool in_async_gen_fiber = async_gen && async_gen->fiber_stack_ != nullptr;
+        bool in_async_gen_fiber = async_gen && async_gen->fiber_->co != nullptr;
         AsyncExecutor* exec = in_async_gen_fiber ? nullptr : AsyncExecutor::get_current();
         Context* gctx = in_async_gen_fiber
             ? (async_gen->get_outer_context() ? async_gen->get_outer_context() : async_gen->get_generator_context())
@@ -1719,7 +1719,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                 async_gen->await_result_ = next_result;  // pin promise as GC root during suspension
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
+                mco_yield(async_gen->fiber_->co);
                 Object::current_context_ = &ctx;
 
                 if (async_gen->await_is_throw_) {
@@ -1730,7 +1730,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 }
                 awaited = async_gen->await_result_;
                 async_gen->await_result_ = Value();
-            } else if (exec && exec->fiber_stack_ != nullptr) {
+            } else if (exec && exec->fiber_->co != nullptr) {
                 // Fiber-based: call next(), await the result
                 Value next_method_val = iterator_obj->get_property("next");
                 if (!next_method_val.is_function()) {
@@ -1917,7 +1917,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 }
 
                 exec->await_result_ = next_result;  // pin promise as GC root during suspension
-                swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
+                mco_yield(exec->fiber_->co);
                 Object::current_context_ = &ctx;
 
                 if (exec->await_is_throw_) {
@@ -2008,7 +2008,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     async_gen->await_result_ = value;  // pin as GC root during suspension
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                    swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
+                    mco_yield(async_gen->fiber_->co);
                     Object::current_context_ = &ctx;
                     if (async_gen->await_is_throw_) {
                         ctx.throw_exception(async_gen->await_result_, true);
@@ -2018,7 +2018,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     value = async_gen->await_result_;
                     async_gen->await_result_ = Value();
-                } else if (exec && exec->fiber_stack_ != nullptr) {
+                } else if (exec && exec->fiber_->co != nullptr) {
                     // `value` was already fully wrapped, awaited, and unwrapped by the
                     // AsyncFromSyncIteratorContinuation step above (next_result_promise's
                     // resolution) -- nothing further to await here.

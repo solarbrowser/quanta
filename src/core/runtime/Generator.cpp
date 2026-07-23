@@ -41,9 +41,8 @@ thread_local size_t Generator::current_yield_counter_ = 0;
 thread_local Object* Generator::s_generator_prototype_ = nullptr;
 thread_local Object* Generator::s_generator_function_prototype_ = nullptr;
 
-void Generator::fiber_entry(uint32_t lo, uint32_t hi) {
-    uintptr_t ptr = ((uintptr_t)hi << 32) | (uintptr_t)lo;
-    Generator* gen = reinterpret_cast<Generator*>(ptr);
+void Generator::fiber_entry(mco_coro* co) {
+    Generator* gen = static_cast<Generator*>(mco_get_user_data(co));
     gen->run_body();
 }
 
@@ -71,13 +70,12 @@ void Generator::run_body() {
         // Other exceptions -- propagated via generator_context_
     } catch (...) {}
     state_ = State::Completed;
-    swapcontext(&fiber_->fiber_ctx, &fiber_->caller_ctx);
+    mco_yield(fiber_->co);
 }
 
 Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx)
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
-      body_(body), state_(State::SuspendedStart),
-      fiber_stack_(FiberStackPool::acquire(STACK_SIZE)), outer_context_(outer_ctx) {
+      body_(body), state_(State::SuspendedStart), outer_context_(outer_ctx) {
     if (gen_func) {
         Value fn_proto = gen_func->get_property("prototype");
         if (fn_proto.is_object()) {
@@ -87,20 +85,18 @@ Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* o
         }
     }
 
-    // Set up fiber context
-    getcontext(&fiber_->fiber_ctx);
-    fiber_->fiber_ctx.uc_stack.ss_sp   = fiber_stack_;
-    fiber_->fiber_ctx.uc_stack.ss_size = STACK_SIZE;
-    fiber_->fiber_ctx.uc_link = nullptr;
-    uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
-    makecontext(&fiber_->fiber_ctx, (void(*)())fiber_entry, 2,
-                (uint32_t)(ptr & 0xFFFFFFFF), (uint32_t)(ptr >> 32));
-    FiberRegistry::register_fiber(this, fiber_stack_, STACK_SIZE, fiber_.get(), this);
+    mco_desc desc = mco_desc_init(fiber_entry, STACK_SIZE);
+    desc.user_data = this;
+    desc.alloc_cb = fiber_alloc_cb;
+    desc.dealloc_cb = fiber_dealloc_cb;
+    mco_create(&fiber_->co, &desc);
+    FiberRegistry::register_fiber(this, static_cast<char*>(fiber_->co->stack_base),
+                                   fiber_->co->stack_size, fiber_.get(), this);
 }
 
 Generator::~Generator() {
     FiberRegistry::unregister_fiber(this);
-    if (fiber_stack_) FiberStackPool::release(fiber_stack_, STACK_SIZE);
+    if (fiber_->co) mco_destroy(fiber_->co);
 }
 
 Generator::GeneratorResult Generator::next(const Value& value) {
@@ -118,7 +114,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     current_generator_ = this;
     {
         FiberEnterScope enter_scope;
-        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+        mco_resume(fiber_->co);
     }
     current_generator_ = prev;
 
@@ -162,7 +158,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     current_generator_ = this;
     {
         FiberEnterScope enter_scope;
-        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+        mco_resume(fiber_->co);
     }
     current_generator_ = prev;
 
@@ -201,7 +197,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     current_generator_ = this;
     {
         FiberEnterScope enter_scope;
-        swapcontext(&fiber_->caller_ctx, &fiber_->fiber_ctx);
+        mco_resume(fiber_->co);
     }
     current_generator_ = prev;
 

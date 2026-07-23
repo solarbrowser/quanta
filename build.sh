@@ -277,7 +277,7 @@ CXXFLAGS=(
     -pthread
 )
 
-INCLUDES=(-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc)
+INCLUDES=(-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro)
 
 PCRE2FLAGS=(
     -O3

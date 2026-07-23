@@ -53,7 +53,7 @@ if %ERRORLEVEL% NEQ 0 (
 for /f "tokens=3" %%v in ('clang++ --version ^| findstr "version"') do set CLANG_VER=%%v
 
 set "CXXFLAGS=-std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.9.0.71926\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
-set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc"
+set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro"
 set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32"
 set "PCRE2FLAGS=-O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -Ithird_party/pcre2/src -march=native -fomit-frame-pointer"
 set "UTF8PROC_FLAGS=-O3 -DUTF8PROC_STATIC -Ithird_party/utf8proc -march=native -fomit-frame-pointer"
@@ -207,11 +207,14 @@ for %%f in (src\core\vm\*.cpp) do (
 goto :eof
 
 :phase_link
+REM cmd.exe does not expand *.o wildcards on a plain command line (only
+REM inside a `for` loop does) -- build the object list explicitly first.
+set "OBJLIST="
+for %%d in (core\engine core\engine\builtins core\gc core\modules core\runtime core\vm lexer parser parser\ast pcre2 utf8proc) do (
+    for %%f in (build\obj\%%d\*.o) do set "OBJLIST=!OBJLIST! "%%f""
+)
 clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp ^
-    build\obj\core\engine\*.o build\obj\core\engine\builtins\*.o build\obj\core\gc\*.o ^
-    build\obj\core\modules\*.o build\obj\core\runtime\*.o build\obj\core\vm\*.o ^
-    build\obj\lexer\*.o build\obj\parser\*.o build\obj\parser\ast\*.o ^
-    build\obj\pcre2\*.o build\obj\utf8proc\*.o %LIBS% %STACK% 2> "%ERRTMP%"
+    !OBJLIST! %LIBS% %STACK% 2> "%ERRTMP%"
 set "RC=%ERRORLEVEL%"
 call :fold_errors
 if not "%RC%"=="0" (

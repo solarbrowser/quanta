@@ -1272,8 +1272,8 @@ void Context::add_disposable_resource(const Value& resource, const Value& method
 bool await_value(Context& ctx, const Value& value, Value& out_result) {
     AsyncGenerator* async_gen = AsyncGenerator::get_current();
     AsyncExecutor* exec = AsyncExecutor::get_current();
-    bool in_gen_fiber = async_gen && async_gen->fiber_stack_ != nullptr;
-    bool in_exec_fiber = !in_gen_fiber && exec && exec->fiber_stack_ != nullptr;
+    bool in_gen_fiber = async_gen && async_gen->fiber_->co != nullptr;
+    bool in_exec_fiber = !in_gen_fiber && exec && exec->fiber_->co != nullptr;
 
     Context* gctx = nullptr;
     if (in_gen_fiber) {
@@ -1361,7 +1361,7 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
         }
         async_gen->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-        swapcontext(&async_gen->fiber_->fiber_ctx, &async_gen->fiber_->caller_ctx);
+        mco_yield(async_gen->fiber_->co);
         if (async_gen->await_is_throw_) {
             out_result = async_gen->await_result_;
             async_gen->await_is_throw_ = false;
@@ -1395,7 +1395,7 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
             if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); }, {val});
         }
         exec->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
-        swapcontext(&exec->fiber_->fiber_ctx, &exec->fiber_->caller_ctx);
+        mco_yield(exec->fiber_->co);
         if (exec->await_is_throw_) {
             out_result = exec->await_result_;
             exec->await_is_throw_ = false;

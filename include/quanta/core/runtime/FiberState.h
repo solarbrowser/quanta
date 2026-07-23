@@ -7,19 +7,30 @@
 #ifndef QUANTA_FIBERSTATE_H
 #define QUANTA_FIBERSTATE_H
 
-#include <ucontext.h>
+#include "minicoro.h"
+#include "quanta/core/runtime/FiberStackPool.h"
 
 namespace Quanta {
 
-// The ucontext pair of a fiber, kept out of the owning GC cell: two
-// ucontext_t's are ~2KB and would bloat Generator/AsyncGenerator cells from
-// ~300B to a 2560B size class. Plain-malloc backing store, owned via
-// unique_ptr. Also gives the conservative root scanner one fixed spot
-// for the saved register area.
+// A fiber's minicoro handle, kept out of the owning GC cell: mco_coro's
+// control block + saved-register area would bloat Generator/AsyncGenerator
+// cells into a larger size class. Plain-malloc backing store, owned via
+// unique_ptr. co->stack_base/stack_size is the fiber's own stack (scanned
+// directly by FiberRegistry); the control block/register area pointed to by
+// `co` itself is a separate scanned range -- see FiberRegistry::Record.
 struct FiberState {
-    ucontext_t fiber_ctx;
-    ucontext_t caller_ctx;
+    mco_coro* co = nullptr;
 };
+
+// mco_desc alloc_cb/dealloc_cb: routes minicoro's single combined allocation
+// (control block + register area + stack) through the existing stack pool
+// instead of plain malloc/free.
+inline void* fiber_alloc_cb(size_t size, void*) {
+    return FiberStackPool::acquire(size);
+}
+inline void fiber_dealloc_cb(void* ptr, size_t size, void*) {
+    FiberStackPool::release(static_cast<char*>(ptr), size);
+}
 
 }
 

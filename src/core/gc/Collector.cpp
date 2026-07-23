@@ -23,10 +23,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <pthread.h>
-#include <ucontext.h>
 #include <unordered_set>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <ucontext.h>
+#endif
 
 namespace Quanta {
 
@@ -339,6 +343,12 @@ void main_thread_stack_bounds(const char** lo, const char** hi) {
     static thread_local const char* cached_lo = nullptr;
     static thread_local const char* cached_hi = nullptr;
     if (!cached_lo) {
+#ifdef _WIN32
+        ULONG_PTR low = 0, high = 0;
+        GetCurrentThreadStackLimits(&low, &high);
+        cached_lo = reinterpret_cast<const char*>(low);
+        cached_hi = reinterpret_cast<const char*>(high);
+#else
         pthread_attr_t attr;
         pthread_getattr_np(pthread_self(), &attr);
         void* addr = nullptr;
@@ -347,6 +357,7 @@ void main_thread_stack_bounds(const char** lo, const char** hi) {
         pthread_attr_destroy(&attr);
         cached_lo = static_cast<const char*>(addr);
         cached_hi = cached_lo + size;
+#endif
     }
     *lo = cached_lo;
     *hi = cached_hi;
@@ -358,8 +369,13 @@ void scan_stacks(MarkVisitor& v) {
     // it falling inside [sp, main_hi] by luck of stack layout missed a
     // register-resident pointer under some compilers/flags (observed with
     // ASan's stack redzones reordering locals enough to exclude it).
+#ifdef _WIN32
+    CONTEXT spilled_registers;
+    RtlCaptureContext(&spilled_registers);
+#else
     ucontext_t spilled_registers;
     getcontext(&spilled_registers);
+#endif
     scan_range(v, &spilled_registers, &spilled_registers + 1);
 
     const char* main_lo;
@@ -383,11 +399,16 @@ void scan_stacks(MarkVisitor& v) {
     }
 
     // Fiber stacks are zero-initialized vectors: scanning the full buffer is
-    // safe, and untouched regions are all zeros (skipped fast). The FiberState
-    // pair carries the saved register file of suspended fibers.
+    // safe, and untouched regions are all zeros (skipped fast). A suspended
+    // fiber's saved registers live in its mco_coro control block, which sits
+    // outside stack_lo/stack_hi (a separate part of the same allocation) --
+    // co->coro_size covers it.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
         scan_range(v, rec.stack_lo, rec.stack_hi);
-        if (rec.state) scan_range(v, rec.state, rec.state + 1);
+        if (rec.state && rec.state->co) {
+            mco_coro* co = rec.state->co;
+            scan_range(v, co, reinterpret_cast<const char*>(co) + co->coro_size);
+        }
         if (rec.extra_roots) rec.extra_roots(v);
     });
 }

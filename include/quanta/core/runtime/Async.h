@@ -18,7 +18,6 @@
 #include <unordered_map>
 #include <chrono>
 #include <cstdint>
-#include <ucontext.h>
 #include "quanta/core/runtime/FiberState.h"
 
 namespace Quanta {
@@ -33,11 +32,9 @@ class Visitor;
 class AsyncFunction;
 class AsyncGeneratorFunction;
 
-// Fiber-based async executor (ucontext_t). The body runs exactly once on a
-// dedicated stack. `await expr` suspends via swapcontext; promise callbacks
-// call resume() to swap back in.
-// When `await expr` is hit, the fiber suspends via swapcontext.
-// When the awaited Promise settles, resume() swaps back into the fiber.
+// Fiber-based async executor (minicoro). The body runs exactly once on a
+// dedicated stack. `await expr` suspends via mco_yield; promise callbacks
+// call resume() to mco_resume back in.
 class AsyncExecutor : public std::enable_shared_from_this<AsyncExecutor> {
 public:
     // body is non-owning: it points into owner_fn's own body, kept
@@ -66,13 +63,12 @@ public:
     // Fiber infrastructure
     static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
-    char* fiber_stack_;  // FiberStackPool'dan; dtor iade eder
 
 private:
     ASTNode* body_;
     AsyncFunction* owner_fn_;
     static thread_local AsyncExecutor* current_;
-    static void fiber_entry(uint32_t lo, uint32_t hi);
+    static void fiber_entry(mco_coro* co);
 };
 
 
@@ -160,7 +156,6 @@ public:
     // Fiber infrastructure
     static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
-    char* fiber_stack_;  // FiberStackPool'dan; dtor iade eder
 
     // Yield protocol (written by fiber, read by caller after suspend)
     SuspendReason suspend_reason_ = SuspendReason::Done;
@@ -224,7 +219,7 @@ public:
     static void set_current(AsyncGenerator* g) { current_ = g; }
 
 private:
-    // Enter/re-enter the fiber; after swapcontext returns, handle the suspend reason.
+    // Enter/re-enter the fiber; after mco_resume returns, handle the suspend reason.
     void enter_fiber();
     // Called after fiber suspends; fulfills/rejects pending_promise_ when appropriate.
     void handle_suspension();
@@ -237,7 +232,7 @@ private:
     void process_next_request();
 
     static thread_local AsyncGenerator* current_;
-    static void fiber_entry(uint32_t lo, uint32_t hi);
+    static void fiber_entry(mco_coro* co);
 };
 
 
