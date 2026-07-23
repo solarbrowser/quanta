@@ -9,7 +9,9 @@
 #include <atomic>
 #include <cstdlib>
 #include <mutex>
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif
 
 namespace Quanta {
 
@@ -113,6 +115,12 @@ void BlockAllocator::release_block_region(void* region) {
 }
 
 void BlockAllocator::decommit_idle_chunks() const {
+#ifdef _WIN32
+    // No madvise(MADV_DONTNEED) equivalent for an aligned_alloc'd (not
+    // VirtualAlloc'd) region -- skipped, this is a memory-footprint
+    // optimization, not a correctness requirement.
+    return;
+#else
     for (void* chunk : chunks_) {
         uintptr_t base = reinterpret_cast<uintptr_t>(chunk);
         uintptr_t end = base + kChunkSize;
@@ -131,6 +139,7 @@ void BlockAllocator::decommit_idle_chunks() const {
         // hands back.
         madvise(chunk, kChunkSize, MADV_DONTNEED);
     }
+#endif
 }
 
 bool BlockAllocator::owns_address(const void* p) {

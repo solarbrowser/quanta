@@ -68,13 +68,21 @@ set /a TOTAL_FILES+=32
 
 echo %DIVIDER%
 call :phase "Configure project" phase_configure
+if errorlevel 1 exit /b 1
 call :phase "Compile third-party" phase_thirdparty
+if errorlevel 1 exit /b 1
 call :phase "Compile engine" phase_engine
+if errorlevel 1 exit /b 1
 call :phase "Compile GC" phase_gc
+if errorlevel 1 exit /b 1
 call :phase "Compile runtime" phase_runtime
+if errorlevel 1 exit /b 1
 call :phase "Compile front-end" phase_frontend
+if errorlevel 1 exit /b 1
 call :phase "Compile VM" phase_vm
+if errorlevel 1 exit /b 1
 call :phase "Link executable" phase_link
+if errorlevel 1 exit /b 1
 echo %DIVIDER%
 
 for /f %%t in ('powershell -NoProfile -Command "[int64]((Get-Date).Ticks / 10000)"') do set BUILD_END=%%t
