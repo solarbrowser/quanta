@@ -29,6 +29,11 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#ifdef __APPLE__
+// Apple's SDK hard-errors on the POSIX-deprecated ucontext routines unless
+// this is defined; glibc needs no such guard.
+#define _XOPEN_SOURCE 600
+#endif
 #include <ucontext.h>
 #endif
 
