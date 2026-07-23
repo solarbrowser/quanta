@@ -9,7 +9,10 @@
 #include <atomic>
 #include <cstdlib>
 #include <mutex>
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#include <memoryapi.h>
+#else
 #include <sys/mman.h>
 #endif
 
@@ -92,7 +95,15 @@ BlockAllocator::~BlockAllocator() {
 }
 
 void BlockAllocator::grow() {
+    // Windows: VirtualAlloc instead of aligned_alloc -- decommit_idle_chunks
+    // below needs a genuine VirtualAlloc'd region to hand pages back via
+    // DiscardVirtualMemory. Naturally aligned well past kBlockSize (Windows'
+    // allocation granularity is 64KB).
+#ifdef _WIN32
+    void* chunk = VirtualAlloc(nullptr, kChunkSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
     void* chunk = std::aligned_alloc(HeapBlock::kBlockSize, kChunkSize);
+#endif
     if (!chunk) std::abort();  // OOM on chunk map: no sane recovery path
     chunks_.push_back(chunk);
     registry().add(chunk);
@@ -115,12 +126,6 @@ void BlockAllocator::release_block_region(void* region) {
 }
 
 void BlockAllocator::decommit_idle_chunks() const {
-#ifdef _WIN32
-    // No madvise(MADV_DONTNEED) equivalent for an aligned_alloc'd (not
-    // VirtualAlloc'd) region -- skipped, this is a memory-footprint
-    // optimization, not a correctness requirement.
-    return;
-#else
     for (void* chunk : chunks_) {
         uintptr_t base = reinterpret_cast<uintptr_t>(chunk);
         uintptr_t end = base + kChunkSize;
@@ -137,9 +142,12 @@ void BlockAllocator::decommit_idle_chunks() const {
         // instead of touching unmapped memory -- HeapBlock::init()
         // overwrites every field on the next use regardless of what the OS
         // hands back.
+#ifdef _WIN32
+        DiscardVirtualMemory(chunk, kChunkSize);
+#else
         madvise(chunk, kChunkSize, MADV_DONTNEED);
-    }
 #endif
+    }
 }
 
 bool BlockAllocator::owns_address(const void* p) {
