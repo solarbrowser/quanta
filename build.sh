@@ -19,15 +19,16 @@ ERROR_LOG="$BUILD_DIR/errors.log"
 
 mkdir -p "$BUILD_DIR" "$OBJ_DIR" "$BIN_DIR"
 : > "$ERROR_LOG"
-printf '[%(%Y-%m-%d %H:%M:%S)T] Build started\n' -1 > "$LOG_FILE"
+printf '[%s] Build started\n' "$(date '+%Y-%m-%d %H:%M:%S')" > "$LOG_FILE"
 
 WARNING_COUNT=0
 COMPILED_FILES=0
-BUILD_START=$(date +%s.%N)
+BUILD_START=$(date +%s)
 
 JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 JOB_DIR=$(mktemp -d)
 JOB_SEQ=0
+JOB_PIDS=()
 trap 'rm -rf "$JOB_DIR"' EXIT
 
 fail() {
@@ -82,7 +83,11 @@ run_compile() {
 # Runs "$@" (after the source name) in the background, capturing its exit
 # code and stderr under $JOB_DIR for later, serial collection -- keeps
 # ERROR_LOG writes and the warning/file counters race-free across a whole
-# pool of concurrent compiles. Blocks (via `wait -n`) once $JOBS are in flight.
+# pool of concurrent compiles. Blocks once $JOBS are in flight by waiting on
+# the oldest tracked PID specifically (`wait -n`, i.e. whichever finishes
+# first, needs bash 4.3+ -- macOS ships bash 3.2, so this settles for FIFO
+# draining instead: still a hard cap on concurrency, just not always the
+# very next one to finish).
 launch_job() {
     local src="$1"
     shift
@@ -90,8 +95,10 @@ launch_job() {
     local id="$JOB_SEQ"
     echo "$src" > "$JOB_DIR/$id.src"
     ( "$@" 2>"$JOB_DIR/$id.err"; echo $? > "$JOB_DIR/$id.rc" ) &
-    if (( $(jobs -rp | wc -l) >= JOBS )); then
-        wait -n
+    JOB_PIDS+=("$!")
+    if [ "${#JOB_PIDS[@]}" -ge "$JOBS" ]; then
+        wait "${JOB_PIDS[0]}" 2>/dev/null
+        JOB_PIDS=("${JOB_PIDS[@]:1}")
     fi
 }
 
@@ -101,6 +108,7 @@ launch_job() {
 # non-parallel run and exits.
 collect_jobs() {
     wait
+    JOB_PIDS=()
     local f id rc src fail_src fail_err
     for f in "$JOB_DIR"/*.rc; do
         [[ -e "$f" ]] || continue
@@ -125,15 +133,19 @@ collect_jobs() {
     fi
 }
 
+# $2 is the caller's array VARIABLE NAME, not its value -- namerefs
+# (`local -n`) need bash 4.3+, unavailable on macOS's stock bash 3.2, so
+# this appends via eval instead. Safe: every caller passes one of this
+# script's own hardcoded *_OBJECTS names, never anything derived from
+# outside input.
 compile_group() {
-    local obj_subdir="$1"
-    local -n arr_ref="$2"
+    local obj_subdir="$1" arr_name="$2"
     shift 2
     local src obj
     for src in "$@"; do
         obj="$OBJ_DIR/$obj_subdir/$(basename "${src%.cpp}").o"
         launch_job "$src" clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" -c "$src" -o "$obj"
-        arr_ref+=("$obj")
+        eval "$arr_name+=(\"\$obj\")"
     done
     collect_jobs
 }
@@ -163,10 +175,10 @@ phase() {
     local name="$1"; shift
     PHASE_NUM=$((PHASE_NUM + 1))
     local t0 t1 elapsed
-    t0=$(date +%s.%N)
+    t0=$(date +%s)
     "$@"
-    t1=$(date +%s.%N)
-    elapsed=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')
+    t1=$(date +%s)
+    elapsed=$((t1 - t0))
     printf "[%d/%d] %-28s ${GREEN}✓${NC} %ss\n" "$PHASE_NUM" "$TOTAL_PHASES" "$name" "$elapsed"
 }
 
@@ -336,14 +348,18 @@ PCRE2_SOURCES=(
 )
 
 CORE_ENGINE_SOURCES=(src/core/engine/*.cpp)
-mapfile -d '' BUILTIN_SOURCES < <(find src/core/engine/builtins -name '*.cpp' -print0 2>/dev/null)
+# mapfile/readarray needs bash 4.0+ (macOS's stock bash is 3.2) -- a NUL-
+# delimited read loop is the portable equivalent.
+BUILTIN_SOURCES=()
+while IFS= read -r -d '' f; do BUILTIN_SOURCES+=("$f"); done < <(find src/core/engine/builtins -name '*.cpp' -print0 2>/dev/null)
 CORE_GC_SOURCES=(src/core/gc/*.cpp)
 CORE_MODULE_SOURCES=(src/core/modules/*.cpp)
 CORE_RUNTIME_SOURCES=(src/core/runtime/*.cpp)
 CORE_VM_SOURCES=(src/core/vm/*.cpp)
 LEXER_SOURCES=(src/lexer/*.cpp)
 PARSER_SOURCES=(src/parser/*.cpp)
-mapfile -d '' AST_SOURCES < <(find src/parser/ast -name '*.cpp' -print0 2>/dev/null)
+AST_SOURCES=()
+while IFS= read -r -d '' f; do AST_SOURCES+=("$f"); done < <(find src/parser/ast -name '*.cpp' -print0 2>/dev/null)
 
 shopt -u nullglob
 
@@ -386,9 +402,10 @@ phase "Compile VM"          phase_vm
 phase "Link executable"     phase_link
 echo "$DIVIDER"
 
-BUILD_END=$(date +%s.%N)
-TOTAL_TIME=$(awk -v a="$BUILD_START" -v b="$BUILD_END" 'BEGIN{printf "%.2f", b-a}')
-SIZE_MB=$(( $(stat -c '%s' "$BIN_DIR/quanta") / 1048576 ))
+BUILD_END=$(date +%s)
+TOTAL_TIME=$((BUILD_END - BUILD_START))
+# GNU stat (-c) vs BSD/macOS stat (-f) -- try GNU first, fall back to BSD.
+SIZE_MB=$(( $(stat -c '%s' "$BIN_DIR/quanta" 2>/dev/null || stat -f '%z' "$BIN_DIR/quanta") / 1048576 ))
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 
 echo -e "${GREEN}✓ Build completed successfully${NC}"
