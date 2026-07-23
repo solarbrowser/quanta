@@ -1279,7 +1279,7 @@ void register_typed_array_builtins(Context& ctx) {
                 int64_t current_len = static_cast<int64_t>(ta->length());
                 if (end > current_len) end = current_len;
                 sl = end > start ? static_cast<size_t>(end - start) : 0;
-                for (size_t i = 0; i < sl && i < r->length(); i++) r->set_element(i, ta->get_element(start + i));
+                for (size_t i = 0; i < sl && i < r->length(); i++) r->set_element(i, ta->get_element(static_cast<size_t>(start) + i));
             }
             return Value(r);
         }, 2);
