@@ -1,0 +1,37 @@
+name: Build (macOS)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'build.sh'
+      - 'src/**'
+      - 'include/**'
+      - 'console.cpp'
+      - '.github/workflows/build-macos.yml'
+  pull_request:
+    paths:
+      - 'build.sh'
+      - 'src/**'
+      - 'include/**'
+      - 'console.cpp'
+      - '.github/workflows/build-macos.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Smoke test
+        run: |
+          echo 'console.log(1 + 2)' > /tmp/smoke.js
+          build/bin/quanta /tmp/smoke.js
