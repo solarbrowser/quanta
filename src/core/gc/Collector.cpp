@@ -348,6 +348,13 @@ void main_thread_stack_bounds(const char** lo, const char** hi) {
         GetCurrentThreadStackLimits(&low, &high);
         cached_lo = reinterpret_cast<const char*>(low);
         cached_hi = reinterpret_cast<const char*>(high);
+#elif defined(__APPLE__)
+        // No pthread_getattr_np on Darwin (a glibc extension) -- these two
+        // are the BSD/Darwin-native equivalent. Unlike Linux's addr+size
+        // (addr is the low end), pthread_get_stackaddr_np returns the HIGH
+        // end (stacks grow down from there).
+        cached_hi = static_cast<const char*>(pthread_get_stackaddr_np(pthread_self()));
+        cached_lo = cached_hi - pthread_get_stacksize_np(pthread_self());
 #else
         pthread_attr_t attr;
         pthread_getattr_np(pthread_self(), &attr);
