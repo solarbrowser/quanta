@@ -240,13 +240,20 @@ phase_vm() {
 phase_link() {
     local errfile
     errfile=$(mktemp)
-    run_compile "console.cpp (link)" "$errfile" clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" "${LTO_FLAGS[@]}" \
-        -DMAIN_EXECUTABLE -o "$BIN_DIR/quanta" console.cpp \
-        "${CORE_ENGINE_OBJECTS[@]}" "${BUILTIN_OBJECTS[@]}" "${CORE_GC_OBJECTS[@]}" \
-        "${CORE_MODULE_OBJECTS[@]}" "${CORE_RUNTIME_OBJECTS[@]}" "${CORE_VM_OBJECTS[@]}" \
-        "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}" \
-        "${PCRE2_OBJECTS[@]}" "${UTF8PROC_OBJECTS[@]}" \
-        "${LIBS[@]}" "${STACK_FLAGS[@]}"
+    # bash 3.2 (macOS) treats a declared-but-empty array's "${arr[@]}" as unset
+    # under set -u, even though its "${#arr[@]}" count works fine -- so LTO_FLAGS
+    # (empty when lld isn't found) and STACK_FLAGS (always empty on POSIX; it's
+    # build-windows.bat's linker-only /STACK counterpart) are appended via a
+    # regular array instead of expanded inline.
+    local link_args=("${CXXFLAGS[@]}" "${INCLUDES[@]}")
+    [ "${#LTO_FLAGS[@]}" -gt 0 ] && link_args+=("${LTO_FLAGS[@]}")
+    link_args+=(-DMAIN_EXECUTABLE -o "$BIN_DIR/quanta" console.cpp
+        "${CORE_ENGINE_OBJECTS[@]}" "${BUILTIN_OBJECTS[@]}" "${CORE_GC_OBJECTS[@]}"
+        "${CORE_MODULE_OBJECTS[@]}" "${CORE_RUNTIME_OBJECTS[@]}" "${CORE_VM_OBJECTS[@]}"
+        "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}"
+        "${PCRE2_OBJECTS[@]}" "${UTF8PROC_OBJECTS[@]}" "${LIBS[@]}")
+    [ "${#STACK_FLAGS[@]}" -gt 0 ] && link_args+=("${STACK_FLAGS[@]}")
+    run_compile "console.cpp (link)" "$errfile" clang++ "${link_args[@]}"
 }
 
 # ./build.sh heap-test -> build and run the GC heap unit tests, nothing else
