@@ -18,7 +18,7 @@ set /a COMPILED_FILES=0
 set /a TOTAL_PHASES=8
 set /a PHASE_NUM=0
 
-for /f %%t in ('powershell -NoProfile -Command "[int64]((Get-Date).Ticks / 10000)"') do set BUILD_START=%%t
+for /f %%t in ('powershell -NoProfile -Command "(Get-Date).Ticks"') do set BUILD_START=%%t
 
 REM build-windows.bat heap-test -> build and run the GC heap unit tests only
 if /i "%~1"=="heap-test" (
@@ -85,9 +85,8 @@ call :phase "Link executable" phase_link
 if errorlevel 1 exit /b 1
 echo %DIVIDER%
 
-for /f %%t in ('powershell -NoProfile -Command "[int64]((Get-Date).Ticks / 10000)"') do set BUILD_END=%%t
-set /a TOTAL_MS=BUILD_END-BUILD_START
-call :format_ms !TOTAL_MS! TOTAL_TIME
+for /f %%t in ('powershell -NoProfile -Command "(Get-Date).Ticks"') do set BUILD_END=%%t
+for /f %%s in ('powershell -NoProfile -Command "[math]::Round((%BUILD_END% - %BUILD_START%) / 10000000.0, 2)"') do set TOTAL_TIME=%%s
 for %%f in (build\bin\quanta.exe) do set /a SIZE_MB=%%~zf/1048576
 
 echo %CHECK% Build completed successfully
@@ -113,21 +112,12 @@ REM ===================================================================
 
 :phase
 set /a PHASE_NUM+=1
-for /f %%t in ('powershell -NoProfile -Command "[int64]((Get-Date).Ticks / 10000)"') do set PT0=%%t
+for /f %%t in ('powershell -NoProfile -Command "(Get-Date).Ticks"') do set PT0=%%t
 call :%~2
 if errorlevel 1 exit /b 1
-for /f %%t in ('powershell -NoProfile -Command "[int64]((Get-Date).Ticks / 10000)"') do set PT1=%%t
-set /a PELAPSED=PT1-PT0
-call :format_ms !PELAPSED! PELAPSED_STR
-echo [!PHASE_NUM!/%TOTAL_PHASES%] %~1 %CHECK% !PELAPSED_STR!s
-goto :eof
-
-:format_ms
-REM %1=milliseconds  %2=name of variable to receive "S.CC"
-set /a _S=%~1/1000
-set /a _CS=(%~1%%1000)/10
-if !_CS! LSS 10 set "_CS=0!_CS!"
-set "%~2=!_S!.!_CS!"
+for /f %%t in ('powershell -NoProfile -Command "(Get-Date).Ticks"') do set PT1=%%t
+for /f %%s in ('powershell -NoProfile -Command "[math]::Round((%PT1% - %PT0%) / 10000000.0, 2)"') do set PELAPSED_STR=%%s
+echo [!PHASE_NUM!/%TOTAL_PHASES%] %~1 %CHECK% %PELAPSED_STR%s
 goto :eof
 
 :phase_configure
