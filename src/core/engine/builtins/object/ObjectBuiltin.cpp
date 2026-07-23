@@ -39,7 +39,7 @@ static Value get_v(Context& ctx, Object* lookup_obj, const Value& receiver, cons
             PropertyDescriptor d = cur->get_property_descriptor(key);
             if (d.is_accessor_descriptor()) {
                 Function* getter_fn = d.has_getter() && d.get_getter()
-                    ? dynamic_cast<Function*>(d.get_getter()) : nullptr;
+                    ? as_function(d.get_getter()) : nullptr;
                 return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
             }
             return d.get_value();
@@ -175,7 +175,7 @@ Value object_prototype_to_string(Context& ctx, const Value& this_val) {
                 PropertyDescriptor d = cur->get_property_descriptor("Symbol.toStringTag");
                 if (d.is_accessor_descriptor()) {
                     if (d.has_getter()) {
-                        Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+                        Function* getter_fn = as_function(d.get_getter());
                         if (getter_fn) tag = getter_fn->call(ctx, {}, Value(tag_obj));
                     }
                     break;
@@ -823,7 +823,7 @@ void register_object_builtins(Context& ctx) {
 
             Object* proto = obj->get_prototype();
             if (proto) {
-                Function* func_proto = dynamic_cast<Function*>(proto);
+                Function* func_proto = as_function(proto);
                 if (func_proto) {
                     return Value(func_proto);
                 }

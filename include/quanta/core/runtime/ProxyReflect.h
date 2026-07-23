@@ -23,8 +23,8 @@ private:
 
 public:
     Proxy(Object* target, Object* handler);
-    void trace(Visitor& v) override;
-    virtual ~Proxy() = default;
+    void trace(Visitor& v);
+    ~Proxy() = default;
 
     bool target_was_callable() const { return target_was_callable_; }
     
@@ -55,20 +55,34 @@ public:
     Object* get_proxy_target() const { return target_; }
     Object* get_proxy_handler() const { return handler_; }
 
-    Value get_property(const std::string& key) const override;
-    PropertyDescriptor get_property_descriptor(const std::string& key) const override;
-    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
-    bool has_property(const std::string& key) const override;
-    bool delete_property(const std::string& key) override;
-    Value get_element(uint32_t index) const override;
-    uint32_t get_length() const override;
-    Object* get_prototype() const override;
+    // None of these -- nor get_element()/get_length()/get_prototype() below --
+    // are virtual on Object anymore; Object's own switch-based dispatch
+    // reaches these directly.
+    Value get_property(const std::string& key) const;
+    PropertyDescriptor get_property_descriptor(const std::string& key) const;
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    bool has_property(const std::string& key) const;
+    bool delete_property(const std::string& key);
+    // None of these three are virtual on Object anymore -- see
+    // Object::get_element()/get_length()/get_prototype()'s own switch-based
+    // dispatch in Object.cpp.
+    Value get_element(uint32_t index) const;
+    uint32_t get_length() const;
+    Object* get_prototype() const;
     
 private:
     // Lazy GetMethod(handler, name); check has_exception() to tell "absent" from "not callable".
     Function* get_trap_method(const char* name) const;
     void throw_if_revoked(Context& ctx) const;
 };
+
+// get_type()-based replacement for dynamic_cast<Proxy*> -- see as_function() in Object.h.
+inline Proxy* as_proxy(Object* obj) {
+    return (obj && obj->get_type() == Object::ObjectType::Proxy) ? static_cast<Proxy*>(obj) : nullptr;
+}
+inline const Proxy* as_proxy(const Object* obj) {
+    return (obj && obj->get_type() == Object::ObjectType::Proxy) ? static_cast<const Proxy*>(obj) : nullptr;
+}
 
 /**
  * JavaScript Reflect implementation

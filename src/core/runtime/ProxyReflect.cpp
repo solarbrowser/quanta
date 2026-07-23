@@ -18,7 +18,7 @@
 namespace Quanta {
 
 void Proxy::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_object(target_);
     v.visit_object(handler_);
 }
@@ -40,7 +40,7 @@ static Value ordinary_get_with_receiver(Object* O, const std::string& key, Objec
     PropertyDescriptor desc = O->get_property_descriptor(key);
     if (desc.is_data_descriptor()) return desc.get_value();
     if (desc.is_accessor_descriptor()) {
-        Function* getter = desc.get_getter() ? dynamic_cast<Function*>(desc.get_getter()) : nullptr;
+        Function* getter = desc.get_getter() ? as_function(desc.get_getter()) : nullptr;
         if (!getter) return Value();
         Context* ctx = Object::current_context_;
         if (!ctx) return Value();
@@ -1000,7 +1000,7 @@ Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
         PropertyDescriptor desc = current->get_property_descriptor(key);
         if (desc.is_accessor_descriptor()) {
             if (!desc.has_getter()) return Value();
-            Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
+            Function* getter_fn = as_function(desc.get_getter());
             if (!getter_fn) return Value();
             return getter_fn->call(ctx, {}, receiver);
         }
@@ -1075,7 +1075,7 @@ static bool ordinary_set_with_receiver(Object* O, const std::string& key, const 
 
     if (own_desc.is_accessor_descriptor()) {
         if (!own_desc.has_setter() || !own_desc.get_setter()) return false;
-        Function* setter = dynamic_cast<Function*>(own_desc.get_setter());
+        Function* setter = as_function(own_desc.get_setter());
         if (!setter) return false;
         setter->call(ctx, {value}, Value(receiver));
         return !ctx.has_exception();

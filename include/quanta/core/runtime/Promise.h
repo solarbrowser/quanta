@@ -44,8 +44,8 @@ private:
 public:
     explicit Promise(Context* ctx = nullptr);
 
-    void trace(Visitor& v) override;
-    virtual ~Promise();
+    void trace(Visitor& v);
+    ~Promise();
 
     void fulfill(const Value& value);
     void reject(const Value& reason);
@@ -73,6 +73,14 @@ public:
 private:
     void execute_handlers();
 };
+
+// get_type()-based replacement for dynamic_cast<Promise*> -- see as_function() in Object.h.
+inline Promise* as_promise(Object* obj) {
+    return (obj && obj->get_type() == Object::ObjectType::Promise) ? static_cast<Promise*>(obj) : nullptr;
+}
+inline const Promise* as_promise(const Object* obj) {
+    return (obj && obj->get_type() == Object::ObjectType::Promise) ? static_cast<const Promise*>(obj) : nullptr;
+}
 
 }
 

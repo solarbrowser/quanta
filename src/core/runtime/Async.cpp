@@ -29,7 +29,7 @@
 namespace Quanta {
 
 void AsyncGenerator::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_context(generator_context_);
     v.visit_context(outer_context_);
     v.visit(yield_value_);
@@ -163,14 +163,18 @@ AsyncFunction::AsyncFunction(const std::string& name,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
     : Function(name, params, nullptr, closure_context, /*create_prototype=*/false),
-      body_(std::move(body)) {} // async functions must not have .prototype
+      body_(std::move(body)) { // async functions must not have .prototype
+    set_function_kind(FunctionKind::Async);
+}
 
 AsyncFunction::AsyncFunction(const std::string& name,
                            std::vector<std::unique_ptr<Parameter>> params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
     : Function(name, std::move(params), nullptr, closure_context, /*create_prototype=*/false),
-      body_(std::move(body)) {}
+      body_(std::move(body)) {
+    set_function_kind(FunctionKind::Async);
+}
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     // The body runs synchronously up to the first await inside this call
@@ -414,7 +418,7 @@ const BytecodeChunk* AsyncFunction::get_suspendable_chunk(Context& ctx) {
 }
 
 void AsyncFunction::trace(Visitor& v) {
-    Function::trace(v);
+    Function::trace_default(v);
     if (suspendable_chunk_) suspendable_chunk_->trace(v);
 }
 
@@ -525,10 +529,11 @@ thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 
 AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body,
                                AsyncGeneratorFunction* owner_fn, Context* outer_ctx)
-    : Object(ObjectType::Custom), context_owned_(std::move(ctx)),
+    : CustomObjectBase(ObjectType::Custom), context_owned_(std::move(ctx)),
       generator_context_(context_owned_.get()),
       outer_context_(outer_ctx),
       body_(body), owner_fn_(owner_fn), state_(State::SuspendedStart) {
+    set_custom_kind(CustomKind::AsyncGenerator);
     mco_desc desc = mco_desc_init(fiber_entry, STACK_SIZE);
     desc.user_data = this;
     desc.alloc_cb = fiber_alloc_cb;
@@ -941,7 +946,7 @@ static Value reject_bad_generator(Context& ctx, const std::string& msg) {
 
 Value AsyncGenerator::async_generator_next(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
-    AsyncGenerator* async_gen = this_value.is_object() ? dynamic_cast<AsyncGenerator*>(this_value.as_object()) : nullptr;
+    AsyncGenerator* async_gen = this_value.is_object() ? as_async_generator(this_value.as_object()) : nullptr;
     if (!async_gen) {
         return reject_bad_generator(ctx, "AsyncGenerator.prototype.next called on incompatible receiver");
     }
@@ -954,7 +959,7 @@ Value AsyncGenerator::async_generator_next(Context& ctx, const std::vector<Value
 
 Value AsyncGenerator::async_generator_return(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
-    AsyncGenerator* async_gen = this_value.is_object() ? dynamic_cast<AsyncGenerator*>(this_value.as_object()) : nullptr;
+    AsyncGenerator* async_gen = this_value.is_object() ? as_async_generator(this_value.as_object()) : nullptr;
     if (!async_gen) {
         return reject_bad_generator(ctx, "AsyncGenerator.prototype.return called on incompatible receiver");
     }
@@ -967,7 +972,7 @@ Value AsyncGenerator::async_generator_return(Context& ctx, const std::vector<Val
 
 Value AsyncGenerator::async_generator_throw(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
-    AsyncGenerator* async_gen = this_value.is_object() ? dynamic_cast<AsyncGenerator*>(this_value.as_object()) : nullptr;
+    AsyncGenerator* async_gen = this_value.is_object() ? as_async_generator(this_value.as_object()) : nullptr;
     if (!async_gen) {
         return reject_bad_generator(ctx, "AsyncGenerator.prototype.throw called on incompatible receiver");
     }
@@ -979,8 +984,9 @@ Value AsyncGenerator::async_generator_throw(Context& ctx, const std::vector<Valu
 }
 
 
-AsyncIterator::AsyncIterator(AsyncNextFunction next_fn) 
-    : Object(ObjectType::Custom), next_fn_(next_fn), done_(false) {
+AsyncIterator::AsyncIterator(AsyncNextFunction next_fn)
+    : CustomObjectBase(ObjectType::Custom), next_fn_(next_fn), done_(false) {
+    set_custom_kind(CustomKind::AsyncIterator);
 }
 
 std::unique_ptr<Promise> AsyncIterator::next() {
@@ -1115,7 +1121,7 @@ Value AsyncIterator::async_iterator_next(Context& ctx, const std::vector<Value>&
         return Value();
     }
     
-    AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
+    AsyncIterator* async_iter = as_async_iterator(this_value.as_object());
     if (!async_iter) {
         ctx.throw_type_error("AsyncIterator.next called on wrong type");
         return Value();
@@ -1133,7 +1139,7 @@ Value AsyncIterator::async_iterator_return(Context& ctx, const std::vector<Value
         return Value();
     }
     
-    AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
+    AsyncIterator* async_iter = as_async_iterator(this_value.as_object());
     if (!async_iter) {
         ctx.throw_type_error("AsyncIterator.return called on wrong type");
         return Value();
@@ -1152,7 +1158,7 @@ Value AsyncIterator::async_iterator_throw(Context& ctx, const std::vector<Value>
         return Value();
     }
     
-    AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
+    AsyncIterator* async_iter = as_async_iterator(this_value.as_object());
     if (!async_iter) {
         ctx.throw_type_error("AsyncIterator.throw called on wrong type");
         return Value();
@@ -1519,6 +1525,7 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
                                                std::unique_ptr<ASTNode> body,
                                                Context* closure_context)
     : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+    set_function_kind(FunctionKind::AsyncGenerator);
     set_is_constructor(false);
     // Each async generator function gets a unique 'prototype' object inheriting from %AsyncGeneratorPrototype%
     if (AsyncGenerator::s_async_generator_prototype_) {
@@ -1537,6 +1544,7 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
                                                std::unique_ptr<ASTNode> body,
                                                Context* closure_context)
     : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
+    set_function_kind(FunctionKind::AsyncGenerator);
     set_is_constructor(false);
     if (AsyncGenerator::s_async_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
@@ -1749,7 +1757,7 @@ const BytecodeChunk* AsyncGeneratorFunction::get_suspendable_chunk(Context& ctx)
 }
 
 void AsyncGeneratorFunction::trace(Visitor& v) {
-    Function::trace(v);
+    Function::trace_default(v);
     if (suspendable_chunk_) suspendable_chunk_->trace(v);
 }
 

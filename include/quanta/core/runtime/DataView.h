@@ -39,12 +39,12 @@ private:
     uint64_t swap_bytes_64(uint64_t value) const;
     
 public:
-    void trace(Visitor& v) override;
+    void trace(Visitor& v);
     explicit DataView(std::shared_ptr<ArrayBuffer> buffer);
     DataView(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset);
     DataView(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t byte_length);
     
-    virtual ~DataView() = default;
+    ~DataView() = default;
     
     ArrayBuffer* buffer() const { return buffer_.get(); }
     size_t byte_offset() const { return byte_offset_; }
@@ -55,7 +55,6 @@ public:
     bool is_out_of_bounds() const;
     size_t current_byte_length() const; // only valid when !is_out_of_bounds()
 
-    bool is_data_view() const override { return true; }
     std::string get_type_name() const { return "DataView"; }
     
     Value get_int8(size_t offset) const;
@@ -83,7 +82,8 @@ public:
     bool set_float64(size_t offset, double value, bool little_endian = false);
     
     // Handles buffer/byteLength/byteOffset directly; native-getter accessor dispatch doesn't call them.
-    Value get_property(const std::string& key) const override;
+    // No longer virtual on Object -- see Object::get_property()'s own switch-based dispatch.
+    Value get_property(const std::string& key) const;
 
     std::string to_string() const;
     

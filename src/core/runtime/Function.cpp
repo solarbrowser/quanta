@@ -11,6 +11,8 @@
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/core/vm/Interpreter.h"
+#include "quanta/core/runtime/Async.h"
+#include "quanta/core/runtime/Generator.h"
 #include "quanta/parser/AST.h"
 #include <sstream>
 #include <iostream>
@@ -340,6 +342,15 @@ bool Function::has_closure_props() const {
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
+    switch (get_function_kind()) {
+        case FunctionKind::Async: return static_cast<AsyncFunction*>(this)->call(ctx, args, this_value);
+        case FunctionKind::Generator: return static_cast<GeneratorFunction*>(this)->call(ctx, args, this_value);
+        case FunctionKind::AsyncGenerator: return static_cast<AsyncGeneratorFunction*>(this)->call(ctx, args, this_value);
+        default: return call_default(ctx, args, this_value);
+    }
+}
+
+Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value this_value) {
     // Roots args across the whole call (native path included): these Values
     // live in the caller's malloc'd vector storage, invisible to the stack scan.
     ValueVectorRoot args_root(&args);
@@ -1067,7 +1078,7 @@ PropertyDescriptor Function::get_property_descriptor(const std::string& key) con
     if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         return PropertyDescriptor(Value(static_cast<double>(declared_length_)), PropertyAttributes::Configurable);
     }
-    return Object::get_property_descriptor(key);
+    return Object::get_property_descriptor_default(key);
 }
 
 // Configurable:true, so `delete` always succeeds. Two cases: never
@@ -1085,7 +1096,7 @@ bool Function::delete_property(const std::string& key) {
             name_deleted_ = true;
             return true;
         }
-        bool ok = Object::delete_property(key);
+        bool ok = Object::delete_property_default(key);
         if (ok) name_deleted_ = true;
         return ok;
     }
@@ -1094,11 +1105,11 @@ bool Function::delete_property(const std::string& key) {
             length_deleted_ = true;
             return true;
         }
-        bool ok = Object::delete_property(key);
+        bool ok = Object::delete_property_default(key);
         if (ok) length_deleted_ = true;
         return ok;
     }
-    return Object::delete_property(key);
+    return Object::delete_property_default(key);
 }
 
 // The one case that must NOT stay purely synthesized: any real definition
@@ -1113,12 +1124,12 @@ bool Function::set_property_descriptor(const std::string& key, const PropertyDes
     auto* d = descriptors();
     if (key == "name" && !name_deleted_ && !(d && d->count("name"))) {
         PropertyDescriptor mat(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
-        Object::set_property_descriptor("name", mat);
+        Object::set_property_descriptor_default("name", mat);
     } else if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         PropertyDescriptor mat(Value(static_cast<double>(declared_length_)), PropertyAttributes::Configurable);
-        Object::set_property_descriptor("length", mat);
+        Object::set_property_descriptor_default("length", mat);
     }
-    return Object::set_property_descriptor(key, desc);
+    return Object::set_property_descriptor_default(key, desc);
 }
 
 Value Function::get_property(const std::string& key) const {
@@ -1145,7 +1156,7 @@ Value Function::get_property(const std::string& key) const {
                 if (it->is_accessor_descriptor()) {
                     Object* getter = it->get_getter();
                     if (getter && current_context_) {
-                        Function* gfn = dynamic_cast<Function*>(getter);
+                        Function* gfn = as_function(getter);
                         if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Function*>(this)));
                     }
                     return Value();
@@ -1162,7 +1173,7 @@ Value Function::get_property(const std::string& key) const {
             if (desc.is_accessor_descriptor()) {
                 Object* getter = desc.get_getter();
                 if (getter && current_context_) {
-                    Function* gfn = dynamic_cast<Function*>(getter);
+                    Function* gfn = as_function(getter);
                     if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Function*>(this)));
                 }
                 return Value();
@@ -1211,7 +1222,7 @@ Value Function::get_property(const std::string& key) const {
             if (desc_it) {
                 const PropertyDescriptor& desc = *desc_it;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                    Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
+                    Function* getter_fn = as_function(desc.get_getter());
                     if (getter_fn && current_context_) {
                         return getter_fn->call(*current_context_, {}, Value(const_cast<Function*>(this)));
                     }
@@ -1259,15 +1270,16 @@ void Function::set_name(const std::string& name) {
 }
 
 std::vector<std::string> Function::get_internal_property_keys() const {
-    return Object::get_own_property_keys();
+    return Object::get_own_property_keys_default();
 }
 
 std::vector<std::string> Function::get_own_property_keys() const {
-    // Object::get_own_property_keys() already sorts array-index keys first (ascending),
-    // then strings in creation order, then symbols -- that ordering must be preserved
-    // even when the function also has integer-named static members (e.g. `static [1](){}`).
-    // Only the STRING portion gets length/name/prototype pulled to its front here.
-    auto all = Object::get_own_property_keys();
+    // Object::get_own_property_keys_default() already sorts array-index keys first
+    // (ascending), then strings in creation order, then symbols -- that ordering must
+    // be preserved even when the function also has integer-named static members (e.g.
+    // `static [1](){}`). Only the STRING portion gets length/name/prototype pulled to
+    // its front here.
+    auto all = Object::get_own_property_keys_default();
     // "length"/"name" won't be in the base result when virtually present
     // (lazy, not yet materialized) -- inject them so the priority loop below
     // still surfaces them (Object.getOwnPropertyNames/Reflect.ownKeys must
@@ -1317,19 +1329,19 @@ bool Function::set_property(const std::string& key, const Value& value, Property
         }
         if (value.is_object()) {
             prototype_ = value.as_object();
-            Object::delete_property(key);
+            Object::delete_property_default(key);
             return true;
         }
         if (value.is_function()) {
             prototype_ = value.as_function();
-            Object::delete_property(key);
+            Object::delete_property_default(key);
             return true;
         }
         prototype_ = nullptr;
-        return Object::set_property(key, value, attrs);
+        return Object::set_property_default(key, value, attrs);
     }
 
-    bool ok = Object::set_property(key, value, attrs);
+    bool ok = Object::set_property_default(key, value, attrs);
     if (ok && key.size() > 10 && key.compare(0, 10, "__closure_") == 0 &&
         key.compare(0, 16, "__closure_const_") != 0) {
         has_closure_props_hint_ = true;

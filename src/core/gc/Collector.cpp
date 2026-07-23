@@ -12,12 +12,21 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/SmallMapPool.h"
 #include "quanta/core/engine/builtins/AtomicsBuiltin.h"
+#include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/BigInt.h"
+#include "quanta/core/runtime/DataView.h"
+#include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/FiberState.h"
+#include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/runtime/Generator.h"
+#include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/runtime/MapSet.h"
+#include "quanta/core/runtime/Promise.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/TypedArray.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -501,7 +510,68 @@ size_t run_sweep() {
     static const bool poison = env_flag("QUANTA_GC_POISON");
     for (const Dead& d : dead) {
         switch (d.kind) {
-            case CellKind::Object: static_cast<Object*>(d.cell)->~Object(); break;
+            case CellKind::Object: {
+                Object* obj = static_cast<Object*>(d.cell);
+                // Explicit per-type dispatch instead of a virtual ~Object()
+                // call -- Object carries no vtable. Function/TypedArrayBase/
+                // CustomObjectBase keep their own small vtables, so casting
+                // to those three still reaches every further subclass
+                // (AsyncFunction/GeneratorFunction/...; 11 numeric
+                // TypedArrays; Generator/AsyncGenerator/AsyncIterator/
+                // Iterator+4) via ordinary virtual dispatch from here.
+                using OT = Object::ObjectType;
+                switch (obj->get_type()) {
+                    case OT::Function: {
+                        // Function itself carries no vtable (see Object.h's note on
+                        // why); AsyncFunction/GeneratorFunction/AsyncGeneratorFunction
+                        // need their own destructor called explicitly, same reasoning
+                        // as the outer switch on get_type().
+                        Function* fn = static_cast<Function*>(obj);
+                        switch (fn->get_function_kind()) {
+                            case Function::FunctionKind::Async: static_cast<AsyncFunction*>(fn)->~AsyncFunction(); break;
+                            case Function::FunctionKind::Generator: static_cast<GeneratorFunction*>(fn)->~GeneratorFunction(); break;
+                            case Function::FunctionKind::AsyncGenerator: static_cast<AsyncGeneratorFunction*>(fn)->~AsyncGeneratorFunction(); break;
+                            default: fn->~Function(); break;
+                        }
+                        break;
+                    }
+                    case OT::Custom: {
+                        // CustomObjectBase itself carries no vtable either (see
+                        // Object.h's note); every concrete kind sharing
+                        // ObjectType::Custom needs its own destructor called
+                        // explicitly, same reasoning as the outer switch.
+                        CustomObjectBase* cob = static_cast<CustomObjectBase*>(obj);
+                        using CK = CustomObjectBase::CustomKind;
+                        switch (cob->get_custom_kind()) {
+                            case CK::Generator: static_cast<Generator*>(cob)->~Generator(); break;
+                            case CK::AsyncGenerator: static_cast<AsyncGenerator*>(cob)->~AsyncGenerator(); break;
+                            case CK::AsyncIterator: static_cast<AsyncIterator*>(cob)->~AsyncIterator(); break;
+                            case CK::ArrayIterator: static_cast<ArrayIterator*>(cob)->~ArrayIterator(); break;
+                            case CK::StringIterator: static_cast<StringIterator*>(cob)->~StringIterator(); break;
+                            case CK::MapIterator: static_cast<MapIterator*>(cob)->~MapIterator(); break;
+                            case CK::SetIterator: static_cast<SetIterator*>(cob)->~SetIterator(); break;
+                            case CK::ModuleNamespace: static_cast<ModuleNamespaceObject*>(cob)->~ModuleNamespaceObject(); break;
+                            case CK::DeferredNamespace: static_cast<DeferredNamespaceObject*>(cob)->~DeferredNamespaceObject(); break;
+                        }
+                        break;
+                    }
+                    case OT::TypedArray: static_cast<TypedArrayBase*>(obj)->~TypedArrayBase(); break;
+                    case OT::Error: static_cast<Error*>(obj)->~Error(); break;
+                    case OT::Promise: static_cast<Promise*>(obj)->~Promise(); break;
+                    case OT::Proxy: static_cast<Proxy*>(obj)->~Proxy(); break;
+                    case OT::Map: static_cast<Map*>(obj)->~Map(); break;
+                    case OT::Set: static_cast<Set*>(obj)->~Set(); break;
+                    case OT::WeakMap: static_cast<WeakMap*>(obj)->~WeakMap(); break;
+                    case OT::WeakSet: static_cast<WeakSet*>(obj)->~WeakSet(); break;
+                    case OT::WeakRef: static_cast<WeakRef*>(obj)->~WeakRef(); break;
+                    case OT::FinalizationRegistry:
+                        static_cast<FinalizationRegistry*>(obj)->~FinalizationRegistry(); break;
+                    case OT::ArrayBuffer: static_cast<ArrayBuffer*>(obj)->~ArrayBuffer(); break;
+                    case OT::DataView: static_cast<DataView*>(obj)->~DataView(); break;
+                    default: obj->~Object(); break;  // Ordinary/Array/Arguments/String/Number/Boolean/Date/RegExp/Symbol/BigInt
+                }
+                break;
+            }
             case CellKind::String: static_cast<String*>(d.cell)->~String(); break;
             case CellKind::Symbol: static_cast<Symbol*>(d.cell)->~Symbol(); break;
             case CellKind::BigInt: static_cast<BigInt*>(d.cell)->~BigInt(); break;

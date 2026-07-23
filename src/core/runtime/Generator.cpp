@@ -21,7 +21,7 @@
 namespace Quanta {
 
 void Generator::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_object(generator_function_);
     v.visit_context(generator_context_);
     v.visit_context(outer_context_);
@@ -74,8 +74,9 @@ void Generator::run_body() {
 }
 
 Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx)
-    : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
+    : CustomObjectBase(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
       body_(body), state_(State::SuspendedStart), outer_context_(outer_ctx) {
+    set_custom_kind(CustomKind::Generator);
     if (gen_func) {
         Value fn_proto = gen_func->get_property("prototype");
         if (fn_proto.is_object()) {
@@ -635,6 +636,7 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
                                    std::unique_ptr<ASTNode> body,
                                    Context* closure_context)
     : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
+    set_function_kind(FunctionKind::Generator);
     set_is_constructor(false);
     if (Generator::s_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
@@ -653,6 +655,7 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
                                    std::unique_ptr<ASTNode> body,
                                    Context* closure_context)
     : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+    set_function_kind(FunctionKind::Generator);
     set_is_constructor(false);
     // Each generator function gets a unique 'prototype' object inheriting from %GeneratorPrototype%
     if (Generator::s_generator_prototype_) {
@@ -877,7 +880,7 @@ const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx) {
 }
 
 void GeneratorFunction::trace(Visitor& v) {
-    Function::trace(v);
+    Function::trace_default(v);
     if (suspendable_chunk_) suspendable_chunk_->trace(v);
 }
 

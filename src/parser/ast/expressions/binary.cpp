@@ -1049,7 +1049,7 @@ static bool write_member_update_result(Context& ctx, MemberExpression* member, c
         }
         if (desc.is_accessor_descriptor()) {
             if (desc.has_setter()) {
-                Function* setter_fn = dynamic_cast<Function*>(desc.get_setter());
+                Function* setter_fn = as_function(desc.get_setter());
                 if (setter_fn && write_obj) setter_fn->call(ctx, {new_value}, Value(write_obj));
             }
         } else if (write_obj) {
@@ -1092,7 +1092,7 @@ static bool write_member_update_result(Context& ctx, MemberExpression* member, c
                     ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
                     return false;
                 }
-                Function* setter_fn = dynamic_cast<Function*>(pd.get_setter());
+                Function* setter_fn = as_function(pd.get_setter());
                 if (setter_fn) {
                     Value recv = write_obj->is_function()
                         ? Value(static_cast<Function*>(write_obj)) : Value(write_obj);

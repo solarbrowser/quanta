@@ -177,7 +177,7 @@ static Value box_primitive_and_get_property(Context& ctx, const Value& object_va
 
     PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
     if (desc.is_accessor_descriptor() && desc.has_getter()) {
-        Function* getter = dynamic_cast<Function*>(desc.get_getter());
+        Function* getter = as_function(desc.get_getter());
         if (getter) return getter->call(ctx, {}, object_value);
     }
     return proto_obj->get_property(prop_name);

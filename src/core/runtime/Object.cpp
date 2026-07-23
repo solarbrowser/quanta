@@ -12,9 +12,15 @@
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
+#include "quanta/core/runtime/DataView.h"
+#include "quanta/core/runtime/MapSet.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/Async.h"
+#include "quanta/core/runtime/Generator.h"
+#include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
 #include <algorithm>
@@ -22,6 +28,8 @@
 #include <iostream>
 
 namespace Quanta {
+
+static_assert(sizeof(Object) == 24, "sizeof(Object) must stay 24 (Phase 3b target: no vtable, tagged prototype/shape, folded RareExtras).");
 
 thread_local Context* Object::current_context_ = nullptr;
 
@@ -39,7 +47,25 @@ void Object::operator delete(void* p) noexcept {
 }
 
 void Object::trace(Visitor& v) {
-    v.visit_object(header_.prototype);
+    switch (get_type()) {
+        case ObjectType::Function: static_cast<Function*>(this)->trace(v); return;
+        case ObjectType::TypedArray: static_cast<TypedArrayBase*>(this)->trace(v); return;
+        case ObjectType::Custom: static_cast<CustomObjectBase*>(this)->trace(v); return;
+        case ObjectType::Map: static_cast<Map*>(this)->trace(v); return;
+        case ObjectType::Set: static_cast<Set*>(this)->trace(v); return;
+        case ObjectType::WeakMap: static_cast<WeakMap*>(this)->trace(v); return;
+        case ObjectType::WeakSet: static_cast<WeakSet*>(this)->trace(v); return;
+        case ObjectType::WeakRef: static_cast<WeakRef*>(this)->trace(v); return;
+        case ObjectType::FinalizationRegistry: static_cast<FinalizationRegistry*>(this)->trace(v); return;
+        case ObjectType::DataView: static_cast<DataView*>(this)->trace(v); return;
+        case ObjectType::Promise: static_cast<Promise*>(this)->trace(v); return;
+        case ObjectType::Proxy: static_cast<Proxy*>(this)->trace(v); return;
+        default: trace_default(v); return;
+    }
+}
+
+void Object::trace_default(Visitor& v) {
+    v.visit_object(proto_);
     // Only the LOGICALLY valid extent of each region -- butterfly_'s
     // capacity beyond elements_length()/shape_->slot_count() is unused
     // slack (from amortized-doubling growth), never initialized, and must
@@ -87,38 +113,49 @@ bool Object::has_shape_slot(const std::string& key) const {
     return shape_ && shape_->find_slot(key) >= 0;
 }
 
+RareExtras& Object::ensure_extras() {
+    if (!butterfly_) realloc_butterfly(0, 0);
+    ButterflyHeader* h = butterfly_header();
+    if (!h->extras) h->extras = new RareExtras();
+    return *h->extras;
+}
+
 std::unordered_map<std::string, Value>* Object::sparse_overflow() const {
-    return extras_ ? extras_->sparse_overflow.get() : nullptr;
+    RareExtras* e = peek_extras();
+    return e ? e->sparse_overflow.get() : nullptr;
 }
 std::unordered_map<std::string, Value>& Object::ensure_sparse_overflow() {
-    if (!extras_) extras_ = std::make_unique<RareExtras>();
-    if (!extras_->sparse_overflow) extras_->sparse_overflow = std::make_unique<std::unordered_map<std::string, Value>>();
-    return *extras_->sparse_overflow;
+    RareExtras& e = ensure_extras();
+    if (!e.sparse_overflow) e.sparse_overflow = std::make_unique<std::unordered_map<std::string, Value>>();
+    return *e.sparse_overflow;
 }
 std::unordered_set<uint32_t>* Object::deleted_elements() const {
-    return extras_ ? extras_->deleted_elements.get() : nullptr;
+    RareExtras* e = peek_extras();
+    return e ? e->deleted_elements.get() : nullptr;
 }
 std::unordered_set<uint32_t>& Object::ensure_deleted_elements() {
-    if (!extras_) extras_ = std::make_unique<RareExtras>();
-    if (!extras_->deleted_elements) extras_->deleted_elements = std::make_unique<std::unordered_set<uint32_t>>();
-    return *extras_->deleted_elements;
+    RareExtras& e = ensure_extras();
+    if (!e.deleted_elements) e.deleted_elements = std::make_unique<std::unordered_set<uint32_t>>();
+    return *e.deleted_elements;
 }
 HybridDescriptorMap* Object::descriptors() const {
-    return extras_ ? extras_->descriptors.get() : nullptr;
+    RareExtras* e = peek_extras();
+    return e ? e->descriptors.get() : nullptr;
 }
 HybridDescriptorMap& Object::ensure_descriptors() {
-    if (!extras_) extras_ = std::make_unique<RareExtras>();
-    if (!extras_->descriptors) extras_->descriptors = std::make_unique<HybridDescriptorMap>();
-    return *extras_->descriptors;
+    RareExtras& e = ensure_extras();
+    if (!e.descriptors) e.descriptors = std::make_unique<HybridDescriptorMap>();
+    return *e.descriptors;
 }
 void Object::push_extra_property_order(const std::string& key) {
-    if (!extras_) extras_ = std::make_unique<RareExtras>();
-    uint32_t snapshot = shape_ ? shape_->slot_count() : extras_->next_order_snapshot++;
-    extras_->extra_property_order.push_back({key, snapshot});
+    RareExtras& e = ensure_extras();
+    uint32_t snapshot = shape_ ? shape_->slot_count() : e.next_order_snapshot++;
+    e.extra_property_order.push_back({key, snapshot});
 }
 void Object::erase_extra_property_order(const std::string& key) {
-    if (!extras_) return;
-    auto& order = extras_->extra_property_order;
+    RareExtras* e = peek_extras();
+    if (!e) return;
+    auto& order = e->extra_property_order;
     order.erase(std::remove_if(order.begin(), order.end(),
         [&](const auto& p) { return p.first == key; }), order.end());
 }
@@ -146,8 +183,6 @@ void Object::add_shape_property_cached(const std::string& key, const Value& valu
     uint32_t new_count = to_shape->slot_count();
     ensure_shape_capacity(new_count);
     *shape_slot_ptr(new_count - 1) = value;
-    header_.property_count++;
-    update_hash_code();
     // Mirrors store_in_overflow's own bump for the equivalent slow-path
     // branch -- this object may itself be used as another chain's prototype.
     if (used_as_prototype()) bump_proto_epoch();
@@ -160,8 +195,6 @@ void Object::add_accessor_shape_property_cached(const std::string& key, const Va
     ensure_shape_capacity(new_count);
     *shape_slot_ptr(new_count - 2) = getter;
     *shape_slot_ptr(new_count - 1) = setter;
-    header_.property_count++;
-    update_hash_code();
     // Mirrors add_shape_property_cached's own bump -- see its comment.
     if (used_as_prototype()) bump_proto_epoch();
 }
@@ -215,13 +248,14 @@ void Object::migrate_to_dictionary_mode() {
             descs[prop.key] = PropertyDescriptor(*shape_slot_ptr(prop.slot_index), PropertyAttributes::Default);
         }
     }
-    // extras_ becomes the sole order authority once shape_ goes null below;
-    // each property keeps its own slot_index as its clock (not the current
-    // slot_count(), which would collapse them all to one snapshot).
+    // RareExtras becomes the sole order authority once shape_ goes null
+    // below; each property keeps its own slot_index as its clock (not the
+    // current slot_count(), which would collapse them all to one snapshot).
+    RareExtras& extras = ensure_extras();
     for (const auto& prop : shape_->properties_in_order()) {
-        extras_->extra_property_order.push_back({prop.key, prop.slot_index});
+        extras.extra_property_order.push_back({prop.key, prop.slot_index});
     }
-    extras_->next_order_snapshot = shape_->slot_count();
+    extras.next_order_snapshot = shape_->slot_count();
     // Leftover butterfly shape-slot capacity is left allocated (not shrunk,
     // unlike the old shape_slots_.clear()) -- shape_ == nullptr already
     // tells every real consumer not to trust it.
@@ -256,13 +290,16 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
     Value* new_butterfly = reinterpret_cast<Value*>(new_block + new_elements_capacity * sizeof(Value) +
                                                       sizeof(ButterflyHeader));
     ButterflyHeader* new_header = reinterpret_cast<ButterflyHeader*>(new_butterfly) - 1;
+    constexpr size_t kHeaderWidths = sizeof(ButterflyHeader) / sizeof(Value);
 
     uint32_t old_elements_length = 0;
+    RareExtras* old_extras = nullptr;
     if (butterfly_) {
         ButterflyHeader* old_header = butterfly_header();
         old_elements_length = old_header->elements_length;
         uint32_t old_elements_cap = old_header->elements_capacity;
         uint32_t old_shape_cap = old_header->shape_capacity;
+        old_extras = old_header->extras;
         // Both regions' OLD capacities are <= their new ones (callers only
         // ever grow) -- copy each region's full old extent across at its
         // same per-slot index, just at new addresses either side of the
@@ -271,20 +308,29 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
             *(new_butterfly + i) = *shape_slot_ptr(i);
         }
         for (uint32_t i = 0; i < old_elements_cap; i++) {
-            *(new_butterfly - 3 - i) = *element_ptr(i);
+            *(new_butterfly - kHeaderWidths - 1 - i) = *element_ptr(i);
         }
-        free_butterfly();
+        // Transplant, not delete: old_extras (if any) is still owned by this
+        // object, just relocating to the new header below. release_butterfly_block
+        // (unlike free_butterfly) returns the old block without touching it.
+        release_butterfly_block();
     }
 
     new_header->elements_length = old_elements_length;
     new_header->elements_capacity = new_elements_capacity;
     new_header->shape_capacity = new_shape_capacity;
     new_header->reserved = 0;
+    new_header->extras = old_extras;
     butterfly_ = new_butterfly;
 }
 
 void Object::free_butterfly() {
     if (!butterfly_) return;
+    delete butterfly_header()->extras;
+    release_butterfly_block();
+}
+
+void Object::release_butterfly_block() {
     size_t elem_cap = elements_capacity();
     size_t shape_cap = shape_capacity();
     char* base = reinterpret_cast<char*>(butterfly_) - sizeof(ButterflyHeader) -
@@ -342,7 +388,16 @@ void Object::bump_array_length(double candidate) {
 }
 
 void Function::trace(Visitor& v) {
-    Object::trace(v);
+    switch (get_function_kind()) {
+        case FunctionKind::Async: static_cast<AsyncFunction*>(this)->trace(v); return;
+        case FunctionKind::Generator: static_cast<GeneratorFunction*>(this)->trace(v); return;
+        case FunctionKind::AsyncGenerator: static_cast<AsyncGeneratorFunction*>(this)->trace(v); return;
+        default: trace_default(v); return;
+    }
+}
+
+void Function::trace_default(Visitor& v) {
+    Object::trace_default(v);
     v.visit_context(closure_context_);
     v.visit_environment(closure_environment_);
     v.visit_object(prototype_);
@@ -368,11 +423,7 @@ static Value make_prop_key_value(const std::string& key) {
 
 
 Object::Object(ObjectType type) {
-    header_.prototype = nullptr;
-    header_.type = type;
-    header_.flags = 0;
-    header_.property_count = 0;
-    header_.hash_code = reinterpret_cast<uintptr_t>(this) & 0xFFFFFFFF;
+    set_type(type);
 
     if (type == ObjectType::Array) {
         ensure_elements_capacity(8);
@@ -384,17 +435,16 @@ Object::~Object() {
 }
 
 Object::Object(Object* prototype, ObjectType type) : Object(type) {
-    // Must go through set_prototype, not a direct header_.prototype write --
-    // it marks `prototype` used_as_prototype(), which the transition-cache
-    // relies on for every object ever installed as a prototype, including
-    // via this constructor (Object.create(proto), Error-hierarchy bootstrap).
+    // Must go through set_prototype, not a direct proto_ write -- it marks
+    // `prototype` used_as_prototype(), which the transition-cache relies on
+    // for every object ever installed as a prototype, including via this
+    // constructor (Object.create(proto), Error-hierarchy bootstrap).
     if (prototype) set_prototype(prototype);
 }
 
 void Object::set_prototype(Object* prototype) {
     Collector::write_barrier(this);
-    header_.prototype = prototype;
-    update_hash_code();
+    proto_ = prototype;
     // The engine's single [[Prototype]]-change choke point, so marking+bumping
     // here covers every caller (setPrototypeOf, __proto__, class extends, ...).
     if (prototype) prototype->mark_used_as_prototype();
@@ -402,7 +452,7 @@ void Object::set_prototype(Object* prototype) {
 }
 
 bool Object::has_prototype(Object* prototype) const {
-    Object* current = header_.prototype;
+    Object* current = proto_;
     while (current) {
         if (current == prototype) {
             return true;
@@ -412,12 +462,12 @@ bool Object::has_prototype(Object* prototype) const {
     return false;
 }
 
-bool Object::has_property(const std::string& key) const {
+bool Object::has_property_default(const std::string& key) const {
     if (has_own_property(key)) {
         return true;
     }
 
-    Object* current = header_.prototype;
+    Object* current = proto_;
     while (current) {
         if (current->get_type() == ObjectType::Proxy) {
             // Invoke Proxy has trap for prototype chain traversal
@@ -429,6 +479,15 @@ bool Object::has_property(const std::string& key) const {
         current = current->get_prototype();
     }
     return false;
+}
+
+bool Object::has_property(const std::string& key) const {
+    switch (get_type()) {
+        case ObjectType::TypedArray: return static_cast<const TypedArrayBase*>(this)->has_property(key);
+        case ObjectType::Proxy: return static_cast<const Proxy*>(this)->has_property(key);
+        case ObjectType::Custom: return static_cast<const CustomObjectBase*>(this)->has_property(key);
+        default: return has_property_default(key);
+    }
 }
 
 void Object::add_private_field(const std::string& key, const Value& value) {
@@ -530,7 +589,7 @@ bool Object::has_private_slot(const std::string& key) const {
     return false;
 }
 
-bool Object::has_own_property(const std::string& key) const {
+bool Object::has_own_property_default(const std::string& key) const {
     // Private storage is never exposed as an own property (spec: private slot
     // semantics). All of it is internally shaped: qualified slots ("#x@ptr")
     // or brand slots ("#[[pm:ptr]]"). A bare "#x" own property can only come
@@ -565,8 +624,31 @@ bool Object::has_own_property(const std::string& key) const {
     return has_shape_slot(key);
 }
 
+bool Object::has_own_property(const std::string& key) const {
+    switch (get_type()) {
+        case ObjectType::Function: return static_cast<const Function*>(this)->has_own_property(key);
+        case ObjectType::TypedArray: return static_cast<const TypedArrayBase*>(this)->has_own_property(key);
+        case ObjectType::Custom: return static_cast<const CustomObjectBase*>(this)->has_own_property(key);
+        default: return has_own_property_default(key);
+    }
+}
+
 
 Value Object::get_property(const std::string& key) const {
+    switch (get_type()) {
+        case ObjectType::Function: return static_cast<const Function*>(this)->get_property(key);
+        case ObjectType::TypedArray: return static_cast<const TypedArrayBase*>(this)->get_property(key);
+        case ObjectType::Proxy: return static_cast<const Proxy*>(this)->get_property(key);
+        case ObjectType::ArrayBuffer: return static_cast<const ArrayBuffer*>(this)->get_property(key);
+        case ObjectType::DataView: return static_cast<const DataView*>(this)->get_property(key);
+        case ObjectType::Map: return static_cast<const Map*>(this)->get_property(key);
+        case ObjectType::Set: return static_cast<const Set*>(this)->get_property(key);
+        case ObjectType::Custom: return static_cast<const CustomObjectBase*>(this)->get_property(key);
+        default: return get_property_default(key);
+    }
+}
+
+Value Object::get_property_default(const std::string& key) const {
     if (this->get_type() == ObjectType::Proxy) {
         return const_cast<Proxy*>(static_cast<const Proxy*>(this))->get_trap(make_prop_key_value(key));
     }
@@ -663,7 +745,7 @@ Value Object::get_property(const std::string& key) const {
         }
 
         // Check prototype chain for overridden methods (e.g. a subclass's own "map").
-        Object* current = header_.prototype;
+        Object* current = proto_;
         while (current) {
             if (current->has_own_property(key)) {
                 return current->get_own_property(key);
@@ -699,7 +781,7 @@ Value Object::get_property(const std::string& key) const {
     }
 
     const Object* original_receiver = this;
-    Object* current = header_.prototype;
+    Object* current = proto_;
     while (current) {
         // When prototype is a Proxy, invoke its get trap with the original receiver
         if (current->get_type() == ObjectType::Proxy) {
@@ -714,7 +796,7 @@ Value Object::get_property(const std::string& key) const {
             if (desc_it) {
                 const PropertyDescriptor& desc = *desc_it;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                    Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
+                    Function* getter_fn = as_function(desc.get_getter());
                     if (getter_fn && current_context_) {
                         Value recv = original_receiver->is_function()
                             ? Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)))
@@ -730,7 +812,7 @@ Value Object::get_property(const std::string& key) const {
         if (current->shape_ && current->shape_->is_accessor_slot(key)) {
             int32_t idx = current->shape_->find_slot(key);
             Object* getter = as_object_like(*current->shape_slot_ptr(idx));
-            Function* getter_fn = getter ? dynamic_cast<Function*>(getter) : nullptr;
+            Function* getter_fn = getter ? as_function(getter) : nullptr;
             if (getter_fn && current_context_) {
                 Value recv = original_receiver->is_function()
                     ? Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)))
@@ -761,7 +843,7 @@ Value Object::get_own_property(const std::string& key) const {
                     if (desc.has_getter()) {
                         Object* getter = desc.get_getter();
                         if (getter && current_context_) {
-                            Function* getter_fn = dynamic_cast<Function*>(getter);
+                            Function* getter_fn = as_function(getter);
                             if (getter_fn) {
                                 return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
                             }
@@ -777,7 +859,7 @@ Value Object::get_own_property(const std::string& key) const {
         // get_element()'s fallback walks the prototype chain, which breaks own-only
         // semantics here -- skip it except for TypedArray/Arguments, whose own-element
         // handling lives only in get_element().
-        if (header_.type == ObjectType::TypedArray || header_.type == ObjectType::Arguments) {
+        if (get_type() == ObjectType::TypedArray || get_type() == ObjectType::Arguments) {
             return get_element(index);
         }
         auto* de = deleted_elements();
@@ -805,7 +887,7 @@ Value Object::get_own_property(const std::string& key) const {
                 }
                 Object* getter = desc.get_getter();
                 if (getter) {
-                    Function* getter_fn = dynamic_cast<Function*>(getter);
+                    Function* getter_fn = as_function(getter);
                     if (getter_fn) {
                         if (current_context_) {
                             return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
@@ -830,7 +912,7 @@ Value Object::get_own_property(const std::string& key) const {
         int32_t idx = shape_->find_slot(key);
         Object* getter = as_object_like(*shape_slot_ptr(idx));
         if (getter && current_context_) {
-            Function* getter_fn = dynamic_cast<Function*>(getter);
+            Function* getter_fn = as_function(getter);
             if (getter_fn) {
                 return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
             }
@@ -886,8 +968,18 @@ static bool array_set_length_coerce(Context* ctx, const Value& value, double& ou
 }
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    switch (get_type()) {
+        case ObjectType::Function: return static_cast<Function*>(this)->set_property(key, value, attrs);
+        case ObjectType::TypedArray: return static_cast<TypedArrayBase*>(this)->set_property(key, value, attrs);
+        case ObjectType::Proxy: return static_cast<Proxy*>(this)->set_property(key, value, attrs);
+        case ObjectType::Custom: return static_cast<CustomObjectBase*>(this)->set_property(key, value, attrs);
+        default: return set_property_default(key, value, attrs);
+    }
+}
+
+bool Object::set_property_default(const std::string& key, const Value& value, PropertyAttributes attrs) {
     Collector::write_barrier(this);
-    if (header_.type == ObjectType::Array && key == "length") {
+    if (get_type() == ObjectType::Array && key == "length") {
         // Coerce (can throw/run side effects) before the [[Writable]] check, not after.
         double length_double;
         if (!array_set_length_coerce(current_context_, value, length_double)) return false;
@@ -954,14 +1046,14 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
                 Object* setter = own_pd.get_setter();
                 if (!setter) return false;
                 if (current_context_) {
-                    Function* setter_fn = dynamic_cast<Function*>(setter);
+                    Function* setter_fn = as_function(setter);
                     if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
                 }
                 return true;
             }
         }
-        if (header_.type == ObjectType::Array && !has_own_property(key) && header_.prototype) {
-            Object* proto = header_.prototype;
+        if (get_type() == ObjectType::Array && !has_own_property(key) && proto_) {
+            Object* proto = proto_;
             while (proto) {
                 if (proto->get_type() == ObjectType::Proxy) {
                     return static_cast<Proxy*>(proto)->set_trap(Value(key), Value(value), Value(this));
@@ -972,7 +1064,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
                         Object* setter = pd.get_setter();
                         if (!setter) return false; // no setter (incl. {set: undefined})
                         if (current_context_) {
-                            Function* setter_fn = dynamic_cast<Function*>(setter);
+                            Function* setter_fn = as_function(setter);
                             if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
                         }
                         return true;
@@ -988,7 +1080,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     bool prop_exists = has_own_property(key);
     // If property does not exist on this object, check if a Proxy ancestor has a set trap
     if (!prop_exists) {
-        Object* current = header_.prototype;
+        Object* current = proto_;
         while (current) {
             if (current->get_type() == ObjectType::Proxy) {
                 Value receiver_val = this->is_function()
@@ -1003,14 +1095,14 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     }
     // Check prototype chain for accessor descriptors (setter invocation)
     if (!prop_exists) {
-        Object* cur = header_.prototype;
+        Object* cur = proto_;
         while (cur) {
             PropertyDescriptor inherited_desc = cur->get_property_descriptor(key);
             if (inherited_desc.is_accessor_descriptor()) {
                 if (!inherited_desc.get_setter()) return false; // no setter (incl. {set: undefined})
                 Object* setter = inherited_desc.get_setter();
                 if (current_context_) {
-                    Function* setter_fn = dynamic_cast<Function*>(setter);
+                    Function* setter_fn = as_function(setter);
                     if (setter_fn) {
                         Value receiver = this->is_function()
                             ? Value(static_cast<Function*>(this))
@@ -1030,7 +1122,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         if (desc.is_accessor_descriptor() && desc.has_setter() && desc.get_setter()) {
             Object* setter = desc.get_setter();
             if (current_context_) {
-                Function* setter_fn = dynamic_cast<Function*>(setter);
+                Function* setter_fn = as_function(setter);
                 if (setter_fn) {
                     Value receiver = this->is_function()
                         ? Value(static_cast<Function*>(this))
@@ -1100,7 +1192,7 @@ bool Object::set_property(const Value& key, const Value& value, PropertyAttribut
 // OrdinarySet semantics: if prototype chain has non-writable data property, silently fail
 bool Object::ordinary_set(const std::string& key, const Value& value) {
     if (!has_own_property(key)) {
-        Object* cur = header_.prototype;
+        Object* cur = proto_;
         while (cur) {
             // A Proxy prototype means target.[[Set]](P, V, receiver=this) -- dispatch directly.
             if (cur->get_type() == ObjectType::Proxy) {
@@ -1153,6 +1245,16 @@ void Object::remove_own_property(const std::string& key) {
 }
 
 bool Object::delete_property(const std::string& key) {
+    switch (get_type()) {
+        case ObjectType::Function: return static_cast<Function*>(this)->delete_property(key);
+        case ObjectType::TypedArray: return static_cast<TypedArrayBase*>(this)->delete_property(key);
+        case ObjectType::Proxy: return static_cast<Proxy*>(this)->delete_property(key);
+        case ObjectType::Custom: return static_cast<CustomObjectBase*>(this)->delete_property(key);
+        default: return delete_property_default(key);
+    }
+}
+
+bool Object::delete_property_default(const std::string& key) {
     // Spec: deleting a non-existent property always returns true
     if (!has_own_property(key)) {
         return true;
@@ -1187,8 +1289,6 @@ bool Object::delete_property(const std::string& key) {
         // cycle on the same key would grow property_insertion_order_ unboundedly.
         erase_extra_property_order(key);
 
-        header_.property_count--;
-        update_hash_code();
         return true;
     }
 
@@ -1198,8 +1298,6 @@ bool Object::delete_property(const std::string& key) {
         if (d->find(key)) {
             d->erase(key);
             erase_extra_property_order(key);
-            if (header_.property_count > 0) header_.property_count--;
-            update_hash_code();
             return true;
         }
     }
@@ -1208,21 +1306,24 @@ bool Object::delete_property(const std::string& key) {
 }
 
 Value Object::get_element(uint32_t index) const {
+    if (get_type() == ObjectType::Proxy) {
+        return static_cast<const Proxy*>(this)->get_element(index);
+    }
     // TypedArrayBase::get_element(size_t) is a different signature, not a virtual
     // override of this uint32_t one -- dispatch explicitly so generic Array.prototype
     // methods invoked via .call()/.apply() on a typed array read real backing-store data.
-    if (header_.type == ObjectType::TypedArray) {
+    if (get_type() == ObjectType::TypedArray) {
         return static_cast<const TypedArrayBase*>(this)->get_element(static_cast<size_t>(index));
     }
     // Arguments: check all descriptors (accessor AND data) since they hold live bindings.
-    if (header_.type == ObjectType::Arguments) {
+    if (get_type() == ObjectType::Arguments) {
       if (auto* d = descriptors()) {
         auto* it = d->find(std::to_string(index));
         if (it) {
             if (it->is_accessor_descriptor() && it->has_getter()) {
                 Object* getter = it->get_getter();
                 if (getter && current_context_) {
-                    Function* gfn = dynamic_cast<Function*>(getter);
+                    Function* gfn = as_function(getter);
                     if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
                 }
             }
@@ -1233,7 +1334,7 @@ Value Object::get_element(uint32_t index) const {
 
     // For all other types: check descriptors_ for both accessor and data properties.
     // Data descriptor values are kept in sync by set_element, so prefer them over elements_.
-    if (header_.type != ObjectType::Arguments) {
+    if (get_type() != ObjectType::Arguments) {
       if (auto* d = descriptors()) {
         auto* it = d->find(std::to_string(index));
         if (it) {
@@ -1241,7 +1342,7 @@ Value Object::get_element(uint32_t index) const {
                 if (it->has_getter()) {
                     Object* getter = it->get_getter();
                     if (getter && current_context_) {
-                        Function* gfn = dynamic_cast<Function*>(getter);
+                        Function* gfn = as_function(getter);
                         if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
                     }
                 }
@@ -1260,7 +1361,7 @@ Value Object::get_element(uint32_t index) const {
 
     // For non-Arguments/TypedArray (includes Array holes/out-of-bounds): check
     // data descriptors, overflow, and walk the prototype chain.
-    if (header_.type != ObjectType::Arguments && header_.type != ObjectType::TypedArray) {
+    if (get_type() != ObjectType::Arguments && get_type() != ObjectType::TypedArray) {
         std::string key = std::to_string(index);
         if (auto* d = descriptors()) {
             auto* it = d->find(key);
@@ -1282,7 +1383,7 @@ bool Object::set_element(uint32_t index, const Value& value) {
     // Same dispatch problem as get_element: TypedArrayBase::set_element(size_t) doesn't
     // override this uint32_t signature, so generic Array.prototype methods called via
     // .call()/.apply() on a typed array must be routed there explicitly.
-    if (header_.type == ObjectType::TypedArray) {
+    if (get_type() == ObjectType::TypedArray) {
         return const_cast<TypedArrayBase*>(static_cast<const TypedArrayBase*>(this))
             ->set_element(static_cast<size_t>(index), value);
     }
@@ -1294,7 +1395,7 @@ bool Object::set_element(uint32_t index, const Value& value) {
                 Object* setter = it->get_setter();
                 if (!setter) return false; // no setter (incl. {set: undefined})
                 if (current_context_) {
-                    Function* setter_fn = dynamic_cast<Function*>(setter);
+                    Function* setter_fn = as_function(setter);
                     if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
                 }
                 return true;
@@ -1313,11 +1414,11 @@ bool Object::set_element(uint32_t index, const Value& value) {
     }
 
     if (__builtin_expect(index >= elements_length(), 0)) {
-        if (__builtin_expect(index > 10000000, 0)) {
+        if (__builtin_expect(sparse_growth_too_costly(index, elements_length()), 0)) {
             // Too sparse to grow the dense elements_ vector -- store in sparse_overflow_
             // instead (get_element()/has_own_property() already fall back to it), still
             // bumping Array length per ArraySetLength side effect (15.4.5.1 step 4.e.ii).
-            if (header_.type == ObjectType::Array) {
+            if (get_type() == ObjectType::Array) {
                 bump_array_length(static_cast<double>(index) + 1);
             }
             return store_in_overflow(std::to_string(index), value);
@@ -1333,7 +1434,7 @@ bool Object::set_element(uint32_t index, const Value& value) {
             }
         }
 
-        if (__builtin_expect(header_.type == ObjectType::Array, 1)) {
+        if (__builtin_expect(get_type() == ObjectType::Array, 1)) {
             // never shrink length on a write within bounds
             bump_array_length(static_cast<double>(new_size));
         }
@@ -1372,13 +1473,13 @@ void Object::collect_named_keys_in_order(std::vector<std::string>& raw_keys) con
             shape_idx++;
         }
     };
-    if (extras_) {
+    if (RareExtras* extras = peek_extras()) {
         auto* so = sparse_overflow();
         auto* d = descriptors();
         // Raw insertion order isn't always clock order: migration appends a
         // batch of migrated keys with possibly lower snapshots after
         // entries already present. Stable-sort a copy to restore it.
-        std::vector<std::pair<std::string, uint32_t>> sorted_extras = extras_->extra_property_order;
+        std::vector<std::pair<std::string, uint32_t>> sorted_extras = extras->extra_property_order;
         std::stable_sort(sorted_extras.begin(), sorted_extras.end(),
             [](const auto& a, const auto& b) { return a.second < b.second; });
         for (const auto& [key, snapshot] : sorted_extras) {
@@ -1396,6 +1497,15 @@ void Object::collect_named_keys_in_order(std::vector<std::string>& raw_keys) con
 }
 
 std::vector<std::string> Object::get_own_property_keys() const {
+    switch (get_type()) {
+        case ObjectType::Function: return static_cast<const Function*>(this)->get_own_property_keys();
+        case ObjectType::TypedArray: return static_cast<const TypedArrayBase*>(this)->get_own_property_keys();
+        case ObjectType::Custom: return static_cast<const CustomObjectBase*>(this)->get_own_property_keys();
+        default: return get_own_property_keys_default();
+    }
+}
+
+std::vector<std::string> Object::get_own_property_keys_default() const {
     // ES6 [[OwnPropertyKeys]]: indices ascending, then strings, then symbols, each in creation order.
     // Step 1: Collect ALL keys in their original storage order (preserves insertion order)
     std::vector<std::string> raw_keys;
@@ -1473,16 +1583,23 @@ std::vector<std::string> Object::get_own_property_keys_unfiltered() const {
 }
 
 std::vector<std::string> Object::get_enumerable_keys() const {
+    if (get_type() == ObjectType::Custom) {
+        return static_cast<const CustomObjectBase*>(this)->get_enumerable_keys();
+    }
+    return get_enumerable_keys_default();
+}
+
+std::vector<std::string> Object::get_enumerable_keys_default() const {
     std::vector<std::string> keys;
     auto all_keys = get_own_property_keys();
-    
+
     for (const auto& key : all_keys) {
         PropertyDescriptor desc = get_property_descriptor(key);
         if (desc.is_enumerable()) {
             keys.push_back(key);
         }
     }
-    
+
     return keys;
 }
 
@@ -1497,6 +1614,16 @@ std::vector<uint32_t> Object::get_element_indices() const {
 }
 
 PropertyDescriptor Object::get_property_descriptor(const std::string& key) const {
+    switch (get_type()) {
+        case ObjectType::Function: return static_cast<const Function*>(this)->get_property_descriptor(key);
+        case ObjectType::TypedArray: return static_cast<const TypedArrayBase*>(this)->get_property_descriptor(key);
+        case ObjectType::Proxy: return static_cast<const Proxy*>(this)->get_property_descriptor(key);
+        case ObjectType::Custom: return static_cast<const CustomObjectBase*>(this)->get_property_descriptor(key);
+        default: return get_property_descriptor_default(key);
+    }
+}
+
+PropertyDescriptor Object::get_property_descriptor_default(const std::string& key) const {
     // Check descriptor map first (takes precedence over shape attrs)
     if (auto* d = descriptors()) {
         auto* it = d->find(key);
@@ -1504,9 +1631,9 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
             // ES6 9.4.4: mapped arguments slots appear as DATA descriptors to callers.
             // Internally we use accessor descriptors for the param aliasing, but expose
             // {value, writable, enumerable, configurable} to [[GetOwnProperty]].
-            if (header_.type == ObjectType::Arguments && it->is_accessor_descriptor()) {
+            if (get_type() == ObjectType::Arguments && it->is_accessor_descriptor()) {
                 Function* gfn = it->get_getter()
-                    ? dynamic_cast<Function*>(it->get_getter()) : nullptr;
+                    ? as_function(it->get_getter()) : nullptr;
                 if (gfn && gfn->is_mapped_arguments_accessor()) {
                     // Capture before the call: even though `gfn` is now provably
                     // the genuine internal closure (is_mapped_arguments_accessor()
@@ -1554,11 +1681,20 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
 }
 
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    switch (get_type()) {
+        case ObjectType::Function: return static_cast<Function*>(this)->set_property_descriptor(key, desc);
+        case ObjectType::TypedArray: return static_cast<TypedArrayBase*>(this)->set_property_descriptor(key, desc);
+        case ObjectType::Custom: return static_cast<CustomObjectBase*>(this)->set_property_descriptor(key, desc);
+        default: return set_property_descriptor_default(key, desc);
+    }
+}
+
+bool Object::set_property_descriptor_default(const std::string& key, const PropertyDescriptor& desc) {
     Collector::write_barrier(this);
     // [[DefineOwnProperty]] on a Proxy is just its "defineProperty" trap.
     // The generic logic below would call has_own_property() first, firing the
     // unrelated "has" trap instead.
-    if (header_.type == ObjectType::Proxy) {
+    if (get_type() == ObjectType::Proxy) {
         return static_cast<Proxy*>(this)->define_property_trap(make_prop_key_value(key), desc);
     }
 
@@ -1576,7 +1712,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
 
     // Runs before the configurability checks below: an out-of-range length throws
     // RangeError even when the descriptor also conflicts with length's non-configurability.
-    if (header_.type == ObjectType::Array && key == "length" && desc.is_data_descriptor() && desc.has_value()) {
+    if (get_type() == ObjectType::Array && key == "length" && desc.is_data_descriptor() && desc.has_value()) {
         double unused;
         if (!array_set_length_coerce(current_context_, desc.get_value(), unused)) return false;
     }
@@ -1627,16 +1763,16 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         // ES6 9.4.4.3: if Arguments has a live param-mapped accessor for this index,
         // {value:V} updates the binding and keeps the mapping active (do not replace the accessor).
         // Only sever when desc explicitly sets writable:false.
-        if (header_.type == ObjectType::Arguments && desc.has_value()) {
+        if (get_type() == ObjectType::Arguments && desc.has_value()) {
             auto* it = descs.find(key);
             if (it && it->is_accessor_descriptor()) {
                 Function* gfn = it->get_getter()
-                    ? dynamic_cast<Function*>(it->get_getter()) : nullptr;
+                    ? as_function(it->get_getter()) : nullptr;
                 if (gfn && gfn->is_mapped_arguments_accessor() && current_context_) {
                     bool still_valid = true;
                     // Update param binding
                     if (it->has_setter()) {
-                        Function* setter_fn = dynamic_cast<Function*>(it->get_setter());
+                        Function* setter_fn = as_function(it->get_setter());
                         if (setter_fn) {
                             setter_fn->call(*current_context_, {desc.get_value()}, Value(this));
                             // Defense-in-depth re-resolve (see the analogous
@@ -1673,7 +1809,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 }
                 // Non-param accessor (user-installed): just call its setter if present
                 if (it && it->has_setter() && current_context_) {
-                    Function* setter_fn = dynamic_cast<Function*>(it->get_setter());
+                    Function* setter_fn = as_function(it->get_setter());
                     if (setter_fn) setter_fn->call(*current_context_, {desc.get_value()}, Value(this));
                 }
             }
@@ -1681,15 +1817,20 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         uint32_t index;
         if (is_array_index(key, &index)) {
             // Growing past a non-writable "length" must throw, not silently grow.
-            if (header_.type == ObjectType::Array && desc.has_value() &&
+            if (get_type() == ObjectType::Array && desc.has_value() &&
                 static_cast<double>(index) >= static_cast<double>(get_length())) {
                 PropertyDescriptor length_desc = get_property_descriptor("length");
                 if (length_desc.has_writable() && !length_desc.is_writable()) {
                     return false;
                 }
             }
-            // cap growth to avoid huge upfront allocation on a sparse high index
-            if (desc.has_value() && index <= 10000000) {
+            // cap growth to avoid huge upfront allocation on a sparse high index --
+            // only consult the cost check when this index would actually GROW the
+            // dense array; an already-in-bounds index needs no growth at all, and
+            // sparse_growth_too_costly(index, old_size) underflows (uint64_t wraps)
+            // if index < old_size, wrongly reporting an in-bounds write as "too costly".
+            bool index_in_bounds = index < elements_length();
+            if (desc.has_value() && (index_in_bounds || !sparse_growth_too_costly(index, elements_length()))) {
                 if (index >= elements_length()) {
                     size_t old_size = elements_length();
                     resize_elements(static_cast<uint32_t>(index + 1));
@@ -1705,13 +1846,13 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 if (auto* de = deleted_elements()) de->erase(index);
                 // ArraySetLength side effect: defining index N on an Array bumps length to N+1
                 // if N >= current length (15.4.5.1 step 4.e.ii).
-                if (header_.type == ObjectType::Array) {
+                if (get_type() == ObjectType::Array) {
                     bump_array_length(static_cast<double>(index) + 1);
                 }
             } else if (desc.has_value()) {
                 // Beyond the dense-array growth cap -- same sparse_overflow_ fallback as set_element().
                 store_in_overflow(key, desc.get_value());
-                if (header_.type == ObjectType::Array) {
+                if (get_type() == ObjectType::Array) {
                     bump_array_length(static_cast<double>(index) + 1);
                 }
             }
@@ -1721,7 +1862,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             // fast path below bypasses Object::set_property's length-specific checks.
             Value coerced_value = desc.get_value();
             bool length_shrink_blocked = false;
-            if (header_.type == ObjectType::Array && key == "length" && desc.has_value()) {
+            if (get_type() == ObjectType::Array && key == "length" && desc.has_value()) {
                 double length_double = desc.get_value().to_number();
                 if (current_context_ && current_context_->has_exception()) return false;
                 // to_number() swallows the "valueOf/toString both non-primitive" case as NaN;
@@ -1819,7 +1960,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         uint32_t index;
         if (is_array_index(key, &index)) {
             uint32_t new_size = index + 1;
-            if (header_.type == ObjectType::Array && new_size > get_length()) {
+            if (get_type() == ObjectType::Array && new_size > get_length()) {
                 bump_array_length(static_cast<double>(new_size));
             }
         } else if (!has_own_property(key)) {
@@ -1854,10 +1995,10 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 }
             }
             // ES6 9.4.4.3: if defineProperty makes a mapped arg non-writable, sever the mapping.
-            if (header_.type == ObjectType::Arguments && existing.is_accessor_descriptor() &&
+            if (get_type() == ObjectType::Arguments && existing.is_accessor_descriptor() &&
                     desc.has_writable() && !desc.is_writable()) {
                 Function* gfn = existing.get_getter()
-                    ? dynamic_cast<Function*>(existing.get_getter()) : nullptr;
+                    ? as_function(existing.get_getter()) : nullptr;
                 if (gfn && gfn->is_mapped_arguments_accessor() && current_context_) {
                     // Capture before the call, and re-resolve after (below) as
                     // defense-in-depth -- see the analogous comment in
@@ -1933,7 +2074,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             if (desc.is_accessor_descriptor() && existing.is_accessor_descriptor()) {
                 bool is_param_mapped = false;
                 if (existing.has_getter()) {
-                    Function* gfn = dynamic_cast<Function*>(existing.get_getter());
+                    Function* gfn = as_function(existing.get_getter());
                     if (gfn && gfn->is_mapped_arguments_accessor()) is_param_mapped = true;
                 }
                 if (!is_param_mapped) {
@@ -1963,11 +2104,98 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     return true;
 }
 
+void CustomObjectBase::trace(Visitor& v) {
+    switch (get_custom_kind()) {
+        case CustomKind::Generator: static_cast<Generator*>(this)->trace(v); return;
+        case CustomKind::AsyncGenerator: static_cast<AsyncGenerator*>(this)->trace(v); return;
+        case CustomKind::ArrayIterator: static_cast<ArrayIterator*>(this)->trace(v); return;
+        case CustomKind::MapIterator: static_cast<MapIterator*>(this)->trace(v); return;
+        case CustomKind::SetIterator: static_cast<SetIterator*>(this)->trace(v); return;
+        // AsyncIterator/StringIterator/ModuleNamespace/DeferredNamespace hold
+        // no extra cell references and rely on the base body as-is.
+        default: trace_default(v); return;
+    }
+}
+
+bool CustomObjectBase::has_property(const std::string& key) const {
+    switch (get_custom_kind()) {
+        case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->has_property(key);
+        default: return has_property_default(key);
+    }
+}
+
+bool CustomObjectBase::has_own_property(const std::string& key) const {
+    switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->has_own_property(key);
+        case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->has_own_property(key);
+        default: return has_own_property_default(key);
+    }
+}
+
+Value CustomObjectBase::get_property(const std::string& key) const {
+    switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->get_property(key);
+        case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->get_property(key);
+        default: return get_property_default(key);
+    }
+}
+
+bool CustomObjectBase::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<ModuleNamespaceObject*>(this)->set_property(key, value, attrs);
+        case CustomKind::DeferredNamespace: return static_cast<DeferredNamespaceObject*>(this)->set_property(key, value, attrs);
+        default: return set_property_default(key, value, attrs);
+    }
+}
+
+bool CustomObjectBase::delete_property(const std::string& key) {
+    switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<ModuleNamespaceObject*>(this)->delete_property(key);
+        case CustomKind::DeferredNamespace: return static_cast<DeferredNamespaceObject*>(this)->delete_property(key);
+        default: return delete_property_default(key);
+    }
+}
+
+std::vector<std::string> CustomObjectBase::get_own_property_keys() const {
+    switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->get_own_property_keys();
+        case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->get_own_property_keys();
+        default: return get_own_property_keys_default();
+    }
+}
+
+std::vector<std::string> CustomObjectBase::get_enumerable_keys() const {
+    switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->get_enumerable_keys();
+        case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->get_enumerable_keys();
+        default: return get_enumerable_keys_default();
+    }
+}
+
+PropertyDescriptor CustomObjectBase::get_property_descriptor(const std::string& key) const {
+    switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->get_property_descriptor(key);
+        case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->get_property_descriptor(key);
+        default: return get_property_descriptor_default(key);
+    }
+}
+
+bool CustomObjectBase::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<ModuleNamespaceObject*>(this)->set_property_descriptor(key, desc);
+        case CustomKind::DeferredNamespace: return static_cast<DeferredNamespaceObject*>(this)->set_property_descriptor(key, desc);
+        default: return set_property_descriptor_default(key, desc);
+    }
+}
+
 uint32_t Object::get_length() const {
-    if (header_.type == ObjectType::TypedArray) {
+    if (get_type() == ObjectType::Proxy) {
+        return static_cast<const Proxy*>(this)->get_length();
+    }
+    if (get_type() == ObjectType::TypedArray) {
         return static_cast<uint32_t>(static_cast<const TypedArrayBase*>(this)->length());
     }
-    if (header_.type == ObjectType::Array || header_.type == ObjectType::Arguments) {
+    if (get_type() == ObjectType::Array || get_type() == ObjectType::Arguments) {
         Value length_val = get_own_property("length");
         if (length_val.is_number()) {
             return static_cast<uint32_t>(length_val.as_number());
@@ -1976,8 +2204,8 @@ uint32_t Object::get_length() const {
     // plain array-likes (e.g. Array.prototype.every.call(plainObj)) store length as a property
     // ToLength per spec: coerce length via ToNumber. Apply to all non-Array/Arguments types
     // so that Boolean/Number/String wrappers and custom objects with prototype-chain length work.
-    if (header_.type != ObjectType::Array && header_.type != ObjectType::Arguments
-        && header_.type != ObjectType::TypedArray && has_property("length")) {
+    if (get_type() != ObjectType::Array && get_type() != ObjectType::Arguments
+        && get_type() != ObjectType::TypedArray && has_property("length")) {
         Value length_val = get_property("length");
         if (!length_val.is_symbol() && !length_val.is_undefined() && !length_val.is_null()) {
             double n = length_val.to_number();
@@ -1991,8 +2219,8 @@ uint32_t Object::get_length() const {
         return 0;
     }
     // No "length" property at all on a generic object: ToLength(undefined) = 0.
-    if (header_.type != ObjectType::Array && header_.type != ObjectType::Arguments
-        && header_.type != ObjectType::TypedArray) {
+    if (get_type() != ObjectType::Array && get_type() != ObjectType::Arguments
+        && get_type() != ObjectType::TypedArray) {
         return 0;
     }
     return static_cast<uint32_t>(elements_length());
@@ -2005,7 +2233,7 @@ void Object::set_length(uint32_t length) {
     set_property_descriptor("length", length_desc);
 
     // Resize elements array if this is actually an Array
-    if (header_.type == ObjectType::Array && length < elements_length()) {
+    if (get_type() == ObjectType::Array && length < elements_length()) {
         resize_elements(length);
     }
 }
@@ -2061,7 +2289,7 @@ Value Object::shift() {
 }
 
 std::unique_ptr<Object> Object::map(Function* callback, Context& ctx, const Value& thisArg) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return ObjectFactory::create_array(0);
     }
 
@@ -2098,7 +2326,7 @@ std::unique_ptr<Object> Object::map(Function* callback, Context& ctx, const Valu
 }
 
 std::unique_ptr<Object> Object::filter(Function* callback, Context& ctx, const Value& thisArg) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return ObjectFactory::create_array(0);
     }
 
@@ -2124,7 +2352,7 @@ std::unique_ptr<Object> Object::filter(Function* callback, Context& ctx, const V
 }
 
 void Object::forEach(Function* callback, Context& ctx, const Value& thisArg) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return;
     }
 
@@ -2142,7 +2370,7 @@ void Object::forEach(Function* callback, Context& ctx, const Value& thisArg) {
 }
 
 Value Object::reduce(Function* callback, const Value& initial_value, Context& ctx) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return Value();
     }
     
@@ -2168,7 +2396,7 @@ Value Object::reduce(Function* callback, const Value& initial_value, Context& ct
 }
 
 Value Object::reduceRight(Function* callback, const Value& initial_value, Context& ctx) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return Value();
     }
 
@@ -2199,7 +2427,7 @@ Value Object::reduceRight(Function* callback, const Value& initial_value, Contex
 }
 
 Value Object::groupBy(Function* callback, Context& ctx) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return Value();
     }
     
@@ -2238,7 +2466,7 @@ Value Object::groupBy(Function* callback, Context& ctx) {
 }
 
 std::unique_ptr<Object> Object::flat(uint32_t depth) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return ObjectFactory::create_array(0);
     }
 
@@ -2264,7 +2492,7 @@ std::unique_ptr<Object> Object::flat(uint32_t depth) {
 }
 
 std::unique_ptr<Object> Object::flatMap(Function* callback, Context& ctx, const Value& thisArg) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return ObjectFactory::create_array(0);
     }
 
@@ -2293,7 +2521,7 @@ std::unique_ptr<Object> Object::flatMap(Function* callback, Context& ctx, const 
 }
 
 Object* Object::copyWithin(int32_t target, int32_t start, int32_t end) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return this;
     }
 
@@ -2322,7 +2550,7 @@ Object* Object::copyWithin(int32_t target, int32_t start, int32_t end) {
 }
 
 Value Object::findLast(Function* callback, Context& ctx, const Value& thisArg) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return Value();
     }
 
@@ -2340,7 +2568,7 @@ Value Object::findLast(Function* callback, Context& ctx, const Value& thisArg) {
 }
 
 Value Object::findLastIndex(Function* callback, Context& ctx, const Value& thisArg) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return Value(-1.0);
     }
 
@@ -2358,7 +2586,7 @@ Value Object::findLastIndex(Function* callback, Context& ctx, const Value& thisA
 }
 
 std::unique_ptr<Object> Object::toSpliced(uint32_t start, uint32_t deleteCount, const std::vector<Value>& items) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return ObjectFactory::create_array(0);
     }
 
@@ -2385,7 +2613,7 @@ std::unique_ptr<Object> Object::toSpliced(uint32_t start, uint32_t deleteCount, 
 }
 
 Object* Object::fill(const Value& value, int32_t start, int32_t end) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return this;
     }
 
@@ -2403,7 +2631,7 @@ Object* Object::fill(const Value& value, int32_t start, int32_t end) {
 }
 
 std::unique_ptr<Object> Object::toSorted(Function* compareFn, Context& ctx) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return ObjectFactory::create_array(0);
     }
 
@@ -2445,7 +2673,7 @@ std::unique_ptr<Object> Object::toSorted(Function* compareFn, Context& ctx) {
 }
 
 std::unique_ptr<Object> Object::with_method(uint32_t index, const Value& value) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return ObjectFactory::create_array(0);
     }
 
@@ -2464,7 +2692,7 @@ std::unique_ptr<Object> Object::with_method(uint32_t index, const Value& value) 
 }
 
 Value Object::at(int32_t index) {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return Value();
     }
 
@@ -2481,7 +2709,7 @@ Value Object::at(int32_t index) {
 }
 
 std::unique_ptr<Object> Object::toReversed() {
-    if (header_.type != ObjectType::Array) {
+    if (get_type() != ObjectType::Array) {
         return ObjectFactory::create_array(0);
     }
 
@@ -2495,18 +2723,30 @@ std::unique_ptr<Object> Object::toReversed() {
     return result;
 }
 
+bool Object::is_shared_array_buffer() const {
+    return get_type() == ObjectType::ArrayBuffer &&
+           static_cast<const ArrayBuffer*>(this)->is_shared();
+}
+
+Object* Object::get_prototype() const {
+    if (get_type() == ObjectType::Proxy) {
+        return static_cast<const Proxy*>(this)->get_prototype();
+    }
+    return proto_;
+}
+
 bool Object::is_extensible() const {
-    return !(header_.flags & 0x01);
+    return !proto_.flag(kNotExtensible);
 }
 
 void Object::prevent_extensions() {
-    header_.flags |= 0x01;
+    proto_.set_flag(kNotExtensible);
 }
 
 void Object::reopen_extensible() {
     // Engine-internal only (e.g. a deferred namespace filling its own exports);
     // user-visible extensibility is one-way.
-    header_.flags &= ~uint32_t(0x01);
+    proto_.clear_flag(kNotExtensible);
 }
 
 void Object::seal() {
@@ -2583,6 +2823,13 @@ bool Object::is_array_index(const std::string& key, uint32_t* index) const {
     return false;
 }
 
+bool Object::sparse_growth_too_costly(uint32_t index, uint32_t old_size) {
+    constexpr uint32_t kAbsoluteCap = 10000000;
+    constexpr uint64_t kMaxSingleGap = 10000;
+    if (index > kAbsoluteCap) return true;
+    return (static_cast<uint64_t>(index) - old_size) > kMaxSingleGap;
+}
+
 bool Object::store_in_overflow(const std::string& key, const Value& value) {
     uint32_t index;
     if (is_array_index(key, &index)) {
@@ -2590,10 +2837,8 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
         bool is_new_property = overflow.find(key) == overflow.end();
         overflow[key] = value;
         if (is_new_property) {
-            header_.property_count++;
             push_extra_property_order(key);
         }
-        update_hash_code();
         if (used_as_prototype()) bump_proto_epoch();
         return true;
     }
@@ -2619,7 +2864,6 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
     }
 
     if (is_new_property) {
-        header_.property_count++;
         // Shape-resident properties get their order from Shape::properties_
         // in_order() instead -- only extras-resident (migrated/descriptor)
         // ones need their own tracking here. Mirrored back out in
@@ -2629,7 +2873,6 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
         }
     }
 
-    update_hash_code();
     // A new own property (or an attribute-changing dictionary-mode overwrite
     // above) can change whether this object, if consulted as a prototype,
     // still blocks a [[Set]] -- see proto_epoch()'s doc comment.
@@ -2648,21 +2891,13 @@ void Object::clear_properties() {
     if (auto* d = descriptors()) {
         d->clear();
     }
-    if (extras_) {
-        extras_->extra_property_order.clear();
-        extras_->next_order_snapshot = 0;
+    if (RareExtras* extras = peek_extras()) {
+        extras->extra_property_order.clear();
+        extras->next_order_snapshot = 0;
     }
 
-    header_.property_count = 0;
-
-    header_.type = ObjectType::Ordinary;
-    header_.flags = 0;
-
-    update_hash_code();
-}
-
-void Object::update_hash_code() {
-    header_.hash_code = (header_.property_count << 16) | static_cast<uint32_t>(header_.type);
+    set_type(ObjectType::Ordinary);
+    proto_.clear_flags();
 }
 
 std::string Object::to_string() const {
@@ -2674,7 +2909,7 @@ std::string Object::to_string() const {
         }
     }
 
-    if (header_.type == ObjectType::Array) {
+    if (get_type() == ObjectType::Array) {
         std::ostringstream oss;
         for (uint32_t i = 0; i < elements_length(); ++i) {
             if (i > 0) oss << ",";
@@ -2685,7 +2920,7 @@ std::string Object::to_string() const {
         return oss.str();
     }
 
-    if (header_.type == ObjectType::Proxy) {
+    if (get_type() == ObjectType::Proxy) {
         return "[object Object]";
     }
 
@@ -2721,7 +2956,7 @@ std::string Object::to_string() const {
 
     // Fallback: check for name and message properties (Error objects)
     // This handles Error objects that don't have a custom toString method
-    if (header_.type == ObjectType::Error) {
+    if (get_type() == ObjectType::Error) {
         Value name_prop = get_property("name");
         Value message_prop = get_property("message");
 
@@ -2740,7 +2975,7 @@ std::string Object::to_string() const {
         std::string message_str = message_prop.to_string();
 
         // Try to get constructor name from prototype chain
-        Object* proto = header_.prototype;
+        Object* proto = proto_;
         while (proto) {
             Value ctor_val = proto->get_property("constructor");
             if (!ctor_val.is_undefined() && ctor_val.is_function()) {
@@ -2758,7 +2993,7 @@ std::string Object::to_string() const {
         }
 
         // Fallback: check if prototype has toString (custom error types like Test262Error)
-        proto = header_.prototype;
+        proto = proto_;
         if (proto) {
             Value toString_val = proto->get_property("toString");
             if (!toString_val.is_undefined() && toString_val.is_function()) {
@@ -2859,23 +3094,6 @@ void PropertyDescriptor::set_configurable(bool configurable) {
         attributes_ = static_cast<PropertyAttributes>(attributes_ & ~PropertyAttributes::Configurable);
     }
     has_configurable_ = true;
-}
-
-
-Value Object::internal_get(const std::string& key) const {
-    return get_property(key);
-}
-
-bool Object::internal_set(const std::string& key, const Value& value) {
-    return set_property(key, value);
-}
-
-bool Object::internal_delete(const std::string& key) {
-    return delete_property(key);
-}
-
-std::vector<std::string> Object::internal_own_keys() const {
-    return get_own_property_keys();
 }
 
 

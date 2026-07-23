@@ -1240,7 +1240,7 @@ void register_iterator_constructor(Context& ctx) {
                             PropertyDescriptor d = str_proto.as_object()->get_property_descriptor(iter_sym2->to_property_key());
                             Value iter_method2;
                             if (d.is_accessor_descriptor() && d.get_getter()) {
-                                Function* getter = dynamic_cast<Function*>(d.get_getter());
+                                Function* getter = as_function(d.get_getter());
                                 if (getter) { iter_method2 = getter->call(ctx, {}, O); if (ctx.has_exception()) return Value(); }
                             } else if (d.is_data_descriptor()) {
                                 iter_method2 = d.get_value();

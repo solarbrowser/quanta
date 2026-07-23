@@ -422,7 +422,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     ctx.throw_type_error("'" + lprop + "' accessor has no getter");
                     return Value();
                 }
-                Function* getter_fn = dynamic_cast<Function*>(priv_desc.get_getter());
+                Function* getter_fn = as_function(priv_desc.get_getter());
                 cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
             } else if (priv_owner && priv_desc.has_value()) {
                 cur = priv_desc.get_value();
@@ -443,7 +443,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         ctx.throw_type_error("'" + lprop + "' was defined without a setter");
                         return Value();
                     }
-                    Function* setter_fn = dynamic_cast<Function*>(priv_desc.get_setter());
+                    Function* setter_fn = as_function(priv_desc.get_setter());
                     if (setter_fn) setter_fn->call(ctx, {right_value}, object_value);
                     if (ctx.has_exception()) return Value();
                     return right_value;
@@ -607,7 +607,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                             PropertyDescriptor desc = level->get_property_descriptor(prop_name);
                             if (desc.is_accessor_descriptor()) {
                                 if (desc.has_setter()) {
-                                    Function* setter = dynamic_cast<Function*>(desc.get_setter());
+                                    Function* setter = as_function(desc.get_setter());
                                     if (setter) setter->call(ctx, {right_value}, object_value);
                                 }
                                 return right_value;
@@ -765,7 +765,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                             ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
                             return Value();
                         }
-                        Function* getter_fn = dynamic_cast<Function*>(own_pd.get_getter());
+                        Function* getter_fn = as_function(own_pd.get_getter());
                         cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
                         if (ctx.has_exception()) return Value();
                     } else {
@@ -792,7 +792,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
                         return Value();
                     }
-                    Function* setter_fn = dynamic_cast<Function*>(own_pd.get_setter());
+                    Function* setter_fn = as_function(own_pd.get_setter());
                     if (setter_fn) setter_fn->call(ctx, {final_value}, object_value);
                     if (ctx.has_exception()) return Value();
                     return final_value;
@@ -848,7 +848,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                             ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
                             return Value();
                         }
-                        Function* getter_fn = dynamic_cast<Function*>(pd.get_getter());
+                        Function* getter_fn = as_function(pd.get_getter());
                         Value cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
                         if (ctx.has_exception()) return Value();
                         Value final_value = right_value;
@@ -867,7 +867,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                             default: break;
                         }
                         if (ctx.has_exception()) return Value();
-                        Function* setter_fn = dynamic_cast<Function*>(pd.get_setter());
+                        Function* setter_fn = as_function(pd.get_setter());
                         if (setter_fn) setter_fn->call(ctx, {final_value}, object_value);
                         if (ctx.has_exception()) return Value();
                         return final_value;
@@ -928,7 +928,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (operator_ == Operator::ASSIGN && desc.is_accessor_descriptor() && desc.has_setter()) {
                 Object* setter = desc.get_setter();
                 if (setter) {
-                    Function* setter_fn = dynamic_cast<Function*>(setter);
+                    Function* setter_fn = as_function(setter);
                     if (setter_fn) {
                         try {
                             setter_fn->call(ctx, {right_value}, Value(obj));

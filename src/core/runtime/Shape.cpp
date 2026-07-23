@@ -16,8 +16,13 @@ Shape::Shape(Shape* parent, const std::string& key, uint32_t slot_index, bool is
 }
 
 Shape* Shape::root() {
-    static thread_local Shape instance;
-    return &instance;
+    // Heap-allocated (leaked, matching "immortal for the thread's lifetime"
+    // above) rather than a plain `static thread_local Shape instance` --
+    // thread-local storage doesn't reliably honor over-alignment (Shape is
+    // alignas(32), Object.h's TaggedShapePtr tag bits), while `new` does
+    // (C++17 over-aligned dynamic allocation).
+    static thread_local Shape* instance = new Shape();
+    return instance;
 }
 
 Shape* Shape::transition(const std::string& key) {

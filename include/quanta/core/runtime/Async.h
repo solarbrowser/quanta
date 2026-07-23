@@ -92,10 +92,10 @@ public:
                   std::unique_ptr<ASTNode> body,
                   Context* closure_context);
 
-    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value()) override;
+    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
 
     const BytecodeChunk* get_suspendable_chunk(Context& ctx);
-    void trace(Visitor& v) override;
+    void trace(Visitor& v);
 
 private:
 };
@@ -116,7 +116,7 @@ public:
 };
 
 
-class AsyncGenerator : public Object {
+class AsyncGenerator : public CustomObjectBase {
 public:
     enum class State {
         SuspendedStart,
@@ -190,8 +190,10 @@ public:
 public:
     AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body, AsyncGeneratorFunction* owner_fn,
                    Context* outer_ctx = nullptr);
-    void trace(Visitor& v) override;
-    virtual ~AsyncGenerator();
+    void trace(Visitor& v);
+    // Non-virtual: the GC sweep (Collector.cpp) reads get_custom_kind() and
+    // destructs through the correct concrete type itself.
+    ~AsyncGenerator();
 
     AsyncGeneratorResult next(const Value& value = Value());
     AsyncGeneratorResult return_value(const Value& value);
@@ -235,6 +237,18 @@ private:
     static void fiber_entry(mco_coro* co);
 };
 
+// get_type()-based replacement for dynamic_cast<AsyncGenerator*>(Object*):
+// ObjectType::Custom is shared by every CustomObjectBase-rooted class
+// (Generator/AsyncGenerator/AsyncIterator/Iterator+subclasses/...), so
+// telling them apart still needs a real dynamic_cast -- just routed through
+// CustomObjectBase's own (still-live) vtable instead of Object's, since
+// Object itself is no longer polymorphic.
+inline AsyncGenerator* as_async_generator(Object* obj) {
+    if (!obj || obj->get_type() != Object::ObjectType::Custom) return nullptr;
+    auto* base = static_cast<CustomObjectBase*>(obj);
+    return base->get_custom_kind() == CustomObjectBase::CustomKind::AsyncGenerator
+        ? static_cast<AsyncGenerator*>(base) : nullptr;
+}
 
 class AsyncGeneratorFunction : public Function {
     std::unique_ptr<ASTNode> body_;
@@ -250,14 +264,14 @@ public:
                            std::vector<std::unique_ptr<class Parameter>> params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context);
-    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value()) override;
+    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
 
     const BytecodeChunk* get_suspendable_chunk(Context& ctx);
-    void trace(Visitor& v) override;
+    void trace(Visitor& v);
 };
 
 
-class AsyncIterator : public Object {
+class AsyncIterator : public CustomObjectBase {
 public:
     using AsyncNextFunction = std::function<std::unique_ptr<Promise>()>;
     
@@ -267,7 +281,8 @@ private:
     
 public:
     AsyncIterator(AsyncNextFunction next_fn);
-    virtual ~AsyncIterator() = default;
+    // Non-virtual: no further subclass, and the GC sweep destructs directly.
+    ~AsyncIterator() = default;
     
     std::unique_ptr<Promise> next();
     std::unique_ptr<Promise> return_value(const Value& value);
@@ -279,6 +294,15 @@ public:
     
     static void setup_async_iterator_prototype(Context& ctx);
 };
+
+// get_type()-based replacement for dynamic_cast<AsyncIterator*>(Object*) --
+// see as_async_generator() above.
+inline AsyncIterator* as_async_iterator(Object* obj) {
+    if (!obj || obj->get_type() != Object::ObjectType::Custom) return nullptr;
+    auto* base = static_cast<CustomObjectBase*>(obj);
+    return base->get_custom_kind() == CustomObjectBase::CustomKind::AsyncIterator
+        ? static_cast<AsyncIterator*>(base) : nullptr;
+}
 
 
 namespace AsyncUtils {

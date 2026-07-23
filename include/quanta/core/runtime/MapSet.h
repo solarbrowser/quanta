@@ -44,8 +44,8 @@ private:
     
 public:
     Map();
-    void trace(Visitor& v) override;
-    virtual ~Map() = default;
+    void trace(Visitor& v);
+    ~Map() = default;
     
     bool has(const Value& key) const;
     Value get(const Value& key) const;
@@ -56,7 +56,8 @@ public:
     size_t size() const { return size_; }
     bool empty() const { return size_ == 0; }
     
-    Value get_property(const std::string& key) const override;
+    // No longer virtual on Object -- see Object::get_property()'s own switch-based dispatch.
+    Value get_property(const std::string& key) const;
     
     std::vector<Value> keys() const;
     std::vector<Value> values() const;
@@ -100,8 +101,8 @@ private:
 
 public:
     Set();
-    void trace(Visitor& v) override;
-    virtual ~Set() = default;
+    void trace(Visitor& v);
+    ~Set() = default;
     
     bool has(const Value& value) const;
     void add(const Value& value);
@@ -111,7 +112,8 @@ public:
     size_t size() const { return size_; }
     bool empty() const { return size_ == 0; }
     
-    Value get_property(const std::string& key) const override;
+    // No longer virtual on Object -- see Object::get_property()'s own switch-based dispatch.
+    Value get_property(const std::string& key) const;
     
     std::vector<Value> values() const;
     std::vector<std::pair<Value, Value>> entries() const;
@@ -151,8 +153,8 @@ public:
     // Keys are weakly held: trace() reports the map to the collector's
     // ephemeron pass instead of visiting entries_/symbol_entries_ directly,
     // so a value is only kept alive while its key is (see Collector.cpp).
-    void trace(Visitor& v) override;
-    virtual ~WeakMap() = default;
+    void trace(Visitor& v);
+    ~WeakMap() = default;
 
     bool has(Object* key) const;
     Value get(Object* key) const;
@@ -190,8 +192,8 @@ private:
 public:
     WeakSet();
     // Weakly held: see WeakMap::trace.
-    void trace(Visitor& v) override;
-    virtual ~WeakSet() = default;
+    void trace(Visitor& v);
+    ~WeakSet() = default;
 
     bool has(Object* value) const;
     void add(Object* value);
@@ -226,8 +228,8 @@ public:
     explicit WeakRef(class Symbol* target);
     // Does not visit the target: a live WeakRef pointing at a dead target is
     // the normal, observable end state (deref() then returns undefined).
-    void trace(Visitor& v) override;
-    virtual ~WeakRef() = default;
+    void trace(Visitor& v);
+    ~WeakRef() = default;
 
     Value deref() const;
     Object* target_object() const { return target_object_; }
@@ -269,8 +271,8 @@ public:
     FinalizationRegistry(Function* cleanup_callback, Context* ctx);
     // Strongly traces the callback and each cell's heldValue; targets/tokens
     // are weak (see WeakMap::trace).
-    void trace(Visitor& v) override;
-    virtual ~FinalizationRegistry() = default;
+    void trace(Visitor& v);
+    ~FinalizationRegistry() = default;
 
     void register_target(Object* target_obj, class Symbol* target_sym, const Value& held,
                          Object* token_obj, class Symbol* token_sym);

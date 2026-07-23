@@ -116,11 +116,11 @@ static Object* as_object_or_function(const Value& v) {
 // [[OwnPropertyKeys]] / [[GetOwnProperty]] that respect a Proxy's traps (the plain Object
 // virtuals don't dispatch to Proxy traps at all -- see ownKeys/getOwnPropertyDescriptor tests).
 static std::vector<std::string> own_keys_for(Object* obj) {
-    Proxy* px = dynamic_cast<Proxy*>(obj);
+    Proxy* px = as_proxy(obj);
     return px ? px->own_keys_trap() : obj->get_own_property_keys();
 }
 static PropertyDescriptor own_property_descriptor_for(Object* obj, const std::string& key) {
-    Proxy* px = dynamic_cast<Proxy*>(obj);
+    Proxy* px = as_proxy(obj);
     return px ? px->get_own_property_descriptor_trap(Value(key)) : obj->get_property_descriptor(key);
 }
 
@@ -359,7 +359,7 @@ void register_promise_builtins(Context& ctx) {
                 return Value();
             }
 
-            Promise* promise = dynamic_cast<Promise*>(this_obj);
+            Promise* promise = as_promise(this_obj);
             if (!promise) {
                 ctx.throw_type_error("Promise.prototype.then called on non-Promise");
                 return Value();
@@ -582,7 +582,7 @@ void register_promise_builtins(Context& ctx) {
                 return Value();
             }
             if (value.is_object()) {
-                Promise* p = dynamic_cast<Promise*>(value.as_object());
+                Promise* p = as_promise(value.as_object());
                 if (p) {
                     Value xctor = value.as_object()->get_property("constructor");
                     if (xctor.is_function() && c_val.is_function() && xctor.as_function() == c_val.as_function()) {

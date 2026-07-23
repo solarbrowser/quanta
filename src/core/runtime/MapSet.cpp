@@ -18,7 +18,7 @@
 namespace Quanta {
 
 void Map::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     for (const auto& e : entries_) {
         if (e.deleted) continue;
         v.visit(e.key);
@@ -27,19 +27,19 @@ void Map::trace(Visitor& v) {
 }
 
 void Set::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     for (const auto& e : values_) {
         if (!e.deleted) v.visit(e.value);
     }
 }
 
 void WeakMap::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_weak_map(this);
 }
 
 void WeakSet::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_weak_set(this);
 }
 
@@ -135,7 +135,7 @@ Value Map::get_property(const std::string& key) const {
     if (key == "size") {
         return Value(static_cast<double>(size_));
     }
-    return Object::get_property(key);
+    return Object::get_property_default(key);
 }
 
 std::vector<Value> Map::keys() const {
@@ -686,7 +686,7 @@ Value Set::get_property(const std::string& key) const {
     if (key == "size") {
         return Value(static_cast<double>(size_));
     }
-    return Object::get_property(key);
+    return Object::get_property_default(key);
 }
 
 std::vector<Value> Set::values() const {
@@ -1821,7 +1821,7 @@ WeakRef::WeakRef(Object* target) : Object(ObjectType::WeakRef), target_object_(t
 WeakRef::WeakRef(Symbol* target) : Object(ObjectType::WeakRef), target_symbol_(target) {}
 
 void WeakRef::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_weak_ref(this);
 }
 
@@ -1900,7 +1900,7 @@ FinalizationRegistry::FinalizationRegistry(Function* cleanup_callback, Context* 
 }
 
 void FinalizationRegistry::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_object(cleanup_callback_);
     for (const auto& cell : cells_) v.visit(cell.held_value);
     v.visit_context(context_);

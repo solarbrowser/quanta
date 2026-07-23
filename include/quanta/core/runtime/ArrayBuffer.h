@@ -42,6 +42,13 @@ public:
         ~BackingStore();
     };
 
+protected:
+    // ArrayBuffer and SharedArrayBuffer share ObjectType::ArrayBuffer (no
+    // separate tag), so this is the only way to tell them apart once
+    // is_shared_array_buffer() is no longer virtual -- set true only by
+    // SharedArrayBuffer's own constructors.
+    bool is_shared_ = false;
+
 private:
     std::shared_ptr<BackingStore> store_;
     bool is_detached_;
@@ -57,7 +64,7 @@ public:
     ArrayBuffer(const uint8_t* source, size_t byte_length);
     explicit ArrayBuffer(std::shared_ptr<BackingStore> store);
 
-    ~ArrayBuffer() override;
+    ~ArrayBuffer();
 
     size_t byte_length() const {
         return (is_detached_ || !store_) ? 0 : store_->byte_length.load(std::memory_order_seq_cst);
@@ -65,6 +72,7 @@ public:
     size_t max_byte_length() const { return store_ ? store_->max_byte_length : 0; }
     bool is_detached() const { return is_detached_; }
     bool is_resizable() const { return is_resizable_; }
+    bool is_shared() const { return is_shared_; }
 
     uint8_t* data() { return (is_detached_ || !store_) ? nullptr : store_->data; }
     const uint8_t* data() const { return (is_detached_ || !store_) ? nullptr : store_->data; }
@@ -94,13 +102,13 @@ public:
     
     static Value isView(Context& ctx, const std::vector<Value>& args);
     
-    Value get_property(const std::string& key) const override;
+    // No longer virtual on Object -- see Object::get_property()'s own
+    // switch-based dispatch in Object.cpp.
+    Value get_property(const std::string& key) const;
     
     std::string to_string() const;
     void mark_references() const;
-    
-    bool is_array_buffer() const override { return true; }
-    
+
 private:
     static std::shared_ptr<BackingStore> make_store(size_t byte_length,
                                                     size_t max_byte_length,
@@ -134,8 +142,6 @@ public:
     // Monotonic: false when new_byte_length is below the current length
     // (spec: grow never shrinks), even if another agent grows concurrently.
     bool grow(size_t new_byte_length);
-
-    bool is_shared_array_buffer() const override { return true; }
 };
 
 }

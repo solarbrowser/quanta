@@ -1681,7 +1681,7 @@ void register_typed_array_builtins(Context& ctx) {
     auto typedarray_from = ObjectFactory::create_native_function("from",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            Function* ctor = this_obj ? dynamic_cast<Function*>(this_obj) : nullptr;
+            Function* ctor = this_obj ? as_function(this_obj) : nullptr;
             if (!ctor || !ctor->is_constructor()) {
                 ctx.throw_type_error("TypedArray.from must be called on a concrete TypedArray constructor");
                 return Value();
@@ -1794,7 +1794,7 @@ void register_typed_array_builtins(Context& ctx) {
     auto typedarray_of = ObjectFactory::create_native_function("of",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            Function* ctor = this_obj ? dynamic_cast<Function*>(this_obj) : nullptr;
+            Function* ctor = this_obj ? as_function(this_obj) : nullptr;
             if (!ctor) {
                 ctx.throw_type_error("TypedArray.of must be called on a concrete TypedArray constructor");
                 return Value();

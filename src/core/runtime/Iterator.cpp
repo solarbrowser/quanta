@@ -16,28 +16,28 @@
 namespace Quanta {
 
 void ArrayIterator::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_object(array_);
 }
 
 void MapIterator::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_object(map_);
 }
 
 void SetIterator::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_object(set_);
 }
 
 
 
 Iterator::Iterator(NextFunction next_fn)
-    : Object(ObjectType::Custom), next_fn_(next_fn), done_(false) {
+    : CustomObjectBase(ObjectType::Custom), next_fn_(next_fn), done_(false) {
 }
 
 Iterator::Iterator()
-    : Object(ObjectType::Custom), done_(false) {
+    : CustomObjectBase(ObjectType::Custom), done_(false) {
 }
 
 void Iterator::set_next_function(NextFunction next_fn) {
@@ -45,15 +45,24 @@ void Iterator::set_next_function(NextFunction next_fn) {
 }
 
 Iterator::IteratorResult Iterator::next() {
+    switch (get_custom_kind()) {
+        case CustomKind::StringIterator: return static_cast<StringIterator*>(this)->next();
+        case CustomKind::MapIterator: return static_cast<MapIterator*>(this)->next();
+        case CustomKind::SetIterator: return static_cast<SetIterator*>(this)->next();
+        default: return next_default();
+    }
+}
+
+Iterator::IteratorResult Iterator::next_default() {
     if (done_) {
         return IteratorResult(Value(), true);
     }
-    
+
     auto result = next_fn_();
     if (result.done) {
         done_ = true;
     }
-    
+
     return result;
 }
 
@@ -75,7 +84,8 @@ Value Iterator::iterator_next(Context& ctx, const std::vector<Value>& args) {
     Iterator* iterator = static_cast<Iterator*>(obj);
     // %ArrayIteratorPrototype%.next revalidates a typed-array target: a buffer
     // resize can take it out of bounds between calls.
-    if (auto* arr_it = dynamic_cast<ArrayIterator*>(iterator)) {
+    if (iterator->get_custom_kind() == CustomKind::ArrayIterator) {
+        ArrayIterator* arr_it = static_cast<ArrayIterator*>(iterator);
         Object* target = arr_it->get_array();
         if (target && target->is_typed_array() && static_cast<TypedArrayBase*>(target)->is_out_of_bounds()) {
             ctx.throw_type_error("Array iterator: underlying typed array is out of bounds");
@@ -255,6 +265,7 @@ Value Iterator::create_iterator_result(const Value& value, bool done) {
 
 ArrayIterator::ArrayIterator(Object* array, Kind kind)
     : Iterator([this]() { return this->next_impl(); }), array_(array), kind_(kind), index_(0) {
+    set_custom_kind(CustomKind::ArrayIterator);
     if (s_array_iterator_prototype_) {
         set_prototype(s_array_iterator_prototype_);
     }
@@ -302,6 +313,7 @@ Iterator::IteratorResult ArrayIterator::next_impl() {
 
 StringIterator::StringIterator(const std::string& str)
     : Iterator(), string_(str), position_(0) {
+    set_custom_kind(CustomKind::StringIterator);
     if (s_string_iterator_prototype_) {
         set_prototype(s_string_iterator_prototype_);
     }
@@ -342,6 +354,7 @@ Iterator::IteratorResult StringIterator::next_impl() {
 
 MapIterator::MapIterator(Map* map, Kind kind)
     : Iterator(), map_(map), kind_(kind), index_(0) {
+    set_custom_kind(CustomKind::MapIterator);
     if (s_map_iterator_prototype_) {
         set_prototype(s_map_iterator_prototype_);
     }
@@ -386,6 +399,7 @@ Iterator::IteratorResult MapIterator::next_impl() {
 
 SetIterator::SetIterator(Set* set, Kind kind)
     : Iterator(), set_(set), kind_(kind), index_(0) {
+    set_custom_kind(CustomKind::SetIterator);
     if (s_set_iterator_prototype_) {
         set_prototype(s_set_iterator_prototype_);
     }

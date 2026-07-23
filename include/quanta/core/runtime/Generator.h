@@ -40,7 +40,7 @@ public:
  * JavaScript Generator implementation
  * Supports ES6 generator functions and yield expressions
  */
-class Generator : public Object {
+class Generator : public CustomObjectBase {
 public:
     enum class State {
         SuspendedStart,
@@ -100,8 +100,10 @@ public:
     bool throwing_ = false;
     bool returning_ = false;
     Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx = nullptr);
-    void trace(Visitor& v) override;
-    virtual ~Generator();
+    void trace(Visitor& v);
+    // Non-virtual: the GC sweep (Collector.cpp) reads get_custom_kind() and
+    // destructs through the correct concrete type itself.
+    ~Generator();
 
     GeneratorResult next(const Value& value = Value());
     GeneratorResult return_value(const Value& value);
@@ -176,7 +178,7 @@ public:
     // Compiles on first call and caches; permanently null if the body or the
     // captured scope chain (a `with`) is incompatible.
     const BytecodeChunk* get_suspendable_chunk(Context& ctx);
-    void trace(Visitor& v) override;
+    void trace(Visitor& v);
 };
 
 class YieldExpression;

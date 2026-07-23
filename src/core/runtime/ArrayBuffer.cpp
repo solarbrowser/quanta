@@ -236,7 +236,7 @@ Value ArrayBuffer::get_property(const std::string& key) const {
         return Value(true);
     }
     
-    return Object::get_property(key);
+    return Object::get_property_default(key);
 }
 
 std::string ArrayBuffer::to_string() const {
@@ -396,14 +396,17 @@ std::unique_ptr<ArrayBuffer> from_vector(const std::vector<uint8_t>& vec) {
 
 SharedArrayBuffer::SharedArrayBuffer(size_t byte_length)
     : ArrayBuffer(byte_length) {
+    is_shared_ = true;
 }
 
 SharedArrayBuffer::SharedArrayBuffer(size_t byte_length, size_t max_byte_length)
     : ArrayBuffer(byte_length, max_byte_length) {
+    is_shared_ = true;
 }
 
 SharedArrayBuffer::SharedArrayBuffer(std::shared_ptr<BackingStore> store)
     : ArrayBuffer(std::move(store)) {
+    is_shared_ = true;
 }
 
 bool SharedArrayBuffer::grow(size_t new_byte_length) {

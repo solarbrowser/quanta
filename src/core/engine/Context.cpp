@@ -478,7 +478,7 @@ void Context::throw_exception(const Value& exception, bool raw) {
 
     if (current_exception_.is_object()) {
         Object* obj = current_exception_.as_object();
-        Error* error = dynamic_cast<Error*>(obj);
+        Error* error = as_error(obj);
         if (error) {
             error->generate_stack_trace();
         }

@@ -235,7 +235,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             // For getter properties, invoke with current 'this' as receiver (spec super[[Get]])
             PropertyDescriptor desc = lookup_proto->get_property_descriptor(prop_name);
             if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                Function* getter = dynamic_cast<Function*>(desc.get_getter());
+                Function* getter = as_function(desc.get_getter());
                 if (getter) {
                     Value this_val = ctx.get_binding("this");
                     return getter->call(ctx, {}, this_val);
@@ -298,7 +298,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                 Object* proto_obj = proto.as_object();
                 PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                    Function* getter = dynamic_cast<Function*>(desc.get_getter());
+                    Function* getter = as_function(desc.get_getter());
                     if (getter) return getter->call(ctx, {}, object_value);
                     return Value();
                 }
@@ -334,7 +334,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     // Check for accessor getter on prototype
                     PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
                     if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                        Function* getter = dynamic_cast<Function*>(desc.get_getter());
+                        Function* getter = as_function(desc.get_getter());
                         if (getter) {
                             return getter->call(ctx, {}, object_value);
                         }
@@ -378,7 +378,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                             ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
                             return Value();
                         }
-                        Function* getter_fn = dynamic_cast<Function*>(own_d.get_getter());
+                        Function* getter_fn = as_function(own_d.get_getter());
                         if (getter_fn) return getter_fn->call(ctx, {}, object_value);
                         return Value();
                     }
@@ -400,7 +400,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                                 ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
                                 return Value();
                             }
-                            Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+                            Function* getter_fn = as_function(d.get_getter());
                             if (getter_fn) return getter_fn->call(ctx, {}, object_value);
                             return Value();
                         }
@@ -437,7 +437,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
                     Object* getter = desc.get_getter();
                     if (getter) {
-                        Function* getter_fn = dynamic_cast<Function*>(getter);
+                        Function* getter_fn = as_function(getter);
                         if (getter_fn) {
                             std::vector<Value> args;
                             return getter_fn->call(ctx, args, object_value);
@@ -456,7 +456,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                 while (proto) {
                     PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
                     if (proto_desc.is_accessor_descriptor() && proto_desc.has_getter()) {
-                        Function* getter_fn = dynamic_cast<Function*>(proto_desc.get_getter());
+                        Function* getter_fn = as_function(proto_desc.get_getter());
                         if (getter_fn) {
                             std::vector<Value> args;
                             return getter_fn->call(ctx, args, object_value);
@@ -510,7 +510,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             if (desc.is_accessor_descriptor() && desc.has_getter()) {
                 Object* getter = desc.get_getter();
                 if (getter) {
-                    Function* getter_fn = dynamic_cast<Function*>(getter);
+                    Function* getter_fn = as_function(getter);
                     if (getter_fn) {
                         std::vector<Value> args;
                         return getter_fn->call(ctx, args, object_value);

@@ -12,7 +12,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <algorithm>
 #include "quanta/core/runtime/Value.h"
+#include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/Symbol.h"
 
 namespace Quanta {
 
@@ -73,6 +76,100 @@ private:
     Value namespace_;
 };
 
+// ES2022 10.4.6: Module Namespace Exotic Object.
+// Reads every property live from the module's binding environment so that
+// mutations to exported variables after import are observable (live bindings).
+// Moved here (out of ModuleLoader.cpp) so CustomObjectBase's own switch
+// (Object.cpp) can name this class directly for its ObjectType::Custom /
+// CustomKind::ModuleNamespace case.
+class ModuleNamespaceObject : public CustomObjectBase {
+    Module* module_;
+
+    static std::string tag_key() {
+        Symbol* s = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        return s ? s->to_property_key() : std::string();
+    }
+
+public:
+    explicit ModuleNamespaceObject(Module* module)
+        : CustomObjectBase(ObjectType::Custom), module_(module) {
+        set_custom_kind(CustomKind::ModuleNamespace);
+        set_prototype(nullptr);
+    }
+
+    // [[Get]]: live binding for exports; "Module" for @@toStringTag
+    Value get_property(const std::string& key) const {
+        std::string tk = tag_key();
+        if (!tk.empty() && key == tk) return Value(std::string("Module"));
+        if (module_ && module_->has_export(key)) return module_->get_export(key);
+        return Value();
+    }
+
+    // [[HasProperty]] / [[GetOwnProperty]] presence check
+    bool has_own_property(const std::string& key) const {
+        std::string tk = tag_key();
+        if (!tk.empty() && key == tk) return true;
+        if (module_) {
+            for (auto& n : module_->get_export_names())
+                if (n == key) return true;
+        }
+        return false;
+    }
+
+    // [[OwnPropertyKeys]]: sorted string export names, then @@toStringTag
+    std::vector<std::string> get_own_property_keys() const {
+        std::vector<std::string> keys;
+        if (module_) {
+            keys = module_->get_export_names();
+            std::sort(keys.begin(), keys.end());
+        }
+        std::string tk = tag_key();
+        if (!tk.empty()) keys.push_back(tk);
+        return keys;
+    }
+
+    // Enumerable keys: only the sorted string exports (@@toStringTag is non-enumerable)
+    std::vector<std::string> get_enumerable_keys() const {
+        std::vector<std::string> keys;
+        if (module_) {
+            keys = module_->get_export_names();
+            std::sort(keys.begin(), keys.end());
+        }
+        return keys;
+    }
+
+    // [[Set]]: always false per ES2022 10.4.6.5
+    bool set_property(const std::string& /*key*/, const Value& /*value*/,
+                      PropertyAttributes /*attrs*/ = PropertyAttributes::Default) {
+        return false;
+    }
+
+    // [[DefineOwnProperty]]: always false per ES2022 10.4.6.4
+    bool set_property_descriptor(const std::string& /*key*/, const PropertyDescriptor& /*desc*/) {
+        return false;
+    }
+
+    // [[Delete]]: false for any own property (all non-configurable), true otherwise
+    bool delete_property(const std::string& key) {
+        if (has_own_property(key)) return false;
+        return true;
+    }
+
+    // [[GetOwnProperty]]: proper non-writable non-configurable descriptors
+    PropertyDescriptor get_property_descriptor(const std::string& key) const {
+        std::string tk = tag_key();
+        if (!tk.empty() && key == tk) {
+            // @@toStringTag: non-writable, non-enumerable, non-configurable
+            return PropertyDescriptor(Value(std::string("Module")), PropertyAttributes::None);
+        }
+        if (module_ && module_->has_export(key)) {
+            // Spec 10.4.6.8: exports are {writable: true, enumerable: true, configurable: false}
+            return PropertyDescriptor(module_->get_export(key), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable));
+        }
+        return PropertyDescriptor();
+    }
+};
+
 /**
  * Manages module loading, resolution, and dependency tracking
  */
@@ -123,6 +220,106 @@ private:
     std::string join_paths(const std::string& base, const std::string& relative);
     bool file_exists(const std::string& filename);
     std::string read_file(const std::string& filename);
+};
+
+// Namespace object for a deferred (`import defer * as ns from ...`) module:
+// the module doesn't actually load/evaluate until its first property access
+// (spec: import-defer proposal). Moved here from language.cpp (originally
+// .cpp-local) for the same reason as ModuleNamespaceObject above --
+// CustomObjectBase's switch dispatch (Object.cpp) needs to name it directly.
+class DeferredNamespaceObject : public CustomObjectBase {
+    ModuleLoader* loader_;
+    std::string module_source_;
+    std::string from_path_;
+    bool evaluated_ = false;
+
+    void ensure_evaluated() {
+        if (evaluated_) return;
+        evaluated_ = true;
+        Module* mod = loader_->load_module(module_source_, from_path_);
+        if (!mod) return;
+        // The namespace is observably non-extensible; re-open it only for this
+        // internal export copy.
+        reopen_extensible();
+        for (const auto& name : mod->get_export_names())
+            Object::set_property_default(name, mod->get_export(name));
+        prevent_extensions();
+    }
+
+    static bool is_symbol_like(const std::string& key) {
+        // Per spec: Symbol keys and "then" do not trigger deferred evaluation.
+        // Symbol keys in this engine are stored as "@@sym:N" or "Symbol.xxx".
+        if (key == "then") return true;
+        if (key.size() >= 5 && key.substr(0, 5) == "@@sym") return true;
+        if (key.size() >= 7 && key.substr(0, 7) == "Symbol.") return true;
+        return false;
+    }
+
+public:
+    DeferredNamespaceObject(ModuleLoader* loader, const std::string& src, const std::string& from)
+        // Explicit ObjectType::Custom (matching ModuleNamespaceObject, its
+        // non-deferred sibling) -- previously fell through to the implicit
+        // default (ObjectType::Ordinary), which the GC sweep's destructor
+        // dispatch cannot tell apart from a genuinely plain Object.
+        : CustomObjectBase(ObjectType::Custom), loader_(loader), module_source_(src), from_path_(from) {
+        set_custom_kind(CustomKind::DeferredNamespace);
+        // Namespace objects are never extensible (spec 10.4.6): PrivateFieldAdd
+        // on one throws TypeError without triggering deferred evaluation.
+        prevent_extensions();
+    }
+
+    Value get_property(const std::string& key) const {
+        if (!is_symbol_like(key))
+            const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::get_property_default(key);
+    }
+
+    bool has_own_property(const std::string& key) const {
+        if (!is_symbol_like(key))
+            const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::has_own_property_default(key);
+    }
+
+    bool has_property(const std::string& key) const {
+        if (!is_symbol_like(key))
+            const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::has_property_default(key);
+    }
+
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) {
+        // Spec: [[Set]] on a namespace object always returns false without triggering evaluation.
+        return false;
+    }
+
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+        // Spec: [[DefineOwnProperty]] on a namespace object triggers evaluation for non-symbol-like keys.
+        if (!is_symbol_like(key))
+            ensure_evaluated();
+        return Object::set_property_descriptor_default(key, desc);
+    }
+
+    PropertyDescriptor get_property_descriptor(const std::string& key) const {
+        // Spec: [[GetOwnProperty]] on a deferred namespace object triggers evaluation for non-symbol-like keys.
+        if (!is_symbol_like(key))
+            const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::get_property_descriptor_default(key);
+    }
+
+    bool delete_property(const std::string& key) {
+        if (!is_symbol_like(key))
+            ensure_evaluated();
+        return Object::delete_property_default(key);
+    }
+
+    std::vector<std::string> get_own_property_keys() const {
+        const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::get_own_property_keys_default();
+    }
+
+    std::vector<std::string> get_enumerable_keys() const {
+        const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::get_enumerable_keys_default();
+    }
 };
 
 }

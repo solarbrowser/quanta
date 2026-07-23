@@ -48,14 +48,20 @@ protected:
     void validate_offset_and_length(size_t buffer_byte_length, size_t byte_offset, size_t length) const;
 
 public:
-    void trace(Visitor& v) override;
+    // Non-virtual: none of the 11 concrete numeric TypedArray<T> leaves
+    // override trace() or add extra cell references -- this one
+    // implementation is the whole story, reached directly from Object's
+    // ObjectType::TypedArray switch case. A vtable here would misalign the
+    // Object subobject for a base with none of its own (see Object.h's
+    // note on why Object itself carries no vtable).
+    void trace(Visitor& v);
     TypedArrayBase(ArrayType type, size_t bytes_per_element);
     TypedArrayBase(ArrayType type, size_t bytes_per_element, size_t length);
     TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer);
     TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer,
                    size_t byte_offset, size_t length = SIZE_MAX);
 
-    virtual ~TypedArrayBase() = default;
+    ~TypedArrayBase() = default;
 
     ArrayBuffer* buffer() const { return buffer_.get(); }
     size_t byte_offset() const { return byte_offset_; }
@@ -76,29 +82,36 @@ public:
     bool is_valid_integer_index(double idx) const;
 
 
-    bool is_typed_array() const override { return true; }
-    virtual std::string get_type_name() const = 0;
-    
-    virtual Value get_element(size_t index) const = 0;
-    virtual bool set_element(size_t index, const Value& value) = 0;
+    // All 11 concrete leaves just spell the type differently; no per-type
+    // behavior, so no dispatch needed at all.
+    std::string get_type_name() const { return array_type_to_string(array_type_); }
+
+    // Non-virtual: switches on array_type_ to the exact concrete leaf
+    // (Int8Array/.../BigUint64Array) instead of virtual dispatch -- a
+    // vtable here would misalign the Object subobject (see trace()'s
+    // comment above). Defined out-of-line (TypedArray.cpp): needs every
+    // leaf's full definition, which comes later in this header.
+    Value get_element(size_t index) const;
+    bool set_element(size_t index, const Value& value);
     
     Value subarray(size_t start, size_t end = SIZE_MAX) const;
     void set_from_array(const std::vector<Value>& source, size_t offset = 0);
     void set_from_typed_array(const TypedArrayBase& source, size_t offset = 0);
     
-    Value get_property(const std::string& key) const override;
-    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
+    // None of these eight are virtual on Object anymore -- Object's own
+    // get_property()/etc. switch on get_type() and dispatch here directly.
+    Value get_property(const std::string& key) const;
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     // Integer-indexed properties (0..current_length()-1) live in the backing buffer, not in the
     // generic Object property table, so [[OwnPropertyKeys]]/[[GetOwnProperty]]/for-in/Object.keys
     // need their own view of them here -- re-derived live so a resizable buffer's current size is reflected.
-    std::vector<std::string> get_own_property_keys() const override;
-    bool has_own_property(const std::string& key) const override;
-    bool has_property(const std::string& key) const override;
-    bool delete_property(const std::string& key) override;
-    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) override;
-    PropertyDescriptor get_property_descriptor(const std::string& key) const override;
+    std::vector<std::string> get_own_property_keys() const;
+    bool has_own_property(const std::string& key) const;
+    bool has_property(const std::string& key) const;
+    bool delete_property(const std::string& key);
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
+    PropertyDescriptor get_property_descriptor(const std::string& key) const;
     
-    Value get_element(uint32_t index) const;
     bool set_element(uint32_t index, const Value& value);
     
     std::string to_string() const;
@@ -127,9 +140,9 @@ public:
     TypedArray(ArrayType type, std::shared_ptr<ArrayBuffer> buffer);
     TypedArray(ArrayType type, std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX);
     
-    Value get_element(size_t index) const override;
-    bool set_element(size_t index, const Value& value) override;
-    
+    Value get_element(size_t index) const;
+    bool set_element(size_t index, const Value& value);
+
     T at(size_t index) const { return get_typed_element(index); }
     void set(size_t index, T value) { set_typed_element(index, value); }
 };
@@ -141,10 +154,8 @@ class Int8Array : public TypedArray<int8_t> {
 public:
     Int8Array(size_t length) : TypedArray(ArrayType::INT8, length) {}
     Int8Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::INT8, buffer) {}
-    Int8Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX) 
+    Int8Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::INT8, buffer, byte_offset, length) {}
-    
-    std::string get_type_name() const override { return "Int8Array"; }
 };
 
 class Uint8Array : public TypedArray<uint8_t> {
@@ -153,8 +164,6 @@ public:
     Uint8Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::UINT8, buffer) {}
     Uint8Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::UINT8, buffer, byte_offset, length) {}
-        
-    std::string get_type_name() const override { return "Uint8Array"; }
 };
 
 class Uint8ClampedArray : public TypedArray<uint8_t> {
@@ -163,10 +172,8 @@ public:
     Uint8ClampedArray(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::UINT8_CLAMPED, buffer) {}
     Uint8ClampedArray(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::UINT8_CLAMPED, buffer, byte_offset, length) {}
-        
-    std::string get_type_name() const override { return "Uint8ClampedArray"; }
-    
-    bool set_element(size_t index, const Value& value) override;
+
+    bool set_element(size_t index, const Value& value);
 };
 
 class Int16Array : public TypedArray<int16_t> {
@@ -175,8 +182,6 @@ public:
     Int16Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::INT16, buffer) {}
     Int16Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::INT16, buffer, byte_offset, length) {}
-        
-    std::string get_type_name() const override { return "Int16Array"; }
 };
 
 class Uint16Array : public TypedArray<uint16_t> {
@@ -185,8 +190,6 @@ public:
     Uint16Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::UINT16, buffer) {}
     Uint16Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::UINT16, buffer, byte_offset, length) {}
-        
-    std::string get_type_name() const override { return "Uint16Array"; }
 };
 
 class Int32Array : public TypedArray<int32_t> {
@@ -195,8 +198,6 @@ public:
     Int32Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::INT32, buffer) {}
     Int32Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::INT32, buffer, byte_offset, length) {}
-        
-    std::string get_type_name() const override { return "Int32Array"; }
 };
 
 class Uint32Array : public TypedArray<uint32_t> {
@@ -205,8 +206,6 @@ public:
     Uint32Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::UINT32, buffer) {}
     Uint32Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::UINT32, buffer, byte_offset, length) {}
-        
-    std::string get_type_name() const override { return "Uint32Array"; }
 };
 
 class Float32Array : public TypedArray<float> {
@@ -215,8 +214,6 @@ public:
     Float32Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::FLOAT32, buffer) {}
     Float32Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::FLOAT32, buffer, byte_offset, length) {}
-        
-    std::string get_type_name() const override { return "Float32Array"; }
 };
 
 class Float64Array : public TypedArray<double> {
@@ -225,8 +222,6 @@ public:
     Float64Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::FLOAT64, buffer) {}
     Float64Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::FLOAT64, buffer, byte_offset, length) {}
-
-    std::string get_type_name() const override { return "Float64Array"; }
 };
 
 class BigInt64Array : public TypedArrayBase {
@@ -235,9 +230,8 @@ public:
     BigInt64Array(std::shared_ptr<ArrayBuffer> buffer);
     BigInt64Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX);
 
-    std::string get_type_name() const override { return "BigInt64Array"; }
-    Value get_element(size_t index) const override;
-    bool set_element(size_t index, const Value& value) override;
+    Value get_element(size_t index) const;
+    bool set_element(size_t index, const Value& value);
 };
 
 class BigUint64Array : public TypedArrayBase {
@@ -246,9 +240,8 @@ public:
     BigUint64Array(std::shared_ptr<ArrayBuffer> buffer);
     BigUint64Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX);
 
-    std::string get_type_name() const override { return "BigUint64Array"; }
-    Value get_element(size_t index) const override;
-    bool set_element(size_t index, const Value& value) override;
+    Value get_element(size_t index) const;
+    bool set_element(size_t index, const Value& value);
 };
 
 /**

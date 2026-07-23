@@ -17,7 +17,7 @@ namespace Quanta {
 class Context;
 class Symbol;
 
-class Iterator : public Object {
+class Iterator : public CustomObjectBase {
 public:
     struct IteratorResult {
         Value value;
@@ -35,12 +35,20 @@ private:
 public:
     Iterator(NextFunction next_fn);
     Iterator();
-    virtual ~Iterator() = default;
-    
+    // Non-virtual: Iterator is never instantiated directly (always one of
+    // the four concrete subclasses below), and none of them need their own
+    // destructor logic beyond member cleanup -- the GC sweep's CustomKind
+    // switch (Collector.cpp) calls the exact one directly.
+    ~Iterator() = default;
+
     void set_next_function(NextFunction next_fn);
-    
-    virtual IteratorResult next();
-    
+
+    // Non-virtual: switches on get_custom_kind() to reach StringIterator/
+    // MapIterator/SetIterator's own bodies; next_default() below is
+    // ArrayIterator's path (via next_fn_) and the base body otherwise.
+    IteratorResult next();
+
+
     static Value iterator_next(Context& ctx, const std::vector<Value>& args);
     static Value iterator_return(Context& ctx, const std::vector<Value>& args);
     static Value iterator_throw(Context& ctx, const std::vector<Value>& args);
@@ -56,6 +64,9 @@ public:
     static thread_local Object* s_string_iterator_prototype_;
     static thread_local Object* s_map_iterator_prototype_;
     static thread_local Object* s_set_iterator_prototype_;
+
+protected:
+    IteratorResult next_default();
 };
 
 /**
@@ -77,7 +88,7 @@ private:
     
 public:
     ArrayIterator(Object* array, Kind kind);
-    void trace(Visitor& v) override;
+    void trace(Visitor& v);
     
     static std::unique_ptr<ArrayIterator> create_keys_iterator(Object* array);
     static std::unique_ptr<ArrayIterator> create_values_iterator(Object* array);
@@ -101,7 +112,7 @@ private:
 public:
     StringIterator(const std::string& str);
 
-    IteratorResult next() override;
+    IteratorResult next();
 
 private:
     IteratorResult next_impl();
@@ -127,9 +138,9 @@ private:
 
 public:
     MapIterator(class Map* map, Kind kind);
-    void trace(Visitor& v) override;
+    void trace(Visitor& v);
 
-    IteratorResult next() override;
+    IteratorResult next();
 
 private:
     IteratorResult next_impl();
@@ -154,9 +165,9 @@ private:
 
 public:
     SetIterator(class Set* set, Kind kind);
-    void trace(Visitor& v) override;
+    void trace(Visitor& v);
 
-    IteratorResult next() override;
+    IteratorResult next();
 
 private:
     IteratorResult next_impl();

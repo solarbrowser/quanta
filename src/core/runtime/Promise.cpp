@@ -17,7 +17,7 @@
 namespace Quanta {
 
 void Promise::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit(value_);
     for (const auto& r : then_records_) {
         v.visit_object(r.on_fulfilled);

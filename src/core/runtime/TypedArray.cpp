@@ -36,8 +36,42 @@ static void quanta_memset(void* dest, int value, size_t count) {
 namespace Quanta {
 
 void TypedArrayBase::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_object(buffer_.get());
+}
+
+Value TypedArrayBase::get_element(size_t index) const {
+    switch (array_type_) {
+        case ArrayType::INT8: return static_cast<const Int8Array*>(this)->get_element(index);
+        case ArrayType::UINT8: return static_cast<const Uint8Array*>(this)->get_element(index);
+        case ArrayType::UINT8_CLAMPED: return static_cast<const Uint8ClampedArray*>(this)->get_element(index);
+        case ArrayType::INT16: return static_cast<const Int16Array*>(this)->get_element(index);
+        case ArrayType::UINT16: return static_cast<const Uint16Array*>(this)->get_element(index);
+        case ArrayType::INT32: return static_cast<const Int32Array*>(this)->get_element(index);
+        case ArrayType::UINT32: return static_cast<const Uint32Array*>(this)->get_element(index);
+        case ArrayType::FLOAT32: return static_cast<const Float32Array*>(this)->get_element(index);
+        case ArrayType::FLOAT64: return static_cast<const Float64Array*>(this)->get_element(index);
+        case ArrayType::BIGINT64: return static_cast<const BigInt64Array*>(this)->get_element(index);
+        case ArrayType::BIGUINT64: return static_cast<const BigUint64Array*>(this)->get_element(index);
+    }
+    return Value();
+}
+
+bool TypedArrayBase::set_element(size_t index, const Value& value) {
+    switch (array_type_) {
+        case ArrayType::INT8: return static_cast<Int8Array*>(this)->set_element(index, value);
+        case ArrayType::UINT8: return static_cast<Uint8Array*>(this)->set_element(index, value);
+        case ArrayType::UINT8_CLAMPED: return static_cast<Uint8ClampedArray*>(this)->set_element(index, value);
+        case ArrayType::INT16: return static_cast<Int16Array*>(this)->set_element(index, value);
+        case ArrayType::UINT16: return static_cast<Uint16Array*>(this)->set_element(index, value);
+        case ArrayType::INT32: return static_cast<Int32Array*>(this)->set_element(index, value);
+        case ArrayType::UINT32: return static_cast<Uint32Array*>(this)->set_element(index, value);
+        case ArrayType::FLOAT32: return static_cast<Float32Array*>(this)->set_element(index, value);
+        case ArrayType::FLOAT64: return static_cast<Float64Array*>(this)->set_element(index, value);
+        case ArrayType::BIGINT64: return static_cast<BigInt64Array*>(this)->set_element(index, value);
+        case ArrayType::BIGUINT64: return static_cast<BigUint64Array*>(this)->set_element(index, value);
+    }
+    return false;
 }
 
 
@@ -185,7 +219,7 @@ Value TypedArrayBase::get_property(const std::string& key) const {
 
     if (key == "length") {
         // defineProperty can shadow "length" with an own property; that wins.
-        if (Object::has_own_property(key)) return Object::get_property(key);
+        if (Object::has_own_property_default(key)) return Object::get_property_default(key);
         return Value(static_cast<double>(current_length()));
     }
     if (key == "byteLength") {
@@ -201,7 +235,7 @@ Value TypedArrayBase::get_property(const std::string& key) const {
         return Value(static_cast<double>(bytes_per_element_));
     }
 
-    return Object::get_property(key);
+    return Object::get_property_default(key);
 }
 
 bool TypedArrayBase::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
@@ -217,7 +251,7 @@ bool TypedArrayBase::set_property(const std::string& key, const Value& value, Pr
         return true;
     }
 
-    return Object::set_property(key, value, attrs);
+    return Object::set_property_default(key, value, attrs);
 }
 
 std::vector<std::string> TypedArrayBase::get_own_property_keys() const {
@@ -225,26 +259,26 @@ std::vector<std::string> TypedArrayBase::get_own_property_keys() const {
     size_t len = current_length();
     keys.reserve(len);
     for (size_t i = 0; i < len; ++i) keys.push_back(std::to_string(i));
-    for (const auto& k : Object::get_own_property_keys()) keys.push_back(k);
+    for (const auto& k : Object::get_own_property_keys_default()) keys.push_back(k);
     return keys;
 }
 
 bool TypedArrayBase::has_own_property(const std::string& key) const {
     double num_idx;
     if (canonical_numeric_index(key, num_idx)) return is_valid_integer_index(num_idx);
-    return Object::has_own_property(key);
+    return Object::has_own_property_default(key);
 }
 
 bool TypedArrayBase::has_property(const std::string& key) const {
     double num_idx;
     if (canonical_numeric_index(key, num_idx)) return is_valid_integer_index(num_idx);
-    return Object::has_property(key);
+    return Object::has_property_default(key);
 }
 
 bool TypedArrayBase::delete_property(const std::string& key) {
     double num_idx;
     if (canonical_numeric_index(key, num_idx)) return !is_valid_integer_index(num_idx);
-    return Object::delete_property(key);
+    return Object::delete_property_default(key);
 }
 
 bool TypedArrayBase::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
@@ -260,7 +294,7 @@ bool TypedArrayBase::set_property_descriptor(const std::string& key, const Prope
         }
         return true;
     }
-    return Object::set_property_descriptor(key, desc);
+    return Object::set_property_descriptor_default(key, desc);
 }
 
 PropertyDescriptor TypedArrayBase::get_property_descriptor(const std::string& key) const {
@@ -269,7 +303,7 @@ PropertyDescriptor TypedArrayBase::get_property_descriptor(const std::string& ke
         if (!is_valid_integer_index(num_idx)) return PropertyDescriptor();
         return PropertyDescriptor(get_element(static_cast<size_t>(num_idx)), PropertyAttributes::Default);
     }
-    return Object::get_property_descriptor(key);
+    return Object::get_property_descriptor_default(key);
 }
 
 std::string TypedArrayBase::to_string() const {
@@ -330,10 +364,6 @@ size_t TypedArrayBase::get_bytes_per_element(ArrayType type) {
         default:
             return 1;
     }
-}
-
-Value TypedArrayBase::get_element(uint32_t index) const {
-    return get_element(static_cast<size_t>(index));
 }
 
 bool TypedArrayBase::set_element(uint32_t index, const Value& value) {

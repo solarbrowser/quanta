@@ -44,7 +44,7 @@ public:
     Error(const Error& other) = delete;
     Error& operator=(const Error& other) = delete;
     
-    virtual ~Error() = default;
+    ~Error() = default;
 
     Type get_error_type() const { return error_type_; }
     const std::string& get_message() const { return message_; }
@@ -84,6 +84,14 @@ private:
     void initialize_properties();
     void set_error_name();
 };
+
+// get_type()-based replacement for dynamic_cast<Error*> -- see as_function() in Object.h.
+inline Error* as_error(Object* obj) {
+    return (obj && obj->get_type() == Object::ObjectType::Error) ? static_cast<Error*>(obj) : nullptr;
+}
+inline const Error* as_error(const Object* obj) {
+    return (obj && obj->get_type() == Object::ObjectType::Error) ? static_cast<const Error*>(obj) : nullptr;
+}
 
 /**
  * JavaScript exception class for throwing errors

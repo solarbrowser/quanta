@@ -26,7 +26,7 @@ static void quanta_memcpy(void* dest, const void* src, size_t count) {
 namespace Quanta {
 
 void DataView::trace(Visitor& v) {
-    Object::trace(v);
+    Object::trace_default(v);
     v.visit_object(buffer_.get());
 }
 
@@ -278,7 +278,7 @@ Value DataView::get_property(const std::string& key) const {
         return Value(static_cast<double>(byte_offset_));
     }
 
-    return Object::get_property(key);
+    return Object::get_property_default(key);
 }
 
 std::string DataView::to_string() const {

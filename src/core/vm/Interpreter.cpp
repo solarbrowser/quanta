@@ -134,7 +134,7 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     PropertyDescriptor desc = proto_obj->get_property_descriptor(name);
     if (desc.is_accessor_descriptor()) {
         if (!desc.has_getter()) return Value();
-        Function* getter = dynamic_cast<Function*>(desc.get_getter());
+        Function* getter = as_function(desc.get_getter());
         return getter ? getter->call(ctx, {}, prim) : Value();
     }
     if (cacheable && desc.has_value()) {
@@ -166,7 +166,7 @@ void set_primitive_named(Context& ctx, const Value& prim, const std::string& nam
                 PropertyDescriptor desc = level->get_property_descriptor(name);
                 if (desc.is_accessor_descriptor()) {
                     if (desc.has_setter()) {
-                        Function* setter = dynamic_cast<Function*>(desc.get_setter());
+                        Function* setter = as_function(desc.get_setter());
                         if (setter) setter->call(ctx, {value}, prim);
                     }
                     return;
@@ -320,7 +320,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         PropertyDescriptor desc = override_desc ? *override_desc : obj->get_property_descriptor(name);
         if (desc.is_accessor_descriptor()) {
             if (!desc.has_getter()) return Value();
-            Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
+            Function* getter_fn = as_function(desc.get_getter());
             return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
         }
         // `desc` already fully answers "is this an own property, and if so
@@ -369,7 +369,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 PropertyDescriptor proto_desc = proto->get_property_descriptor(name);
                 if (proto_desc.is_accessor_descriptor()) {
                     if (!proto_desc.has_getter()) return Value();
-                    Function* getter_fn = dynamic_cast<Function*>(proto_desc.get_getter());
+                    Function* getter_fn = as_function(proto_desc.get_getter());
                     return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
                 }
                 if (proto_desc.has_value()) {
@@ -685,7 +685,7 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
                 ctx.throw_type_error("'" + name + "' accessor has no getter");
                 return Value();
             }
-            Function* getter_fn = dynamic_cast<Function*>(own_d.get_getter());
+            Function* getter_fn = as_function(own_d.get_getter());
             return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
         }
         if (pf) {
@@ -708,7 +708,7 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
                 ctx.throw_type_error("'" + used + "' accessor has no getter");
                 return Value();
             }
-            Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+            Function* getter_fn = as_function(d.get_getter());
             return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
         }
         if (d.has_value()) return owner->get_property(used);
@@ -725,7 +725,7 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
                 ctx.throw_type_error("'" + used + "' accessor has no getter");
                 return Value();
             }
-            Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+            Function* getter_fn = as_function(d.get_getter());
             return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
         }
         if (d.has_value()) return lookup->get_property(used);
@@ -758,7 +758,7 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
                 ctx.throw_type_error("'" + qualified + "' was defined without a setter");
                 return;
             }
-            Function* setter_fn = dynamic_cast<Function*>(own_pd.get_setter());
+            Function* setter_fn = as_function(own_pd.get_setter());
             if (setter_fn) setter_fn->call(ctx, {value}, receiver);
             return;
         }
@@ -809,7 +809,7 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
             ctx.throw_type_error("'" + used + "' was defined without a setter");
             return;
         }
-        Function* setter_fn = dynamic_cast<Function*>(pd.get_setter());
+        Function* setter_fn = as_function(pd.get_setter());
         if (setter_fn) setter_fn->call(ctx, {value}, receiver);
         return;
     }

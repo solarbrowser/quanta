@@ -746,7 +746,7 @@ Function* JSON::Stringifier::get_to_json(const Value& v) {
                 PropertyDescriptor d = bp.as_object()->get_property_descriptor("toJSON");
                 if (d.is_data_descriptor() && d.get_value().is_function()) return d.get_value().as_function();
                 if (d.is_accessor_descriptor() && d.get_getter()) {
-                    Function* getter = dynamic_cast<Function*>(d.get_getter());
+                    Function* getter = as_function(d.get_getter());
                     if (getter) {
                         Value tj = getter->call(*context_, {}, v);
                         if (!context_->has_exception() && tj.is_function()) return tj.as_function();

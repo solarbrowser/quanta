@@ -34,7 +34,10 @@ namespace Quanta {
 //  - kMaxSlots bounds chain depth (properties per object). Every new shape
 //    copies its parent's flattened slot table, so an uncapped chain costs
 //    O(n^2) time and memory as one object keeps adding properties.
-class Shape {
+// 32-byte aligned so Object can tag ObjectType (5 bits) into a Shape*'s
+// low bits -- see Object::kTypeTagMask. Cheap here since shapes are shared
+// across every object with the same layout, not allocated per-object.
+class alignas(32) Shape {
 public:
     // The empty shape every plain object starts from.
     static Shape* root();

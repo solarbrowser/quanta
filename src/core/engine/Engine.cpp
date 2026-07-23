@@ -539,7 +539,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
                 if (exception.is_object() || exception.is_function()) {
                     Object* obj = exception.is_object() ? exception.as_object()
                                                         : static_cast<Object*>(exception.as_function());
-                    Error* err_obj = dynamic_cast<Error*>(obj);
+                    Error* err_obj = as_error(obj);
                     if (err_obj && !err_obj->get_stack_trace().empty()) {
                         error_str = err_obj->get_stack_trace();
                     } else {

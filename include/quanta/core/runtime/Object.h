@@ -26,17 +26,21 @@ class PropertyDescriptor;
 class HybridDescriptorMap;
 struct RareExtras;
 
-// Fixed-position header for Object::butterfly_ -- always exactly 2
+// Fixed-position header for Object::butterfly_ -- always exactly 3
 // Value-widths so it sits at a capacity-independent offset from the
 // butterfly pointer (`reinterpret_cast<ButterflyHeader*>(butterfly_) - 1`).
-// Never accessed as a Value, never GC-traced (plain counters).
+// Never accessed as a Value, never GC-traced (plain counters + a raw,
+// explicitly-owned RareExtras*: Object::free_butterfly() deletes it,
+// Object::realloc_butterfly() transplants it to the new header instead --
+// see both for why the distinction matters).
 struct ButterflyHeader {
     uint32_t elements_length = 0;
     uint32_t elements_capacity = 0;
     uint32_t shape_capacity = 0;
     uint32_t reserved = 0;
+    RareExtras* extras = nullptr;
 };
-static_assert(sizeof(ButterflyHeader) == 2 * sizeof(Value), "must be exactly 2 Value-widths");
+static_assert(sizeof(ButterflyHeader) == 3 * sizeof(Value), "must be exactly 3 Value-widths");
 
 class Context;
 class Environment;
@@ -101,13 +105,34 @@ public:
 private:
     static void bump_descriptor_epoch() { ++descriptor_epoch_; }
 
-    struct ObjectHeader {
-        Object* prototype;
-        ObjectType type;
-        uint8_t flags;
-        uint16_t property_count;
-        uint32_t hash_code;
-    } header_;
+    // [[Prototype]] + 2 status bits (extensibility, "ever used as a
+    // prototype"), tagged into the pointer's own low bits. GC heap cells are
+    // at least 16-byte aligned (HeapBlock::kCellAlign), so bits 0-3 of any
+    // real, non-null Object* are always zero. Transparent proxy for Object*:
+    // every existing `proto_->x`, `if (proto_)`, `proto_ == y` call site
+    // keeps compiling unchanged; only flag access needs the explicit
+    // flag()/set_flag()/clear_flag() API, and assignment (`proto_ = ptr`)
+    // preserves the existing flag bits rather than wiping them.
+    class TaggedProto {
+    public:
+        TaggedProto() = default;
+        TaggedProto(Object* p) : bits_(reinterpret_cast<uintptr_t>(p)) {}
+        Object* get() const { return reinterpret_cast<Object*>(bits_ & ~kMask); }
+        operator Object*() const { return get(); }
+        Object* operator->() const { return get(); }
+        TaggedProto& operator=(Object* p) {
+            bits_ = (reinterpret_cast<uintptr_t>(p) & ~kMask) | (bits_ & kMask);
+            return *this;
+        }
+        bool flag(uintptr_t m) const { return (bits_ & m) != 0; }
+        void set_flag(uintptr_t m) { bits_ |= m; }
+        void clear_flag(uintptr_t m) { bits_ &= ~m; }
+        void clear_flags() { bits_ &= ~kMask; }
+    private:
+        static constexpr uintptr_t kMask = 0x3;
+        uintptr_t bits_ = 0;
+    };
+    TaggedProto proto_;
 
     // Named (non-index) fast-path properties: shape describes the layout
     // (which keys, in what slot), the positive side of butterfly_ holds
@@ -116,7 +141,36 @@ private:
     // A property that needs non-default attributes, or any delete, moves
     // everything into descriptors_ and sets shape_ to nullptr -- see
     // migrate_to_dictionary_mode.
-    Shape* shape_ = Shape::root();
+    //
+    // ObjectType is ALSO tagged into shape_'s low 5 bits (Shape is
+    // alignas(32), Shape.h) instead of its own header field -- same
+    // transparent-proxy trick as TaggedProto above; `shape_->x`, `if
+    // (shape_)`, `shape_ = next` all keep compiling unchanged.
+    class TaggedShapePtr {
+    public:
+        TaggedShapePtr() = default;
+        TaggedShapePtr(Shape* s) : bits_(reinterpret_cast<uintptr_t>(s)) {}
+        Shape* get() const { return reinterpret_cast<Shape*>(bits_ & ~kMask); }
+        operator Shape*() const { return get(); }
+        Shape* operator->() const { return get(); }
+        TaggedShapePtr& operator=(Shape* s) {
+            bits_ = (reinterpret_cast<uintptr_t>(s) & ~kMask) | (bits_ & kMask);
+            return *this;
+        }
+        ObjectType type() const { return static_cast<ObjectType>(bits_ & kMask); }
+        void set_type(ObjectType t) { bits_ = (bits_ & ~kMask) | static_cast<uintptr_t>(t); }
+    private:
+        static constexpr uintptr_t kMask = 0x1F;
+        uintptr_t bits_ = 0;
+    };
+    TaggedShapePtr shape_ = Shape::root();
+    // Shape.h hardcodes alignas(32) as a literal (deliberately standalone,
+    // no Object.h dependency) -- this keeps the two files' coupling
+    // compiler-enforced instead of just commented.
+    static_assert(alignof(Shape) >= 32, "TaggedShapePtr needs 5 spare low bits from Shape's alignment");
+
+    // is_extensible()/prevent_extensions()/reopen_extensible()'s bit in proto_.
+    static constexpr uintptr_t kNotExtensible = 0x1;
 
     // Single allocation backing both dense array elements and shape-slot
     // values, one pointer instead of two std::vectors' own ptr+size+capacity
@@ -124,15 +178,11 @@ private:
     // Layout, low to high address:
     //   [element[capacity-1]]...[element[0]] [ButterflyHeader] [shape slot 0]...[shape slot N-1]
     //                                                           ^ butterfly_ points here
-    // `butterfly_[i]` is shape slot i; `butterfly_[-3-i]` is element i (the
-    // header occupies the two slots right before butterfly_). nullptr until
-    // the object needs either kind of storage.
+    // `butterfly_[i]` is shape slot i; `butterfly_[-4-i]` is element i (the
+    // header occupies the three slots right before butterfly_, including the
+    // RareExtras* -- see ButterflyHeader above). nullptr until the object
+    // needs any of: array elements, shape-mode properties, or RareExtras.
     Value* butterfly_ = nullptr;
-
-    // Sparse array-index overflow, deleted-element tombstones, non-default-
-    // attribute/accessor descriptors, and their enumeration order (see
-    // RareExtras below) -- nullptr for most objects (plain shape-mode data).
-    std::unique_ptr<RareExtras> extras_;
 
     // butterfly_ helpers. Trivial ones inline; growth/free in Object.cpp.
     ButterflyHeader* butterfly_header() const {
@@ -142,7 +192,7 @@ private:
     uint32_t elements_length() const { return butterfly_ ? butterfly_header()->elements_length : 0; }
     uint32_t shape_capacity() const { return butterfly_ ? butterfly_header()->shape_capacity : 0; }
     Value* shape_slot_ptr(uint32_t i) const { return butterfly_ + i; }
-    Value* element_ptr(uint32_t i) const { return butterfly_ - 3 - i; }
+    Value* element_ptr(uint32_t i) const { return butterfly_ - (sizeof(ButterflyHeader) / sizeof(Value)) - 1 - i; }
     // Amortized-doubling growth (like std::vector) so at least `needed`
     // shape slots resp. elements exist. New slots are NOT zero-initialized
     // -- callers must fill every newly-visible slot before it's traced or read.
@@ -156,6 +206,12 @@ private:
     // are >=), frees the old block, and repoints butterfly_.
     void realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shape_capacity);
     void free_butterfly();
+    // Shared tail of free_butterfly()/realloc_butterfly(): returns the block
+    // to SmallMapPool without touching butterfly_header()->extras --
+    // free_butterfly() deletes it first (real ownership release, object is
+    // going away), realloc_butterfly() transplants it to the new header
+    // first (still owned, just relocated to a bigger/smaller block).
+    void release_butterfly_block();
 
 public:
     // GC cell protocol: every Object (and subclass) lives in the active
@@ -169,15 +225,26 @@ public:
 
     Object(ObjectType type = ObjectType::Ordinary);
     explicit Object(Object* prototype, ObjectType type = ObjectType::Ordinary);
-    virtual ~Object();
+    // Non-virtual: Object carries no vtable at all. The GC sweep
+    // (Collector.cpp run_sweep(), CellKind::Object case) switches on
+    // get_type() and destroys through the correct concrete type instead --
+    // Function/TypedArrayBase/CustomObjectBase keep their own small vtables
+    // so THEIR subclasses still destruct correctly via ordinary virtual
+    // dispatch from that one cast.
+    ~Object();
 
     // Reports every cell reference this object holds to the collector.
-    // The base walks prototype + property/element storage; subclasses with
-    // C++ fields that reference cells MUST override and chain to the base.
-    // Values captured only inside std::function lambdas are invisible here --
-    // such state must also live in a property or traced field (the existing
-    // pin-property discipline).
-    virtual void trace(Visitor& v);
+    // Non-virtual: switch on get_type() dispatches to Function/TypedArray/
+    // Custom (their own small vtables reach further subclasses) or directly
+    // to the ~7 leaf classes with extra cell references (Map/Set/WeakMap/
+    // WeakSet/WeakRef/FinalizationRegistry/Promise/Proxy/DataView);
+    // trace_default() above is the plain-Object body, also the fallback
+    // every override chains to instead of calling this (which would
+    // re-enter the switch and recurse). Values captured only inside
+    // std::function lambdas are invisible here -- such state must also
+    // live in a property or traced field (the existing pin-property
+    // discipline).
+    void trace(Visitor& v);
 
     friend class Function;
     Object(const Object& other) = delete;
@@ -188,34 +255,39 @@ public:
     Object(Object&& other) = delete;
     Object& operator=(Object&& other) = delete;
 
-    ObjectType get_type() const { return header_.type; }
-    void set_type(ObjectType type) { header_.type = type; }
-    bool is_array() const { return header_.type == ObjectType::Array; }
-    bool is_function() const { return header_.type == ObjectType::Function; }
+    ObjectType get_type() const { return shape_.type(); }
+    void set_type(ObjectType type) { shape_.set_type(type); }
+    bool is_array() const { return get_type() == ObjectType::Array; }
+    bool is_function() const { return get_type() == ObjectType::Function; }
     bool is_primitive_wrapper() const {
-        return header_.type == ObjectType::String || 
-               header_.type == ObjectType::Number || 
-               header_.type == ObjectType::Boolean;
+        return get_type() == ObjectType::String ||
+               get_type() == ObjectType::Number ||
+               get_type() == ObjectType::Boolean;
     }
-    
-    virtual bool is_array_buffer() const { return header_.type == ObjectType::ArrayBuffer; }
-    virtual bool is_typed_array() const { return header_.type == ObjectType::TypedArray; }
-    virtual bool is_data_view() const { return header_.type == ObjectType::DataView; }
-    virtual bool is_shared_array_buffer() const { return false; }
-    
-    virtual bool is_wasm_memory() const { return false; }
-    virtual bool is_wasm_module() const { return false; }
-    virtual bool is_wasm_instance() const { return false; }
 
-    virtual Object* get_prototype() const { return header_.prototype; }
+    bool is_array_buffer() const { return get_type() == ObjectType::ArrayBuffer; }
+    bool is_typed_array() const { return get_type() == ObjectType::TypedArray; }
+    bool is_data_view() const { return get_type() == ObjectType::DataView; }
+    // ArrayBuffer and SharedArrayBuffer share ObjectType::ArrayBuffer (no
+    // separate tag) -- out-of-line in Object.cpp, which already includes
+    // ArrayBuffer.h, so it can check ArrayBuffer::is_shared() directly.
+    bool is_shared_array_buffer() const;
+
+    // Only Proxy overrides this (getPrototypeOf trap) -- out-of-line in
+    // Object.cpp, which already includes ProxyReflect.h.
+    Object* get_prototype() const;
     // Non-virtual: reads the internal [[Prototype]] slot directly, bypassing Proxy's getPrototypeOf trap.
     // For internal bookkeeping (e.g. checking whether a freshly-constructed object already has a prototype) where invoking a user trap would be observably wrong.
-    Object* get_prototype_raw() const { return header_.prototype; }
+    Object* get_prototype_raw() const { return proto_; }
     void set_prototype(Object* prototype);
     bool has_prototype(Object* prototype) const;
     
-    virtual bool has_property(const std::string& key) const;
-    virtual bool has_own_property(const std::string& key) const;
+    // Non-virtual: switch on get_type() dispatches to TypedArray/Proxy/Custom
+    // (CustomObjectBase); *_default() below is the plain-Object body, also
+    // the fallback every override chains to instead of calling these two
+    // (which would re-enter the switch and recurse).
+    bool has_property(const std::string& key) const;
+    bool has_own_property(const std::string& key) const;
     bool has_private_slot(const std::string& key) const;
     std::string find_private_slot_key(const std::string& prefix) const;
     Value get_private_slot_value(const std::string& key) const;
@@ -228,11 +300,12 @@ public:
     void set_private_slot_value(const std::string& key, const Value& value);
     void add_private_field(const std::string& key, const Value& value = Value());
 
-    virtual Value get_property(const std::string& key) const;
+    // Non-virtual, see has_property()'s comment above for the pattern.
+    Value get_property(const std::string& key) const;
     Value get_property(const Value& key) const;
     Value get_own_property(const std::string& key) const;
 
-    virtual bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool set_property(const Value& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool ordinary_set(const std::string& key, const Value& value);
     // CreateDataProperty (spec 7.3.5): installs an own, Default-attrs data
@@ -242,10 +315,11 @@ public:
     // chain at all. Caller must already know `key` has no own property on
     // `this` (true by construction right after Op::CreateObject).
     bool create_own_data_property(const std::string& key, const Value& value);
-    virtual bool delete_property(const std::string& key);
+    bool delete_property(const std::string& key);
     void remove_own_property(const std::string& key); // force-remove ignoring configurable
     
-    virtual Value get_element(uint32_t index) const;
+    // Only Proxy overrides this -- out-of-line in Object.cpp.
+    Value get_element(uint32_t index) const;
 
     // fp: unchecked array access
     inline Value get_element_unchecked(uint32_t index) const {
@@ -255,14 +329,15 @@ public:
     bool set_element(uint32_t index, const Value& value);
     bool delete_element(uint32_t index);
     
-    virtual std::vector<std::string> get_own_property_keys() const;
-    virtual std::vector<std::string> get_enumerable_keys() const;
-    virtual std::vector<std::string> get_internal_property_keys() const;
+    std::vector<std::string> get_own_property_keys() const;
+    std::vector<std::string> get_enumerable_keys() const;
+    // Only Function overrides this -- out-of-line in Object.cpp.
+    std::vector<std::string> get_internal_property_keys() const;
     std::vector<std::string> get_own_property_keys_unfiltered() const;
     std::vector<uint32_t> get_element_indices() const;
-    
-    virtual PropertyDescriptor get_property_descriptor(const std::string& key) const;
-    virtual bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
+
+    PropertyDescriptor get_property_descriptor(const std::string& key) const;
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
     
     bool is_extensible() const;
     void prevent_extensions();
@@ -275,11 +350,12 @@ public:
     // Set once (never cleared) the first time set_prototype() installs this
     // object as someone's [[Prototype]] -- gates whether this object's own
     // mutations need to bump proto_epoch(), so ordinary objects never pay it.
-    static constexpr uint8_t kUsedAsPrototype = 0x02;
-    bool used_as_prototype() const { return header_.flags & kUsedAsPrototype; }
-    void mark_used_as_prototype() { header_.flags |= kUsedAsPrototype; }
+    static constexpr uintptr_t kUsedAsPrototype = 0x02;
+    bool used_as_prototype() const { return proto_.flag(kUsedAsPrototype); }
+    void mark_used_as_prototype() { proto_.set_flag(kUsedAsPrototype); }
     
-    virtual uint32_t get_length() const;
+    // Only Proxy overrides this -- out-of-line in Object.cpp.
+    uint32_t get_length() const;
     void set_length(uint32_t length);
     void push(const Value& value);
     Value pop();
@@ -305,28 +381,19 @@ public:
 
     Value groupBy(Function* callback, Context& ctx);
     
-    Value call(Context& ctx, const Value& this_value, const std::vector<Value>& args);
-    Value construct(Context& ctx, const std::vector<Value>& args);
-    
     Value to_primitive(const std::string& hint = "") const;
     std::string to_string() const;
     double to_number() const;
     bool to_boolean() const;
     
-    size_t property_count() const { return header_.property_count; }
     size_t element_count() const { return elements_length(); }
-    std::string debug_string() const;
-    uint32_t hash() const { return header_.hash_code; }
-    
-    void mark_references() const;
-    size_t memory_usage() const;
 
     // VM inline-cache fast path. A shape match alone doesn't prove "plain
     // data slot, no override" -- defineProperty can attach non-default
     // attributes to an existing shape-mode key without changing the shape.
     // Callers must also check has_descriptor_override(key) before trusting
     // the slot value.
-    Shape* get_shape() const { return shape_; }
+    Shape* get_shape() const { return shape_.get(); }
     const Value* get_shape_slot_unchecked(uint32_t index) const {
         return index < shape_capacity() ? shape_slot_ptr(index) : nullptr;
     }
@@ -359,15 +426,26 @@ public:
     void add_accessor_shape_property_cached(const std::string& key, const Value& getter,
                                              const Value& setter, Shape* to_shape);
 
-    Value get_internal_property(const std::string& key) const;
-    void set_internal_property(const std::string& key, const Value& value);
-
 protected:
-    virtual Value internal_get(const std::string& key) const;
-    virtual bool internal_set(const std::string& key, const Value& value);
-    virtual bool internal_delete(const std::string& key);
-    virtual std::vector<std::string> internal_own_keys() const;
-    
+    // Plain-Object bodies of the switch-dispatched methods above -- every
+    // override (TypedArrayBase, Proxy, Function, CustomObjectBase's own
+    // Custom-family defaults, ModuleNamespaceObject/DeferredNamespaceObject)
+    // chains to these instead of the public switch-dispatched names, or it
+    // would recurse straight back into its own case.
+    bool has_property_default(const std::string& key) const;
+    bool has_own_property_default(const std::string& key) const;
+    Value get_property_default(const std::string& key) const;
+    bool set_property_default(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    bool delete_property_default(const std::string& key);
+    std::vector<std::string> get_own_property_keys_default() const;
+    std::vector<std::string> get_enumerable_keys_default() const;
+    PropertyDescriptor get_property_descriptor_default(const std::string& key) const;
+    bool set_property_descriptor_default(const std::string& key, const PropertyDescriptor& desc);
+    // Base trace body (prototype + element/shape-slot/overflow/descriptor
+    // storage); every override chains to this instead of trace() (which would
+    // re-enter the switch and recurse).
+    void trace_default(Visitor& v);
+
     void ensure_element_capacity(uint32_t capacity);
     void compact_elements();
 
@@ -407,14 +485,31 @@ private:
     static const std::string& intern_key(const std::string& key);
 
     bool is_array_index(const std::string& key, uint32_t* index = nullptr) const;
-    void update_hash_code();
     PropertyDescriptor create_data_descriptor(const Value& value, PropertyAttributes attrs) const;
 
+    // Would growing the dense elements_ region to cover `index` (from the
+    // current `old_size`) allocate something wildly out of proportion to
+    // what's actually being stored? Either the absolute index is huge, or --
+    // the more common trap -- this ONE write would create a huge gap of
+    // holes relative to what's already there (e.g. writing index 999999 on
+    // an otherwise-empty object: one assignment, megabytes of dense storage
+    // for a single value). Both are the same waste/DoS vector; callers fall
+    // back to store_in_overflow (sparse_overflow_) instead of resizing.
+    static bool sparse_growth_too_costly(uint32_t index, uint32_t old_size);
+
+    // RareExtras lives in the butterfly header (ButterflyHeader::extras)
+    // instead of its own Object field -- peek_extras() mirrors the old bare
+    // `if (extras_)` check (nullptr if no butterfly, or a butterfly with no
+    // RareExtras yet); ensure_extras() allocates a header-only butterfly
+    // first if needed, then the RareExtras itself on first use.
+    RareExtras* peek_extras() const { return butterfly_ ? butterfly_header()->extras : nullptr; }
+    RareExtras& ensure_extras();
+
     // RareExtras accessors: "peek" forms return nullptr without allocating
-    // extras_ (mirrors the old field's bare `if (sparse_overflow_)` check);
-    // "ensure" forms allocate extras_ (and the specific sub-member) on
-    // first use, matching the old `if (!sparse_overflow_) sparse_overflow_
-    // = std::make_unique<...>();` pattern.
+    // (mirrors the old field's bare `if (sparse_overflow_)` check); "ensure"
+    // forms allocate (and the specific sub-member) on first use, matching
+    // the old `if (!sparse_overflow_) sparse_overflow_ =
+    // std::make_unique<...>();` pattern.
     std::unordered_map<std::string, Value>* sparse_overflow() const;
     std::unordered_map<std::string, Value>& ensure_sparse_overflow();
     std::unordered_set<uint32_t>* deleted_elements() const;
@@ -432,6 +527,67 @@ private:
     // Named (non-index) keys only; numeric/element keys are handled
     // separately by both callers.
     void collect_named_keys_in_order(std::vector<std::string>& out) const;
+};
+
+// Common base for every ObjectType::Custom-tagged class (Generator,
+// AsyncGenerator, AsyncIterator, Iterator + its 4 subclasses,
+// ModuleNamespaceObject, DeferredNamespaceObject) -- ObjectType::Custom alone
+// can't tell these apart (ModuleNamespaceObject isn't even Iterator-derived),
+// so the GC sweep destroys every Custom-tagged cell through THIS class's
+// virtual destructor instead: one static_cast + virtual call here correctly
+// reaches whichever concrete type it actually is, without Object itself
+// needing a vtable. Existing dynamic_cast<Generator*> etc. call sites are
+// unaffected (Generator is still, transitively, a CustomObjectBase).
+class CustomObjectBase : public Object {
+public:
+    // Distinguishes the concrete type sharing ObjectType::Custom, without a
+    // vtable: trace()/destructor/the 9 property-access methods all switch
+    // on this instead of virtual dispatch (a vtable here would misalign the
+    // Object subobject, same reasoning as Object.h's own note on why Object
+    // itself carries no vtable). ModuleNamespace/DeferredNamespace are
+    // otherwise .cpp-local classes (ModuleLoader.cpp/language.cpp) --
+    // moved into ModuleLoader.h so this switch (defined in Object.cpp) can
+    // name them directly.
+    enum class CustomKind : uint8_t {
+        Generator, AsyncGenerator, AsyncIterator,
+        ArrayIterator, StringIterator, MapIterator, SetIterator,
+        ModuleNamespace, DeferredNamespace
+    };
+
+private:
+    CustomKind custom_kind_ = CustomKind::Generator;
+protected:
+    void set_custom_kind(CustomKind kind) { custom_kind_ = kind; }
+public:
+    CustomKind get_custom_kind() const { return custom_kind_; }
+
+    using Object::Object;
+    // Non-virtual: the GC sweep (Collector.cpp) reads get_custom_kind() and
+    // destructs through the correct concrete type itself, same pattern as
+    // Object's own destructor dispatch.
+    ~CustomObjectBase() = default;
+
+    // Non-virtual: switches on get_custom_kind() to reach Generator/
+    // AsyncGenerator/ArrayIterator/MapIterator/SetIterator's own extra cell
+    // references (AsyncIterator/StringIterator/ModuleNamespace/
+    // DeferredNamespace hold none and use trace_default() as-is).
+    void trace(Visitor& v);
+
+    // Property-access hooks for this subtree specifically -- Object's own
+    // switch dispatches ObjectType::Custom here, then this switches again
+    // on get_custom_kind(). Only ModuleNamespaceObject/DeferredNamespaceObject
+    // actually override any of these nine (Generator/AsyncGenerator/
+    // AsyncIterator/Iterator's own subclasses don't need to) -- every other
+    // kind falls through to the plain-Object *_default() body.
+    bool has_property(const std::string& key) const;
+    bool has_own_property(const std::string& key) const;
+    Value get_property(const std::string& key) const;
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    bool delete_property(const std::string& key);
+    std::vector<std::string> get_own_property_keys() const;
+    std::vector<std::string> get_enumerable_keys() const;
+    PropertyDescriptor get_property_descriptor(const std::string& key) const;
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
 };
 
 /**
@@ -633,8 +789,8 @@ private:
 // deleted-element tombstones, non-default-attribute/accessor descriptors,
 // and the enumeration order of whichever of those a given object actually
 // has (shape-resident properties order via Shape::properties_in_order()
-// instead). Bundled behind one Object::extras_ pointer instead of four
-// separate fields.
+// instead). Bundled behind one ButterflyHeader::extras pointer (see
+// Object::peek_extras/ensure_extras) instead of four separate fields.
 struct RareExtras {
     std::unique_ptr<std::unordered_map<std::string, Value>> sparse_overflow;
     std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements;
@@ -659,6 +815,21 @@ public:
         Constructor,
         Method
     };
+
+    // Distinguishes AsyncFunction/GeneratorFunction/AsyncGeneratorFunction
+    // from plain Function and from each other, without a vtable: call()/
+    // trace()/the GC sweep's destructor dispatch all switch on this instead
+    // of virtual dispatch (a Function-level vtable would misalign the
+    // Object subobject, same reasoning as Object.h's own note on why Object
+    // itself carries no vtable).
+    enum class FunctionKind : uint8_t { Plain, Async, Generator, AsyncGenerator };
+
+private:
+    FunctionKind function_kind_ = FunctionKind::Plain;
+protected:
+    void set_function_kind(FunctionKind kind) { function_kind_ = kind; }
+public:
+    FunctionKind get_function_kind() const { return function_kind_; }
 
 private:
     std::string name_;
@@ -781,9 +952,17 @@ public:
              uint32_t arity,
              bool create_prototype = false);
     
-    virtual ~Function() = default;
+    // Non-virtual: the GC sweep (Collector.cpp) reads get_function_kind()
+    // and destructs through the correct concrete type itself, same pattern
+    // as Object's own destructor dispatch.
+    ~Function() = default;
 
-    void trace(Visitor& v) override;
+    // Non-virtual: switches on get_function_kind() to reach AsyncFunction/
+    // GeneratorFunction/AsyncGeneratorFunction's own extra cell references;
+    // trace_default() below is the plain-Function body, also the fallback
+    // each of those three chains to instead of calling this (which would
+    // re-enter the switch and recurse).
+    void trace(Visitor& v);
 
     const std::string& get_name() const { return name_; }
     void set_name(const std::string& name);
@@ -855,14 +1034,18 @@ public:
     void mark_as_hot() const { is_hot_ = true; }
     void reset_performance_stats() const { execution_count_ = 0; is_hot_ = false; }
     
-    virtual Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    // Non-virtual: switches on get_function_kind(), same reasoning as
+    // trace() above. call_default() is the plain-Function body.
+    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
     Value construct(Context& ctx, const std::vector<Value>& args);
     
-    Value get_property(const std::string& key) const override;
-    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
-    std::vector<std::string> get_own_property_keys() const override;
-    std::vector<std::string> get_internal_property_keys() const override;
-    bool has_own_property(const std::string& key) const override {
+    // None of these seven are virtual on Object anymore -- Object's own
+    // get_property()/etc. switch on get_type() and dispatch here directly.
+    Value get_property(const std::string& key) const;
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    std::vector<std::string> get_own_property_keys() const;
+    std::vector<std::string> get_internal_property_keys() const;
+    bool has_own_property(const std::string& key) const {
         if (key == "prototype" && prototype_ != nullptr) return true;
         // "name"/"length" are virtually present (own, just not materialized
         // into descriptors_/shape yet) unless explicitly deleted -- see the
@@ -870,11 +1053,11 @@ public:
         auto* d = descriptors();
         if (key == "name" && !name_deleted_ && !(d && d->count("name"))) return true;
         if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) return true;
-        return Object::has_own_property(key);
+        return Object::has_own_property_default(key);
     }
-    PropertyDescriptor get_property_descriptor(const std::string& key) const override;
-    bool delete_property(const std::string& key) override;
-    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) override;
+    PropertyDescriptor get_property_descriptor(const std::string& key) const;
+    bool delete_property(const std::string& key);
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
     // Spec length (ES6: params before the first rest/default) -- decoupled
     // from parameters_.size(), which includes every param. See callers in
     // FunctionExpression::evaluate's clone-elision path.
@@ -897,7 +1080,20 @@ protected:
     // Builds the full arguments object (mapped/unmapped, callee, iterator)
     // and binds it as "arguments" in fn_ctx.
     void create_arguments_object(Context& fn_ctx, const std::vector<Value>& args);
+    // Base bodies -- see trace()/call()'s own doc comments above.
+    void trace_default(Visitor& v);
+    Value call_default(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
 };
+
+// get_type()-based replacement for dynamic_cast<Function*>: Object is no
+// longer polymorphic, so RTTI-based downcasting from a plain Object* isn't
+// available. nullptr in, nullptr out (mirrors dynamic_cast's own behavior).
+inline Function* as_function(Object* obj) {
+    return (obj && obj->get_type() == Object::ObjectType::Function) ? static_cast<Function*>(obj) : nullptr;
+}
+inline const Function* as_function(const Object* obj) {
+    return (obj && obj->get_type() == Object::ObjectType::Function) ? static_cast<const Function*>(obj) : nullptr;
+}
 
 namespace ObjectFactory {
     void initialize_memory_pools();
