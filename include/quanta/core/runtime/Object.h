@@ -900,7 +900,6 @@ private:
             SmallMapAllocator<BytecodeChunk::LookupCacheEntry>> lookup_cache;
         std::vector<PrivateFeedback, SmallMapAllocator<PrivateFeedback>> private_feedback;
     };
-    mutable std::unique_ptr<InstanceFeedback> instance_feedback_;
     // Per-instance overrides for get_source_text()/get_name(): the common
     // case (decl-site defaults, identical for every instance sharing one
     // executable) lives on executable_->source_text/name instead -- see
@@ -918,19 +917,55 @@ private:
         std::string name;
         bool has_name = false;
     };
-    mutable std::unique_ptr<InstanceOverrides> instance_overrides_;
-    // Bundles native-only per-instance state behind one pointer: all three
-    // fields only exist for native functions (is_native_, no executable_ to
-    // derive a decl-site default from -- natives never share, so there's no
-    // sharing benefit to a separate override), so folding them together
-    // costs nothing beyond the single pointer indirection the native
-    // closure itself already needs.
+    // Bundles native-only per-instance state: all three fields only exist
+    // for native functions (is_native_, no executable_ to derive a decl-site
+    // default from -- natives never share, so there's no sharing benefit to
+    // a separate override).
     struct NativeFunctionData {
         std::function<Value(Context&, const std::vector<Value>&)> fn;
         size_t declared_length = 0;
         std::string name;
     };
-    std::unique_ptr<NativeFunctionData> native_data_;
+    // InstanceOverrides/InstanceFeedback above only exist for non-native
+    // functions (need executable_ to have a decl-site default to deviate
+    // from / share a chunk with); NativeFunctionData above only exists for
+    // native ones (is_native_, no executable_ at all). is_native_ never
+    // changes after construction, so these two shapes are truly mutually
+    // exclusive for the whole lifetime of any one instance -- one tagged
+    // pointer covers both, discriminated by the is_native_ bit the class
+    // already carries (no separate tag needed, unlike e.g. std::variant,
+    // which would cost an extra word for its own discriminant and erase
+    // this saving entirely). Manual new/delete instead of unique_ptr: the
+    // pointee's static type depends on a runtime flag, not a compile-time
+    // one, so ~Function() below does the delete by hand instead.
+    struct NonNativeInstanceData {
+        InstanceFeedback feedback;
+        InstanceOverrides overrides;
+    };
+    mutable void* instance_data_ = nullptr;
+    // Every one of these four checks is_native_ itself (not just
+    // instance_data_'s null-ness) before casting -- the whole point of a
+    // tagged union is that a wrong cast is silent type-confusion, not a
+    // compile error, so the safety has to live in these four call sites
+    // instead. ensure_native_data() must only ever be called when
+    // is_native_ is already known true by the caller (the two native
+    // constructors); ensure_instance_data() only when executable_ is
+    // non-null (which already implies !is_native_, see the class-header
+    // comment on executable_).
+    NativeFunctionData& ensure_native_data() const {
+        if (!instance_data_) instance_data_ = new NativeFunctionData();
+        return *static_cast<NativeFunctionData*>(instance_data_);
+    }
+    NativeFunctionData* native_data() const {
+        return (is_native_ && instance_data_) ? static_cast<NativeFunctionData*>(instance_data_) : nullptr;
+    }
+    NonNativeInstanceData& ensure_instance_data() const {
+        if (!instance_data_) instance_data_ = new NonNativeInstanceData();
+        return *static_cast<NonNativeInstanceData*>(instance_data_);
+    }
+    NonNativeInstanceData* instance_data() const {
+        return (!is_native_ && instance_data_) ? static_cast<NonNativeInstanceData*>(instance_data_) : nullptr;
+    }
 
     mutable uint32_t execution_count_;
 
@@ -974,8 +1009,11 @@ public:
     
     // Non-virtual: the GC sweep (Collector.cpp) reads get_function_kind()
     // and destructs through the correct concrete type itself, same pattern
-    // as Object's own destructor dispatch.
-    ~Function() = default;
+    // as Object's own destructor dispatch. Out-of-line (Function.cpp):
+    // manually deletes instance_data_ through whichever type is_native_
+    // says it actually is (see that field's own doc comment) -- this is
+    // the one place that has to know both shapes.
+    ~Function();
 
     // Non-virtual: switches on get_function_kind() to reach AsyncFunction/
     // GeneratorFunction/AsyncGeneratorFunction's own extra cell references;
@@ -985,25 +1023,26 @@ public:
     void trace(Visitor& v);
 
     const std::string& get_name() const {
-        if (instance_overrides_ && instance_overrides_->has_name) return instance_overrides_->name;
+        if (auto* d = instance_data()) { if (d->overrides.has_name) return d->overrides.name; }
         if (executable_) return executable_->name;
         static const std::string empty;
-        return native_data_ ? native_data_->name : empty;
+        auto* nd = native_data();
+        return nd ? nd->name : empty;
     }
     void set_name(const std::string& name);
     // Populates the decl-site default (executable_->name) the first time, or
     // allocates a per-instance override if the executable already holds a
     // DIFFERENT value -- shared by the constructors (a fresh name at
     // construction) and set_name() (a later NamedEvaluation rename). No-op
-    // for native functions (native_data_->name is set directly by whichever
+    // for native functions (native_data()->name is set directly by whichever
     // constructor built it, never shared).
     void assign_decl_site_name(const std::string& name) {
         if (!executable_) return;
         if (executable_->name.empty()) { executable_->name = name; return; }
         if (executable_->name == name) return;
-        if (!instance_overrides_) instance_overrides_ = std::make_unique<InstanceOverrides>();
-        instance_overrides_->name = name;
-        instance_overrides_->has_name = true;
+        auto& overrides = ensure_instance_data().overrides;
+        overrides.name = name;
+        overrides.has_name = true;
     }
     const std::vector<std::string>& get_parameters() const {
         static const std::vector<std::string> empty;
@@ -1044,38 +1083,44 @@ public:
     void set_construct_slot_hint(uint32_t count) { if (executable_) executable_->construct_slot_hint = count; }
     uint32_t get_construct_slot_hint() const { return executable_ ? executable_->construct_slot_hint : 0; }
     const std::string& get_source_text() const {
-        if (instance_overrides_ && instance_overrides_->has_source_text) return instance_overrides_->source_text;
+        if (auto* d = instance_data()) { if (d->overrides.has_source_text) return d->overrides.source_text; }
         static const std::string empty;
         return executable_ ? executable_->source_text : empty;
     }
     // Decl-site-invariant source text populates the shared executable's own
     // copy directly (safe: every instance from the same site sets the exact
     // same value, same idiom as strict_directive_state_ etc). A call that
-    // would actually change an already-different value -- or has no
-    // executable at all (native functions) -- falls back to a per-instance
-    // override instead of corrupting every sibling sharing that executable.
+    // would actually change an already-different value falls back to a
+    // per-instance override instead of corrupting every sibling sharing
+    // that executable. Native functions have no override home for this (no
+    // NativeFunctionData field for it) and never consult get_source_text()
+    // themselves (to_string() special-cases is_native_ before ever reaching
+    // it), so this is simply a no-op for them rather than risk writing
+    // through instance_data_ as the wrong pointee type.
     void set_source_text(const std::string& s) {
         if (executable_) {
             if (executable_->source_text.empty()) { executable_->source_text = s; return; }
             if (executable_->source_text == s) return;
+        } else if (is_native_) {
+            return;
         }
-        if (!instance_overrides_) instance_overrides_ = std::make_unique<InstanceOverrides>();
-        instance_overrides_->source_text = s;
-        instance_overrides_->has_source_text = true;
+        auto& overrides = ensure_instance_data().overrides;
+        overrides.source_text = s;
+        overrides.has_source_text = true;
     }
 
     // Lazily allocated + sized by the caller (Interpreter.cpp) to chunk.names.size().
+    // Never called for native functions (they never reach Interpreter::run()).
     std::vector<BytecodeChunk::LookupCacheEntry,
         SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>& instance_lookup_cache() const {
-        if (!instance_feedback_) instance_feedback_ = std::make_unique<InstanceFeedback>();
-        return instance_feedback_->lookup_cache;
+        return ensure_instance_data().feedback.lookup_cache;
     }
 
     // Lazily allocated + sized by the caller (Interpreter.cpp) to chunk.private_feedback.size().
+    // Never called for native functions (they never reach Interpreter::run()).
     std::vector<PrivateFeedback,
         SmallMapAllocator<PrivateFeedback>>& instance_private_feedback() const {
-        if (!instance_feedback_) instance_feedback_ = std::make_unique<InstanceFeedback>();
-        return instance_feedback_->private_feedback;
+        return ensure_instance_data().feedback.private_feedback;
     }
 
     // Shared decl-site data (null only for native functions).
@@ -1115,14 +1160,15 @@ public:
     // from get_parameters().size(), which includes every param. Decl-site-
     // invariant for non-native functions (a pure function of params), so it
     // lives on the shared executable; native functions have no executable,
-    // so theirs lives in native_data_ instead.
+    // so theirs lives in native_data() instead.
     void set_declared_length(size_t len) {
         if (executable_) executable_->declared_length = len;
-        else if (native_data_) native_data_->declared_length = len;
+        else if (auto* nd = native_data()) nd->declared_length = len;
     }
     size_t get_declared_length() const {
         if (executable_) return executable_->declared_length;
-        return native_data_ ? native_data_->declared_length : 0;
+        auto* nd = native_data();
+        return nd ? nd->declared_length : 0;
     }
 
     Object* get_function_prototype() const { return prototype_; }

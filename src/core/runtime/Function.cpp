@@ -190,7 +190,7 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
-      native_data_(std::make_unique<NativeFunctionData>(NativeFunctionData{std::move(native_fn), 0, name})),
+      instance_data_(new NativeFunctionData{std::move(native_fn), 0, name}),
       execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -200,7 +200,7 @@ Function::Function(const std::string& name,
     }
 
     // "name"/"length" are lazy -- see the class-header comment.
-    // native_data_->declared_length defaults to 0 (already set above).
+    // native_data()->declared_length defaults to 0 (already set above).
 }
 
 Function::Function(const std::string& name,
@@ -210,7 +210,7 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
-      native_data_(std::make_unique<NativeFunctionData>(NativeFunctionData{std::move(native_fn), arity, name})),
+      instance_data_(new NativeFunctionData{std::move(native_fn), arity, name}),
       execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -220,6 +220,12 @@ Function::Function(const std::string& name,
     }
 
     // "name"/"length" are lazy -- see the class-header comment.
+}
+
+Function::~Function() {
+    if (!instance_data_) return;
+    if (is_native_) delete static_cast<NativeFunctionData*>(instance_data_);
+    else delete static_cast<NonNativeInstanceData*>(instance_data_);
 }
 
 void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>& args, Object* arguments_obj) {
@@ -503,14 +509,14 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         Value saved_new_target = ctx.get_new_target();
         if (!is_construct_invocation) ctx.set_new_target(Value());
 
-        // ctx is reused as-is (no fresh Context for natives) -- if native_data_->fn
+        // ctx is reused as-is (no fresh Context for natives) -- if native_data()->fn
         // stashes current_context_ somewhere long-lived (Promise's own ctor,
         // setTimeout), it's THIS context that would leak. ContextSurvivorGuard
         // consults this instead of registering unconditionally.
         ctx.mark_exposed_to_escape();
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &ctx;
-        Value result = native_data_->fn(ctx, args);
+        Value result = native_data()->fn(ctx, args);
         Object::current_context_ = prev_context;
         ctx.set_original_this_nullish(prev_nullish);
         ctx.set_original_this_primitive(prev_primitive);
@@ -1301,7 +1307,7 @@ void Function::mark_closure_environment_escaped() const {
 
 void Function::set_name(const std::string& name) {
     if (executable_) assign_decl_site_name(name);
-    else if (native_data_) native_data_->name = name;
+    else if (auto* nd = native_data()) nd->name = name;
     // Force-update the name in descriptors (bypasses writable check)
     // But don't overwrite if the descriptor was explicitly set to a function (e.g. static name())
     if (auto* d = descriptors()) {

@@ -31,10 +31,10 @@ namespace Quanta {
 
 static_assert(sizeof(Object) == 24);
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Function) == 96);
-static_assert(sizeof(GeneratorFunction) == 96);
-static_assert(sizeof(AsyncFunction) == 96);
-static_assert(sizeof(AsyncGeneratorFunction) == 96);
+static_assert(sizeof(Function) == 80);
+static_assert(sizeof(GeneratorFunction) == 80);
+static_assert(sizeof(AsyncFunction) == 80);
+static_assert(sizeof(AsyncGeneratorFunction) == 80);
 #else
 static_assert(sizeof(Function) <= 144);
 static_assert(sizeof(GeneratorFunction) <= 144);

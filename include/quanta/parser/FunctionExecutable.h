@@ -123,7 +123,7 @@ public:
     // ExecutableRef<const FunctionExecutable> (every Function instance) can
     // still populate them once. Native functions have no executable at all,
     // so their own per-instance equivalents live in NativeFunctionData
-    // instead (see Function::native_data_).
+    // instead (see Function::native_data()).
     mutable std::string source_text;
     mutable size_t declared_length = 0;
     // Class field count for pre-sizing new instances' shape slots -- fixed by
@@ -138,7 +138,7 @@ public:
     // as source_text. The rare exception (a computed object-literal/class
     // property key whose runtime value differs across separate evaluations
     // of the same literal) is handled by Function's own per-instance
-    // instance_overrides_, not here -- see Function::set_name.
+    // InstanceOverrides, not here -- see Function::set_name.
     mutable std::string name;
 
     // -1 unknown, 0 no, 1 yes -- see Function::call_default's own doc
