@@ -31,15 +31,15 @@ namespace Quanta {
 
 static_assert(sizeof(Object) == 24);
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Function) == 192);
-static_assert(sizeof(GeneratorFunction) == 192);
-static_assert(sizeof(AsyncFunction) == 192);
-static_assert(sizeof(AsyncGeneratorFunction) == 192);
+static_assert(sizeof(Function) == 168);
+static_assert(sizeof(GeneratorFunction) == 168);
+static_assert(sizeof(AsyncFunction) == 168);
+static_assert(sizeof(AsyncGeneratorFunction) == 168);
 #else
-static_assert(sizeof(Function) <= 240);
-static_assert(sizeof(GeneratorFunction) <= 240);
-static_assert(sizeof(AsyncFunction) <= 240);
-static_assert(sizeof(AsyncGeneratorFunction) <= 240);
+static_assert(sizeof(Function) <= 216);
+static_assert(sizeof(GeneratorFunction) <= 216);
+static_assert(sizeof(AsyncFunction) <= 216);
+static_assert(sizeof(AsyncGeneratorFunction) <= 216);
 #endif
 
 thread_local Context* Object::current_context_ = nullptr;

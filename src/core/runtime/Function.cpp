@@ -61,11 +61,12 @@ Function::Function(const std::string& name,
                    std::unique_ptr<ASTNode> body,
                    Context* closure_context,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name),
+    : Object(ObjectType::Function),
       closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     auto exe = std::make_shared<FunctionExecutable>();
+    exe->name = name;  // fresh executable, guaranteed empty -- no compare needed
     exe->parameters = params;
     exe->body = std::move(body);
 
@@ -103,11 +104,12 @@ Function::Function(const std::string& name,
                    std::unique_ptr<ASTNode> body,
                    Context* closure_context,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name),
+    : Object(ObjectType::Function),
       closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     auto exe = std::make_shared<FunctionExecutable>();
+    exe->name = name;  // fresh executable, guaranteed empty -- no compare needed
     for (const auto& param : params) {
         exe->parameters.push_back(param->get_name()->get_name());
     }
@@ -149,10 +151,15 @@ Function::Function(const std::string& name,
                    std::shared_ptr<const FunctionExecutable> executable,
                    Context* closure_context,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name), executable_(std::move(executable)),
+    : Object(ObjectType::Function), executable_(std::move(executable)),
       closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
+    // executable_ may already be shared with sibling instances from the same
+    // decl site -- populate its name once, or fall back to a per-instance
+    // override if a sibling already claimed a different one (see
+    // assign_decl_site_name's own doc comment).
+    assign_decl_site_name(name);
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -180,10 +187,10 @@ Function::Function(const std::string& name,
 Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
+    : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
-      native_data_(std::make_unique<NativeFunctionData>(NativeFunctionData{std::move(native_fn), 0})),
+      native_data_(std::make_unique<NativeFunctionData>(NativeFunctionData{std::move(native_fn), 0, name})),
       execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -200,10 +207,10 @@ Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    uint32_t arity,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
+    : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
-      native_data_(std::make_unique<NativeFunctionData>(NativeFunctionData{std::move(native_fn), arity})),
+      native_data_(std::make_unique<NativeFunctionData>(NativeFunctionData{std::move(native_fn), arity, name})),
       execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -418,7 +425,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 
     // Class constructors must be called with new
     if (is_class_constructor_ && !ctx.is_in_constructor_call()) {
-        ctx.throw_exception(Value("TypeError: Class constructor " + name_ + " cannot be invoked without 'new'"));
+        ctx.throw_exception(Value("TypeError: Class constructor " + get_name() + " cannot be invoked without 'new'"));
         return Value();
     }
 
@@ -547,9 +554,10 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         }
         if (executable_->self_name_state < 0) {
             executable_->self_name_state = 0;
-            if (!name_.empty() && name_ != "<anonymous>") {
+            const std::string& self_name = get_name();
+            if (!self_name.empty() && self_name != "<anonymous>") {
                 for (const auto& n : executable_->bytecode_chunk->names) {
-                    if (n == name_) { executable_->self_name_state = 1; break; }
+                    if (n == self_name) { executable_->self_name_state = 1; break; }
                 }
             }
         }
@@ -802,7 +810,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
                     return env && env[0] == '1';
                 }();
                 if (disasm) {
-                    std::fprintf(stderr, "%s", disassemble_chunk(*executable_->bytecode_chunk, name_).c_str());
+                    std::fprintf(stderr, "%s", disassemble_chunk(*executable_->bytecode_chunk, get_name()).c_str());
                 }
             } else {
                 executable_->vm_incompatible = true;
@@ -814,15 +822,16 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
             // compiled body mentions the name at all (checked once).
             if (executable_->self_name_state < 0) {
                 executable_->self_name_state = 0;
-                if (!name_.empty() && name_ != "<anonymous>") {
+                const std::string& self_name = get_name();
+                if (!self_name.empty() && self_name != "<anonymous>") {
                     for (const auto& n : executable_->bytecode_chunk->names) {
-                        if (n == name_) { executable_->self_name_state = 1; break; }
+                        if (n == self_name) { executable_->self_name_state = 1; break; }
                     }
                 }
             }
             if (executable_->self_name_state == 1) {
-                if (!function_context.has_binding(name_)) {
-                    function_context.create_binding(name_, Value(this), false);
+                if (!function_context.has_binding(get_name())) {
+                    function_context.create_binding(get_name(), Value(this), false);
                 } else {
                     // The captured chain already provides the name (function
                     // declarations): fast calls don't need the self-binding.
@@ -1015,8 +1024,9 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 
     if (body_) {
         // ES5: Named function expressions have their name as an immutable binding
-        if (!name_.empty() && name_ != "<anonymous>" && !function_context.has_binding(name_)) {
-            function_context.create_binding(name_, Value(this), false);
+        const std::string& self_name = get_name();
+        if (!self_name.empty() && self_name != "<anonymous>" && !function_context.has_binding(self_name)) {
+            function_context.create_binding(self_name, Value(this), false);
         }
 
         {
@@ -1104,7 +1114,8 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 PropertyDescriptor Function::get_property_descriptor(const std::string& key) const {
     auto* d = descriptors();
     if (key == "name" && !name_deleted_ && !(d && d->count("name"))) {
-        return PropertyDescriptor(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
+        const std::string& n = get_name();
+        return PropertyDescriptor(Value(n == "<arrow>" ? std::string("") : n), PropertyAttributes::Configurable);
     }
     if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         return PropertyDescriptor(Value(static_cast<double>(get_declared_length())), PropertyAttributes::Configurable);
@@ -1154,7 +1165,8 @@ bool Function::delete_property(const std::string& key) {
 bool Function::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
     auto* d = descriptors();
     if (key == "name" && !name_deleted_ && !(d && d->count("name"))) {
-        PropertyDescriptor mat(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
+        const std::string& n = get_name();
+        PropertyDescriptor mat(Value(n == "<arrow>" ? std::string("") : n), PropertyAttributes::Configurable);
         Object::set_property_descriptor_default("name", mat);
     } else if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         PropertyDescriptor mat(Value(static_cast<double>(get_declared_length())), PropertyAttributes::Configurable);
@@ -1194,7 +1206,8 @@ Value Function::get_property(const std::string& key) const {
                 }
             }
         }
-        return Value(name_ == "<arrow>" ? std::string("") : name_);
+        const std::string& n = get_name();
+        return Value(n == "<arrow>" ? std::string("") : n);
     }
     if (key == "length") {
         auto* d = descriptors();
@@ -1287,14 +1300,15 @@ void Function::mark_closure_environment_escaped() const {
 }
 
 void Function::set_name(const std::string& name) {
-    name_ = name;
+    if (executable_) assign_decl_site_name(name);
+    else if (native_data_) native_data_->name = name;
     // Force-update the name in descriptors (bypasses writable check)
     // But don't overwrite if the descriptor was explicitly set to a function (e.g. static name())
     if (auto* d = descriptors()) {
         auto* it = d->find("name");
         if (it && it->is_data_descriptor()) {
             if (!it->get_value().is_function()) {
-                *it = PropertyDescriptor(Value(name_), it->get_attributes());
+                *it = PropertyDescriptor(Value(get_name()), it->get_attributes());
             }
         }
     }
@@ -1384,7 +1398,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     ValueVectorRoot args_root(&args);
     // Check if this function is a constructor
     if (!is_constructor_) {
-        ctx.throw_exception(Value("TypeError: " + name_ + " is not a constructor"));
+        ctx.throw_exception(Value("TypeError: " + get_name() + " is not a constructor"));
         return Value();
     }
 
@@ -1517,7 +1531,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 std::string Function::to_string() const {
     // A well-known-symbol-named function's `name` is internally stored as "@@x" (e.g.
     // "@@asyncIterator"); NativeFunction syntax requires the spec's bracketed form instead.
-    std::string display_name = name_;
+    std::string display_name = get_name();
     if (display_name.size() > 2 && display_name[0] == '@' && display_name[1] == '@') {
         display_name = "[Symbol." + display_name.substr(2) + "]";
     }

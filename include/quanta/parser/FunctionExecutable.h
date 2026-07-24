@@ -71,6 +71,15 @@ public:
     mutable std::string source_text;
     mutable size_t declared_length = 0;
 
+    // Decl-site default name -- almost always identical for every instance
+    // sharing this executable (the constructor parameter or the static
+    // binding/property-key NamedEvaluation infers), same sharing rationale
+    // as source_text. The rare exception (a computed object-literal/class
+    // property key whose runtime value differs across separate evaluations
+    // of the same literal) is handled by Function's own per-instance
+    // name_override_, not here -- see Function::set_name.
+    mutable std::string name;
+
     // -1 unknown, 0 no, 1 yes -- see Function::call_default's own doc
     // comments on the fields these replace.
     mutable int8_t strict_directive_state = -1;

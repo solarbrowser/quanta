@@ -833,7 +833,6 @@ public:
     FunctionKind get_function_kind() const { return function_kind_; }
 
 private:
-    std::string name_;
     // Shared, decl-site-scoped data (AST body/params, compiled bytecode,
     // decl-site-invariant caches) -- see FunctionExecutable's own doc
     // comment. Null only for native functions (no AST/decl site at all).
@@ -886,13 +885,23 @@ private:
     // executable to hold a shared default at all). Null in the overwhelmingly
     // common case, so this costs one pointer instead of a resident std::string.
     mutable std::unique_ptr<std::string> source_text_override_;
-    // Bundles native-only per-instance state behind one pointer: both fields
-    // only exist for native functions (is_native_, no executable_ to derive a
-    // decl-site default from), so folding them together costs nothing beyond
-    // the single pointer indirection the native closure itself already needs.
+    // Per-instance override for get_name(): same rationale as
+    // source_text_override_ above -- the decl-site default lives on
+    // executable_->name, only allocated when a genuinely instance-specific
+    // rename happens (a computed object-literal/class property key whose
+    // runtime value differs across separate evaluations of the same shared
+    // literal -- see Function::set_name).
+    mutable std::unique_ptr<std::string> name_override_;
+    // Bundles native-only per-instance state behind one pointer: all three
+    // fields only exist for native functions (is_native_, no executable_ to
+    // derive a decl-site default from -- natives never share, so there's no
+    // sharing benefit to a separate override), so folding them together
+    // costs nothing beyond the single pointer indirection the native
+    // closure itself already needs.
     struct NativeFunctionData {
         std::function<Value(Context&, const std::vector<Value>&)> fn;
         size_t declared_length = 0;
+        std::string name;
     };
     std::unique_ptr<NativeFunctionData> native_data_;
 
@@ -960,8 +969,24 @@ public:
     // re-enter the switch and recurse).
     void trace(Visitor& v);
 
-    const std::string& get_name() const { return name_; }
+    const std::string& get_name() const {
+        if (name_override_) return *name_override_;
+        if (executable_) return executable_->name;
+        static const std::string empty;
+        return native_data_ ? native_data_->name : empty;
+    }
     void set_name(const std::string& name);
+    // Populates the decl-site default (executable_->name) the first time, or
+    // allocates a per-instance override if the executable already holds a
+    // DIFFERENT value -- shared by the constructors (a fresh name at
+    // construction) and set_name() (a later NamedEvaluation rename). No-op
+    // for native functions (native_data_->name is set directly by whichever
+    // constructor built it, never shared).
+    void assign_decl_site_name(const std::string& name) {
+        if (!executable_) return;
+        if (executable_->name.empty()) executable_->name = name;
+        else if (executable_->name != name) name_override_ = std::make_unique<std::string>(name);
+    }
     const std::vector<std::string>& get_parameters() const {
         static const std::vector<std::string> empty;
         return executable_ ? executable_->parameters : empty;
