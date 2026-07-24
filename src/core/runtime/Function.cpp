@@ -86,9 +86,9 @@ Function::Function(const std::string& name,
     }
 
     // "name"/"length" are lazy -- see the class-header comment on
-    // name_deleted_/length_deleted_/declared_length_. declared_length_
-    // mirrors this constructor's own former eager-descriptor value exactly.
-    declared_length_ = params.size();
+    // name_deleted_/length_deleted_. exe->declared_length mirrors this
+    // constructor's own former eager-descriptor value exactly.
+    exe->declared_length = params.size();
     executable_ = std::move(exe);
 
     // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
@@ -135,7 +135,7 @@ Function::Function(const std::string& name,
         if (param->is_rest() || param->has_default()) break;
         formal_length++;
     }
-    declared_length_ = formal_length;
+    exe->declared_length = formal_length;
     executable_ = std::move(exe);
 
     // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
@@ -167,9 +167,10 @@ Function::Function(const std::string& name,
         prototype_->set_property_descriptor("constructor", ctor_desc);
     }
 
-    // declared_length_ (spec length) is set explicitly by the caller via
-    // set_declared_length() -- it depends on which parameter came from the
-    // shared executable's cached spec length, not derivable generically here.
+    // Spec length is set explicitly by the caller via set_declared_length()
+    // (writes through to executable_->declared_length) -- it depends on
+    // which parameter came from the shared executable's cached spec length,
+    // not derivable generically here.
 
     if (Object* func_proto = ObjectFactory::get_function_prototype()) {
         set_prototype(func_proto);
@@ -181,26 +182,9 @@ Function::Function(const std::string& name,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
-      is_class_constructor_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
-    if (create_prototype) {
-        auto proto = ObjectFactory::create_object();
-        prototype_ = proto.release();
-        PropertyDescriptor prototype_desc(Value(prototype_), PropertyAttributes::None);
-        this->set_property_descriptor("prototype", prototype_desc);
-    }
-
-    // "name"/"length" are lazy -- see the class-header comment. declared_length_
-    // defaults to 0 (already set by the in-class initializer).
-
-}
-
-Function::Function(const std::string& name,
-                   std::function<Value(Context&, const std::vector<Value>&)> native_fn,
-                   uint32_t arity,
-                   bool create_prototype)
-    : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
-      is_class_constructor_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      is_class_constructor_(false), is_strict_(false), is_param_default_(false),
+      native_data_(std::make_unique<NativeFunctionData>(NativeFunctionData{std::move(native_fn), 0})),
+      execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -209,7 +193,26 @@ Function::Function(const std::string& name,
     }
 
     // "name"/"length" are lazy -- see the class-header comment.
-    declared_length_ = arity;
+    // native_data_->declared_length defaults to 0 (already set above).
+}
+
+Function::Function(const std::string& name,
+                   std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+                   uint32_t arity,
+                   bool create_prototype)
+    : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
+      is_class_constructor_(false), is_strict_(false), is_param_default_(false),
+      native_data_(std::make_unique<NativeFunctionData>(NativeFunctionData{std::move(native_fn), arity})),
+      execution_count_(0), is_hot_(false) {
+    if (create_prototype) {
+        auto proto = ObjectFactory::create_object();
+        prototype_ = proto.release();
+        PropertyDescriptor prototype_desc(Value(prototype_), PropertyAttributes::None);
+        this->set_property_descriptor("prototype", prototype_desc);
+    }
+
+    // "name"/"length" are lazy -- see the class-header comment.
 }
 
 void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>& args, Object* arguments_obj) {
@@ -493,14 +496,14 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         Value saved_new_target = ctx.get_new_target();
         if (!is_construct_invocation) ctx.set_new_target(Value());
 
-        // ctx is reused as-is (no fresh Context for natives) -- if native_fn_
+        // ctx is reused as-is (no fresh Context for natives) -- if native_data_->fn
         // stashes current_context_ somewhere long-lived (Promise's own ctor,
         // setTimeout), it's THIS context that would leak. ContextSurvivorGuard
         // consults this instead of registering unconditionally.
         ctx.mark_exposed_to_escape();
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &ctx;
-        Value result = native_fn_(ctx, args);
+        Value result = native_data_->fn(ctx, args);
         Object::current_context_ = prev_context;
         ctx.set_original_this_nullish(prev_nullish);
         ctx.set_original_this_primitive(prev_primitive);
@@ -1091,7 +1094,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 }
 
 // "name"/"length" are lazy (see the class-header comment on
-// name_deleted_/length_deleted_/declared_length_): synthesizes the
+// name_deleted_/length_deleted_, and get_declared_length()): synthesizes the
 // spec-correct descriptor {value, writable:false, enumerable:false,
 // configurable:true} on demand, without ever touching descriptors_/shape --
 // mirrors get_property's own fallback so introspection (getOwnPropertyDescriptor,
@@ -1104,7 +1107,7 @@ PropertyDescriptor Function::get_property_descriptor(const std::string& key) con
         return PropertyDescriptor(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
     }
     if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
-        return PropertyDescriptor(Value(static_cast<double>(declared_length_)), PropertyAttributes::Configurable);
+        return PropertyDescriptor(Value(static_cast<double>(get_declared_length())), PropertyAttributes::Configurable);
     }
     return Object::get_property_descriptor_default(key);
 }
@@ -1154,7 +1157,7 @@ bool Function::set_property_descriptor(const std::string& key, const PropertyDes
         PropertyDescriptor mat(Value(name_ == "<arrow>" ? std::string("") : name_), PropertyAttributes::Configurable);
         Object::set_property_descriptor_default("name", mat);
     } else if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
-        PropertyDescriptor mat(Value(static_cast<double>(declared_length_)), PropertyAttributes::Configurable);
+        PropertyDescriptor mat(Value(static_cast<double>(get_declared_length())), PropertyAttributes::Configurable);
         Object::set_property_descriptor_default("length", mat);
     }
     return Object::set_property_descriptor_default(key, desc);
@@ -1211,7 +1214,7 @@ Value Function::get_property(const std::string& key) const {
             return *slot;
         }
         if (length_deleted_) return Value(0.0);
-        return Value(static_cast<double>(declared_length_));
+        return Value(static_cast<double>(get_declared_length()));
     }
     if (key == "prototype") {
         if (prototype_ != nullptr) return Value(prototype_);

@@ -48,6 +48,29 @@ public:
     mutable std::shared_ptr<const BytecodeChunk> bytecode_chunk;
     mutable bool vm_incompatible = false;
 
+    // Generator/AsyncFunction/AsyncGeneratorFunction's own compiled form
+    // (VM::compile_suspendable, not the plain call bytecode above -- it
+    // supports mid-function suspend/resume) -- mirrors bytecode_chunk/
+    // vm_incompatible exactly, just for the suspendable calling convention.
+    // Lazily populated on first call of any instance sharing this executable,
+    // idempotent if recomputed (pure function of body), so sharing across
+    // every instance from the same decl site is safe. Plain (non-suspendable)
+    // Function instances never touch these.
+    mutable std::shared_ptr<const BytecodeChunk> suspendable_chunk;
+    mutable bool suspendable_incompatible = false;
+
+    // Decl-site defaults for Function's own lazy "length"/toString() sources:
+    // both are pure functions of body/params (source_text is the literal's own
+    // source slice, declared_length is the ES6 spec length -- params before
+    // the first rest/default), so every instance sharing this executable
+    // wants the identical value. Mutable so callers holding a
+    // shared_ptr<const FunctionExecutable> (every Function instance) can
+    // still populate them once. Native functions have no executable at all,
+    // so their own per-instance equivalents live in NativeFunctionData
+    // instead (see Function::native_data_).
+    mutable std::string source_text;
+    mutable size_t declared_length = 0;
+
     // -1 unknown, 0 no, 1 yes -- see Function::call_default's own doc
     // comments on the fields these replace.
     mutable int8_t strict_directive_state = -1;

@@ -162,8 +162,8 @@ AsyncFunction::AsyncFunction(const std::string& name,
                            const std::vector<std::string>& params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
-    : Function(name, params, nullptr, closure_context, /*create_prototype=*/false),
-      body_(std::move(body)) { // async functions must not have .prototype
+    // async functions must not have .prototype
+    : Function(name, params, std::move(body), closure_context, /*create_prototype=*/false) {
     set_function_kind(FunctionKind::Async);
 }
 
@@ -171,19 +171,27 @@ AsyncFunction::AsyncFunction(const std::string& name,
                            std::vector<std::unique_ptr<Parameter>> params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
-    : Function(name, std::move(params), nullptr, closure_context, /*create_prototype=*/false),
-      body_(std::move(body)) {
+    : Function(name, std::move(params), std::move(body), closure_context, /*create_prototype=*/false) {
+    set_function_kind(FunctionKind::Async);
+}
+
+AsyncFunction::AsyncFunction(const std::string& name,
+                           std::shared_ptr<const FunctionExecutable> executable,
+                           Context* closure_context)
+    : Function(name, std::move(executable), closure_context, /*create_prototype=*/false) {
     set_function_kind(FunctionKind::Async);
 }
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     // The body runs synchronously up to the first await inside this call
     // (executor->run() below), so this frame makes CallStack::top() the real
-    // AST owner while the prefix executes -- without it, closures created
-    // there would see the CALLER as their enclosing function and key the
-    // nested-chunk cache on AST nodes that die with this AsyncFunction.
-    // Post-await resumes run without this frame and fall to the safe clone path.
+    // declaring function while the prefix executes -- without it, private-field
+    // access inside a closure created there would resolve brands against the
+    // CALLER's frame instead of this AsyncFunction's own. Post-await resumes
+    // run without this frame and fall back to CallStack's own no-frame path
+    // (see resolve_private_storage_key).
     CallStack& stack = CallStack::instance();
+    ASTNode* body_ = ast_body();
     Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, get_name(), &ctx.get_current_filename(), call_position, this);
 
@@ -384,12 +392,12 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     // the body executes (so e.g. `with` blocks resolve the local shadowing
     // binding rather than falling through to an outer scope).
     if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body_.get(), *exec_ctx);
+        scan_for_var_declarations(body_, *exec_ctx);
     }
 
     // Shared with every call, like an ordinary function's body -- no clone.
     auto executor = std::make_shared<AsyncExecutor>(
-        body_.get(), this, std::move(exec_ctx), promise_raw, ctx.get_engine());
+        body_, this, std::move(exec_ctx), promise_raw, ctx.get_engine());
     executor->run();
 
     // Transfer the exec context to the engine's survivor pool so closures created inside the body can still look up bindings later. Mirrors ContextSurvivorGuard in sync Function::call().
@@ -405,21 +413,24 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
 }
 
 const BytecodeChunk* AsyncFunction::get_suspendable_chunk(Context& ctx) {
-    if (suspendable_incompatible_) return nullptr;
-    if (suspendable_chunk_) return suspendable_chunk_.get();
+    const FunctionExecutable* exe = get_executable().get();
+    if (!exe) return nullptr;
+    if (exe->suspendable_incompatible) return nullptr;
+    if (exe->suspendable_chunk) return exe->suspendable_chunk.get();
     // Same `with`-chain check as Function::call; fixed at closure creation.
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-        if (e->is_with_environment()) { suspendable_incompatible_ = true; return nullptr; }
+        if (e->is_with_environment()) { exe->suspendable_incompatible = true; return nullptr; }
     }
-    suspendable_chunk_ = VM::compile_suspendable(body_.get());
-    if (!suspendable_chunk_) { suspendable_incompatible_ = true; return nullptr; }
+    exe->suspendable_chunk = VM::compile_suspendable(ast_body());
+    if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
-    return suspendable_chunk_.get();
+    return exe->suspendable_chunk.get();
 }
 
 void AsyncFunction::trace(Visitor& v) {
     Function::trace_default(v);
-    if (suspendable_chunk_) suspendable_chunk_->trace(v);
+    const auto& exe = get_executable();
+    if (exe && exe->suspendable_chunk) exe->suspendable_chunk->trace(v);
 }
 
 
@@ -1524,7 +1535,7 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
                                                const std::vector<std::string>& params,
                                                std::unique_ptr<ASTNode> body,
                                                Context* closure_context)
-    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+    : Function(name, params, std::move(body), closure_context) {
     set_function_kind(FunctionKind::AsyncGenerator);
     set_is_constructor(false);
     // Each async generator function gets a unique 'prototype' object inheriting from %AsyncGeneratorPrototype%
@@ -1543,7 +1554,28 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
                                                std::vector<std::unique_ptr<Parameter>> params,
                                                std::unique_ptr<ASTNode> body,
                                                Context* closure_context)
-    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
+    : Function(name, std::move(params), std::move(body), closure_context) {
+    set_function_kind(FunctionKind::AsyncGenerator);
+    set_is_constructor(false);
+    if (AsyncGenerator::s_async_generator_prototype_) {
+        auto fn_proto = ObjectFactory::create_object();
+        fn_proto->set_prototype(AsyncGenerator::s_async_generator_prototype_);
+        PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
+        this->set_property_descriptor("prototype", proto_desc);
+        if (AsyncGenerator::s_async_generator_function_prototype_) {
+            this->set_prototype(AsyncGenerator::s_async_generator_function_prototype_);
+        }
+    }
+}
+
+AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
+                                               std::shared_ptr<const FunctionExecutable> executable,
+                                               Context* closure_context)
+    // create_prototype defaults to true, same as the two AST-owning
+    // constructors above -- the throwaway plain-Object .prototype it builds
+    // gets immediately overwritten below by the real %AsyncGeneratorPrototype%-
+    // inheriting one, exactly like those two do.
+    : Function(name, std::move(executable), closure_context) {
     set_function_kind(FunctionKind::AsyncGenerator);
     set_is_constructor(false);
     if (AsyncGenerator::s_async_generator_prototype_) {
@@ -1730,12 +1762,13 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
 
     // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
     // the function body before it executes (see AsyncFunction::call for rationale).
+    ASTNode* body_ = ast_body();
     if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body_.get(), *gen_ctx);
+        scan_for_var_declarations(body_, *gen_ctx);
     }
 
     Context* outer_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
-    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), body_.get(), this, outer_ctx);
+    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), body_, this, outer_ctx);
     // OrdinaryCreateFromConstructor: the instance inherits from this function's
     // own "prototype" object, not %AsyncGeneratorPrototype% directly.
     Value own_proto = get_property("prototype");
@@ -1744,21 +1777,24 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
 }
 
 const BytecodeChunk* AsyncGeneratorFunction::get_suspendable_chunk(Context& ctx) {
-    if (suspendable_incompatible_) return nullptr;
-    if (suspendable_chunk_) return suspendable_chunk_.get();
+    const FunctionExecutable* exe = get_executable().get();
+    if (!exe) return nullptr;
+    if (exe->suspendable_incompatible) return nullptr;
+    if (exe->suspendable_chunk) return exe->suspendable_chunk.get();
     // Same `with`-chain check as Function::call; fixed at closure creation.
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-        if (e->is_with_environment()) { suspendable_incompatible_ = true; return nullptr; }
+        if (e->is_with_environment()) { exe->suspendable_incompatible = true; return nullptr; }
     }
-    suspendable_chunk_ = VM::compile_suspendable(body_.get());
-    if (!suspendable_chunk_) { suspendable_incompatible_ = true; return nullptr; }
+    exe->suspendable_chunk = VM::compile_suspendable(ast_body());
+    if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
-    return suspendable_chunk_.get();
+    return exe->suspendable_chunk.get();
 }
 
 void AsyncGeneratorFunction::trace(Visitor& v) {
     Function::trace_default(v);
-    if (suspendable_chunk_) suspendable_chunk_->trace(v);
+    const auto& exe = get_executable();
+    if (exe && exe->suspendable_chunk) exe->suspendable_chunk->trace(v);
 }
 
 }

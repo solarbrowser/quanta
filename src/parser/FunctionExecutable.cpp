@@ -23,6 +23,7 @@ FunctionExecutable::~FunctionExecutable() {
 void FunctionExecutable::gc_trace_roots(Visitor& v) {
     for (FunctionExecutable* exe : live_executables_) {
         if (exe->bytecode_chunk) exe->bytecode_chunk->trace(v);
+        if (exe->suspendable_chunk) exe->suspendable_chunk->trace(v);
     }
 }
 

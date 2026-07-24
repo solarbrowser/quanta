@@ -1347,8 +1347,13 @@ private:
     bool is_arrow_ = false;
     std::string source_text_;
     bool is_decl_form_ = false; // `export default async function fn(){}`: HoistableDeclaration, not NamedEvaluation
+    // Same cache-on-node pattern as FunctionExpression/FunctionDeclaration/
+    // ArrowFunctionExpression's own cached_executable_.
+    mutable std::shared_ptr<FunctionExecutable> cached_executable_;
 
 public:
+    const std::shared_ptr<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    void set_cached_executable(std::shared_ptr<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
     AsyncFunctionExpression(std::unique_ptr<Identifier> id,
                            std::vector<std::unique_ptr<Parameter>> params,
                            std::unique_ptr<BlockStatement> body,

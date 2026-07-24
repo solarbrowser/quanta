@@ -635,7 +635,7 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
                                    std::vector<std::unique_ptr<Parameter>> params,
                                    std::unique_ptr<ASTNode> body,
                                    Context* closure_context)
-    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
+    : Function(name, std::move(params), std::move(body), closure_context) {
     set_function_kind(FunctionKind::Generator);
     set_is_constructor(false);
     if (Generator::s_generator_prototype_) {
@@ -654,7 +654,7 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
                                    const std::vector<std::string>& params,
                                    std::unique_ptr<ASTNode> body,
                                    Context* closure_context)
-    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+    : Function(name, params, std::move(body), closure_context) {
     set_function_kind(FunctionKind::Generator);
     set_is_constructor(false);
     // Each generator function gets a unique 'prototype' object inheriting from %GeneratorPrototype%
@@ -665,6 +665,27 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
 
+        if (Generator::s_generator_function_prototype_) {
+            this->set_prototype(Generator::s_generator_function_prototype_);
+        }
+    }
+}
+
+GeneratorFunction::GeneratorFunction(const std::string& name,
+                                   std::shared_ptr<const FunctionExecutable> executable,
+                                   Context* closure_context)
+    // create_prototype defaults to true, same as the two AST-owning
+    // constructors above -- the throwaway plain-Object .prototype it builds
+    // gets immediately overwritten below by the real %GeneratorPrototype%-
+    // inheriting one, exactly like those two do.
+    : Function(name, std::move(executable), closure_context) {
+    set_function_kind(FunctionKind::Generator);
+    set_is_constructor(false);
+    if (Generator::s_generator_prototype_) {
+        auto fn_proto = ObjectFactory::create_object();
+        fn_proto->set_prototype(Generator::s_generator_prototype_);
+        PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
+        this->set_property_descriptor("prototype", proto_desc);
         if (Generator::s_generator_function_prototype_) {
             this->set_prototype(Generator::s_generator_function_prototype_);
         }
@@ -854,8 +875,9 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
 
     // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
     // the function body before it executes (see AsyncFunction::call for rationale).
+    ASTNode* body_ = ast_body();
     if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body_.get(), gen_context);
+        scan_for_var_declarations(body_, gen_context);
     }
 
     // &ctx (the caller's own context, not a fresh one) is captured into the
@@ -863,25 +885,28 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     // Generator object is -- ContextSurvivorGuard consults this instead of
     // registering unconditionally.
     ctx.mark_exposed_to_escape();
-    return std::make_unique<Generator>(this, gen_context_ptr.release(), body_.get(), &ctx);
+    return std::make_unique<Generator>(this, gen_context_ptr.release(), body_, &ctx);
 }
 
 const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx) {
-    if (suspendable_incompatible_) return nullptr;
-    if (suspendable_chunk_) return suspendable_chunk_.get();
+    const FunctionExecutable* exe = get_executable().get();
+    if (!exe) return nullptr;
+    if (exe->suspendable_incompatible) return nullptr;
+    if (exe->suspendable_chunk) return exe->suspendable_chunk.get();
     // Same `with`-chain check as Function::call; fixed at closure creation.
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-        if (e->is_with_environment()) { suspendable_incompatible_ = true; return nullptr; }
+        if (e->is_with_environment()) { exe->suspendable_incompatible = true; return nullptr; }
     }
-    suspendable_chunk_ = VM::compile_suspendable(body_.get());
-    if (!suspendable_chunk_) { suspendable_incompatible_ = true; return nullptr; }
+    exe->suspendable_chunk = VM::compile_suspendable(ast_body());
+    if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
-    return suspendable_chunk_.get();
+    return exe->suspendable_chunk.get();
 }
 
 void GeneratorFunction::trace(Visitor& v) {
     Function::trace_default(v);
-    if (suspendable_chunk_) suspendable_chunk_->trace(v);
+    const auto& exe = get_executable();
+    if (exe && exe->suspendable_chunk) exe->suspendable_chunk->trace(v);
 }
 
 

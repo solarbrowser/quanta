@@ -265,26 +265,14 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     const std::string& function_name = id_->get_name();
 
     std::unique_ptr<Function> function_obj;
-    if (is_async_ && is_generator_) {
-        std::vector<std::unique_ptr<Parameter>> gen_params;
-        for (const auto& p : params_)
-            gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-        function_obj = std::make_unique<AsyncGeneratorFunction>(function_name, std::move(gen_params), body_->clone(), &ctx);
-    } else if (is_generator_) {
-        std::vector<std::unique_ptr<Parameter>> gen_params;
-        for (const auto& p : params_)
-            gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-        function_obj = std::make_unique<GeneratorFunction>(function_name, std::move(gen_params), body_->clone(), &ctx);
-    } else if (is_async_) {
-        std::vector<std::unique_ptr<Parameter>> async_params;
-        for (const auto& p : params_)
-            async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-        function_obj = std::make_unique<AsyncFunction>(function_name, std::move(async_params), body_->clone(), &ctx);
-    } else {
+    {
         // Share one FunctionExecutable across every instantiation of this
         // declaration site (e.g. a nested declaration re-hoisted on every
         // call of an enclosing function) -- same cache-on-node pattern as
-        // FunctionExpression::evaluate's plain branch.
+        // FunctionExpression::evaluate's plain branch, now also covering the
+        // generator/async/async-generator forms (each is a mutually
+        // exclusive shape for the SAME node, so they all share the one
+        // cached_executable_ slot safely).
         std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
         if (!exe) {
             exe = std::make_shared<FunctionExecutable>();
@@ -300,16 +288,29 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
             if (p->is_rest() || p->has_default()) break;
             declared_length++;
         }
-        function_obj = std::make_unique<Function>(function_name, std::move(exe), &ctx);
-        function_obj->set_declared_length(declared_length);
-        // Matches create_js_function's own two follow-up steps: this call
-        // site isn't analyzed for closure_needs_outer_environment, so
-        // preserve the old unconditional pin, and link [[Prototype]] since
-        // the shared-executable constructor doesn't do it automatically.
-        function_obj->mark_closure_environment_escaped();
-        if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-            function_obj->set_prototype(func_proto);
+
+        if (is_async_ && is_generator_) {
+            function_obj = std::make_unique<AsyncGeneratorFunction>(function_name, std::move(exe), &ctx);
+        } else if (is_generator_) {
+            function_obj = std::make_unique<GeneratorFunction>(function_name, std::move(exe), &ctx);
+        } else if (is_async_) {
+            function_obj = std::make_unique<AsyncFunction>(function_name, std::move(exe), &ctx);
+        } else {
+            function_obj = std::make_unique<Function>(function_name, std::move(exe), &ctx);
+            // Matches create_js_function's own two follow-up steps: this call
+            // site isn't analyzed for closure_needs_outer_environment, so
+            // preserve the old unconditional pin, and link [[Prototype]] since
+            // the shared-executable constructor doesn't do it automatically.
+            // Generator/AsyncFunction/AsyncGeneratorFunction never called this
+            // here even before this change (their own constructors set
+            // [[Prototype]] to the matching intrinsic themselves), so this
+            // stays plain-Function-only to preserve existing behavior exactly.
+            function_obj->mark_closure_environment_escaped();
+            if (Object* func_proto = ObjectFactory::get_function_prototype()) {
+                function_obj->set_prototype(func_proto);
+            }
         }
+        function_obj->set_declared_length(declared_length);
     }
 
     // Generator/async function declarations get a Function subclass that the base
@@ -634,44 +635,39 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                     }
                     std::unique_ptr<Function> instance_method;
+                    // Method syntax parses to a FunctionExpression internally -- share its
+                    // executable via the same cache-on-node mechanism FunctionExpression's own
+                    // evaluate() uses, so methods from one class declaration get real reuse
+                    // whenever the class itself is nested inside a repeatedly-called function.
+                    // Generator/async-generator/async methods share the SAME executable slot
+                    // (mutually exclusive shapes for the same method node).
+                    std::shared_ptr<FunctionExecutable> exe;
+                    FunctionExpression* method_func_expr =
+                        method->get_value()->get_type() == Type::FUNCTION_EXPRESSION
+                            ? static_cast<FunctionExpression*>(method->get_value()) : nullptr;
+                    if (method_func_expr) exe = method_func_expr->get_cached_executable();
+                    if (!exe) {
+                        exe = std::make_shared<FunctionExecutable>();
+                        exe->body = method->get_value()->get_body()->clone();
+                        for (const auto& p : method_params) exe->parameters.push_back(p->get_name()->get_name());
+                        exe->parameter_objects = std::move(method_params);
+                        if (method_func_expr) method_func_expr->set_cached_executable(exe);
+                    }
+                    size_t method_declared_length = 0;
+                    for (const auto& p : exe->parameter_objects) {
+                        if (p->is_rest() || p->has_default()) break;
+                        method_declared_length++;
+                    }
                     if (method_is_gen && method_is_async) {
-                        std::vector<std::unique_ptr<Parameter>> gen_params;
-                        for (const auto& p : method_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-                        instance_method = std::make_unique<AsyncGeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
+                        instance_method = std::make_unique<AsyncGeneratorFunction>(method_name, std::move(exe), &ctx);
                     } else if (method_is_gen) {
-                        std::vector<std::unique_ptr<Parameter>> gen_params;
-                        for (const auto& p : method_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-                        instance_method = std::make_unique<GeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
+                        instance_method = std::make_unique<GeneratorFunction>(method_name, std::move(exe), &ctx);
                     } else if (method_is_async) {
-                        std::vector<std::unique_ptr<Parameter>> async_params;
-                        for (const auto& p : method_params) async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-                        instance_method = std::make_unique<AsyncFunction>(method_name, std::move(async_params), method->get_value()->get_body()->clone(), &ctx);
+                        instance_method = std::make_unique<AsyncFunction>(method_name, std::move(exe), &ctx);
                     } else {
                         // Class methods are non-constructors; non-generator methods have no prototype
                         // (async ones already skip it in AsyncFunction's own ctor).
-                        // Method syntax parses to a FunctionExpression internally -- share its
-                        // executable via the same cache-on-node mechanism FunctionExpression's own
-                        // evaluate() uses, so methods from one class declaration get real reuse
-                        // whenever the class itself is nested inside a repeatedly-called function.
-                        std::shared_ptr<FunctionExecutable> exe;
-                        FunctionExpression* method_func_expr =
-                            method->get_value()->get_type() == Type::FUNCTION_EXPRESSION
-                                ? static_cast<FunctionExpression*>(method->get_value()) : nullptr;
-                        if (method_func_expr) exe = method_func_expr->get_cached_executable();
-                        if (!exe) {
-                            exe = std::make_shared<FunctionExecutable>();
-                            exe->body = method->get_value()->get_body()->clone();
-                            for (const auto& p : method_params) exe->parameters.push_back(p->get_name()->get_name());
-                            exe->parameter_objects = std::move(method_params);
-                            if (method_func_expr) method_func_expr->set_cached_executable(exe);
-                        }
-                        size_t method_declared_length = 0;
-                        for (const auto& p : exe->parameter_objects) {
-                            if (p->is_rest() || p->has_default()) break;
-                            method_declared_length++;
-                        }
                         instance_method = std::make_unique<Function>(method_name, std::move(exe), &ctx, /*create_prototype=*/false);
-                        instance_method->set_declared_length(method_declared_length);
                         // Matches create_js_function's own two follow-up steps (see
                         // FunctionDeclaration::evaluate's identical rationale).
                         instance_method->mark_closure_environment_escaped();
@@ -679,6 +675,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                             instance_method->set_prototype(func_proto);
                         }
                     }
+                    instance_method->set_declared_length(method_declared_length);
                     if (!method->get_source_text().empty()) instance_method->set_source_text(method->get_source_text());
                     instance_method->set_is_strict(true);
                     instance_method->set_property("__private_class_brand__", Value(prototype.get()));
@@ -997,46 +994,42 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                     }
                     std::unique_ptr<Function> static_method;
+                    // See the instance-method branch above for the executable-sharing
+                    // rationale -- generator/async-generator/async statics share the
+                    // SAME executable slot (mutually exclusive shapes for the same node).
+                    std::shared_ptr<FunctionExecutable> exe;
+                    FunctionExpression* method_func_expr =
+                        method->get_value()->get_type() == Type::FUNCTION_EXPRESSION
+                            ? static_cast<FunctionExpression*>(method->get_value()) : nullptr;
+                    if (method_func_expr) exe = method_func_expr->get_cached_executable();
+                    if (!exe) {
+                        exe = std::make_shared<FunctionExecutable>();
+                        exe->body = method->get_value()->get_body()->clone();
+                        for (const auto& p : static_params) exe->parameters.push_back(p->get_name()->get_name());
+                        exe->parameter_objects = std::move(static_params);
+                        if (method_func_expr) method_func_expr->set_cached_executable(exe);
+                    }
+                    size_t method_declared_length = 0;
+                    for (const auto& p : exe->parameter_objects) {
+                        if (p->is_rest() || p->has_default()) break;
+                        method_declared_length++;
+                    }
                     if (static_is_gen && static_is_async) {
-                        std::vector<std::unique_ptr<Parameter>> gen_params;
-                        for (const auto& p : static_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-                        static_method = std::make_unique<AsyncGeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
+                        static_method = std::make_unique<AsyncGeneratorFunction>(method_name, std::move(exe), &ctx);
                     } else if (static_is_gen) {
-                        std::vector<std::unique_ptr<Parameter>> gen_params;
-                        for (const auto& p : static_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-                        static_method = std::make_unique<GeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
+                        static_method = std::make_unique<GeneratorFunction>(method_name, std::move(exe), &ctx);
                     } else if (static_is_async) {
-                        std::vector<std::unique_ptr<Parameter>> async_params;
-                        for (const auto& p : static_params) async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-                        static_method = std::make_unique<AsyncFunction>(method_name, std::move(async_params), method->get_value()->get_body()->clone(), &ctx);
+                        static_method = std::make_unique<AsyncFunction>(method_name, std::move(exe), &ctx);
                     } else {
                         // Class static methods are non-constructors; non-generator methods have no
                         // prototype (async ones already skip it in AsyncFunction's own ctor).
-                        // See the instance-method branch above for the executable-sharing rationale.
-                        std::shared_ptr<FunctionExecutable> exe;
-                        FunctionExpression* method_func_expr =
-                            method->get_value()->get_type() == Type::FUNCTION_EXPRESSION
-                                ? static_cast<FunctionExpression*>(method->get_value()) : nullptr;
-                        if (method_func_expr) exe = method_func_expr->get_cached_executable();
-                        if (!exe) {
-                            exe = std::make_shared<FunctionExecutable>();
-                            exe->body = method->get_value()->get_body()->clone();
-                            for (const auto& p : static_params) exe->parameters.push_back(p->get_name()->get_name());
-                            exe->parameter_objects = std::move(static_params);
-                            if (method_func_expr) method_func_expr->set_cached_executable(exe);
-                        }
-                        size_t method_declared_length = 0;
-                        for (const auto& p : exe->parameter_objects) {
-                            if (p->is_rest() || p->has_default()) break;
-                            method_declared_length++;
-                        }
                         static_method = std::make_unique<Function>(method_name, std::move(exe), &ctx, /*create_prototype=*/false);
-                        static_method->set_declared_length(method_declared_length);
                         static_method->mark_closure_environment_escaped();
                         if (Object* func_proto = ObjectFactory::get_function_prototype()) {
                             static_method->set_prototype(func_proto);
                         }
                     }
+                    static_method->set_declared_length(method_declared_length);
                     if (!method->get_source_text().empty()) static_method->set_source_text(method->get_source_text());
                     static_method->set_is_strict(true);
                     static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
@@ -1511,46 +1504,45 @@ Value FunctionExpression::evaluate(Context& ctx) {
         set_needs_outer_env_state(closure_needs_outer_environment(params_, body_.get(), /*is_arrow=*/false) ? 1 : 0);
     }
     bool needs_outer_env = get_needs_outer_env_state() != 0;
+    // Share one FunctionExecutable across every instantiation of this
+    // literal -- built once (durable clone of body_/params_, exactly the
+    // clone the old per-instance path made anyway), cached directly on
+    // this node (mirrors cached_param_names_'s idiom), reused by every
+    // later evaluate() of the same literal regardless of which enclosing
+    // call (if any) is currently running. Compiled bytecode is filled in
+    // lazily on first CALL of any instance sharing this executable (see
+    // Function::call_default), same as it always was for a top-level or
+    // un-nested function -- this just makes every construction path get
+    // that same one-compile-per-decl-site behavior instead of only the
+    // narrow enclosing-instance-scoped case the old mechanism covered. Now
+    // also covers the generator/async-generator forms (mutually exclusive
+    // shapes for the SAME node, so they safely share the one
+    // cached_executable_ slot with the plain form below).
+    std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+    if (!exe) {
+        exe = std::make_shared<FunctionExecutable>();
+        exe->body = body_->clone();
+        for (const auto& param : params_) {
+            exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+        }
+        exe->parameters = get_cached_param_names();
+        set_cached_executable(exe);
+    }
     if (is_async_ && is_generator_) {
-        std::vector<std::unique_ptr<Parameter>> gen_params;
-        for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-        function = std::make_unique<AsyncGeneratorFunction>(name, std::move(gen_params), body_->clone(), &ctx);
+        function = std::make_unique<AsyncGeneratorFunction>(name, std::move(exe), &ctx);
         function->mark_closure_environment_escaped();  // suspendable body: not analyzed, preserve the old pin
     } else if (is_generator_) {
-        std::vector<std::unique_ptr<Parameter>> gen_params;
-        for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-        function = std::make_unique<GeneratorFunction>(name, std::move(gen_params), body_->clone(), &ctx);
+        function = std::make_unique<GeneratorFunction>(name, std::move(exe), &ctx);
         function->mark_closure_environment_escaped();  // suspendable body: not analyzed, preserve the old pin
     } else {
-        // Share one FunctionExecutable across every instantiation of this
-        // literal -- built once (durable clone of body_/params_, exactly the
-        // clone the old per-instance path made anyway), cached directly on
-        // this node (mirrors cached_param_names_'s idiom), reused by every
-        // later evaluate() of the same literal regardless of which enclosing
-        // call (if any) is currently running. Compiled bytecode is filled in
-        // lazily on first CALL of any instance sharing this executable (see
-        // Function::call_default), same as it always was for a top-level or
-        // un-nested function -- this just makes every construction path get
-        // that same one-compile-per-decl-site behavior instead of only the
-        // narrow enclosing-instance-scoped case the old mechanism covered.
-        std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
-        if (!exe) {
-            exe = std::make_shared<FunctionExecutable>();
-            exe->body = body_->clone();
-            for (const auto& param : params_) {
-                exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-            }
-            exe->parameters = get_cached_param_names();
-            set_cached_executable(exe);
-        }
         // Method/getter/setter shorthand is non-constructible (spec 14.3.9) -- the
         // literal/class finalize step would strip .prototype right away, so skip
         // building it at all.
         function = std::make_unique<Function>(name, std::move(exe), &ctx,
                                               /*create_prototype=*/!is_method_shorthand_);
-        function->set_declared_length(get_cached_spec_length());
         if (needs_outer_env) function->mark_closure_environment_escaped();
     }
+    function->set_declared_length(get_cached_spec_length());
 
     // NamedEvaluation (spec 15.2.5/15.5.3): give a named function expression an immutable
     // self-reference binding so its name resolves inside the body without aliasing an outer one.
@@ -1656,11 +1648,29 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     std::string name = "";
 
     if (is_async_) {
-        std::vector<std::unique_ptr<Parameter>> async_params;
-        for (const auto& p : params_)
-            async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+        // Share one FunctionExecutable across every instantiation of this
+        // async arrow literal -- same cache-on-node pattern as the sync
+        // branch below (mutually exclusive: an arrow's is_async_ never
+        // changes, so both branches safely share the one cached_executable_
+        // slot on this node).
+        std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+        if (!exe) {
+            exe = std::make_shared<FunctionExecutable>();
+            exe->body = body_->clone();
+            for (const auto& param : params_) {
+                exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+                exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
+            }
+            set_cached_executable(exe);
+        }
+        size_t declared_length = 0;
+        for (const auto& p : exe->parameter_objects) {
+            if (p->is_rest() || p->has_default()) break;
+            declared_length++;
+        }
 
-        auto* async_fn = new AsyncFunction(name, std::move(async_params), body_->clone(), &ctx);
+        auto* async_fn = new AsyncFunction(name, std::move(exe), &ctx);
+        async_fn->set_declared_length(declared_length);
         async_fn->set_is_arrow(true);
         if (ctx.is_strict_mode()) async_fn->set_is_strict(true);
 
@@ -3052,11 +3062,27 @@ std::unique_ptr<ASTNode> YieldExpression::clone() const {
 Value AsyncFunctionExpression::evaluate(Context& ctx) {
     std::string function_name = id_ ? id_->get_name() : "";
 
-    std::vector<std::unique_ptr<Parameter>> async_params;
-    for (const auto& p : params_)
-        async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+    // Share one FunctionExecutable across every instantiation of this async
+    // function literal -- same cache-on-node pattern as FunctionExpression's
+    // plain branch.
+    std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+    if (!exe) {
+        exe = std::make_shared<FunctionExecutable>();
+        exe->body = body_->clone();
+        for (const auto& param : params_) {
+            exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+            exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
+        }
+        set_cached_executable(exe);
+    }
+    size_t declared_length = 0;
+    for (const auto& p : exe->parameter_objects) {
+        if (p->is_rest() || p->has_default()) break;
+        declared_length++;
+    }
 
-    auto* fn = new AsyncFunction(function_name, std::move(async_params), std::unique_ptr<ASTNode>(body_->clone().release()), &ctx);
+    auto* fn = new AsyncFunction(function_name, std::move(exe), &ctx);
+    fn->set_declared_length(declared_length);
 
     // NamedEvaluation (spec 15.8.4): see FunctionExpression::evaluate for the same pattern.
     if (id_ && !is_arrow_ && !is_decl_form_) {

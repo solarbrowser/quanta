@@ -75,13 +75,6 @@ private:
 class Parameter;
 
 class AsyncFunction : public Function {
-private:
-    std::unique_ptr<ASTNode> body_;
-    std::vector<std::unique_ptr<Parameter>> ast_params_;
-    // Lazy body->bytecode cache (mirrors Function::bytecode_chunk_).
-    std::unique_ptr<BytecodeChunk> suspendable_chunk_;
-    bool suspendable_incompatible_ = false;
-
 public:
     AsyncFunction(const std::string& name,
                   const std::vector<std::string>& params,
@@ -92,12 +85,18 @@ public:
                   std::unique_ptr<ASTNode> body,
                   Context* closure_context);
 
+    // Shares an already-built FunctionExecutable, same as Function's own
+    // shared-executable constructor -- every AsyncFunction instance from the
+    // same declaration site reuses the identical body/params/compiled
+    // suspendable chunk instead of re-cloning the AST and recompiling.
+    AsyncFunction(const std::string& name,
+                  std::shared_ptr<const class FunctionExecutable> executable,
+                  Context* closure_context);
+
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
 
     const BytecodeChunk* get_suspendable_chunk(Context& ctx);
     void trace(Visitor& v);
-
-private:
 };
 
 
@@ -251,10 +250,6 @@ inline AsyncGenerator* as_async_generator(Object* obj) {
 }
 
 class AsyncGeneratorFunction : public Function {
-    std::unique_ptr<ASTNode> body_;
-    // Lazy body->bytecode cache (mirrors GeneratorFunction/AsyncFunction).
-    std::unique_ptr<BytecodeChunk> suspendable_chunk_;
-    bool suspendable_incompatible_ = false;
 public:
     AsyncGeneratorFunction(const std::string& name,
                            const std::vector<std::string>& params,
@@ -264,6 +259,16 @@ public:
                            std::vector<std::unique_ptr<class Parameter>> params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context);
+
+    // Shares an already-built FunctionExecutable, same as Function's own
+    // shared-executable constructor -- every AsyncGeneratorFunction instance
+    // from the same declaration site reuses the identical body/params/
+    // compiled suspendable chunk instead of re-cloning the AST and
+    // recompiling.
+    AsyncGeneratorFunction(const std::string& name,
+                           std::shared_ptr<const class FunctionExecutable> executable,
+                           Context* closure_context);
+
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
 
     const BytecodeChunk* get_suspendable_chunk(Context& ctx);

@@ -153,13 +153,6 @@ private:
  * Represents function* declarations
  */
 class GeneratorFunction : public Function {
-private:
-    std::unique_ptr<ASTNode> body_;
-    // Lazy body->bytecode cache, shared by every generator this function
-    // produces (mirrors Function::bytecode_chunk_/vm_incompatible_).
-    std::unique_ptr<BytecodeChunk> suspendable_chunk_;
-    bool suspendable_incompatible_ = false;
-
 public:
     GeneratorFunction(const std::string& name,
                      const std::vector<std::string>& params,
@@ -169,6 +162,14 @@ public:
     GeneratorFunction(const std::string& name,
                      std::vector<std::unique_ptr<class Parameter>> params,
                      std::unique_ptr<ASTNode> body,
+                     Context* closure_context);
+
+    // Shares an already-built FunctionExecutable, same as Function's own
+    // shared-executable constructor -- every GeneratorFunction instance from
+    // the same declaration site reuses the identical body/params/compiled
+    // suspendable chunk instead of re-cloning the AST and recompiling.
+    GeneratorFunction(const std::string& name,
+                     std::shared_ptr<const class FunctionExecutable> executable,
                      Context* closure_context);
 
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());

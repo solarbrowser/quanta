@@ -858,11 +858,9 @@ private:
     // overrides below) -- these track whether each has been explicitly
     // deleted, since a never-installed and a deleted property must be told
     // apart (the former still virtually reads as present, the latter must
-    // not). declared_length_ is the spec length (may differ from
-    // parameters_.size() for rest/default params -- see each constructor).
+    // not).
     bool name_deleted_ = false;
     bool length_deleted_ = false;
-    size_t declared_length_ = 0;
     // Per-instance lookup cache, used in place of BytecodeChunk::lookup_cache
     // when the executable's bytecode_chunk is shared -- instances differ in
     // captured environment, so a chunk-level cache would serve stale results.
@@ -880,8 +878,23 @@ private:
     // sharing the same compiled site.
     mutable std::vector<PrivateFeedback,
         SmallMapAllocator<PrivateFeedback>> instance_private_feedback_;
-    std::string source_text_;
-    std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
+    // Per-instance override for get_source_text(): the common case (decl-site
+    // source text, identical for every instance sharing one executable) lives
+    // on executable_->source_text instead (see set_source_text() below) --
+    // this is only ever allocated for the rare case of a genuinely
+    // instance-specific override (or a native function, which has no
+    // executable to hold a shared default at all). Null in the overwhelmingly
+    // common case, so this costs one pointer instead of a resident std::string.
+    mutable std::unique_ptr<std::string> source_text_override_;
+    // Bundles native-only per-instance state behind one pointer: both fields
+    // only exist for native functions (is_native_, no executable_ to derive a
+    // decl-site default from), so folding them together costs nothing beyond
+    // the single pointer indirection the native closure itself already needs.
+    struct NativeFunctionData {
+        std::function<Value(Context&, const std::vector<Value>&)> fn;
+        size_t declared_length = 0;
+    };
+    std::unique_ptr<NativeFunctionData> native_data_;
 
     mutable uint32_t execution_count_;
     mutable bool is_hot_;
@@ -983,8 +996,24 @@ public:
     void set_is_param_default(bool v) { is_param_default_ = v; }
     bool is_mapped_arguments_accessor() const { return is_mapped_arguments_accessor_; }
     void set_construct_slot_hint(uint32_t count) { construct_slot_hint_ = count; }
-    const std::string& get_source_text() const { return source_text_; }
-    void set_source_text(const std::string& s) { source_text_ = s; }
+    const std::string& get_source_text() const {
+        if (source_text_override_) return *source_text_override_;
+        static const std::string empty;
+        return executable_ ? executable_->source_text : empty;
+    }
+    // Decl-site-invariant source text populates the shared executable's own
+    // copy directly (safe: every instance from the same site sets the exact
+    // same value, same idiom as strict_directive_state_ etc). A call that
+    // would actually change an already-different value -- or has no
+    // executable at all (native functions) -- falls back to a per-instance
+    // override instead of corrupting every sibling sharing that executable.
+    void set_source_text(const std::string& s) {
+        if (executable_) {
+            if (executable_->source_text.empty()) { executable_->source_text = s; return; }
+            if (executable_->source_text == s) return;
+        }
+        source_text_override_ = std::make_unique<std::string>(s);
+    }
 
     // Lazily sized by the caller (Interpreter.cpp) to chunk.names.size().
     std::vector<BytecodeChunk::LookupCacheEntry,
@@ -1028,8 +1057,18 @@ public:
     bool delete_property(const std::string& key);
     bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
     // Spec length (ES6: params before the first rest/default) -- decoupled
-    // from get_parameters().size(), which includes every param.
-    void set_declared_length(size_t len) { declared_length_ = len; }
+    // from get_parameters().size(), which includes every param. Decl-site-
+    // invariant for non-native functions (a pure function of params), so it
+    // lives on the shared executable; native functions have no executable,
+    // so theirs lives in native_data_ instead.
+    void set_declared_length(size_t len) {
+        if (executable_) executable_->declared_length = len;
+        else if (native_data_) native_data_->declared_length = len;
+    }
+    size_t get_declared_length() const {
+        if (executable_) return executable_->declared_length;
+        return native_data_ ? native_data_->declared_length : 0;
+    }
 
     Object* get_function_prototype() const { return prototype_; }
     void set_function_prototype(Object* proto);
