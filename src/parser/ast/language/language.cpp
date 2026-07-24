@@ -1432,39 +1432,11 @@ std::unique_ptr<ASTNode> MethodDefinition::clone() const {
 Value FunctionExpression::evaluate(Context& ctx) {
     std::string name = is_named() ? id_->get_name() : "";
 
-    // Cross-instantiation chunk cache, keyed on `this` and scoped to the
-    // enclosing Function instance -- see nested_chunk_cache_ in Object.h.
-    // Generator/async closures have the same recompile issue via their own
-    // suspendable_chunk_; left for a follow-up.
-    Function* enclosing_fn = nullptr;
-    if (!is_async_ && !is_generator_) {
-        CallStack& cs = CallStack::instance();
-        // A native top frame (eval, generator resume, dynamic import) doesn't
-        // own the executing AST -- caching on it would key by an AST address
-        // that's freed once the native call returns.
-        if (!cs.is_empty() && cs.top().function_ptr && !cs.top().function_ptr->is_native()) {
-            enclosing_fn = cs.top().function_ptr;
-        }
-    }
-    std::shared_ptr<const BytecodeChunk> cached_chunk;
-    bool cache_hit = enclosing_fn && enclosing_fn->lookup_nested_chunk(this, cached_chunk);
-    if (enclosing_fn && !cache_hit) {
-        // Compile from THIS node's own (never-cloned) body_/params_, not the
-        // per-instance clone below -- a chunk compiled from the clone would
-        // bake dangling pointers (chunk.closures/destructuring_patterns) into
-        // whichever instance's clone happens to be first, freed the moment
-        // that first instance is GC'd while later instances still share it.
-        cached_chunk = BytecodeCompiler::compile(body_.get(), params_);
-        enclosing_fn->store_nested_chunk(this, cached_chunk);
-        if (cached_chunk) Collector::write_barrier(enclosing_fn);
-    }
-
     std::unique_ptr<Function> function;
-    bool clone_elided = false;
     // Resolved once per literal site (needs_outer_env_state_ cache), reused
     // by every instantiation -- see closure_needs_outer_environment's doc
     // comment (BytecodeCompiler.h) for the full contract. Only consulted
-    // below for the non-suspendable branches; generator/async bodies always
+    // below for the non-suspendable branch; generator/async bodies always
     // keep the old unconditional pin regardless.
     if (get_needs_outer_env_state() < 0) {
         set_needs_outer_env_state(closure_needs_outer_environment(params_, body_.get(), /*is_arrow=*/false) ? 1 : 0);
@@ -1480,43 +1452,34 @@ Value FunctionExpression::evaluate(Context& ctx) {
         for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
         function = std::make_unique<GeneratorFunction>(name, std::move(gen_params), body_->clone(), &ctx);
         function->mark_closure_environment_escaped();  // suspendable body: not analyzed, preserve the old pin
-    } else if (cached_chunk && enclosing_fn && !cached_chunk->needs_arguments && VM::enabled()) {
-        // Clone elision: borrow the stable declaration-site AST instead of
-        // cloning body_/params_, pinning enclosing_fn (the AST's real owner,
-        // already confirmed non-native above) for this instance's lifetime.
-        // needs_arguments is excluded because that path reads parameter_objects_
-        // at runtime; requiring VM::enabled() (static-once, so this can't change
-        // later) keeps a tree-walker fallback -- which would need an owned body --
-        // from ever hitting an un-materialized instance; materialize_from_decl_site()
-        // is the backstop regardless.
-        // Empty vector, not param_names: parameters_ stays unused for this
-        // instance -- get_parameters() borrows FunctionExpression's own
-        // cached_param_names_ via decl_site_ instead (set below), avoiding a
-        // per-instance vector copy. get_cached_spec_length() below populates
-        // that cache as a side effect (shares ensure_param_cache() with
-        // get_cached_param_names()), so it's already ready by the time
-        // anything could read it through decl_site_.
-        function = std::make_unique<Function>(name, std::vector<std::string>{}, nullptr, &ctx,
-                                              /*create_prototype=*/!is_method_shorthand_);
-        // Spec length is params before the first rest/default, matching the
-        // Parameter-vector ctor -- always set explicitly (cheap field write,
-        // no descriptor involved now that "length" is lazy).
-        function->set_declared_length(get_cached_spec_length());
-        function->set_decl_site(this);
-        function->attach_precompiled_chunk(std::move(cached_chunk), enclosing_fn);
-        clone_elided = true;
-        if (needs_outer_env) function->mark_closure_environment_escaped();
     } else {
-        std::vector<std::unique_ptr<Parameter>> param_clones;
-        for (const auto& param : params_) {
-            param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+        // Share one FunctionExecutable across every instantiation of this
+        // literal -- built once (durable clone of body_/params_, exactly the
+        // clone the old per-instance path made anyway), cached directly on
+        // this node (mirrors cached_param_names_'s idiom), reused by every
+        // later evaluate() of the same literal regardless of which enclosing
+        // call (if any) is currently running. Compiled bytecode is filled in
+        // lazily on first CALL of any instance sharing this executable (see
+        // Function::call_default), same as it always was for a top-level or
+        // un-nested function -- this just makes every construction path get
+        // that same one-compile-per-decl-site behavior instead of only the
+        // narrow enclosing-instance-scoped case the old mechanism covered.
+        std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+        if (!exe) {
+            exe = std::make_shared<FunctionExecutable>();
+            exe->body = body_->clone();
+            for (const auto& param : params_) {
+                exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+            }
+            exe->parameters = get_cached_param_names();
+            set_cached_executable(exe);
         }
         // Method/getter/setter shorthand is non-constructible (spec 14.3.9) -- the
         // literal/class finalize step would strip .prototype right away, so skip
         // building it at all.
-        function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx,
+        function = std::make_unique<Function>(name, std::move(exe), &ctx,
                                               /*create_prototype=*/!is_method_shorthand_);
-        if (cached_chunk) function->attach_precompiled_chunk(std::move(cached_chunk), enclosing_fn);
+        function->set_declared_length(get_cached_spec_length());
         if (needs_outer_env) function->mark_closure_environment_escaped();
     }
 
@@ -1568,7 +1531,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
         }
     }
 
-    if (function && !clone_elided && !source_text_.empty()) {
+    if (function && !source_text_.empty()) {
         function->set_source_text(source_text_);
     }
     if (function && body_->has_direct_eval_cached()) {

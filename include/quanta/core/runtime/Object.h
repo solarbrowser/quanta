@@ -11,6 +11,7 @@
 #include "quanta/core/runtime/Shape.h"
 #include "quanta/core/runtime/SmallMapPool.h"
 #include "quanta/core/vm/Bytecode.h"
+#include "quanta/parser/FunctionExecutable.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -833,9 +834,10 @@ public:
 
 private:
     std::string name_;
-    std::vector<std::string> parameters_;
-    std::vector<std::unique_ptr<class Parameter>> parameter_objects_;
-    std::unique_ptr<class ASTNode> body_;
+    // Shared, decl-site-scoped data (AST body/params, compiled bytecode,
+    // decl-site-invariant caches) -- see FunctionExecutable's own doc
+    // comment. Null only for native functions (no AST/decl site at all).
+    std::shared_ptr<const FunctionExecutable> executable_;
     class Context* closure_context_;
     class Environment* closure_environment_;  // lexical environment captured at creation time
     mutable Object* prototype_;  // Mutable to allow lazy initialization in get_property
@@ -861,73 +863,36 @@ private:
     bool name_deleted_ = false;
     bool length_deleted_ = false;
     size_t declared_length_ = 0;
-    // Lazy AST->bytecode result, shared by every call. vm_incompatible_ is the
-    // negative cache: one failed compile routes this function through the
-    // tree-walker forever (function-level fallback, see vm-architecture.md).
-    // shared_ptr: instances sharing a declaration site (nested_chunk_cache_
-    // below) share one compiled chunk instead of each compiling its own.
-    std::shared_ptr<const BytecodeChunk> bytecode_chunk_;
-    bool vm_incompatible_ = false;
     // Per-instance lookup cache, used in place of BytecodeChunk::lookup_cache
-    // when bytecode_chunk_ is shared -- instances differ in captured
-    // environment, so a chunk-level cache would serve stale results. Pooled
-    // (unlike chunk.lookup_cache, deliberately left on the default allocator
-    // -- see Interpreter.cpp's lookup_cache_data comment): a fresh instance
-    // is resized exactly once, on its first call, and this is the dominant
-    // allocation for single-use clone-elided closures.
+    // when the executable's bytecode_chunk is shared -- instances differ in
+    // captured environment, so a chunk-level cache would serve stale results.
+    // Pooled (unlike chunk.lookup_cache, deliberately left on the default
+    // allocator -- see Interpreter.cpp's lookup_cache_data comment): a fresh
+    // instance is resized exactly once, on its first call, and this is the
+    // dominant allocation for single-use closures.
     mutable std::vector<BytecodeChunk::LookupCacheEntry,
         SmallMapAllocator<BytecodeChunk::LookupCacheEntry>> instance_lookup_cache_;
-    // Compiled-chunk cache for closures declared in this function's own body,
-    // keyed by the declaration-site AST node (stable: body_ clones once at
-    // construction, never again). A present key with a null chunk means
-    // "known VM-incompatible," avoiding a doomed recompile every instantiation.
-    std::unordered_map<const ASTNode*, std::shared_ptr<const BytecodeChunk>> nested_chunk_cache_;
-    // Owner + borrow pair for clone elision: when decl_site_ is set, this
-    // instance never cloned body_/parameter_objects_ and reads them through
-    // decl_site_ instead (see ast_body()). body_owner_ is the Function whose
-    // AST decl_site_ (and bytecode_chunk_'s embedded pointers) point into --
-    // pinned here so it outlives this instance (traced in Function::trace).
-    Function* body_owner_ = nullptr;
-    const class FunctionExpression* decl_site_ = nullptr;
     std::string source_text_;
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
     mutable uint32_t execution_count_;
     mutable bool is_hot_;
-    // Once-per-function facts cached on first call: the 'use strict' directive
-    // is static per body, and __closure_ self-reference props are installed at
-    // class-evaluation time -- re-deriving either on every call showed up hard
-    // in call-heavy profiles. -1 unknown, 0 no, 1 yes.
-    mutable int8_t strict_directive_state_ = -1;
-    mutable int8_t closure_props_state_ = -1;
-    // -1 unknown, 0 body never mentions the function's own name (skip the
-    // per-call self-reference binding), 1 mentions it.
-    mutable int8_t self_name_state_ = -1;
-    // -1 unknown, else bitmask: bit0=__super_constructor__, bit1=__super_is_null__,
-    // bit2=__private_brands__ present. Same monotonic-cache precedent as
-    // closure_props_state_ above -- these markers are installed once at
-    // creation time and never removed afterward.
-    mutable int8_t super_marker_state_ = -1;
     // Set eagerly the moment a genuine (non-const-marker) __closure_ property
     // is installed (see Function::set_property) -- has_closure_props()
     // becomes an O(1) check instead of scanning every own property key on
     // demand, which used to run on EVERY first call to EVERY function: fresh,
-    // single-use closures never benefit from closure_props_state_'s cache
-    // above (there's no second call to pay it off). Monotonic: only ever
+    // single-use closures never benefit from executable_'s closure_props_state
+    // cache (there's no second call to pay it off). Monotonic: only ever
     // flips false->true, never reset -- if the property is later deleted
     // (astronomically unlikely for this mangled internal name), the flag
     // stays stale-true, which only costs one redundant scan in
     // Function::call's own install-check below, not a correctness issue.
     bool has_closure_props_hint_ = false;
 
-    // Tree-walker insurance for borrowed-AST instances: clones body_ AND
-    // parameter_objects_ from decl_site_ (both or neither -- a body-only
-    // materialization would silently mis-bind default/rest params).
-    void materialize_from_decl_site();
     // Detection-only half of the __closure_* scan in Function::call (no
-    // Context needed) -- used to resolve closure_props_state_ before a
-    // Context exists; the call-site scan still runs separately to apply
-    // the bindings when this returns true.
+    // Context needed) -- used to resolve executable_'s closure_props_state
+    // before a Context exists; the call-site scan still runs separately to
+    // apply the bindings when this returns true.
     bool has_closure_props() const;
 
 public:
@@ -942,7 +907,17 @@ public:
              std::unique_ptr<class ASTNode> body,
              class Context* closure_context,
              bool create_prototype = true);
-             
+
+    // Shares an already-built FunctionExecutable instead of wrapping a fresh
+    // one -- every instance from the same decl site (e.g. a closure
+    // recreated on each call of an enclosing function) takes this
+    // constructor and reuses the identical body/params/compiled-chunk
+    // instead of re-cloning the AST and recompiling.
+    Function(const std::string& name,
+             std::shared_ptr<const FunctionExecutable> executable,
+             class Context* closure_context,
+             bool create_prototype = true);
+
     Function(const std::string& name,
              std::function<Value(Context&, const std::vector<Value>&)> native_fn,
              bool create_prototype = false);
@@ -966,11 +941,14 @@ public:
 
     const std::string& get_name() const { return name_; }
     void set_name(const std::string& name);
-    // Out-of-line: clone-elided instances borrow decl_site_'s cached param
-    // names instead of owning a copy -- needs FunctionExpression, only
-    // forward-declared here (see ast_body()'s identical rationale).
-    const std::vector<std::string>& get_parameters() const;
-    const std::vector<std::unique_ptr<class Parameter>>& get_parameter_objects() const { return parameter_objects_; }
+    const std::vector<std::string>& get_parameters() const {
+        static const std::vector<std::string> empty;
+        return executable_ ? executable_->parameters : empty;
+    }
+    // Out-of-line (Function.cpp): the static empty-vector fallback's
+    // destructor needs Parameter complete, which this header can't provide
+    // (only forward-declared here to avoid a runtime->parser header cycle).
+    const std::vector<std::unique_ptr<class Parameter>>& get_parameter_objects() const;
     const ASTNode* get_body() const { return ast_body(); }
     size_t get_arity() const { return get_parameters().size(); }
     bool is_native() const { return is_native_; }
@@ -997,37 +975,16 @@ public:
     void set_is_param_default(bool v) { is_param_default_ = v; }
     bool is_mapped_arguments_accessor() const { return is_mapped_arguments_accessor_; }
     void set_construct_slot_hint(uint32_t count) { construct_slot_hint_ = count; }
-    // Out-of-line: clone-elided instances borrow decl_site_'s own source
-    // text instead of owning a copy -- see get_parameters()'s identical
-    // rationale. Needs FunctionExpression, only forward-declared here.
-    const std::string& get_source_text() const;
+    const std::string& get_source_text() const { return source_text_; }
     void set_source_text(const std::string& s) { source_text_ = s; }
 
     // Lazily sized by the caller (Interpreter.cpp) to chunk.names.size().
     std::vector<BytecodeChunk::LookupCacheEntry,
         SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>& instance_lookup_cache() const { return instance_lookup_cache_; }
 
-    // Adopts an already-compiled (possibly shared) chunk instead of letting
-    // Function::call compile its own. `owner` must be pinned (see body_owner_).
-    void attach_precompiled_chunk(std::shared_ptr<const BytecodeChunk> chunk, Function* owner) {
-        bytecode_chunk_ = std::move(chunk);
-        body_owner_ = owner;
-    }
-    // Declaration-site AST borrow (clone elision); requires attach above first.
-    void set_decl_site(const class FunctionExpression* site) { decl_site_ = site; }
-    // Out-of-line: needs FunctionExpression, only forward-declared here.
-    class ASTNode* ast_body() const;
-
-    // `out`/return convention: true+chunk on hit, true+null on known-incompatible, false on miss.
-    bool lookup_nested_chunk(const ASTNode* key, std::shared_ptr<const BytecodeChunk>& out) const {
-        auto it = nested_chunk_cache_.find(key);
-        if (it == nested_chunk_cache_.end()) return false;
-        out = it->second;
-        return true;
-    }
-    void store_nested_chunk(const ASTNode* key, std::shared_ptr<const BytecodeChunk> chunk) {
-        nested_chunk_cache_[key] = std::move(chunk);
-    }
+    // Shared decl-site data (null only for native functions).
+    const std::shared_ptr<const FunctionExecutable>& get_executable() const { return executable_; }
+    class ASTNode* ast_body() const { return executable_ ? executable_->body.get() : nullptr; }
 
     uint32_t get_execution_count() const { return execution_count_; }
     bool is_hot_function() const { return is_hot_; }
@@ -1059,8 +1016,7 @@ public:
     bool delete_property(const std::string& key);
     bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
     // Spec length (ES6: params before the first rest/default) -- decoupled
-    // from parameters_.size(), which includes every param. See callers in
-    // FunctionExpression::evaluate's clone-elision path.
+    // from get_parameters().size(), which includes every param.
     void set_declared_length(size_t len) { declared_length_ = len; }
 
     Object* get_function_prototype() const { return prototype_; }

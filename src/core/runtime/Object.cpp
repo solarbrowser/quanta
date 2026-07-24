@@ -30,6 +30,7 @@
 namespace Quanta {
 
 static_assert(sizeof(Object) == 24, "sizeof(Object) must stay 24 (Phase 3b target: no vtable, tagged prototype/shape, folded RareExtras).");
+static_assert(sizeof(Function) == 224, "sizeof(Function) must stay 224 (Phase 1: shared FunctionExecutable replaces per-instance body/params/bytecode/decl-site caches).");
 
 thread_local Context* Object::current_context_ = nullptr;
 
@@ -401,12 +402,10 @@ void Function::trace_default(Visitor& v) {
     v.visit_context(closure_context_);
     v.visit_environment(closure_environment_);
     v.visit_object(prototype_);
-    v.visit_object(body_owner_);
-    if (bytecode_chunk_) bytecode_chunk_->trace(v);
-    // Otherwise unreachable until some instance adopts it via attach_precompiled_chunk.
-    for (const auto& entry : nested_chunk_cache_) {
-        if (entry.second) entry.second->trace(v);
-    }
+    // executable_ is a plain (non-GC) shared_ptr -- ordinary refcounting keeps
+    // its owned AST clone alive, no GC pinning needed. Only its compiled
+    // chunk holds GC references (constants) that still need tracing.
+    if (executable_ && executable_->bytecode_chunk) executable_->bytecode_chunk->trace(v);
 }
 
 static Value make_prop_key_value(const std::string& key) {

@@ -61,10 +61,14 @@ Function::Function(const std::string& name,
                    std::unique_ptr<ASTNode> body,
                    Context* closure_context,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name), parameters_(params),
-      body_(std::move(body)), closure_context_(closure_context),
+    : Object(ObjectType::Function), name_(name),
+      closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
+    auto exe = std::make_shared<FunctionExecutable>();
+    exe->parameters = params;
+    exe->body = std::move(body);
+
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -84,7 +88,8 @@ Function::Function(const std::string& name,
     // "name"/"length" are lazy -- see the class-header comment on
     // name_deleted_/length_deleted_/declared_length_. declared_length_
     // mirrors this constructor's own former eager-descriptor value exactly.
-    declared_length_ = parameters_.size();
+    declared_length_ = params.size();
+    executable_ = std::move(exe);
 
     // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
     // ObjectFactory::create_js_function would otherwise leave this null.
@@ -98,13 +103,16 @@ Function::Function(const std::string& name,
                    std::unique_ptr<ASTNode> body,
                    Context* closure_context,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
-      body_(std::move(body)), closure_context_(closure_context),
+    : Object(ObjectType::Function), name_(name),
+      closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
-    for (const auto& param : parameter_objects_) {
-        parameters_.push_back(param->get_name()->get_name());
+    auto exe = std::make_shared<FunctionExecutable>();
+    for (const auto& param : params) {
+        exe->parameters.push_back(param->get_name()->get_name());
     }
+    exe->parameter_objects = std::move(params);
+    exe->body = std::move(body);
 
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -123,14 +131,46 @@ Function::Function(const std::string& name,
     // "name"/"length" are lazy -- see the class-header comment. ES6: length =
     // number of params before first rest or default.
     size_t formal_length = 0;
-    for (const auto& param : parameter_objects_) {
+    for (const auto& param : exe->parameter_objects) {
         if (param->is_rest() || param->has_default()) break;
         formal_length++;
     }
     declared_length_ = formal_length;
+    executable_ = std::move(exe);
 
     // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
     // ObjectFactory::create_js_function would otherwise leave this null.
+    if (Object* func_proto = ObjectFactory::get_function_prototype()) {
+        set_prototype(func_proto);
+    }
+}
+
+Function::Function(const std::string& name,
+                   std::shared_ptr<const FunctionExecutable> executable,
+                   Context* closure_context,
+                   bool create_prototype)
+    : Object(ObjectType::Function), name_(name), executable_(std::move(executable)),
+      closure_context_(closure_context),
+      closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
+      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
+    if (create_prototype) {
+        auto proto = ObjectFactory::create_object();
+        prototype_ = proto.release();
+
+        PropertyDescriptor proto_desc(Value(prototype_), PropertyAttributes::Writable);
+        proto_desc.set_enumerable(false);
+        proto_desc.set_configurable(false);
+        this->set_property_descriptor("prototype", proto_desc);
+
+        PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        prototype_->set_property_descriptor("constructor", ctor_desc);
+    }
+
+    // declared_length_ (spec length) is set explicitly by the caller via
+    // set_declared_length() -- it depends on which parameter came from the
+    // shared executable's cached spec length, not derivable generically here.
+
     if (Object* func_proto = ObjectFactory::get_function_prototype()) {
         set_prototype(func_proto);
     }
@@ -173,6 +213,7 @@ Function::Function(const std::string& name,
 }
 
 void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>& args, Object* arguments_obj) {
+    const auto& parameter_objects_ = get_parameter_objects();
     // ES5 10.6 / ES6 9.4.4: mapped arguments only for simple, non-strict parameter lists.
     bool is_simple_params = true;
     for (const auto& p : parameter_objects_) {
@@ -224,6 +265,7 @@ void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>&
 }
 
 void Function::create_arguments_object(Context& fn_ctx, const std::vector<Value>& args) {
+    const auto& parameter_objects_ = get_parameter_objects();
     auto arguments_obj = ObjectFactory::create_array(args.size());
     // Elements for non-mapped indices; mapped ones get accessor descriptors below.
     // Only skip elements for simple param lists (no defaults/rest/destructuring).
@@ -314,31 +356,13 @@ void Function::create_arguments_object(Context& fn_ctx, const std::vector<Value>
     fn_ctx.create_binding("arguments", Value(arguments_obj.release()), true, false);
 }
 
-ASTNode* Function::ast_body() const {
-    if (body_) return body_.get();
-    return decl_site_ ? decl_site_->get_body() : nullptr;
-}
-
-const std::vector<std::string>& Function::get_parameters() const {
-    if (decl_site_) return decl_site_->get_cached_param_names();
-    return parameters_;
-}
-
-const std::string& Function::get_source_text() const {
-    if (decl_site_) return decl_site_->get_source_text();
-    return source_text_;
-}
-
-void Function::materialize_from_decl_site() {
-    if (body_ || !decl_site_) return;
-    body_ = decl_site_->get_body()->clone();
-    for (const auto& p : decl_site_->get_params()) {
-        parameter_objects_.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
-    }
-}
-
 bool Function::has_closure_props() const {
     return has_closure_props_hint_;
+}
+
+const std::vector<std::unique_ptr<Parameter>>& Function::get_parameter_objects() const {
+    static const std::vector<std::unique_ptr<Parameter>> empty;
+    return executable_ ? executable_->parameter_objects : empty;
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
@@ -359,6 +383,13 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     bool is_construct_invocation = ctx.consume_pending_construct_call();
     CallStack& stack = CallStack::instance();
     ASTNode* ast = ast_body();
+    // Shadows the old parameter_objects_/body_ member names so the rest of
+    // this function (both the compiled-chunk path and the tree-walker slow
+    // path below) reads unchanged -- both are decl-site data now living on
+    // the shared executable_ (null only for native functions, which return
+    // before any of this is reached).
+    const auto& parameter_objects_ = get_parameter_objects();
+    ASTNode* body_ = ast;
     Position call_position = ast ? ast->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, get_name(), &ctx.get_current_filename(), call_position, this);
 
@@ -503,19 +534,19 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // already attached (true for shared/pre-attached chunks); the slow-path
     // resolutions further down remain as the fallback for a chunk that
     // compiles for the first time later in this same call.
-    if (bytecode_chunk_) {
-        if (strict_directive_state_ < 0 && ast && ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            strict_directive_state_ =
+    if (executable_ && executable_->bytecode_chunk) {
+        if (executable_->strict_directive_state < 0 && ast && ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            executable_->strict_directive_state =
                 (!is_strict_ && static_cast<BlockStatement*>(ast)->has_use_strict_directive()) ? 1 : 0;
         }
-        if (closure_props_state_ < 0) {
-            closure_props_state_ = has_closure_props() ? 1 : 0;
+        if (executable_->closure_props_state < 0) {
+            executable_->closure_props_state = has_closure_props() ? 1 : 0;
         }
-        if (self_name_state_ < 0) {
-            self_name_state_ = 0;
+        if (executable_->self_name_state < 0) {
+            executable_->self_name_state = 0;
             if (!name_.empty() && name_ != "<anonymous>") {
-                for (const auto& n : bytecode_chunk_->names) {
-                    if (n == name_) { self_name_state_ = 1; break; }
+                for (const auto& n : executable_->bytecode_chunk->names) {
+                    if (n == name_) { executable_->self_name_state = 1; break; }
                 }
             }
         }
@@ -525,9 +556,9 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // needs no per-call Environment (every binding insert is already skipped)
     // and no heap Context / survivor-pool bookkeeping -- a stack Context
     // pointing straight at the captured chain suffices.
-    if (VM::enabled() && !vm_incompatible_ && bytecode_chunk_ && !bytecode_chunk_->env_mode &&
-        !is_class_constructor_ && strict_directive_state_ >= 0 &&
-        closure_props_state_ == 0 && (self_name_state_ == 0 || self_name_state_ == 2) &&
+    if (VM::enabled() && executable_ && !executable_->vm_incompatible && executable_->bytecode_chunk && !executable_->bytecode_chunk->env_mode &&
+        !is_class_constructor_ && executable_->strict_directive_state >= 0 &&
+        executable_->closure_props_state == 0 && (executable_->self_name_state == 0 || executable_->self_name_state == 2) &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
         // The Context must be heap-allocated and survivor-managed like the
         // full path: native code (promise reactions, job queues) can capture
@@ -546,7 +577,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         fast_ctx.set_lexical_environment(outer_env);
         fast_ctx.set_variable_environment(outer_env);
         fast_ctx.set_arrow_function_context(is_arrow_);
-        if (is_strict_ || strict_directive_state_ == 1) fast_ctx.set_strict_mode(true);
+        if (is_strict_ || executable_->strict_directive_state == 1) fast_ctx.set_strict_mode(true);
 
         Value fast_this = this_value;
         if (is_arrow_) {
@@ -570,7 +601,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         ExecContextScope gc_frame(&fast_ctx);
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &fast_ctx;
-        Value vm_result = VM::run(*bytecode_chunk_, fast_ctx, args, &fast_this, this);
+        Value vm_result = VM::run(*executable_->bytecode_chunk, fast_ctx, args, &fast_this, this);
         Object::current_context_ = prev_context;
         if (fast_ctx.has_exception()) {
             ctx.throw_exception(fast_ctx.get_exception(), true);
@@ -620,13 +651,13 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         function_context.set_strict_mode(true);
     }
     if (ast && ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        if (strict_directive_state_ < 0) {
+        if (executable_->strict_directive_state < 0) {
             bool was_strict = function_context.is_strict_mode();
             BlockStatement* block = static_cast<BlockStatement*>(ast);
             block->check_use_strict_directive(function_context);
-            strict_directive_state_ =
+            executable_->strict_directive_state =
                 (!was_strict && function_context.is_strict_mode()) ? 1 : 0;
-        } else if (strict_directive_state_ == 1) {
+        } else if (executable_->strict_directive_state == 1) {
             function_context.set_strict_mode(true);
         }
     }
@@ -674,8 +705,8 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // so the per-call binding insert -- and the hash-map growth it forces in
     // the fresh Environment -- is skipped. First call (chunk not compiled
     // yet) and every non-VM path still bind normally.
-    bool vm_register_fast = VM::enabled() && !vm_incompatible_ && bytecode_chunk_ &&
-                            !bytecode_chunk_->env_mode && !function_context.this_needs_super();
+    bool vm_register_fast = VM::enabled() && !executable_->vm_incompatible && executable_->bytecode_chunk &&
+                            !executable_->bytecode_chunk->env_mode && !function_context.this_needs_super();
     if (!vm_register_fast) {
         if (!function_context.create_binding("this", actual_this, true)) {
             // Binding already exists -- force update
@@ -687,7 +718,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // methods (__closure_const_<name>) since the class's name binding doesn't exist
     // in scope yet when its methods are created -- see ClassDeclaration::evaluate.
     // Everything else resolves through closure_environment_, no materialization needed.
-    if (closure_props_state_ != 0) {
+    if (executable_->closure_props_state != 0) {
         auto prop_keys = this->get_internal_property_keys();
         bool found_any = false;
         for (const auto& key : prop_keys) {
@@ -703,20 +734,20 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
                 }
             }
         }
-        if (closure_props_state_ < 0) closure_props_state_ = found_any ? 1 : 0;
+        if (executable_->closure_props_state < 0) executable_->closure_props_state = found_any ? 1 : 0;
     }
 
     // Super/private-brand bindings must exist before the VM branch too --
     // super.x and #private access delegate to the tree-walker's own evaluate()
     // (BytecodeCompiler::emit_treewalker_delegate) and resolve these via
     // normal environment lookup, same as the tree-walker path below.
-    if (super_marker_state_ < 0) {
-        super_marker_state_ = 0;
-        if (this->has_property("__super_constructor__")) super_marker_state_ |= 1;
-        if (this->has_property("__super_is_null__")) super_marker_state_ |= 2;
-        if (this->has_property("__private_brands__")) super_marker_state_ |= 4;
+    if (executable_->super_marker_state < 0) {
+        executable_->super_marker_state = 0;
+        if (this->has_property("__super_constructor__")) executable_->super_marker_state |= 1;
+        if (this->has_property("__super_is_null__")) executable_->super_marker_state |= 2;
+        if (this->has_property("__private_brands__")) executable_->super_marker_state |= 4;
     }
-    if (super_marker_state_ & 1) {
+    if (executable_->super_marker_state & 1) {
         Value super_constructor = this->get_property("__super_constructor__");
         if (!super_constructor.is_undefined() && !super_constructor.is_null()) {
             function_context.create_binding("__super__", super_constructor, false);
@@ -726,10 +757,10 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
             }
         }
     }
-    if (super_marker_state_ & 2) {
+    if (executable_->super_marker_state & 2) {
         function_context.create_binding("__super_is_null__", Value(true), false);
     }
-    if (!vm_register_fast && (super_marker_state_ & 4)) {
+    if (!vm_register_fast && (executable_->super_marker_state & 4)) {
         Value brands = this->get_property("__private_brands__");
         if (!brands.is_undefined() && !brands.is_null()) {
             function_context.create_binding("__eval_private_names__", brands, false);
@@ -741,21 +772,21 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // `arguments`/`this`/`eval`, so the whole binding ceremony below is dead
     // weight for them (it dominated call-heavy benchmarks, e.g. fib). Derived
     // constructors ARE compiled -- Op::LdaThis carries its own this-TDZ check.
-    if (VM::enabled() && !vm_incompatible_ && ast &&
+    if (VM::enabled() && !executable_->vm_incompatible && ast &&
         ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        if (!bytecode_chunk_) {
+        if (!executable_->bytecode_chunk) {
             // A `with` environment in the captured scope chain makes write-
             // reference resolution order observable: the tree-walker resolves
             // (and SetMutableBinding HasProperty-checks) the target BEFORE the
             // RHS runs, while Op::StaLookup resolves at write time. The chain
             // is fixed at closure creation, so one check decides for good.
             for (Environment* e = function_context.get_lexical_environment(); e; e = e->get_outer()) {
-                if (e->is_with_environment()) { vm_incompatible_ = true; break; }
+                if (e->is_with_environment()) { executable_->vm_incompatible = true; break; }
             }
         }
-        if (!bytecode_chunk_ && !vm_incompatible_) {
-            bytecode_chunk_ = BytecodeCompiler::compile(ast, parameter_objects_);
-            if (bytecode_chunk_) {
+        if (!executable_->bytecode_chunk && !executable_->vm_incompatible) {
+            executable_->bytecode_chunk = BytecodeCompiler::compile(ast, parameter_objects_);
+            if (executable_->bytecode_chunk) {
                 // The chunk's constants (new, unmarked cells) are only reachable
                 // through this Function's trace(). If this Function already
                 // survived an earlier GC cycle (sticky mark bit = "old"), a
@@ -768,43 +799,43 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
                     return env && env[0] == '1';
                 }();
                 if (disasm) {
-                    std::fprintf(stderr, "%s", disassemble_chunk(*bytecode_chunk_, name_).c_str());
+                    std::fprintf(stderr, "%s", disassemble_chunk(*executable_->bytecode_chunk, name_).c_str());
                 }
             } else {
-                vm_incompatible_ = true;
+                executable_->vm_incompatible = true;
             }
         }
-        if (bytecode_chunk_) {
+        if (executable_->bytecode_chunk) {
             // Named function expressions still need their self-reference
             // binding for recursion through LdaLookup -- but only if the
             // compiled body mentions the name at all (checked once).
-            if (self_name_state_ < 0) {
-                self_name_state_ = 0;
+            if (executable_->self_name_state < 0) {
+                executable_->self_name_state = 0;
                 if (!name_.empty() && name_ != "<anonymous>") {
-                    for (const auto& n : bytecode_chunk_->names) {
-                        if (n == name_) { self_name_state_ = 1; break; }
+                    for (const auto& n : executable_->bytecode_chunk->names) {
+                        if (n == name_) { executable_->self_name_state = 1; break; }
                     }
                 }
             }
-            if (self_name_state_ == 1) {
+            if (executable_->self_name_state == 1) {
                 if (!function_context.has_binding(name_)) {
                     function_context.create_binding(name_, Value(this), false);
                 } else {
                     // The captured chain already provides the name (function
                     // declarations): fast calls don't need the self-binding.
-                    self_name_state_ = 2;
+                    executable_->self_name_state = 2;
                 }
             }
             // Arrows resolve `arguments` lexically -- only a real function
             // materializes its own. The mapped accessors read the parameter
             // bindings lazily, so creating this before run() binds them is fine.
-            if (bytecode_chunk_->needs_arguments && !is_arrow_) {
+            if (executable_->bytecode_chunk->needs_arguments && !is_arrow_) {
                 create_arguments_object(function_context, args);
             }
             Context* prev_context = Object::current_context_;
             Object::current_context_ = &function_context;
-            Value vm_result = VM::run(*bytecode_chunk_, function_context, args,
-                                      bytecode_chunk_->env_mode ? nullptr : &actual_this, this);
+            Value vm_result = VM::run(*executable_->bytecode_chunk, function_context, args,
+                                      executable_->bytecode_chunk->env_mode ? nullptr : &actual_this, this);
             Object::current_context_ = prev_context;
 
             // Propagate super_called flag to parent context (mirrors the
@@ -843,9 +874,6 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
             return vm_result;
         }
     }
-
-    // Only reachable for a borrowed-AST instance when the VM is globally disabled.
-    materialize_from_decl_site();
 
     // For non-simple params (defaults/rest/destructuring), create arguments early
     // so default expressions can reference it (spec: unmapped arguments for non-simple).
@@ -1003,7 +1031,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         }
 
         if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            scan_for_var_declarations(body_.get(), function_context);
+            scan_for_var_declarations(body_, function_context);
         }
 
         Context* prev_context = Object::current_context_;

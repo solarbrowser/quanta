@@ -21,6 +21,7 @@
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/modules/ModuleLoader.h"
+#include "quanta/parser/FunctionExecutable.h"
 #include "quanta/core/runtime/MapSet.h"
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/core/runtime/ProxyReflect.h"
@@ -656,6 +657,7 @@ void run_minor_collection() {
         for (const Value& val : *vec) v.visit(val);
     Symbol::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
+    FunctionExecutable::gc_trace_roots(v);
     auto t2 = std::chrono::steady_clock::now();
 
     Collector::mark_step(std::chrono::microseconds(-1));
@@ -726,6 +728,7 @@ void scan_major_roots(MarkVisitor& v) {
         for (const Value& val : *vec) v.visit(val);
     Symbol::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
+    FunctionExecutable::gc_trace_roots(v);
 }
 
 thread_local std::chrono::steady_clock::time_point g_major_cycle_start;

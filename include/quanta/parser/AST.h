@@ -9,6 +9,7 @@
 
 #include "quanta/lexer/Token.h"
 #include "quanta/core/runtime/Value.h"
+#include "quanta/parser/FunctionExecutable.h"
 #include <memory>
 #include <vector>
 #include <string>
@@ -1191,6 +1192,12 @@ private:
     // 100000 times).
     mutable int8_t needs_outer_env_state_ = -1;
 
+    // Built once on first evaluate(), reused by every instantiation --
+    // FunctionExecutable's own doc comment explains why a durable clone
+    // (not a borrow) is required. Same lazy-cache idiom as
+    // cached_param_names_ above.
+    mutable std::shared_ptr<FunctionExecutable> cached_executable_;
+
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
                       std::vector<std::unique_ptr<Parameter>> params,
@@ -1231,6 +1238,12 @@ public:
     // parser->VM include). -1 unknown, 0 needs env, 1 doesn't.
     int8_t get_needs_outer_env_state() const { return needs_outer_env_state_; }
     void set_needs_outer_env_state(int8_t v) const { needs_outer_env_state_ = v; }
+
+    // Built lazily by FunctionExpression::evaluate on first evaluation of
+    // this node; every later evaluation reuses the same shared_ptr instead
+    // of cloning body_/params_ again.
+    const std::shared_ptr<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    void set_cached_executable(std::shared_ptr<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
