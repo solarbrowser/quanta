@@ -70,6 +70,11 @@ public:
     // instead (see Function::native_data_).
     mutable std::string source_text;
     mutable size_t declared_length = 0;
+    // Class field count for pre-sizing new instances' shape slots -- fixed by
+    // the class body, so identical for every evaluation of the same class
+    // declaration/expression (only ever set on a class constructor's own
+    // executable; plain functions leave this at 0).
+    mutable uint32_t construct_slot_hint = 0;
 
     // Decl-site default name -- almost always identical for every instance
     // sharing this executable (the constructor parameter or the static
@@ -77,7 +82,7 @@ public:
     // as source_text. The rare exception (a computed object-literal/class
     // property key whose runtime value differs across separate evaluations
     // of the same literal) is handled by Function's own per-instance
-    // name_override_, not here -- see Function::set_name.
+    // instance_overrides_, not here -- see Function::set_name.
     mutable std::string name;
 
     // -1 unknown, 0 no, 1 yes -- see Function::call_default's own doc

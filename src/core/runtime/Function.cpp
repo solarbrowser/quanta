@@ -1403,8 +1403,9 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     }
 
     auto new_object = ObjectFactory::create_object();
-    if (construct_slot_hint_ > 0) {
-        new_object->reserve_property_slots(construct_slot_hint_);
+    uint32_t construct_slot_hint = get_construct_slot_hint();
+    if (construct_slot_hint > 0) {
+        new_object->reserve_property_slots(construct_slot_hint);
     }
     Value this_value(new_object.get());
 

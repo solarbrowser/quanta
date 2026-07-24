@@ -825,8 +825,6 @@ public:
     // itself carries no vtable).
     enum class FunctionKind : uint8_t { Plain, Async, Generator, AsyncGenerator };
 
-private:
-    FunctionKind function_kind_ = FunctionKind::Plain;
 protected:
     void set_function_kind(FunctionKind kind) { function_kind_ = kind; }
 public:
@@ -840,58 +838,90 @@ private:
     class Context* closure_context_;
     class Environment* closure_environment_;  // lexical environment captured at creation time
     mutable Object* prototype_;  // Mutable to allow lazy initialization in get_property
-    bool is_native_;
-    bool is_constructor_;  // Whether this function has [[Construct]] internal method
-    bool is_arrow_;        // Arrow functions have lexical this binding
-    bool is_class_constructor_;  // Class constructors must be called with new
-    bool is_strict_;       // Function runs in strict mode (e.g. class methods)
-    bool is_param_default_;  // Created as a default param expression; uses param scope as outer env
+
+    // Every single-bit/tag field on Function, packed into one 16-bit word
+    // (13 bits used) instead of 12 separate byte-sized members scattered
+    // across the class -- pure storage change, every existing accessor and
+    // every direct internal read/write (is_arrow_ = true, if (is_strict_),
+    // etc.) keeps compiling unchanged, since bit-field member access is
+    // syntactically identical to a plain data member and none of these are
+    // ever address-taken or bound to a reference. Declared consecutively
+    // (no non-bitfield member in between) so the compiler packs them into
+    // shared storage; this also removes the ~14 bytes of alignment padding
+    // these used to force by being split across two separate byte clusters.
+    FunctionKind function_kind_ : 2 = FunctionKind::Plain;
+    bool is_native_ : 1 = false;
+    bool is_constructor_ : 1 = false;  // Whether this function has [[Construct]] internal method
+    bool is_arrow_ : 1 = false;        // Arrow functions have lexical this binding
+    bool is_class_constructor_ : 1 = false;  // Class constructors must be called with new
+    bool is_strict_ : 1 = false;       // Function runs in strict mode (e.g. class methods)
+    bool is_param_default_ : 1 = false;  // Created as a default param expression; uses param scope as outer env
     // Set ONLY by setup_mapped_arguments() on the getter/setter closures it
     // creates -- a C++-only trust bit (no public setter) so Object.cpp's
     // mapped-arguments fast paths can never be fooled by a JS-settable
     // property of the same name into invoking an attacker-authored Function.
-    bool is_mapped_arguments_accessor_ = false;
-    uint32_t construct_slot_hint_ = 0;  // Class field count: pre-sizes new instances' shape slots
+    bool is_mapped_arguments_accessor_ : 1 = false;
     // "name"/"length" are lazy: no real descriptor/shape-slot is installed at
     // construction (see get_property/get_property_descriptor/has_own_property
     // overrides below) -- these track whether each has been explicitly
     // deleted, since a never-installed and a deleted property must be told
     // apart (the former still virtually reads as present, the latter must
     // not).
-    bool name_deleted_ = false;
-    bool length_deleted_ = false;
+    bool name_deleted_ : 1 = false;
+    bool length_deleted_ : 1 = false;
+    // Set eagerly the moment a genuine (non-const-marker) __closure_ property
+    // is installed (see Function::set_property) -- has_closure_props()
+    // becomes an O(1) check instead of scanning every own property key on
+    // demand, which used to run on EVERY first call to EVERY function: fresh,
+    // single-use closures never benefit from executable_'s closure_props_state
+    // cache (there's no second call to pay it off). Monotonic: only ever
+    // flips false->true, never reset -- if the property is later deleted
+    // (astronomically unlikely for this mangled internal name), the flag
+    // stays stale-true, which only costs one redundant scan in
+    // Function::call's own install-check below, not a correctness issue.
+    bool has_closure_props_hint_ : 1 = false;
+    mutable bool is_hot_ : 1 = false;
     // Per-instance lookup cache, used in place of BytecodeChunk::lookup_cache
     // when the executable's bytecode_chunk is shared -- instances differ in
     // captured environment, so a chunk-level cache would serve stale results.
-    // Pooled (unlike chunk.lookup_cache, deliberately left on the default
-    // allocator -- see Interpreter.cpp's lookup_cache_data comment): a fresh
-    // instance is resized exactly once, on its first call, and this is the
-    // dominant allocation for single-use closures.
-    mutable std::vector<BytecodeChunk::LookupCacheEntry,
-        SmallMapAllocator<BytecodeChunk::LookupCacheEntry>> instance_lookup_cache_;
+    // Lazily allocated (unlike InstanceOverrides below, this is genuinely
+    // common -- most closures that capture an outer variable need it -- so
+    // it stays its own pointer rather than bundled with anything else).
+    // Null until first call; the vector itself keeps
+    // using the pooled allocator (see Interpreter.cpp's lookup_cache_data
+    // comment) once allocated, resized exactly once per instance.
+    mutable std::unique_ptr<std::vector<BytecodeChunk::LookupCacheEntry,
+        SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>> instance_lookup_cache_;
     // Per-instance GetPrivate/SetPrivate IC, used in place of
     // BytecodeChunk::private_feedback when the executable's bytecode_chunk is
     // shared -- same reason as instance_lookup_cache_ above: a chunk-level
     // cache would let one instance's resolved qualified key (which encodes
     // that instance's own declaring brand) leak into every other instance
-    // sharing the same compiled site.
-    mutable std::vector<PrivateFeedback,
-        SmallMapAllocator<PrivateFeedback>> instance_private_feedback_;
-    // Per-instance override for get_source_text(): the common case (decl-site
-    // source text, identical for every instance sharing one executable) lives
-    // on executable_->source_text instead (see set_source_text() below) --
-    // this is only ever allocated for the rare case of a genuinely
-    // instance-specific override (or a native function, which has no
-    // executable to hold a shared default at all). Null in the overwhelmingly
-    // common case, so this costs one pointer instead of a resident std::string.
-    mutable std::unique_ptr<std::string> source_text_override_;
-    // Per-instance override for get_name(): same rationale as
-    // source_text_override_ above -- the decl-site default lives on
-    // executable_->name, only allocated when a genuinely instance-specific
-    // rename happens (a computed object-literal/class property key whose
-    // runtime value differs across separate evaluations of the same shared
-    // literal -- see Function::set_name).
-    mutable std::unique_ptr<std::string> name_override_;
+    // sharing the same compiled site. Kept as its OWN pointer rather than
+    // bundled with instance_lookup_cache_ -- outer-variable access is common
+    // to nearly every closure, private-field access is not, so a function
+    // needing only one would otherwise pay for an unused allocation of the
+    // other every time.
+    mutable std::unique_ptr<std::vector<PrivateFeedback,
+        SmallMapAllocator<PrivateFeedback>>> instance_private_feedback_;
+    // Per-instance overrides for get_source_text()/get_name(): the common
+    // case (decl-site defaults, identical for every instance sharing one
+    // executable) lives on executable_->source_text/name instead -- see
+    // set_source_text()/assign_decl_site_name(). Bundled together (unlike
+    // instance_lookup_cache_/instance_private_feedback_ above) because both
+    // represent the exact same kind of rare event -- a genuine per-instance
+    // deviation from the shared decl-site default -- so whichever one fires,
+    // the other was already about equally likely to; has_source_text/has_name
+    // distinguish "never overridden" from "overridden to an empty string"
+    // (the pointer's own null-ness only means "neither override has ever
+    // been needed on this instance").
+    struct InstanceOverrides {
+        std::string source_text;
+        bool has_source_text = false;
+        std::string name;
+        bool has_name = false;
+    };
+    mutable std::unique_ptr<InstanceOverrides> instance_overrides_;
     // Bundles native-only per-instance state behind one pointer: all three
     // fields only exist for native functions (is_native_, no executable_ to
     // derive a decl-site default from -- natives never share, so there's no
@@ -906,18 +936,6 @@ private:
     std::unique_ptr<NativeFunctionData> native_data_;
 
     mutable uint32_t execution_count_;
-    mutable bool is_hot_;
-    // Set eagerly the moment a genuine (non-const-marker) __closure_ property
-    // is installed (see Function::set_property) -- has_closure_props()
-    // becomes an O(1) check instead of scanning every own property key on
-    // demand, which used to run on EVERY first call to EVERY function: fresh,
-    // single-use closures never benefit from executable_'s closure_props_state
-    // cache (there's no second call to pay it off). Monotonic: only ever
-    // flips false->true, never reset -- if the property is later deleted
-    // (astronomically unlikely for this mangled internal name), the flag
-    // stays stale-true, which only costs one redundant scan in
-    // Function::call's own install-check below, not a correctness issue.
-    bool has_closure_props_hint_ = false;
 
     // Detection-only half of the __closure_* scan in Function::call (no
     // Context needed) -- used to resolve executable_'s closure_props_state
@@ -970,7 +988,7 @@ public:
     void trace(Visitor& v);
 
     const std::string& get_name() const {
-        if (name_override_) return *name_override_;
+        if (instance_overrides_ && instance_overrides_->has_name) return instance_overrides_->name;
         if (executable_) return executable_->name;
         static const std::string empty;
         return native_data_ ? native_data_->name : empty;
@@ -984,8 +1002,11 @@ public:
     // constructor built it, never shared).
     void assign_decl_site_name(const std::string& name) {
         if (!executable_) return;
-        if (executable_->name.empty()) executable_->name = name;
-        else if (executable_->name != name) name_override_ = std::make_unique<std::string>(name);
+        if (executable_->name.empty()) { executable_->name = name; return; }
+        if (executable_->name == name) return;
+        if (!instance_overrides_) instance_overrides_ = std::make_unique<InstanceOverrides>();
+        instance_overrides_->name = name;
+        instance_overrides_->has_name = true;
     }
     const std::vector<std::string>& get_parameters() const {
         static const std::vector<std::string> empty;
@@ -1020,9 +1041,13 @@ public:
     bool is_param_default() const { return is_param_default_; }
     void set_is_param_default(bool v) { is_param_default_ = v; }
     bool is_mapped_arguments_accessor() const { return is_mapped_arguments_accessor_; }
-    void set_construct_slot_hint(uint32_t count) { construct_slot_hint_ = count; }
+    // Decl-site-invariant class field count -- see FunctionExecutable::
+    // construct_slot_hint's own doc comment. No-op for native functions
+    // (never class constructors with instance fields).
+    void set_construct_slot_hint(uint32_t count) { if (executable_) executable_->construct_slot_hint = count; }
+    uint32_t get_construct_slot_hint() const { return executable_ ? executable_->construct_slot_hint : 0; }
     const std::string& get_source_text() const {
-        if (source_text_override_) return *source_text_override_;
+        if (instance_overrides_ && instance_overrides_->has_source_text) return instance_overrides_->source_text;
         static const std::string empty;
         return executable_ ? executable_->source_text : empty;
     }
@@ -1037,16 +1062,30 @@ public:
             if (executable_->source_text.empty()) { executable_->source_text = s; return; }
             if (executable_->source_text == s) return;
         }
-        source_text_override_ = std::make_unique<std::string>(s);
+        if (!instance_overrides_) instance_overrides_ = std::make_unique<InstanceOverrides>();
+        instance_overrides_->source_text = s;
+        instance_overrides_->has_source_text = true;
     }
 
-    // Lazily sized by the caller (Interpreter.cpp) to chunk.names.size().
+    // Lazily allocated + sized by the caller (Interpreter.cpp) to chunk.names.size().
     std::vector<BytecodeChunk::LookupCacheEntry,
-        SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>& instance_lookup_cache() const { return instance_lookup_cache_; }
+        SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>& instance_lookup_cache() const {
+        if (!instance_lookup_cache_) {
+            instance_lookup_cache_ = std::make_unique<std::vector<BytecodeChunk::LookupCacheEntry,
+                SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>>();
+        }
+        return *instance_lookup_cache_;
+    }
 
-    // Lazily sized by the caller (Interpreter.cpp) to chunk.private_feedback.size().
+    // Lazily allocated + sized by the caller (Interpreter.cpp) to chunk.private_feedback.size().
     std::vector<PrivateFeedback,
-        SmallMapAllocator<PrivateFeedback>>& instance_private_feedback() const { return instance_private_feedback_; }
+        SmallMapAllocator<PrivateFeedback>>& instance_private_feedback() const {
+        if (!instance_private_feedback_) {
+            instance_private_feedback_ = std::make_unique<std::vector<PrivateFeedback,
+                SmallMapAllocator<PrivateFeedback>>>();
+        }
+        return *instance_private_feedback_;
+    }
 
     // Shared decl-site data (null only for native functions).
     const std::shared_ptr<const FunctionExecutable>& get_executable() const { return executable_; }
