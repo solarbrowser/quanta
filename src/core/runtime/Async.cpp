@@ -176,7 +176,7 @@ AsyncFunction::AsyncFunction(const std::string& name,
 }
 
 AsyncFunction::AsyncFunction(const std::string& name,
-                           std::shared_ptr<const FunctionExecutable> executable,
+                           ExecutableRef<const FunctionExecutable> executable,
                            Context* closure_context)
     : Function(name, std::move(executable), closure_context, /*create_prototype=*/false) {
     set_function_kind(FunctionKind::Async);
@@ -1569,7 +1569,7 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
 }
 
 AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
-                                               std::shared_ptr<const FunctionExecutable> executable,
+                                               ExecutableRef<const FunctionExecutable> executable,
                                                Context* closure_context)
     // create_prototype defaults to true, same as the two AST-owning
     // constructors above -- the throwaway plain-Object .prototype it builds

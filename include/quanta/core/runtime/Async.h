@@ -90,7 +90,7 @@ public:
     // same declaration site reuses the identical body/params/compiled
     // suspendable chunk instead of re-cloning the AST and recompiling.
     AsyncFunction(const std::string& name,
-                  std::shared_ptr<const class FunctionExecutable> executable,
+                  ExecutableRef<const class FunctionExecutable> executable,
                   Context* closure_context);
 
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
@@ -266,7 +266,7 @@ public:
     // compiled suspendable chunk instead of re-cloning the AST and
     // recompiling.
     AsyncGeneratorFunction(const std::string& name,
-                           std::shared_ptr<const class FunctionExecutable> executable,
+                           ExecutableRef<const class FunctionExecutable> executable,
                            Context* closure_context);
 
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());

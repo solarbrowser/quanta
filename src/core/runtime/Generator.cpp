@@ -672,7 +672,7 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
 }
 
 GeneratorFunction::GeneratorFunction(const std::string& name,
-                                   std::shared_ptr<const FunctionExecutable> executable,
+                                   ExecutableRef<const FunctionExecutable> executable,
                                    Context* closure_context)
     // create_prototype defaults to true, same as the two AST-owning
     // constructors above -- the throwaway plain-Object .prototype it builds

@@ -273,9 +273,9 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         // generator/async/async-generator forms (each is a mutually
         // exclusive shape for the SAME node, so they all share the one
         // cached_executable_ slot safely).
-        std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+        ExecutableRef<FunctionExecutable> exe = get_cached_executable();
         if (!exe) {
-            exe = std::make_shared<FunctionExecutable>();
+            exe = make_executable_ref();
             exe->body = body_->clone();
             for (const auto& param : params_) {
                 exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
@@ -641,13 +641,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     // whenever the class itself is nested inside a repeatedly-called function.
                     // Generator/async-generator/async methods share the SAME executable slot
                     // (mutually exclusive shapes for the same method node).
-                    std::shared_ptr<FunctionExecutable> exe;
+                    ExecutableRef<FunctionExecutable> exe;
                     FunctionExpression* method_func_expr =
                         method->get_value()->get_type() == Type::FUNCTION_EXPRESSION
                             ? static_cast<FunctionExpression*>(method->get_value()) : nullptr;
                     if (method_func_expr) exe = method_func_expr->get_cached_executable();
                     if (!exe) {
-                        exe = std::make_shared<FunctionExecutable>();
+                        exe = make_executable_ref();
                         exe->body = method->get_value()->get_body()->clone();
                         for (const auto& p : method_params) exe->parameters.push_back(p->get_name()->get_name());
                         exe->parameter_objects = std::move(method_params);
@@ -997,13 +997,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     // See the instance-method branch above for the executable-sharing
                     // rationale -- generator/async-generator/async statics share the
                     // SAME executable slot (mutually exclusive shapes for the same node).
-                    std::shared_ptr<FunctionExecutable> exe;
+                    ExecutableRef<FunctionExecutable> exe;
                     FunctionExpression* method_func_expr =
                         method->get_value()->get_type() == Type::FUNCTION_EXPRESSION
                             ? static_cast<FunctionExpression*>(method->get_value()) : nullptr;
                     if (method_func_expr) exe = method_func_expr->get_cached_executable();
                     if (!exe) {
-                        exe = std::make_shared<FunctionExecutable>();
+                        exe = make_executable_ref();
                         exe->body = method->get_value()->get_body()->clone();
                         for (const auto& p : static_params) exe->parameters.push_back(p->get_name()->get_name());
                         exe->parameter_objects = std::move(static_params);
@@ -1518,9 +1518,9 @@ Value FunctionExpression::evaluate(Context& ctx) {
     // also covers the generator/async-generator forms (mutually exclusive
     // shapes for the SAME node, so they safely share the one
     // cached_executable_ slot with the plain form below).
-    std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+    ExecutableRef<FunctionExecutable> exe = get_cached_executable();
     if (!exe) {
-        exe = std::make_shared<FunctionExecutable>();
+        exe = make_executable_ref();
         exe->body = body_->clone();
         for (const auto& param : params_) {
             exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
@@ -1653,9 +1653,9 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         // branch below (mutually exclusive: an arrow's is_async_ never
         // changes, so both branches safely share the one cached_executable_
         // slot on this node).
-        std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+        ExecutableRef<FunctionExecutable> exe = get_cached_executable();
         if (!exe) {
-            exe = std::make_shared<FunctionExecutable>();
+            exe = make_executable_ref();
             exe->body = body_->clone();
             for (const auto& param : params_) {
                 exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
@@ -1710,9 +1710,9 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     // literal (e.g. a callback re-created on each call of an enclosing
     // function) -- same cache-on-node pattern as FunctionExpression's plain
     // branch.
-    std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+    ExecutableRef<FunctionExecutable> exe = get_cached_executable();
     if (!exe) {
-        exe = std::make_shared<FunctionExecutable>();
+        exe = make_executable_ref();
         exe->body = body_->clone();
         for (const auto& param : params_) {
             exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
@@ -3065,9 +3065,9 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
     // Share one FunctionExecutable across every instantiation of this async
     // function literal -- same cache-on-node pattern as FunctionExpression's
     // plain branch.
-    std::shared_ptr<FunctionExecutable> exe = get_cached_executable();
+    ExecutableRef<FunctionExecutable> exe = get_cached_executable();
     if (!exe) {
-        exe = std::make_shared<FunctionExecutable>();
+        exe = make_executable_ref();
         exe->body = body_->clone();
         for (const auto& param : params_) {
             exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));

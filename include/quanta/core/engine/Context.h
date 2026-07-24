@@ -408,7 +408,7 @@ public:
     // Like HybridDescriptorMap's inline array (Object.h), but can't copy its
     // migrate-to-overflow-when-full step: stable_binding_slot() hands out a
     // raw Value* that BytecodeChunk::lookup_cache and
-    // Function::instance_lookup_cache_ cache PERMANENTLY (Op::LdaLookup/
+    // Function::instance_lookup_cache() cache PERMANENTLY (Op::LdaLookup/
     // StaLookup trust it for the owning chunk/Function's whole lifetime), and
     // migration would silently invalidate that pointer. So: inline and
     // overflow entries, once populated, NEVER move. Erasing an inline entry
@@ -416,7 +416,7 @@ public:
     // a survivor). Tombstones ARE reused by later inserts -- safe because
     // stable_binding_slot() refuses deletable bindings, the only kind that
     // can ever be erased, so a tombstoned slot never has a live cached
-    // pointer. Re-audit lookup_cache/instance_lookup_cache_ before relaxing
+    // pointer. Re-audit lookup_cache/instance_lookup_cache() before relaxing
     // any of this.
     struct SlotMap {
         static constexpr size_t kInlineCapacity = 4;

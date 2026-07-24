@@ -834,7 +834,7 @@ private:
     // Shared, decl-site-scoped data (AST body/params, compiled bytecode,
     // decl-site-invariant caches) -- see FunctionExecutable's own doc
     // comment. Null only for native functions (no AST/decl site at all).
-    std::shared_ptr<const FunctionExecutable> executable_;
+    ExecutableRef<const FunctionExecutable> executable_;
     class Context* closure_context_;
     class Environment* closure_environment_;  // lexical environment captured at creation time
     mutable Object* prototype_;  // Mutable to allow lazy initialization in get_property
@@ -881,38 +881,35 @@ private:
     // Function::call's own install-check below, not a correctness issue.
     bool has_closure_props_hint_ : 1 = false;
     mutable bool is_hot_ : 1 = false;
-    // Per-instance lookup cache, used in place of BytecodeChunk::lookup_cache
-    // when the executable's bytecode_chunk is shared -- instances differ in
-    // captured environment, so a chunk-level cache would serve stale results.
-    // Lazily allocated (unlike InstanceOverrides below, this is genuinely
-    // common -- most closures that capture an outer variable need it -- so
-    // it stays its own pointer rather than bundled with anything else).
-    // Null until first call; the vector itself keeps
-    // using the pooled allocator (see Interpreter.cpp's lookup_cache_data
-    // comment) once allocated, resized exactly once per instance.
-    mutable std::unique_ptr<std::vector<BytecodeChunk::LookupCacheEntry,
-        SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>> instance_lookup_cache_;
-    // Per-instance GetPrivate/SetPrivate IC, used in place of
-    // BytecodeChunk::private_feedback when the executable's bytecode_chunk is
-    // shared -- same reason as instance_lookup_cache_ above: a chunk-level
-    // cache would let one instance's resolved qualified key (which encodes
-    // that instance's own declaring brand) leak into every other instance
-    // sharing the same compiled site. Kept as its OWN pointer rather than
-    // bundled with instance_lookup_cache_ -- outer-variable access is common
-    // to nearly every closure, private-field access is not, so a function
-    // needing only one would otherwise pay for an unused allocation of the
-    // other every time.
-    mutable std::unique_ptr<std::vector<PrivateFeedback,
-        SmallMapAllocator<PrivateFeedback>>> instance_private_feedback_;
+    // Per-instance IC state, used in place of BytecodeChunk::lookup_cache/
+    // private_feedback when the executable's bytecode_chunk is shared --
+    // instances differ in captured environment/declaring brand, so a
+    // chunk-level cache would serve stale results across sibling instances
+    // (see lookup_cache_data/private_feedback_data in Interpreter.cpp).
+    // Bundled behind one pointer (mirrors V8's own JSFunction::feedback_cell,
+    // a single per-closure IC vector covering every kind of inline cache) --
+    // an unused vector inside costs only its own empty 24-byte header (no
+    // heap allocation for elements until actually resized), so a function
+    // needing only one of the two pays a small, fixed cost for the other's
+    // header rather than a full separate allocation. Null until first call;
+    // each vector keeps using the pooled allocator (see Interpreter.cpp's
+    // lookup_cache_data comment) once allocated, resized exactly once per
+    // instance.
+    struct InstanceFeedback {
+        std::vector<BytecodeChunk::LookupCacheEntry,
+            SmallMapAllocator<BytecodeChunk::LookupCacheEntry>> lookup_cache;
+        std::vector<PrivateFeedback, SmallMapAllocator<PrivateFeedback>> private_feedback;
+    };
+    mutable std::unique_ptr<InstanceFeedback> instance_feedback_;
     // Per-instance overrides for get_source_text()/get_name(): the common
     // case (decl-site defaults, identical for every instance sharing one
     // executable) lives on executable_->source_text/name instead -- see
-    // set_source_text()/assign_decl_site_name(). Bundled together (unlike
-    // instance_lookup_cache_/instance_private_feedback_ above) because both
-    // represent the exact same kind of rare event -- a genuine per-instance
-    // deviation from the shared decl-site default -- so whichever one fires,
-    // the other was already about equally likely to; has_source_text/has_name
-    // distinguish "never overridden" from "overridden to an empty string"
+    // set_source_text()/assign_decl_site_name(). Bundled together because
+    // both represent the exact same kind of rare event -- a genuine
+    // per-instance deviation from the shared decl-site default -- so
+    // whichever one fires, the other was already about equally likely to;
+    // has_source_text/has_name distinguish "never overridden" from
+    // "overridden to an empty string"
     // (the pointer's own null-ness only means "neither override has ever
     // been needed on this instance").
     struct InstanceOverrides {
@@ -962,7 +959,7 @@ public:
     // constructor and reuses the identical body/params/compiled-chunk
     // instead of re-cloning the AST and recompiling.
     Function(const std::string& name,
-             std::shared_ptr<const FunctionExecutable> executable,
+             ExecutableRef<const FunctionExecutable> executable,
              class Context* closure_context,
              bool create_prototype = true);
 
@@ -1070,25 +1067,19 @@ public:
     // Lazily allocated + sized by the caller (Interpreter.cpp) to chunk.names.size().
     std::vector<BytecodeChunk::LookupCacheEntry,
         SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>& instance_lookup_cache() const {
-        if (!instance_lookup_cache_) {
-            instance_lookup_cache_ = std::make_unique<std::vector<BytecodeChunk::LookupCacheEntry,
-                SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>>();
-        }
-        return *instance_lookup_cache_;
+        if (!instance_feedback_) instance_feedback_ = std::make_unique<InstanceFeedback>();
+        return instance_feedback_->lookup_cache;
     }
 
     // Lazily allocated + sized by the caller (Interpreter.cpp) to chunk.private_feedback.size().
     std::vector<PrivateFeedback,
         SmallMapAllocator<PrivateFeedback>>& instance_private_feedback() const {
-        if (!instance_private_feedback_) {
-            instance_private_feedback_ = std::make_unique<std::vector<PrivateFeedback,
-                SmallMapAllocator<PrivateFeedback>>>();
-        }
-        return *instance_private_feedback_;
+        if (!instance_feedback_) instance_feedback_ = std::make_unique<InstanceFeedback>();
+        return instance_feedback_->private_feedback;
     }
 
     // Shared decl-site data (null only for native functions).
-    const std::shared_ptr<const FunctionExecutable>& get_executable() const { return executable_; }
+    const ExecutableRef<const FunctionExecutable>& get_executable() const { return executable_; }
     class ASTNode* ast_body() const { return executable_ ? executable_->body.get() : nullptr; }
 
     uint32_t get_execution_count() const { return execution_count_; }

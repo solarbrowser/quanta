@@ -1026,7 +1026,7 @@ private:
     // idiom as FunctionExpression::cached_executable_ (see
     // FunctionExecutable's own doc comment for why a durable clone, not a
     // borrow, is required).
-    mutable std::shared_ptr<FunctionExecutable> cached_executable_;
+    mutable ExecutableRef<FunctionExecutable> cached_executable_;
 
 public:
     FunctionDeclaration(std::unique_ptr<Identifier> id,
@@ -1045,8 +1045,8 @@ public:
     bool is_generator() const { return is_generator_; }
     void set_source_text(const std::string& s) { source_text_ = s; }
     const std::string& get_source_text() const { return source_text_; }
-    const std::shared_ptr<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
-    void set_cached_executable(std::shared_ptr<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
+    const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1203,7 +1203,7 @@ private:
     // FunctionExecutable's own doc comment explains why a durable clone
     // (not a borrow) is required. Same lazy-cache idiom as
     // cached_param_names_ above.
-    mutable std::shared_ptr<FunctionExecutable> cached_executable_;
+    mutable ExecutableRef<FunctionExecutable> cached_executable_;
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
@@ -1249,8 +1249,8 @@ public:
     // Built lazily by FunctionExpression::evaluate on first evaluation of
     // this node; every later evaluation reuses the same shared_ptr instead
     // of cloning body_/params_ again.
-    const std::shared_ptr<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
-    void set_cached_executable(std::shared_ptr<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
+    const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1280,7 +1280,7 @@ private:
     // idiom as FunctionExpression::cached_executable_. Only used by the
     // non-async branch (async arrows are a Function subclass, not yet
     // sharing an executable).
-    mutable std::shared_ptr<FunctionExecutable> cached_executable_;
+    mutable ExecutableRef<FunctionExecutable> cached_executable_;
 
 public:
     ArrowFunctionExpression(std::vector<std::unique_ptr<Parameter>> params,
@@ -1297,8 +1297,8 @@ public:
     bool has_block_body() const { return body_->get_type() == Type::BLOCK_STATEMENT; }
     void set_source_text(const std::string& s) { source_text_ = s; }
     const std::string& get_source_text() const { return source_text_; }
-    const std::shared_ptr<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
-    void set_cached_executable(std::shared_ptr<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
+    const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1349,11 +1349,11 @@ private:
     bool is_decl_form_ = false; // `export default async function fn(){}`: HoistableDeclaration, not NamedEvaluation
     // Same cache-on-node pattern as FunctionExpression/FunctionDeclaration/
     // ArrowFunctionExpression's own cached_executable_.
-    mutable std::shared_ptr<FunctionExecutable> cached_executable_;
+    mutable ExecutableRef<FunctionExecutable> cached_executable_;
 
 public:
-    const std::shared_ptr<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
-    void set_cached_executable(std::shared_ptr<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
+    const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
     AsyncFunctionExpression(std::unique_ptr<Identifier> id,
                            std::vector<std::unique_ptr<Parameter>> params,
                            std::unique_ptr<BlockStatement> body,

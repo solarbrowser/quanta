@@ -65,7 +65,7 @@ Function::Function(const std::string& name,
       closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
-    auto exe = std::make_shared<FunctionExecutable>();
+    auto exe = make_executable_ref();
     exe->name = name;  // fresh executable, guaranteed empty -- no compare needed
     exe->parameters = params;
     exe->body = std::move(body);
@@ -108,7 +108,7 @@ Function::Function(const std::string& name,
       closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
-    auto exe = std::make_shared<FunctionExecutable>();
+    auto exe = make_executable_ref();
     exe->name = name;  // fresh executable, guaranteed empty -- no compare needed
     for (const auto& param : params) {
         exe->parameters.push_back(param->get_name()->get_name());
@@ -148,7 +148,7 @@ Function::Function(const std::string& name,
 }
 
 Function::Function(const std::string& name,
-                   std::shared_ptr<const FunctionExecutable> executable,
+                   ExecutableRef<const FunctionExecutable> executable,
                    Context* closure_context,
                    bool create_prototype)
     : Object(ObjectType::Function), executable_(std::move(executable)),
