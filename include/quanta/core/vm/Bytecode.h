@@ -229,10 +229,17 @@ struct FeedbackSlot {
 };
 
 // Inline cache for one GetPrivate/SetPrivate site: the resolved qualified
-// key ("#x@<brand>"). Site-constant -- a chunk belongs to one Function,
-// which belongs to one class evaluation -- so once resolved, the per-access
-// brand walk (CallStack scan + key concatenation) is gone; presence of the
-// qualified slot on the receiver IS the brand check.
+// key ("#x@<brand>"). Once resolved, the per-access brand walk (CallStack
+// scan + key concatenation) is gone; presence of the qualified slot on the
+// receiver IS the brand check -- but that's only sound per class evaluation
+// (the qualified key encodes ITS declaring brand), and a chunk can now be
+// shared across many Function instances from separate evaluations of the
+// same class/function literal (see FunctionExecutable). So this struct is
+// only chunk-owned for chunks that are inherently single-instance (the
+// top-level script chunk); every other call routes through the calling
+// Function's own instance_private_feedback() instead -- see Interpreter.cpp's
+// private_feedback_data comment, the same routing as lookup_cache_data/
+// instance_lookup_cache().
 struct PrivateFeedback {
     std::string qualified;  // empty until the slow path resolves a data field
 };
@@ -271,7 +278,9 @@ struct HandlerEntry {
     int32_t genreturn_pc = -1;
 };
 
-// One per compiled function body, owned by its Function, shared by every call.
+// One per compiled function body -- owned by a FunctionExecutable and shared
+// by every Function instance built from that decl site (see
+// FunctionExecutable), not just every call of a single instance.
 struct BytecodeChunk {
     std::vector<uint8_t> code;
     std::vector<Value> constants;   // GC-visible via Function::trace()
@@ -280,10 +289,14 @@ struct BytecodeChunk {
     mutable std::vector<FeedbackSlot> feedback; // written as call sites warm up
     mutable std::vector<PrivateFeedback> private_feedback; // GetPrivate/SetPrivate sites
     mutable std::vector<KeyedFeedback> keyed_feedback; // GetKeyed/SetKeyed sites
-    // Per-name outer-variable cache for LdaLookup/StaLookup: a captured
-    // chain is fixed per Function instance (and the chunk belongs to one),
-    // so a resolved stable binding pointer stays valid for the chunk's
-    // lifetime. See Environment::stable_binding_slot for the guards.
+    // Per-name outer-variable cache for LdaLookup/StaLookup: a resolved
+    // stable binding pointer is only valid for the one captured-environment
+    // chain it was resolved against, so this chunk-level vector is only used
+    // directly for chunks that are inherently single-instance (the top-level
+    // script chunk) -- every other call routes through the calling
+    // Function's own instance_lookup_cache() instead (see Interpreter.cpp's
+    // lookup_cache_data comment). See Environment::stable_binding_slot for
+    // the guards.
     struct LookupCacheEntry { Environment* env = nullptr; Value* slot = nullptr; };
     mutable std::vector<LookupCacheEntry> lookup_cache; // indexed by name id
     uint16_t register_count = 0;

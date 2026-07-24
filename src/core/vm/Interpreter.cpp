@@ -865,8 +865,8 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     Environment* entry_env = chunk.script_mode ? nullptr : ctx.get_lexical_environment();
 
     // A chunk may be shared across several Function instances created from the
-    // same declaration site (see nested_chunk_cache_/attach_precompiled_chunk),
-    // each with its own captured environment chain -- chunk.lookup_cache can't
+    // same declaration site (see FunctionExecutable), each with its own
+    // captured environment chain -- chunk.lookup_cache can't
     // be trusted in that case (it would bake in whichever instance resolved a
     // name first and serve that stale slot to every other instance forever).
     // Route through the calling Function's own per-instance cache instead;
@@ -887,6 +887,17 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
         auto& instance_cache = owner->instance_lookup_cache();
         if (instance_cache.size() < chunk.names.size()) instance_cache.resize(chunk.names.size());
         lookup_cache_data = instance_cache.data();
+    }
+
+    // Same routing as lookup_cache_data above, for the same reason: a shared
+    // chunk's GetPrivate/SetPrivate sites cache a resolved qualified key that
+    // encodes the CALLING instance's own declaring brand (see PrivateFeedback's
+    // doc comment), so every instance sharing the chunk needs its own copy.
+    PrivateFeedback* private_feedback_data = chunk.private_feedback.data();
+    if (owner) {
+        auto& instance_pf = owner->instance_private_feedback();
+        if (instance_pf.size() < chunk.private_feedback.size()) instance_pf.resize(chunk.private_feedback.size());
+        private_feedback_data = instance_pf.data();
     }
 
     // Op::LdaThis cache: `this`'s VALUE is immutable for the whole frame
@@ -1748,7 +1759,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_private(ctx, regs[obj_reg], chunk.names[name_idx], &chunk.private_feedback[fb_idx]);
+                acc = get_private(ctx, regs[obj_reg], chunk.names[name_idx], &private_feedback_data[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -1757,7 +1768,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                set_private(ctx, regs[obj_reg], chunk.names[name_idx], acc, &chunk.private_feedback[fb_idx]);
+                set_private(ctx, regs[obj_reg], chunk.names[name_idx], acc, &private_feedback_data[fb_idx]);
                 CHECK_EXC();
                 break;
             }

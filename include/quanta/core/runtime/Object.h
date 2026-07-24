@@ -872,6 +872,14 @@ private:
     // dominant allocation for single-use closures.
     mutable std::vector<BytecodeChunk::LookupCacheEntry,
         SmallMapAllocator<BytecodeChunk::LookupCacheEntry>> instance_lookup_cache_;
+    // Per-instance GetPrivate/SetPrivate IC, used in place of
+    // BytecodeChunk::private_feedback when the executable's bytecode_chunk is
+    // shared -- same reason as instance_lookup_cache_ above: a chunk-level
+    // cache would let one instance's resolved qualified key (which encodes
+    // that instance's own declaring brand) leak into every other instance
+    // sharing the same compiled site.
+    mutable std::vector<PrivateFeedback,
+        SmallMapAllocator<PrivateFeedback>> instance_private_feedback_;
     std::string source_text_;
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
@@ -981,6 +989,10 @@ public:
     // Lazily sized by the caller (Interpreter.cpp) to chunk.names.size().
     std::vector<BytecodeChunk::LookupCacheEntry,
         SmallMapAllocator<BytecodeChunk::LookupCacheEntry>>& instance_lookup_cache() const { return instance_lookup_cache_; }
+
+    // Lazily sized by the caller (Interpreter.cpp) to chunk.private_feedback.size().
+    std::vector<PrivateFeedback,
+        SmallMapAllocator<PrivateFeedback>>& instance_private_feedback() const { return instance_private_feedback_; }
 
     // Shared decl-site data (null only for native functions).
     const std::shared_ptr<const FunctionExecutable>& get_executable() const { return executable_; }

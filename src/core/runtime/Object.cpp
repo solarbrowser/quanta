@@ -29,8 +29,24 @@
 
 namespace Quanta {
 
-static_assert(sizeof(Object) == 24, "sizeof(Object) must stay 24 (Phase 3b target: no vtable, tagged prototype/shape, folded RareExtras).");
-static_assert(sizeof(Function) == 224, "sizeof(Function) must stay 224 (Phase 1: shared FunctionExecutable replaces per-instance body/params/bytecode/decl-site caches).");
+static_assert(sizeof(Object) == 24, "sizeof(Object) must stay 24 (Phase 3b target: no vtable, tagged prototype/shape, folded RareExtras). Portable: Object holds only pointers/tagged unions/enums, whose sizes don't vary across standard libraries.");
+// Function's own size is NOT ABI-portable the way Object's is: it embeds
+// std::string (name_/source_text_), std::function (native_fn_), and
+// std::vector<T, SmallMapAllocator<T>> members, all of which differ in size
+// across standard library implementations (e.g. libstdc++'s std::string is
+// 32 bytes with a 15-char SSO buffer, libc++'s is 24 bytes with a different
+// layout; MSVC STL's std::function runs noticeably larger than libstdc++/
+// libc++'s). The exact literal is only meaningful pinned to one reference
+// stdlib -- libstdc++ (this project's primary Linux dev/CI target, where
+// every phase of the FunctionExecutable split has been measured) -- so only
+// assert it there; other standard libraries get a looser sanity bound so
+// macOS/Windows builds don't fail on an ABI difference that isn't a real
+// regression.
+#if defined(__GLIBCXX__)
+static_assert(sizeof(Function) == 248, "sizeof(Function) must stay 248 on libstdc++ (Phase 1: shared FunctionExecutable replaces per-instance body/params/bytecode/decl-site caches; +24 for instance_private_feedback_, needed once GetPrivate/SetPrivate IC state can no longer live on a shared chunk -- see PrivateFeedback's doc comment).");
+#else
+static_assert(sizeof(Function) <= 320, "sizeof(Function) grew unexpectedly on this standard library -- check for an accidentally-added field (see the libstdc++-only exact assert alongside this one for the reference measurement).");
+#endif
 
 thread_local Context* Object::current_context_ = nullptr;
 
