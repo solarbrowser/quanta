@@ -66,6 +66,7 @@ std::pair<Shape*, bool> Shape::transition_insert(void*& table, bool is_single,
     if (is_single) {
         auto* single = static_cast<SingleTransition*>(table);
         auto* map = new TransitionMap();
+        map->entries.reserve(2);
         map->insert(single->key, std::move(single->child));
         delete single;
         map->insert(key, std::move(child));

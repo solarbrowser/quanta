@@ -192,58 +192,41 @@ private:
     };
     SlotMap slots_;
 
-    // Transition table (key -> child Shape*), same idiom, sized 8 not 4
-    // (root shapes fan out wider than typical slot counts -- object_literals.js's
-    // computed-key benchmark alone drives 8 children of root). Never
-    // copyable. Entries own unique_ptr<Shape>, never Shape by value: Shape*
-    // is cached permanently elsewhere (FeedbackSlot, Object::shape_), so
-    // only the pointer may move between inline/overflow, never the pointee.
-    //
-    // Same interned-inline/plain-overflow split as SlotMap above, and the
-    // same rule: find() takes a possibly-uninterned key and compares by
-    // value, only insert() requires an already-interned one.
+    // Transition table (key -> child Shape*) for shape nodes with 2+
+    // children (see the 0/1/many split below -- this is the "many" tier).
+    // Grows incrementally via std::vector's own amortized doubling instead
+    // of jumping straight to a fixed-width array the moment a node gets
+    // its 2nd child, so a node with e.g. 2-3 children isn't charged for
+    // capacity it never uses. A linear scan in find()/insert() is fine
+    // here (unlike SlotMap's find_slot, this is transition()'s cache-miss/
+    // cache-hit path only, never the property get/set hot path -- see
+    // Shape::intern's own doc comment on why interning stays cheap too).
+    // Entries own their child unique_ptr<Shape>, never Shape by value:
+    // Shape* is cached permanently elsewhere (FeedbackSlot, Object::shape_).
     struct TransitionMap {
-        static constexpr size_t kInlineCapacity = 8;
-        struct Entry { const std::string* key = nullptr; std::unique_ptr<Shape> value; bool in_use = false; };
-        std::array<Entry, kInlineCapacity> inline_entries;
-        using OverflowMap = std::unordered_map<std::string, std::unique_ptr<Shape>, std::hash<std::string>,
-                                                std::equal_to<std::string>,
-                                                SmallMapAllocator<std::pair<const std::string, std::unique_ptr<Shape>>>>;
-        std::unique_ptr<OverflowMap> overflow;
+        struct Entry { const std::string* key; std::unique_ptr<Shape> value; };
+        std::vector<Entry> entries;
 
         Shape* find(const std::string& key) const {
-            for (const auto& e : inline_entries) {
-                if (e.in_use && *e.key == key) return e.value.get();
-            }
-            if (overflow) {
-                auto it = overflow->find(key);
-                if (it != overflow->end()) return it->second.get();
+            for (const auto& e : entries) {
+                if (*e.key == key) return e.value.get();
             }
             return nullptr;
         }
-        size_t size() const {
-            size_t n = 0;
-            for (const auto& e : inline_entries) if (e.in_use) n++;
-            if (overflow) n += overflow->size();
-            return n;
-        }
-        // `key` must already be interned (see the struct's own doc comment).
+        size_t size() const { return entries.size(); }
+        // `key` must already be interned (see Shape::intern's own doc comment).
         Shape* insert(const std::string* key, std::unique_ptr<Shape> child) {
             Shape* raw = child.get();
-            for (auto& e : inline_entries) {
-                if (!e.in_use) { e.key = key; e.value = std::move(child); e.in_use = true; return raw; }
-            }
-            if (!overflow) overflow = std::make_unique<OverflowMap>();
-            (*overflow)[*key] = std::move(child);
+            entries.push_back({key, std::move(child)});
             return raw;
         }
     };
 
     // The 0/1/many split below (same idea V8/JSC/SpiderMonkey use for their
     // own transition tables) exists because most shape nodes have exactly
-    // one child, or none -- paying for TransitionMap's 8-wide inline array
-    // (200 bytes) on the first child regardless is wasteful when the
-    // common case needs only 16.
+    // one child, or none -- a single embedded {key, child} pair (16 bytes)
+    // for that overwhelmingly common case, no vector/allocation at all
+    // until a genuine 2nd child shows up (see TransitionMap above).
     struct SingleTransition { const std::string* key = nullptr; std::unique_ptr<Shape> child; };
 
     // Reads-by-value against `table`'s current state (null / single /
