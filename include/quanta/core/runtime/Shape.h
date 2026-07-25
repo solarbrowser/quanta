@@ -231,10 +231,15 @@ private:
             return raw;
         }
     };
-    TransitionMap transitions_;
+    // Lazy: null until this shape's first child (most shapes -- the "fully
+    // built object" terminal ones -- never get one). transition()/
+    // transition_accessor() allocate on their own cache-miss path;
+    // find_slot() never touches these at all, so this costs the get/set
+    // hot path nothing either way.
+    std::unique_ptr<TransitionMap> transitions_;
     // Separate memoization tree for transition_accessor() -- see its own
     // doc comment for why this must not share transitions_.
-    TransitionMap accessor_transitions_;
+    std::unique_ptr<TransitionMap> accessor_transitions_;
 };
 
 }

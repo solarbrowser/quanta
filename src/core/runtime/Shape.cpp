@@ -10,9 +10,9 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Shape) == 512);
+static_assert(sizeof(Shape) == 128);
 #else
-static_assert(sizeof(Shape) <= 768);
+static_assert(sizeof(Shape) <= 256);
 #endif
 
 const std::string* Shape::intern(const std::string& key) {
@@ -44,22 +44,30 @@ Shape* Shape::root() {
 Shape* Shape::transition(const std::string& key) {
     // find() compares by value, no interning needed for the (common) case
     // this child already exists -- only intern() on an actual cache miss,
-    // i.e. once per (this, key) edge ever, not once per call.
-    if (Shape* existing = transitions_.find(key)) return existing;
+    // i.e. once per (this, key) edge ever, not once per call. transitions_
+    // itself is lazy (null until this shape's first child), so a leaf
+    // shape (the common terminal case) never allocates it at all.
+    if (transitions_) {
+        if (Shape* existing = transitions_->find(key)) return existing;
+    }
     if (slot_count_ >= kMaxSlots) return nullptr;
-    if (transitions_.size() >= kMaxTransitions) return nullptr;
+    if (transitions_ && transitions_->size() >= kMaxTransitions) return nullptr;
     const std::string* ikey = intern(key);
     auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_));
-    return transitions_.insert(ikey, std::move(child));
+    if (!transitions_) transitions_ = std::make_unique<TransitionMap>();
+    return transitions_->insert(ikey, std::move(child));
 }
 
 Shape* Shape::transition_accessor(const std::string& key) {
-    if (Shape* existing = accessor_transitions_.find(key)) return existing;
+    if (accessor_transitions_) {
+        if (Shape* existing = accessor_transitions_->find(key)) return existing;
+    }
     if (slot_count_ + 2 > kMaxSlots) return nullptr;
-    if (accessor_transitions_.size() >= kMaxTransitions) return nullptr;
+    if (accessor_transitions_ && accessor_transitions_->size() >= kMaxTransitions) return nullptr;
     const std::string* ikey = intern(key);
     auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_, /*is_accessor=*/true));
-    return accessor_transitions_.insert(ikey, std::move(child));
+    if (!accessor_transitions_) accessor_transitions_ = std::make_unique<TransitionMap>();
+    return accessor_transitions_->insert(ikey, std::move(child));
 }
 
 int32_t Shape::find_slot(const std::string& key) const {
