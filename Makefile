@@ -10,7 +10,7 @@ C_CYAN = \033[96m
 
 CXX = clang++
 CXXFLAGS = -std=c++20 -Wall -O3 -march=native -mtune=native
-CXXFLAGS += -DQUANTA_VERSION=\"0.9.0.71926\"
+CXXFLAGS += -DQUANTA_VERSION=\"0.9.1.72526\"
 CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC
 CXXFLAGS += -funroll-loops -finline-functions
 CXXFLAGS += -fvectorize -fslp-vectorize
