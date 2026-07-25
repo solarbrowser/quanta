@@ -46,7 +46,13 @@
 
 namespace Quanta {
 
-
+#if defined(__GLIBCXX__)
+static_assert(sizeof(Context) == 256);
+static_assert(sizeof(Environment) == 176);
+#else
+static_assert(sizeof(Context) <= 896);
+static_assert(sizeof(Environment) <= 512);
+#endif
 
 thread_local uint32_t Context::next_context_id_ = 1;
 
@@ -81,8 +87,10 @@ void Context::gc_trace(Visitor& v) const {
     v.visit_environment(variable_environment_);
     v.visit_object(this_binding_);
     v.visit_object(global_object_);
-    for (const auto& e : built_in_objects_) v.visit_object(e.second);
-    for (const auto& e : built_in_functions_) v.visit_object(e.second);
+    if (builtins_) {
+        for (const auto& e : builtins_->objects) v.visit_object(e.second);
+        for (const auto& e : builtins_->functions) v.visit_object(e.second);
+    }
     v.visit(current_exception_);
     v.visit(return_value_);
     v.visit(new_target_);
@@ -153,11 +161,13 @@ void Environment::operator delete(void* ptr) {
 
 Context::Context(Engine* engine, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
+      has_exception_(false), has_return_value_(false), has_break_(false), has_continue_(false),
+      is_in_constructor_call_(false), super_called_(false), this_needs_super_(false),
+      strict_mode_(false),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
-      execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false),
-      return_value_(), has_return_value_(false), has_break_(false), has_continue_(false),
-      current_loop_label_(), next_statement_label_(), is_in_constructor_call_(false), super_called_(false), this_needs_super_(false),
-      strict_mode_(false), engine_(engine), current_filename_("<unknown>") {
+      execution_depth_(0), global_object_(nullptr), current_exception_(),
+      return_value_(),
+      engine_(engine), current_filename_(Shape::intern("<unknown>")) {
 
     if (type == Type::Global) {
         initialize_global_context();
@@ -166,12 +176,13 @@ Context::Context(Engine* engine, Type type)
 
 Context::Context(Engine* engine, Context* parent, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
+      has_exception_(false), has_return_value_(false), has_break_(false), has_continue_(false),
+      is_in_constructor_call_(false), super_called_(false), this_needs_super_(false),
+      strict_mode_(parent && type != Type::Function ? parent->strict_mode_ : false),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(parent ? parent->global_object_ : nullptr),
-      current_exception_(), has_exception_(false), return_value_(), has_return_value_(false),
-      has_break_(false), has_continue_(false), current_loop_label_(), next_statement_label_(),
-      is_in_constructor_call_(false), super_called_(false), this_needs_super_(false), strict_mode_(parent && type != Type::Function ? parent->strict_mode_ : false),
-      engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>") {
+      current_exception_(), return_value_(),
+      engine_(engine), current_filename_(parent ? parent->current_filename_ : Shape::intern("<unknown>")) {
 
 
 
@@ -587,7 +598,7 @@ void Context::throw_uri_error(const std::string& message) {
 Value Context::get_import_meta() {
     if (import_meta_.is_undefined()) {
         auto meta_obj = ObjectFactory::create_object();
-        meta_obj->set_property("url", Value(std::string("file://") + current_filename_));
+        meta_obj->set_property("url", Value(std::string("file://") + *current_filename_));
         import_meta_ = Value(meta_obj.release());
     }
     return import_meta_;
@@ -612,7 +623,8 @@ void Context::drain_microtasks() {
 }
 
 void Context::register_built_in_object(const std::string& name, Object* object) {
-    built_in_objects_[name] = object;
+    if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
+    builtins_->objects[name] = object;
 
     if (global_object_) {
         Value binding_value;
@@ -628,7 +640,8 @@ void Context::register_built_in_object(const std::string& name, Object* object) 
 }
 
 void Context::register_built_in_function(const std::string& name, Function* function) {
-    built_in_functions_[name] = function;
+    if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
+    builtins_->functions[name] = function;
 
     if (global_object_) {
         PropertyDescriptor desc(Value(function), PropertyAttributes::BuiltinFunction);
@@ -637,21 +650,25 @@ void Context::register_built_in_function(const std::string& name, Function* func
 }
 
 Object* Context::get_built_in_object(const std::string& name) const {
-    auto it = built_in_objects_.find(name);
-    if (it != built_in_objects_.end()) return it->second;
-    if (builtins_root_) {
-        auto rit = builtins_root_->built_in_objects_.find(name);
-        if (rit != builtins_root_->built_in_objects_.end()) return rit->second;
+    if (builtins_) {
+        auto it = builtins_->objects.find(name);
+        if (it != builtins_->objects.end()) return it->second;
+    }
+    if (builtins_root_ && builtins_root_->builtins_) {
+        auto rit = builtins_root_->builtins_->objects.find(name);
+        if (rit != builtins_root_->builtins_->objects.end()) return rit->second;
     }
     return nullptr;
 }
 
 Function* Context::get_built_in_function(const std::string& name) const {
-    auto it = built_in_functions_.find(name);
-    if (it != built_in_functions_.end()) return it->second;
-    if (builtins_root_) {
-        auto rit = builtins_root_->built_in_functions_.find(name);
-        if (rit != builtins_root_->built_in_functions_.end()) return rit->second;
+    if (builtins_) {
+        auto it = builtins_->functions.find(name);
+        if (it != builtins_->functions.end()) return it->second;
+    }
+    if (builtins_root_ && builtins_root_->builtins_) {
+        auto rit = builtins_root_->builtins_->functions.find(name);
+        if (rit != builtins_root_->builtins_->functions.end()) return rit->second;
     }
     return nullptr;
 }
@@ -827,19 +844,23 @@ void Context::clear_return_value() {
 
 void Context::set_break(const std::string& label) {
     has_break_ = true;
-    break_label_ = label;
+    if (label.empty() && !loop_labels_) return;
+    ensure_loop_labels().break_label = label;
 }
 
 void Context::set_continue(const std::string& label) {
     has_continue_ = true;
-    continue_label_ = label;
+    if (label.empty() && !loop_labels_) return;
+    ensure_loop_labels().continue_label = label;
 }
 
 void Context::clear_break_continue() {
     has_break_ = false;
     has_continue_ = false;
-    break_label_.clear();
-    continue_label_.clear();
+    if (loop_labels_) {
+        loop_labels_->break_label.clear();
+        loop_labels_->continue_label.clear();
+    }
 }
 
 
@@ -1260,12 +1281,13 @@ void Context::pop_block_scope() {
 }
 
 void Context::push_dispose_scope() {
-    dispose_scope_stack_.push_back({});
+    if (!dispose_scope_stack_) dispose_scope_stack_ = std::make_unique<std::vector<std::vector<DisposableResource>>>();
+    dispose_scope_stack_->push_back({});
 }
 
 void Context::add_disposable_resource(const Value& resource, const Value& method, bool is_async_dispose) {
-    if (!dispose_scope_stack_.empty()) {
-        dispose_scope_stack_.back().push_back({resource, method, is_async_dispose});
+    if (dispose_scope_stack_ && !dispose_scope_stack_->empty()) {
+        dispose_scope_stack_->back().push_back({resource, method, is_async_dispose});
     }
 }
 
@@ -1428,10 +1450,10 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
 }
 
 void Context::run_dispose_resources() {
-    if (dispose_scope_stack_.empty()) return;
+    if (!dispose_scope_stack_ || dispose_scope_stack_->empty()) return;
 
-    auto resources = std::move(dispose_scope_stack_.back());
-    dispose_scope_stack_.pop_back();
+    auto resources = std::move(dispose_scope_stack_->back());
+    dispose_scope_stack_->pop_back();
 
     // Capture any existing exception
     bool had_exception = has_exception_;

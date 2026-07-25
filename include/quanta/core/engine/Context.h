@@ -47,40 +47,20 @@ private:
     Type type_;
     State state_;
     uint32_t context_id_;
-    
-    Environment* lexical_environment_;
-    Environment* variable_environment_;
-    Object* this_binding_;
-    
-    std::vector<std::unique_ptr<StackFrame>> call_stack_;
-    
-    mutable int execution_depth_;
-    static const int max_execution_depth_ = 500;
-    
-    Object* global_object_;
-    Context* builtins_root_ = nullptr;  // the global context owning the builtin maps (always outlives children)
-    std::unordered_map<std::string, Object*> built_in_objects_;
-    std::unordered_map<std::string, Function*> built_in_functions_;
-    
-    Value current_exception_;
-    bool has_exception_;
-    std::vector<std::pair<size_t, size_t>> try_catch_blocks_;
 
-    Value return_value_;
-    bool has_return_value_;
-
-    bool has_break_;
-    bool has_continue_;
-    std::string break_label_;
-    std::string continue_label_;
-    std::string current_loop_label_;  // Track the label of the current loop
-    std::string next_statement_label_;  // Label to be applied to the next statement
-
-    bool is_in_constructor_call_;
-    bool super_called_;
-    bool this_needs_super_;  // derived class ctor: accessing 'this' before super() throws
-    Object* last_super_override_ = nullptr;  // comparison-only, see last_super_override()
-    Environment* owned_env_ = nullptr;  // see set_owned_env()
+    // Packed into one bit-field group instead of scattered among the
+    // pointer/Value/container fields below -- measured via mirror struct to
+    // beat scattering (each bool otherwise pads out to share a stranded
+    // byte with whatever 8-byte-aligned field follows it) by 56 bytes total,
+    // and beat grouping at the end of the class instead of here by a
+    // further 8 bytes.
+    bool has_exception_ : 1 = false;
+    bool has_return_value_ : 1 = false;
+    bool has_break_ : 1 = false;
+    bool has_continue_ : 1 = false;
+    bool is_in_constructor_call_ : 1 = false;
+    bool super_called_ : 1 = false;
+    bool this_needs_super_ : 1 = false;  // derived class ctor: accessing 'this' before super() throws
     // Set when a native call reused this exact context (Function.cpp's
     // is_native_ branch), or when this context was captured as a Generator's
     // outer_context_ / an AsyncFunction's Promise::context_ -- both bypass
@@ -90,20 +70,82 @@ private:
     // mark_escaped() call), this is the complete "could anything outlive this
     // call and still reach this context" answer -- see ContextSurvivorGuard's
     // doc comment.
-    bool exposed_to_escape_ = false;
-    Value new_target_;
-    bool original_this_was_nullish_ = false;
-    bool original_this_was_primitive_ = false; // set when native call had a non-null/undefined primitive thisArg
+    bool exposed_to_escape_ : 1 = false;
+    bool original_this_was_nullish_ : 1 = false;
+    bool original_this_was_primitive_ : 1 = false; // set when native call had a non-null/undefined primitive thisArg
     // Set by Function::construct() right before it calls Function::call() on the same
     // function, so call() can tell "I'm the construct invocation" apart from a plain call
     // made from inside that constructor's body (which must see new.target == undefined).
-    bool pending_construct_call_ = false;
+    bool pending_construct_call_ : 1 = false;
+    bool strict_mode_ : 1 = false;
+    bool in_param_eval_ : 1 = false;
+    bool is_direct_eval_call_ : 1 = false;
+    bool eval_arguments_conflict_ : 1 = false;
+    bool is_arrow_function_context_ : 1 = false;
+    bool in_class_field_init_ : 1 = false;
 
-    bool strict_mode_;
-    
+    Environment* lexical_environment_;
+    Environment* variable_environment_;
+    Object* this_binding_;
+
+    std::vector<std::unique_ptr<StackFrame>> call_stack_;
+
+    mutable int execution_depth_;
+    static const int max_execution_depth_ = 500;
+
+    Object* global_object_;
+    Context* builtins_root_ = nullptr;  // the global context owning the builtin maps (always outlives children)
+    // Only ever populated on the one Context register_built_in_object()/
+    // register_built_in_function() are actually called on (bootstrap, on
+    // the global context) -- every other Context resolves through
+    // builtins_root_ instead (get_built_in_object()/get_built_in_function()
+    // below) and never touches its own copy, so it stays null forever.
+    struct BuiltinMaps {
+        std::unordered_map<std::string, Object*> objects;
+        std::unordered_map<std::string, Function*> functions;
+    };
+    std::unique_ptr<BuiltinMaps> builtins_;
+
+    Value current_exception_;
+    std::vector<std::pair<size_t, size_t>> try_catch_blocks_;
+
+    Value return_value_;
+
+    // Lazy, bundled: entirely dead for VM-compiled code (only the legacy
+    // tree-walking evaluator touches these, statements.cpp), and even
+    // there almost always written as "" (unlabeled loops/breaks/continues)
+    // -- only a real `label:` statement ever makes one of these non-empty.
+    // Once allocated (by any one field going non-empty), stays allocated
+    // for the Context's lifetime -- the tree-walker's common restore-to-
+    // previous pattern (set_current_loop_label(prev_loop_label) at loop
+    // exit) must not thrash alloc/free every iteration; see
+    // ensure_loop_labels() and each setter below.
+    struct LoopLabelState {
+        std::string break_label;
+        std::string continue_label;
+        std::string current_loop_label;
+        std::string next_statement_label;
+    };
+    std::unique_ptr<LoopLabelState> loop_labels_;
+    LoopLabelState& ensure_loop_labels() {
+        if (!loop_labels_) loop_labels_ = std::make_unique<LoopLabelState>();
+        return *loop_labels_;
+    }
+
+    Object* last_super_override_ = nullptr;  // comparison-only, see last_super_override()
+    Environment* owned_env_ = nullptr;  // see set_owned_env()
+    Value new_target_;
+
     Engine* engine_;
-    
-    std::string current_filename_;
+
+    // Invariant for a whole script/module's Context tree (only ever set on
+    // a root/module Context, see set_current_filename()'s own call sites),
+    // so every child previously paid a full std::string copy (often a heap
+    // allocation) at construction just to inherit an unchanging value.
+    // Interned via Shape::intern() (same pool, same write-only-on-set
+    // discipline -- see that method's own doc comment) so inheriting it is
+    // now a plain pointer copy.
+    const std::string* current_filename_;
 
     static thread_local uint32_t next_context_id_;
 
@@ -116,21 +158,23 @@ private:
     };
     std::vector<MicrotaskEntry> microtask_queue_;
     std::vector<MicrotaskEntry> draining_queue_;  // batch in flight (traced too)
-    bool in_param_eval_ = false;
-    bool is_direct_eval_call_ = false;
-    bool eval_arguments_conflict_ = false;
-    std::unordered_set<std::string> eval_param_names_;
-    bool is_arrow_function_context_ = false;
-    bool in_class_field_init_ = false;
+    // Lazy: null unless a tree-walked (non-VM-compiled) function/generator/
+    // async call with >=1 parameter actually sets a non-empty name set --
+    // see set_eval_param_names()'s own empty-set guard below. VM-compiled
+    // ordinary calls (the majority) never touch this at all.
+    std::unique_ptr<std::unordered_set<std::string>> eval_param_names_;
     Value import_meta_;
 
-    // Dispose scope stack for 'using' declarations (Explicit Resource Management)
+    // Dispose scope stack for 'using' declarations (Explicit Resource
+    // Management) -- lazy, since only Contexts whose AST actually contains
+    // a using/await using declaration ever touch this (push_dispose_scope()
+    // below allocates it on first use).
     struct DisposableResource {
         Value resource_value;     // passed as 'this' to dispose method
         Value dispose_method;     // looked up once at initialization time
         bool is_async_dispose;    // `await using` (vs `using`): Dispose() must Await() the call's result
     };
-    std::vector<std::vector<DisposableResource>> dispose_scope_stack_;
+    std::unique_ptr<std::vector<std::vector<DisposableResource>>> dispose_scope_stack_;
 
 public:
     void gc_trace(Visitor& v) const;
@@ -161,15 +205,24 @@ public:
     void set_arrow_function_context(bool v) { is_arrow_function_context_ = v; }
     bool has_eval_arguments_conflict() const { return eval_arguments_conflict_; }
     void set_eval_arguments_conflict(bool v) { eval_arguments_conflict_ = v; }
-    const std::unordered_set<std::string>& get_eval_param_names() const { return eval_param_names_; }
-    void set_eval_param_names(std::unordered_set<std::string> names) { eval_param_names_ = std::move(names); }
+    const std::unordered_set<std::string>& get_eval_param_names() const {
+        static const std::unordered_set<std::string> kEmpty;
+        return eval_param_names_ ? *eval_param_names_ : kEmpty;
+    }
+    void set_eval_param_names(std::unordered_set<std::string> names) {
+        // Leaf stays leaf: this is called unconditionally (even for a
+        // zero-parameter function) by every tree-walked/generator/async
+        // call, so only allocate when there's genuinely something to store.
+        if (names.empty()) { eval_param_names_.reset(); return; }
+        eval_param_names_ = std::make_unique<std::unordered_set<std::string>>(std::move(names));
+    }
     bool is_in_class_field_init() const { return in_class_field_init_; }
     void set_in_class_field_init(bool v) { in_class_field_init_ = v; }
     Value get_import_meta();
     void set_import_meta(const Value& v) { import_meta_ = v; }
     
-    const std::string& get_current_filename() const { return current_filename_; }
-    void set_current_filename(const std::string& filename) { current_filename_ = filename; }
+    const std::string& get_current_filename() const { return *current_filename_; }
+    void set_current_filename(const std::string& filename) { current_filename_ = Shape::intern(filename); }
     
     bool is_strict_mode() const { return strict_mode_; }
     void set_strict_mode(bool strict) { strict_mode_ = strict; }
@@ -251,17 +304,35 @@ public:
     
     bool has_break() const { return has_break_; }
     bool has_continue() const { return has_continue_; }
-    const std::string& get_break_label() const { return break_label_; }
-    const std::string& get_continue_label() const { return continue_label_; }
+    const std::string& get_break_label() const {
+        static const std::string kEmpty;
+        return loop_labels_ ? loop_labels_->break_label : kEmpty;
+    }
+    const std::string& get_continue_label() const {
+        static const std::string kEmpty;
+        return loop_labels_ ? loop_labels_->continue_label : kEmpty;
+    }
     void set_break(const std::string& label = "");
     void set_continue(const std::string& label = "");
     void clear_break_continue();
 
-    const std::string& get_current_loop_label() const { return current_loop_label_; }
-    void set_current_loop_label(const std::string& label) { current_loop_label_ = label; }
+    const std::string& get_current_loop_label() const {
+        static const std::string kEmpty;
+        return loop_labels_ ? loop_labels_->current_loop_label : kEmpty;
+    }
+    void set_current_loop_label(const std::string& label) {
+        if (label.empty() && !loop_labels_) return;
+        ensure_loop_labels().current_loop_label = label;
+    }
 
-    const std::string& get_next_statement_label() const { return next_statement_label_; }
-    void set_next_statement_label(const std::string& label) { next_statement_label_ = label; }
+    const std::string& get_next_statement_label() const {
+        static const std::string kEmpty;
+        return loop_labels_ ? loop_labels_->next_statement_label : kEmpty;
+    }
+    void set_next_statement_label(const std::string& label) {
+        if (label.empty() && !loop_labels_) return;
+        ensure_loop_labels().next_statement_label = label;
+    }
 
     bool is_in_constructor_call() const { return is_in_constructor_call_; }
     void set_in_constructor_call(bool value) { is_in_constructor_call_ = value; }
@@ -420,12 +491,22 @@ public:
     // any of this.
     struct SlotMap {
         static constexpr size_t kInlineCapacity = 4;
+        // key is interned (Shape::intern(), same pool Shape's own SlotMap/
+        // TransitionMap use) instead of a 32-byte embedded std::string --
+        // 8 bytes per entry instead. find()/inline_slot() (the get/set hot
+        // path) compare against the dereferenced pointee BY VALUE and never
+        // intern; only get_or_create()'s insert branch below calls
+        // Shape::intern(), once per binding-creation event.
         struct InlineEntry {
-            std::string key;
+            const std::string* key = nullptr;
             BindingSlot slot;
             bool in_use = false;
         };
         std::array<InlineEntry, kInlineCapacity> inline_entries;
+        // Stays keyed by plain std::string (the rare/slow spill path once
+        // inline capacity is exceeded) -- it's a unique_ptr either way, so
+        // interning it wouldn't shrink Environment, same rationale as
+        // Shape::SlotMap's own overflow map.
         using OverflowMap = std::unordered_map<std::string, BindingSlot, std::hash<std::string>,
                                                 std::equal_to<std::string>,
                                                 SmallMapAllocator<std::pair<const std::string, BindingSlot>>>;
@@ -433,7 +514,7 @@ public:
 
         BindingSlot* find(const std::string& name) {
             for (auto& e : inline_entries) {
-                if (e.in_use && e.key == name) return &e.slot;
+                if (e.in_use && *e.key == name) return &e.slot;
             }
             if (overflow) {
                 auto it = overflow->find(name);
@@ -451,7 +532,7 @@ public:
             if (BindingSlot* existing = find(name)) return *existing;
             for (auto& e : inline_entries) {
                 if (!e.in_use) {
-                    e.key = name;
+                    e.key = Shape::intern(name);
                     e.slot = BindingSlot{};
                     e.in_use = true;
                     return e.slot;
@@ -466,10 +547,10 @@ public:
         // erasing one node never moves another node's address.
         bool erase(const std::string& name) {
             for (auto& e : inline_entries) {
-                if (e.in_use && e.key == name) {
+                if (e.in_use && *e.key == name) {
                     e.in_use = false;
                     e.slot = BindingSlot{};
-                    e.key.clear();
+                    e.key = nullptr;
                     return true;
                 }
             }
@@ -486,7 +567,7 @@ public:
         template <typename Fn>
         void for_each(Fn&& fn) const {
             for (const auto& e : inline_entries) {
-                if (e.in_use) fn(e.key, e.slot);
+                if (e.in_use) fn(*e.key, e.slot);
             }
             if (overflow) {
                 for (const auto& kv : *overflow) fn(kv.first, kv.second);
@@ -498,8 +579,17 @@ private:
     Type type_;
     Environment* outer_environment_;
     SlotMap slots_;
-    std::unordered_set<std::string> lexical_names_;
-    std::unordered_set<std::string> const_binding_names_; // tracks const declarations in Object envs
+    // Lazy, bundled: only the specific Environment hosting a let/const/
+    // named-class declaration at its own top level ever populates either
+    // set (mark_lexical_declaration()/mark_const_binding() below) -- empty
+    // for every var-only function env, plain block/loop/if body with no
+    // top-level lexical declaration, with-environment, and catch-clause
+    // environment.
+    struct LexicalNames {
+        std::unordered_set<std::string> lexical;
+        std::unordered_set<std::string> const_binding; // tracks const declarations in Object envs
+    };
+    std::unique_ptr<LexicalNames> lexical_names_;
     Object* binding_object_;
     bool is_with_environment_ = false; // ES6 8.1.1.2.1 HasBinding: only `with` object environments consult @@unscopables
     bool is_closure_boundary_ = false; // marks script-level env: stop snapshot loops here
@@ -558,7 +648,7 @@ public:
     SlotMap::InlineEntry* inline_slot(size_t index, const std::string& name) {
         if (index >= SlotMap::kInlineCapacity) return nullptr;
         SlotMap::InlineEntry& e = slots_.inline_entries[index];
-        if (e.in_use && e.key == name) return &e;
+        if (e.in_use && *e.key == name) return &e;
         return nullptr;
     }
     bool set_binding_direct(const std::string& name, const Value& value, Context* ctx = nullptr);
@@ -578,10 +668,20 @@ public:
     void mark_references() const;
 
     bool has_own_binding(const std::string& name) const;
-    bool has_lexical_declaration(const std::string& name) const { return lexical_names_.count(name) > 0; }
-    void mark_lexical_declaration(const std::string& name) { lexical_names_.insert(name); }
-    bool is_const_binding(const std::string& name) const { return const_binding_names_.count(name) > 0; }
-    void mark_const_binding(const std::string& name) { const_binding_names_.insert(name); }
+    bool has_lexical_declaration(const std::string& name) const {
+        return lexical_names_ && lexical_names_->lexical.count(name) > 0;
+    }
+    void mark_lexical_declaration(const std::string& name) {
+        if (!lexical_names_) lexical_names_ = std::make_unique<LexicalNames>();
+        lexical_names_->lexical.insert(name);
+    }
+    bool is_const_binding(const std::string& name) const {
+        return lexical_names_ && lexical_names_->const_binding.count(name) > 0;
+    }
+    void mark_const_binding(const std::string& name) {
+        if (!lexical_names_) lexical_names_ = std::make_unique<LexicalNames>();
+        lexical_names_->const_binding.insert(name);
+    }
     void create_global_function_binding(const std::string& name, const Value& value, bool configurable = false);
     void create_uninitialized_binding(const std::string& name, bool is_mutable = true);
 };

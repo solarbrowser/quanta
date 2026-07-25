@@ -84,25 +84,26 @@ public:
     struct PropertyInfo { std::string key; uint32_t slot_index; bool is_accessor; };
     std::vector<PropertyInfo> properties_in_order() const;
 
+    // Canonicalizes `key` to a stable address. Backed by a thread_local set
+    // that, like Shape itself, is never erased from for the thread's
+    // lifetime, so returned pointers stay valid for as long as the thread
+    // runs. Public (beyond Shape's own use for its slot/transition tables)
+    // because Context/Environment (Context.h) share this exact pool for
+    // their own interned strings instead of standing up a parallel one --
+    // see current_filename_ and Environment::SlotMap::InlineEntry::key.
+    //
+    // Only call this on a write/insert path, never a read/lookup one --
+    // any hot get/set-style path should compare against an already-interned
+    // pointee by value instead (see find_slot()/is_accessor_slot() above
+    // for the pattern).
+    static const std::string* intern(const std::string& key);
+
 private:
     Shape() = default;
     Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is_accessor = false);
 
     static constexpr uint32_t kMaxTransitions = 128;
     static constexpr uint32_t kMaxSlots = 128;
-
-    // Canonicalizes `key` to a stable address, shrinking every key field
-    // below (added_key_ and both slot/transition tables' Entry::key) from a
-    // 32-byte inline std::string to an 8-byte pointer. Backed by a
-    // thread_local set that, like Shape itself, is never erased from for
-    // the thread's lifetime, so returned pointers stay valid as long as any
-    // Shape does.
-    //
-    // Only called from transition()/transition_accessor()'s cache-miss
-    // path -- once per (parent shape, key) tree edge, never per property
-    // access. find_slot()/is_accessor_slot() (the get/set hot path) never
-    // call this; they compare against the interned pointee by value instead.
-    static const std::string* intern(const std::string& key);
 
     Shape* parent_ = nullptr;
     const std::string* added_key_ = nullptr;
