@@ -123,7 +123,7 @@ HeapBlock* Heap::fresh_block(CellKind kind, HeapSegment segment, size_t cls) {
 }
 
 namespace {
-// ~8MB of accounted bytes between collections; the interpreter safepoint
+// ~4MB of accounted bytes between collections; the interpreter safepoint
 // consumes the request (never collect mid-allocation). Shared between
 // allocate() (ordinary cells) and note_extra_bytes() (memory the cell
 // heap can't see directly, e.g. a pinned survivor Context -- see its own
@@ -133,7 +133,7 @@ thread_local size_t g_bytes_since_gc = 0;
 
 void account_bytes(size_t size, bool needs_major) {
     g_bytes_since_gc += size;
-    if (g_bytes_since_gc >= 8 * 1024 * 1024) {
+    if (g_bytes_since_gc >= 4 * 1024 * 1024) {
         g_bytes_since_gc = 0;
         Heap::request_gc();
         if (needs_major) Heap::request_major_gc();
