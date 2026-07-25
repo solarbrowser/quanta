@@ -11,30 +11,30 @@
 
 namespace Quanta {
 
+#if defined(__GLIBCXX__)
+static_assert(sizeof(Error) == 112);
+#else
+static_assert(sizeof(Error) <= 160);
+#endif
 
-Error::Error(Type type, const std::string& message) 
-    : Object(Object::ObjectType::Error), error_type_(type), message_(message), 
+
+Error::Error(Type type, const std::string& message)
+    : Object(Object::ObjectType::Error), error_type_(type), message_(message),
       line_number_(0), column_number_(0) {
-    set_error_name();
     generate_stack_trace();
     initialize_properties();
 }
 
 Error::Error(Type type, const std::string& message, const std::string& filename, int line, int column)
-    : Object(Object::ObjectType::Error), error_type_(type), message_(message), 
-      line_number_(line), column_number_(column), filename_(filename) {
-    set_error_name();
+    : Object(Object::ObjectType::Error), error_type_(type), message_(message),
+      line_number_(line), column_number_(column), filename_(Shape::intern(filename)) {
     generate_stack_trace();
     initialize_properties();
 }
 
-void Error::set_error_name() {
-    name_ = type_to_name(error_type_);
-}
-
 void Error::initialize_properties() {
     set_property("_isError", Value(true), PropertyAttributes::None);
-    set_property("name", Value(name_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    set_property("name", Value(type_to_name(error_type_)), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Only set message as own property when non-empty; when message is "" it means
     // no argument was passed (the native constructor does not pass "" for undefined args).
@@ -53,13 +53,13 @@ void Error::initialize_properties() {
         set_property("columnNumber", Value(static_cast<double>(column_number_)));
     }
 
-    if (!filename_.empty()) {
-        set_property("fileName", Value(filename_));
+    if (filename_ && !filename_->empty()) {
+        set_property("fileName", Value(*filename_));
     }
 }
 
 void Error::set_location(const std::string& filename, int line, int column) {
-    filename_ = filename;
+    filename_ = Shape::intern(filename);
     line_number_ = line;
     column_number_ = column;
     initialize_properties();
@@ -67,9 +67,9 @@ void Error::set_location(const std::string& filename, int line, int column) {
 
 std::string Error::to_string() const {
     if (message_.empty()) {
-        return name_;
+        return type_to_name(error_type_);
     }
-    return name_ + ": " + message_;
+    return type_to_name(error_type_) + ": " + message_;
 }
 
 void Error::generate_stack_trace() {
@@ -83,7 +83,7 @@ void Error::generate_stack_trace() {
 
     try {
         std::ostringstream oss;
-        oss << name_;
+        oss << type_to_name(error_type_);
         if (!message_.empty()) {
             oss << ": " << message_;
         }
@@ -91,12 +91,12 @@ void Error::generate_stack_trace() {
         try {
             CallStack& stack = CallStack::instance();
             std::string stack_frames = stack.generate_stack_trace(20);
-            
+
             if (!stack_frames.empty()) {
                 oss << "\n" << stack_frames;
             } else {
-                if (!filename_.empty()) {
-                    oss << "\n    at " << filename_;
+                if (filename_ && !filename_->empty()) {
+                    oss << "\n    at " << *filename_;
                     if (line_number_ > 0) {
                         oss << ":" << line_number_;
                         if (column_number_ > 0) {
@@ -106,8 +106,8 @@ void Error::generate_stack_trace() {
                 }
             }
         } catch (...) {
-            if (!filename_.empty()) {
-                oss << "\n    at " << filename_;
+            if (filename_ && !filename_->empty()) {
+                oss << "\n    at " << *filename_;
                 if (line_number_ > 0) {
                     oss << ":" << line_number_;
                     if (column_number_ > 0) {
@@ -116,10 +116,10 @@ void Error::generate_stack_trace() {
                 }
             }
         }
-        
+
         stack_trace_ = oss.str();
     } catch (...) {
-        stack_trace_ = name_ + (message_.empty() ? "" : ": " + message_);
+        stack_trace_ = type_to_name(error_type_) + (message_.empty() ? "" : ": " + message_);
     }
 }
 

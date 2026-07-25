@@ -31,29 +31,43 @@ public:
 private:
     Type error_type_;
     std::string message_;
-    std::string name_;
     std::string stack_trace_;
     int line_number_;
     int column_number_;
-    std::string filename_;
+    // Lazy, interned via Shape::intern() (same pool/rationale as Context's
+    // current_filename_): no constructor currently populates this (the
+    // filename+line+column overload below has no callers anywhere in the
+    // codebase today -- the actual uncaught-error "at file:line:col" text
+    // comes entirely from CallStack, see generate_stack_trace()), so this
+    // stays null for every Error in practice. Kept (not removed) so the
+    // capability still works correctly if that constructor or
+    // set_location() ever gains a caller.
+    const std::string* filename_ = nullptr;
 
 public:
     Error(Type type = Type::Error, const std::string& message = "");
     Error(Type type, const std::string& message, const std::string& filename, int line, int column);
-    
+
     Error(const Error& other) = delete;
     Error& operator=(const Error& other) = delete;
-    
+
     ~Error() = default;
 
     Type get_error_type() const { return error_type_; }
     const std::string& get_message() const { return message_; }
-    const std::string& get_name() const { return name_; }
+    // Not a stored field: name is always exactly type_to_name(error_type_)
+    // (never independently overridden -- the JS-visible "name" property can
+    // be reassigned by script, but that's ordinary property storage, not
+    // this internal accessor), so there's nothing to independently store.
+    std::string get_name() const { return type_to_name(error_type_); }
     const std::string& get_stack_trace() const { return stack_trace_; }
     int get_line_number() const { return line_number_; }
     int get_column_number() const { return column_number_; }
-    const std::string& get_filename() const { return filename_; }
-    
+    const std::string& get_filename() const {
+        static const std::string kEmpty;
+        return filename_ ? *filename_ : kEmpty;
+    }
+
     void set_message(const std::string& message) { message_ = message; }
     void set_stack_trace(const std::string& stack) { stack_trace_ = stack; }
     void set_location(const std::string& filename, int line, int column);
@@ -82,7 +96,6 @@ public:
     
 private:
     void initialize_properties();
-    void set_error_name();
 };
 
 // get_type()-based replacement for dynamic_cast<Error*> -- see as_function() in Object.h.
