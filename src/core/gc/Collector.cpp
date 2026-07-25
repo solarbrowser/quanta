@@ -208,11 +208,13 @@ public:
                     visit(e.second);
                     if (marked_cells != before) progress = true;
                 }
-                for (auto& e : wm->raw_symbol_entries()) {
-                    if (!alive(e.first)) continue;
-                    size_t before = marked_cells;
-                    visit(e.second);
-                    if (marked_cells != before) progress = true;
+                if (auto* sm = wm->raw_symbol_entries()) {
+                    for (auto& e : *sm) {
+                        if (!alive(e.first)) continue;
+                        size_t before = marked_cells;
+                        visit(e.second);
+                        if (marked_cells != before) progress = true;
+                    }
                 }
             }
             if (progress) drain();
@@ -231,9 +233,10 @@ public:
             for (auto it = m.begin(); it != m.end();) {
                 if (!alive(it->first)) it = m.erase(it); else ++it;
             }
-            auto& sm = wm->raw_symbol_entries();
-            for (auto it = sm.begin(); it != sm.end();) {
-                if (!alive(it->first)) it = sm.erase(it); else ++it;
+            if (auto* sm = wm->raw_symbol_entries()) {
+                for (auto it = sm->begin(); it != sm->end();) {
+                    if (!alive(it->first)) it = sm->erase(it); else ++it;
+                }
             }
         }
         for (WeakSet* ws : pending_weak_sets_) {
@@ -241,9 +244,10 @@ public:
             for (auto it = s.begin(); it != s.end();) {
                 if (!alive(*it)) it = s.erase(it); else ++it;
             }
-            auto& ss = ws->raw_symbol_values();
-            for (auto it = ss.begin(); it != ss.end();) {
-                if (!alive(*it)) it = ss.erase(it); else ++it;
+            if (auto* ss = ws->raw_symbol_values()) {
+                for (auto it = ss->begin(); it != ss->end();) {
+                    if (!alive(*it)) it = ss->erase(it); else ++it;
+                }
             }
         }
         for (WeakRef* wr : pending_weak_refs_) {

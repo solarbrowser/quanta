@@ -17,6 +17,14 @@
 
 namespace Quanta {
 
+#if defined(__GLIBCXX__)
+static_assert(sizeof(WeakMap) == 88);
+static_assert(sizeof(WeakSet) == 88);
+#else
+static_assert(sizeof(WeakMap) <= 128);
+static_assert(sizeof(WeakSet) <= 128);
+#endif
+
 void Map::trace(Visitor& v) {
     Object::trace_default(v);
     for (const auto& e : entries_) {
@@ -1356,18 +1364,21 @@ bool WeakMap::delete_key(Object* key) {
     return false;
 }
 
-bool WeakMap::has_symbol(Symbol* sym) const { return symbol_entries_.count(sym) > 0; }
+bool WeakMap::has_symbol(Symbol* sym) const { return symbol_entries_ && symbol_entries_->count(sym) > 0; }
 Value WeakMap::get_symbol(Symbol* sym) const {
-    auto it = symbol_entries_.find(sym);
-    return it != symbol_entries_.end() ? it->second : Value();
+    if (!symbol_entries_) return Value();
+    auto it = symbol_entries_->find(sym);
+    return it != symbol_entries_->end() ? it->second : Value();
 }
 void WeakMap::set_symbol(Symbol* sym, const Value& value) {
     Collector::write_barrier(this);
-    symbol_entries_[sym] = value;
+    if (!symbol_entries_) symbol_entries_ = std::make_unique<std::unordered_map<Symbol*, Value>>();
+    (*symbol_entries_)[sym] = value;
 }
 bool WeakMap::delete_symbol(Symbol* sym) {
-    auto it = symbol_entries_.find(sym);
-    if (it != symbol_entries_.end()) { symbol_entries_.erase(it); return true; }
+    if (!symbol_entries_) return false;
+    auto it = symbol_entries_->find(sym);
+    if (it != symbol_entries_->end()) { symbol_entries_->erase(it); return true; }
     return false;
 }
 
@@ -1480,14 +1491,16 @@ bool WeakSet::delete_value(Object* value) {
     return false;
 }
 
-bool WeakSet::has_symbol(Symbol* sym) const { return symbol_values_.count(sym) > 0; }
+bool WeakSet::has_symbol(Symbol* sym) const { return symbol_values_ && symbol_values_->count(sym) > 0; }
 void WeakSet::add_symbol(Symbol* sym) {
     Collector::write_barrier(this);
-    symbol_values_.insert(sym);
+    if (!symbol_values_) symbol_values_ = std::make_unique<std::unordered_set<Symbol*>>();
+    symbol_values_->insert(sym);
 }
 bool WeakSet::delete_symbol(Symbol* sym) {
-    auto it = symbol_values_.find(sym);
-    if (it != symbol_values_.end()) { symbol_values_.erase(it); return true; }
+    if (!symbol_values_) return false;
+    auto it = symbol_values_->find(sym);
+    if (it != symbol_values_->end()) { symbol_values_->erase(it); return true; }
     return false;
 }
 

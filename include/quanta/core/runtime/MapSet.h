@@ -146,7 +146,9 @@ private:
 class WeakMap : public Object {
 private:
     std::unordered_map<Object*, Value> entries_;
-    std::unordered_map<class Symbol*, Value> symbol_entries_; // unregistered symbol keys (ES2023)
+    // Lazy: unregistered symbol keys (ES2023) are a rare feature relative to
+    // ordinary object keys -- most WeakMaps never touch this at all.
+    std::unique_ptr<std::unordered_map<class Symbol*, Value>> symbol_entries_;
 
 public:
     WeakMap();
@@ -165,9 +167,11 @@ public:
     void set_symbol(class Symbol* sym, const Value& value);
     bool delete_symbol(class Symbol* sym);
 
-    // Ephemeron processing hooks: only the collector's mark/sweep touches these.
+    // Ephemeron processing hooks: only the collector's mark/sweep touches
+    // these. raw_symbol_entries() returns null when never populated --
+    // callers (Collector.cpp) must guard before iterating.
     std::unordered_map<Object*, Value>& raw_entries() { return entries_; }
-    std::unordered_map<class Symbol*, Value>& raw_symbol_entries() { return symbol_entries_; }
+    std::unordered_map<class Symbol*, Value>* raw_symbol_entries() { return symbol_entries_.get(); }
 
     static Value weakmap_constructor(Context& ctx, const std::vector<Value>& args);
     static Value weakmap_set(Context& ctx, const std::vector<Value>& args);
@@ -187,7 +191,8 @@ public:
 class WeakSet : public Object {
 private:
     std::unordered_set<Object*> values_;
-    std::unordered_set<class Symbol*> symbol_values_; // unregistered symbol members (ES2023)
+    // Lazy: see WeakMap::symbol_entries_'s own doc comment, same rationale.
+    std::unique_ptr<std::unordered_set<class Symbol*>> symbol_values_;
 
 public:
     WeakSet();
@@ -202,8 +207,10 @@ public:
     void add_symbol(class Symbol* sym);
     bool delete_symbol(class Symbol* sym);
 
+    // raw_symbol_values() returns null when never populated -- callers
+    // (Collector.cpp) must guard before iterating.
     std::unordered_set<Object*>& raw_values() { return values_; }
-    std::unordered_set<class Symbol*>& raw_symbol_values() { return symbol_values_; }
+    std::unordered_set<class Symbol*>* raw_symbol_values() { return symbol_values_.get(); }
 
     static Value weakset_constructor(Context& ctx, const std::vector<Value>& args);
     static Value weakset_add(Context& ctx, const std::vector<Value>& args);
