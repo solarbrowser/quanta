@@ -5,10 +5,26 @@
  */
 
 #include "quanta/core/runtime/Shape.h"
+#include <unordered_set>
 
 namespace Quanta {
 
-Shape::Shape(Shape* parent, const std::string& key, uint32_t slot_index, bool is_accessor)
+#if defined(__GLIBCXX__)
+static_assert(sizeof(Shape) == 512);
+#else
+static_assert(sizeof(Shape) <= 768);
+#endif
+
+const std::string* Shape::intern(const std::string& key) {
+    // Never erased from, so returned pointers are stable for the thread's
+    // lifetime -- see the field's own doc comment in Shape.h.
+    static thread_local std::unordered_set<std::string> table;
+    auto it = table.find(key);
+    if (it == table.end()) it = table.insert(key).first;
+    return &*it;
+}
+
+Shape::Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is_accessor)
     : parent_(parent), added_key_(key),
       slot_count_(slot_index + (is_accessor ? 2u : 1u)), is_accessor_added_(is_accessor) {
     if (parent_) slots_ = parent_->slots_;
@@ -26,19 +42,24 @@ Shape* Shape::root() {
 }
 
 Shape* Shape::transition(const std::string& key) {
+    // find() compares by value, no interning needed for the (common) case
+    // this child already exists -- only intern() on an actual cache miss,
+    // i.e. once per (this, key) edge ever, not once per call.
     if (Shape* existing = transitions_.find(key)) return existing;
     if (slot_count_ >= kMaxSlots) return nullptr;
     if (transitions_.size() >= kMaxTransitions) return nullptr;
-    auto child = std::unique_ptr<Shape>(new Shape(this, key, slot_count_));
-    return transitions_.insert(key, std::move(child));
+    const std::string* ikey = intern(key);
+    auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_));
+    return transitions_.insert(ikey, std::move(child));
 }
 
 Shape* Shape::transition_accessor(const std::string& key) {
     if (Shape* existing = accessor_transitions_.find(key)) return existing;
     if (slot_count_ + 2 > kMaxSlots) return nullptr;
     if (accessor_transitions_.size() >= kMaxTransitions) return nullptr;
-    auto child = std::unique_ptr<Shape>(new Shape(this, key, slot_count_, /*is_accessor=*/true));
-    return accessor_transitions_.insert(key, std::move(child));
+    const std::string* ikey = intern(key);
+    auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_, /*is_accessor=*/true));
+    return accessor_transitions_.insert(ikey, std::move(child));
 }
 
 int32_t Shape::find_slot(const std::string& key) const {
@@ -49,7 +70,7 @@ std::vector<Shape::PropertyInfo> Shape::properties_in_order() const {
     std::vector<PropertyInfo> props;
     for (const Shape* s = this; s->parent_; s = s->parent_) {
         uint32_t width = s->is_accessor_added_ ? 2u : 1u;
-        props.push_back({s->added_key_, s->slot_count_ - width, s->is_accessor_added_});
+        props.push_back({*s->added_key_, s->slot_count_ - width, s->is_accessor_added_});
     }
     std::reverse(props.begin(), props.end());
     return props;

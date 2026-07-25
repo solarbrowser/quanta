@@ -86,13 +86,26 @@ public:
 
 private:
     Shape() = default;
-    Shape(Shape* parent, const std::string& key, uint32_t slot_index, bool is_accessor = false);
+    Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is_accessor = false);
 
     static constexpr uint32_t kMaxTransitions = 128;
     static constexpr uint32_t kMaxSlots = 128;
 
+    // Canonicalizes `key` to a stable address, shrinking every key field
+    // below (added_key_ and both slot/transition tables' Entry::key) from a
+    // 32-byte inline std::string to an 8-byte pointer. Backed by a
+    // thread_local set that, like Shape itself, is never erased from for
+    // the thread's lifetime, so returned pointers stay valid as long as any
+    // Shape does.
+    //
+    // Only called from transition()/transition_accessor()'s cache-miss
+    // path -- once per (parent shape, key) tree edge, never per property
+    // access. find_slot()/is_accessor_slot() (the get/set hot path) never
+    // call this; they compare against the interned pointee by value instead.
+    static const std::string* intern(const std::string& key);
+
     Shape* parent_ = nullptr;
-    std::string added_key_;
+    const std::string* added_key_ = nullptr;
     uint32_t slot_count_ = 0;
     // True if THIS shape's own link (added_key_) reserved two slots (getter
     // then setter) instead of one -- see transition_accessor().
@@ -104,12 +117,20 @@ private:
     // Explicitly copyable (unlike HybridDescriptorMap's owning Object): the
     // constructor below copies a parent's whole table before appending its
     // own key.
+    //
+    // Inline entries store an interned key (8-byte pointer, see
+    // Shape::intern), but find()/is_accessor() take a plain, possibly-
+    // uninterned key and compare against the pointee by value -- they must
+    // never force an intern() call. Only set() takes an already-interned
+    // pointer (its caller, Shape's own constructor, always has one on
+    // hand). Overflow stays keyed by plain std::string: it's just a
+    // unique_ptr either way, so interning it wouldn't shrink Shape.
     struct SlotMap {
         static constexpr size_t kInlineCapacity = 4;
         // is_accessor: true if `value` is the FIRST of a 2-slot getter/setter
         // pair (see Shape's own is_accessor_added_ doc comment) rather than a
         // single plain-data slot index.
-        struct Entry { std::string key; uint32_t value = 0; bool in_use = false; bool is_accessor = false; };
+        struct Entry { const std::string* key = nullptr; uint32_t value = 0; bool in_use = false; bool is_accessor = false; };
         using OverflowEntry = std::pair<uint32_t, bool>; // (slot index, is_accessor)
         std::array<Entry, kInlineCapacity> inline_entries;
         using OverflowMap = std::unordered_map<std::string, OverflowEntry, std::hash<std::string>,
@@ -132,7 +153,7 @@ private:
 
         int32_t find(const std::string& key) const {
             for (const auto& e : inline_entries) {
-                if (e.in_use && e.key == key) return static_cast<int32_t>(e.value);
+                if (e.in_use && *e.key == key) return static_cast<int32_t>(e.value);
             }
             if (overflow) {
                 auto it = overflow->find(key);
@@ -142,7 +163,7 @@ private:
         }
         bool is_accessor(const std::string& key) const {
             for (const auto& e : inline_entries) {
-                if (e.in_use && e.key == key) return e.is_accessor;
+                if (e.in_use && *e.key == key) return e.is_accessor;
             }
             if (overflow) {
                 auto it = overflow->find(key);
@@ -150,15 +171,16 @@ private:
             }
             return false;
         }
-        void set(const std::string& key, uint32_t value, bool is_accessor = false) {
+        // `key` must already be interned (see the struct's own doc comment).
+        void set(const std::string* key, uint32_t value, bool is_accessor = false) {
             for (auto& e : inline_entries) {
-                if (e.in_use && e.key == key) { e.value = value; e.is_accessor = is_accessor; return; }
+                if (e.in_use && *e.key == *key) { e.value = value; e.is_accessor = is_accessor; return; }
             }
             for (auto& e : inline_entries) {
                 if (!e.in_use) { e.key = key; e.value = value; e.in_use = true; e.is_accessor = is_accessor; return; }
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
-            (*overflow)[key] = {value, is_accessor};
+            (*overflow)[*key] = {value, is_accessor};
         }
     };
     SlotMap slots_;
@@ -169,9 +191,13 @@ private:
     // copyable. Entries own unique_ptr<Shape>, never Shape by value: Shape*
     // is cached permanently elsewhere (FeedbackSlot, Object::shape_), so
     // only the pointer may move between inline/overflow, never the pointee.
+    //
+    // Same interned-inline/plain-overflow split as SlotMap above, and the
+    // same rule: find() takes a possibly-uninterned key and compares by
+    // value, only insert() requires an already-interned one.
     struct TransitionMap {
         static constexpr size_t kInlineCapacity = 8;
-        struct Entry { std::string key; std::unique_ptr<Shape> value; bool in_use = false; };
+        struct Entry { const std::string* key = nullptr; std::unique_ptr<Shape> value; bool in_use = false; };
         std::array<Entry, kInlineCapacity> inline_entries;
         using OverflowMap = std::unordered_map<std::string, std::unique_ptr<Shape>, std::hash<std::string>,
                                                 std::equal_to<std::string>,
@@ -180,7 +206,7 @@ private:
 
         Shape* find(const std::string& key) const {
             for (const auto& e : inline_entries) {
-                if (e.in_use && e.key == key) return e.value.get();
+                if (e.in_use && *e.key == key) return e.value.get();
             }
             if (overflow) {
                 auto it = overflow->find(key);
@@ -194,13 +220,14 @@ private:
             if (overflow) n += overflow->size();
             return n;
         }
-        Shape* insert(const std::string& key, std::unique_ptr<Shape> child) {
+        // `key` must already be interned (see the struct's own doc comment).
+        Shape* insert(const std::string* key, std::unique_ptr<Shape> child) {
             Shape* raw = child.get();
             for (auto& e : inline_entries) {
                 if (!e.in_use) { e.key = key; e.value = std::move(child); e.in_use = true; return raw; }
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
-            (*overflow)[key] = std::move(child);
+            (*overflow)[*key] = std::move(child);
             return raw;
         }
     };
