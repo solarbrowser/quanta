@@ -41,33 +41,67 @@ Shape* Shape::root() {
     return instance;
 }
 
-Shape* Shape::transition(const std::string& key) {
-    // find() compares by value, no interning needed for the (common) case
-    // this child already exists -- only intern() on an actual cache miss,
-    // i.e. once per (this, key) edge ever, not once per call. transitions_
-    // itself is lazy (null until this shape's first child), so a leaf
-    // shape (the common terminal case) never allocates it at all.
-    if (transitions_) {
-        if (Shape* existing = transitions_->find(key)) return existing;
+Shape* Shape::transition_find(void* table, bool is_single, const std::string& key) {
+    if (!table) return nullptr;
+    if (is_single) {
+        auto* single = static_cast<SingleTransition*>(table);
+        return *single->key == key ? single->child.get() : nullptr;
     }
+    return static_cast<TransitionMap*>(table)->find(key);
+}
+
+size_t Shape::transition_size(void* table, bool is_single) {
+    if (!table) return 0;
+    if (is_single) return 1;
+    return static_cast<TransitionMap*>(table)->size();
+}
+
+std::pair<Shape*, bool> Shape::transition_insert(void*& table, bool is_single,
+                                                   const std::string* key, std::unique_ptr<Shape> child) {
+    Shape* raw = child.get();
+    if (!table) {
+        table = new SingleTransition{key, std::move(child)};
+        return {raw, true};
+    }
+    if (is_single) {
+        auto* single = static_cast<SingleTransition*>(table);
+        auto* map = new TransitionMap();
+        map->insert(single->key, std::move(single->child));
+        delete single;
+        map->insert(key, std::move(child));
+        table = map;
+        return {raw, false};
+    }
+    static_cast<TransitionMap*>(table)->insert(key, std::move(child));
+    return {raw, false};
+}
+
+Shape* Shape::transition(const std::string& key) {
+    // transition_find() compares by value, no interning needed for the
+    // (common) case this child already exists -- only intern() on an
+    // actual cache miss, i.e. once per (this, key) edge ever, not once
+    // per call. transitions_ itself is lazy (null until this shape's
+    // first child), so a leaf shape (the common terminal case) never
+    // allocates anything at all.
+    if (Shape* existing = transition_find(transitions_, transitions_is_single_, key)) return existing;
     if (slot_count_ >= kMaxSlots) return nullptr;
-    if (transitions_ && transitions_->size() >= kMaxTransitions) return nullptr;
+    if (transition_size(transitions_, transitions_is_single_) >= kMaxTransitions) return nullptr;
     const std::string* ikey = intern(key);
     auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_));
-    if (!transitions_) transitions_ = std::make_unique<TransitionMap>();
-    return transitions_->insert(ikey, std::move(child));
+    auto [result, new_is_single] = transition_insert(transitions_, transitions_is_single_, ikey, std::move(child));
+    transitions_is_single_ = new_is_single;
+    return result;
 }
 
 Shape* Shape::transition_accessor(const std::string& key) {
-    if (accessor_transitions_) {
-        if (Shape* existing = accessor_transitions_->find(key)) return existing;
-    }
+    if (Shape* existing = transition_find(accessor_transitions_, accessor_transitions_is_single_, key)) return existing;
     if (slot_count_ + 2 > kMaxSlots) return nullptr;
-    if (accessor_transitions_ && accessor_transitions_->size() >= kMaxTransitions) return nullptr;
+    if (transition_size(accessor_transitions_, accessor_transitions_is_single_) >= kMaxTransitions) return nullptr;
     const std::string* ikey = intern(key);
     auto child = std::unique_ptr<Shape>(new Shape(this, ikey, slot_count_, /*is_accessor=*/true));
-    if (!accessor_transitions_) accessor_transitions_ = std::make_unique<TransitionMap>();
-    return accessor_transitions_->insert(ikey, std::move(child));
+    auto [result, new_is_single] = transition_insert(accessor_transitions_, accessor_transitions_is_single_, ikey, std::move(child));
+    accessor_transitions_is_single_ = new_is_single;
+    return result;
 }
 
 int32_t Shape::find_slot(const std::string& key) const {

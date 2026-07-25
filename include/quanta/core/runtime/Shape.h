@@ -107,9 +107,16 @@ private:
     Shape* parent_ = nullptr;
     const std::string* added_key_ = nullptr;
     uint32_t slot_count_ = 0;
-    // True if THIS shape's own link (added_key_) reserved two slots (getter
-    // then setter) instead of one -- see transition_accessor().
-    bool is_accessor_added_ = false;
+    // Packed into one byte (bit-fields, zero extra storage over a single
+    // bool -- verified via mirror struct). True if THIS shape's own link
+    // (added_key_) reserved two slots (getter then setter) instead of one
+    // -- see transition_accessor().
+    bool is_accessor_added_ : 1 = false;
+    // Discriminants for transitions_/accessor_transitions_ below: true
+    // means the field points to a SingleTransition, false means it's
+    // either null or a TransitionMap*. See those fields' own doc comment.
+    bool transitions_is_single_ : 1 = false;
+    bool accessor_transitions_is_single_ : 1 = false;
 
     // Slot table (key -> flattened slot index), same inline+overflow idiom
     // as HybridDescriptorMap (Object.h). No migration/erase needed --
@@ -231,15 +238,37 @@ private:
             return raw;
         }
     };
+
+    // The 0/1/many split below (same idea V8/JSC/SpiderMonkey use for their
+    // own transition tables) exists because most shape nodes have exactly
+    // one child, or none -- paying for TransitionMap's 8-wide inline array
+    // (200 bytes) on the first child regardless is wasteful when the
+    // common case needs only 16.
+    struct SingleTransition { const std::string* key = nullptr; std::unique_ptr<Shape> child; };
+
+    // Reads-by-value against `table`'s current state (null / single /
+    // TransitionMap*, discriminated by `is_single`) -- never interns, same
+    // hot-path-safety rule as TransitionMap::find() above.
+    static Shape* transition_find(void* table, bool is_single, const std::string& key);
+    static size_t transition_size(void* table, bool is_single);
+    // `key` must already be interned. Promotes null->single->TransitionMap
+    // as needed, updating `table` in place; returns the new child and the
+    // new is_single state (the caller's is_single field is a bit-field, so
+    // it can't be passed by reference -- assign the second element back).
+    static std::pair<Shape*, bool> transition_insert(void*& table, bool is_single,
+                                                       const std::string* key, std::unique_ptr<Shape> child);
+
     // Lazy: null until this shape's first child (most shapes -- the "fully
     // built object" terminal ones -- never get one). transition()/
     // transition_accessor() allocate on their own cache-miss path;
     // find_slot() never touches these at all, so this costs the get/set
-    // hot path nothing either way.
-    std::unique_ptr<TransitionMap> transitions_;
+    // hot path nothing either way. Tagged by transitions_is_single_/
+    // accessor_transitions_is_single_ above: either a SingleTransition* or
+    // a TransitionMap*, see transition_find/transition_insert.
+    void* transitions_ = nullptr;
     // Separate memoization tree for transition_accessor() -- see its own
     // doc comment for why this must not share transitions_.
-    std::unique_ptr<TransitionMap> accessor_transitions_;
+    void* accessor_transitions_ = nullptr;
 };
 
 }
