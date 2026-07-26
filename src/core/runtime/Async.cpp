@@ -440,106 +440,6 @@ void AsyncFunction::trace(Visitor& v) {
 }
 
 
-AsyncAwaitExpression::AsyncAwaitExpression(std::unique_ptr<ASTNode> expression)
-    : expression_(std::move(expression)) {
-}
-
-Value AsyncAwaitExpression::evaluate(Context& ctx) {
-    AsyncExecutor* exec = AsyncExecutor::get_current();
-
-    if (exec && exec->fiber_->co) {
-        // Fiber-based path: no replay, just suspend/resume
-
-        Value expr_val = expression_ ? expression_->evaluate(ctx) : Value();
-        if (ctx.has_exception()) return Value();
-
-        Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
-
-
-        // Now resolve awaited value / register pending callbacks
-        Value settled_val;
-        bool settled_throw = false;
-        bool is_pending = false;
-
-        if (AsyncUtils::is_promise(expr_val)) {
-            Promise* p = static_cast<Promise*>(expr_val.as_object());
-            if (p->get_state() == PromiseState::FULFILLED) {
-                settled_val = p->get_value();
-            } else if (p->get_state() == PromiseState::REJECTED) {
-                settled_val = p->get_value();
-                settled_throw = true;
-            } else {
-                is_pending = true;
-                auto self = exec->shared_from_this();
-
-                auto on_fulfill = ObjectFactory::create_native_function("",
-                    [self, gctx](Context&, const std::vector<Value>& args) -> Value {
-                        Value val = args.empty() ? Value() : args[0];
-                        self->resume(val, false);
-                        return Value();
-                    });
-                auto on_reject = ObjectFactory::create_native_function("",
-                    [self, gctx](Context&, const std::vector<Value>& args) -> Value {
-                        Value reason = args.empty() ? Value() : args[0];
-                        self->resume(reason, true);
-                        return Value();
-                    });
-
-                p->then(on_fulfill.release(), on_reject.release());
-            }
-        } else {
-            settled_val = expr_val;
-        }
-
-        if (!is_pending) {
-            auto self = exec->shared_from_this();
-            Value val = settled_val;
-            bool thr = settled_throw;
-            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); }, {val});
-        }
-
-        // Suspend fiber -- return control to the microtask runner
-        mco_yield(exec->fiber_->co);
-
-        // Resumed by resume() -- await_result_ holds the settled value
-        if (exec->await_is_throw_) {
-            ctx.throw_exception(exec->await_result_, true);
-            exec->await_is_throw_ = false;
-            exec->await_result_ = Value();
-            return Value();
-        }
-        Value result = exec->await_result_;
-        exec->await_result_ = Value();
-        return result;
-    }
-
-    // Fallback: no executor (e.g., top-level await outside async fn)
-    if (!expression_) return Value();
-    Value awaited_value = expression_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
-    if (!is_awaitable(awaited_value)) return awaited_value;
-
-    auto promise = to_promise(awaited_value, ctx);
-    if (!promise) return awaited_value;
-
-    if (promise->get_state() == PromiseState::FULFILLED) {
-        return promise->get_value();
-    } else if (promise->get_state() == PromiseState::REJECTED) {
-        ctx.throw_exception(promise->get_value(), true);
-        return Value();
-    }
-    return Value();
-}
-
-bool AsyncAwaitExpression::is_awaitable(const Value& value) {
-    return AsyncUtils::is_promise(value) || AsyncUtils::is_thenable(value);
-}
-
-std::unique_ptr<Promise> AsyncAwaitExpression::to_promise(const Value& value, Context& ctx) {
-    return AsyncUtils::to_promise(value, ctx);
-}
-
-
 thread_local Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
 thread_local Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
 thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
@@ -815,10 +715,6 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::throw_exception(const Value
     auto promise_obj = ObjectFactory::create_promise(promise_ctx);
     auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
     return enqueue_request(Request::Type::Throw, exception, std::move(promise));
-}
-
-Value AsyncGenerator::get_async_iterator() {
-    return Value(this);
 }
 
 void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {

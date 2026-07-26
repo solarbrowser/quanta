@@ -120,8 +120,6 @@ public:
 
     Context* get_context() const { return generator_context_; }
 
-    Value get_iterator();
-    
     static Value generator_next(Context& ctx, const std::vector<Value>& args);
     static Value generator_return(Context& ctx, const std::vector<Value>& args);
     static Value generator_throw(Context& ctx, const std::vector<Value>& args);

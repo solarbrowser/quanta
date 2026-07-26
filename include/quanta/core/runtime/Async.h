@@ -99,21 +99,6 @@ public:
 };
 
 
-class AsyncAwaitExpression {
-private:
-    std::unique_ptr<ASTNode> expression_;
-    
-public:
-    AsyncAwaitExpression(std::unique_ptr<ASTNode> expression);
-    
-    Value evaluate(Context& ctx);
-    
-    static bool is_awaitable(const Value& value);
-    
-    static std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx);
-};
-
-
 class AsyncGenerator : public CustomObjectBase {
 public:
     enum class State : uint8_t {
@@ -199,8 +184,6 @@ public:
 
     // Resume fiber after an `await` inside the generator settled
     void resume_from_await(Value result, bool is_throw = false);
-
-    Value get_async_iterator();
 
     State get_state() const { return state_; }
     bool is_done() const { return state_ == State::Completed; }

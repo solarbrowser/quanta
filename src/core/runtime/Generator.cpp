@@ -227,10 +227,6 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     return GeneratorResult(yielded_value_, false);
 }
 
-Value Generator::get_iterator() {
-    return Value(this);
-}
-
 void Generator::complete_generator(const Value& value) {
     (void)value;
     state_ = State::Completed;
