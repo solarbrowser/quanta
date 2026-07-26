@@ -8,6 +8,7 @@
 
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
+#include <cstdint>
 #include <memory>
 #include <vector>
 #include <functional>
@@ -42,7 +43,7 @@ public:
  */
 class Generator : public CustomObjectBase {
 public:
-    enum class State {
+    enum class State : uint8_t {
         SuspendedStart,
         SuspendedYield,
         Executing,
@@ -76,11 +77,15 @@ private:
     // Non-owning: points into generator_function_'s own body, kept alive by
     // trace() visiting generator_function_.
     ASTNode* body_;
-    State state_;
 
     // Fiber-based (stackful coroutine) implementation
     static constexpr size_t STACK_SIZE = 512 * 1024;
 public:
+    State state_;
+    bool yield_raw_result_ = false; // if true, return yielded_result_ as-is
+    bool throwing_ = false;
+    bool returning_ = false;
+
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
 private:
     static thread_local Generator* current_generator_;
@@ -93,12 +98,9 @@ public:
     // Accessible from YieldExpression
     Value yielded_value_;
     Value yielded_result_; // for yield*: full inner result object (may have undefined done)
-    bool yield_raw_result_ = false; // if true, return yielded_result_ as-is
     Value sent_value_;
     Value throw_value_;
     Value return_argument_;
-    bool throwing_ = false;
-    bool returning_ = false;
     Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx = nullptr);
     void trace(Visitor& v);
     // Non-virtual: the GC sweep (Collector.cpp) reads get_custom_kind() and
@@ -114,10 +116,7 @@ public:
     bool is_done() const { return state_ == State::Completed; }
 
     Context* outer_context_ = nullptr;
-    // Legacy fields needed by YieldExpression (kept for compatibility, fiber supersedes replay)
     size_t target_yield_index_ = 0;
-    Value last_value_;
-    std::vector<Value> sent_values_;
 
     Context* get_context() const { return generator_context_; }
 
@@ -142,9 +141,6 @@ public:
     static thread_local Object* s_generator_function_prototype_;
     
 private:
-    GeneratorResult execute_until_yield(const Value& sent_value);
-    GeneratorResult execute_until_yield_throw(const Value& exception);
-    GeneratorResult execute_until_yield_return(const Value& value);
     void complete_generator(const Value& value);
 };
 

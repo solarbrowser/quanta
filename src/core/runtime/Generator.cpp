@@ -20,6 +20,12 @@
 
 namespace Quanta {
 
+#if defined(__GLIBCXX__)
+static_assert(sizeof(Generator) == 128);
+#else
+static_assert(sizeof(Generator) <= 192);
+#endif
+
 void Generator::trace(Visitor& v) {
     Object::trace_default(v);
     v.visit_object(generator_function_);
@@ -30,8 +36,6 @@ void Generator::trace(Visitor& v) {
     v.visit(sent_value_);
     v.visit(throw_value_);
     v.visit(return_argument_);
-    v.visit(last_value_);
-    for (const auto& val : sent_values_) v.visit(val);
 }
 
 
@@ -227,143 +231,9 @@ Value Generator::get_iterator() {
     return Value(this);
 }
 
-Generator::GeneratorResult Generator::execute_until_yield(const Value& sent_value) {
-    if (!body_) {
-        complete_generator(Value());
-        return GeneratorResult(Value(), true);
-    }
-
-    try {
-        last_value_ = sent_value;
-
-        size_t store_idx = target_yield_index_;
-        if (store_idx >= sent_values_.size()) {
-            sent_values_.resize(store_idx + 1);
-        }
-        sent_values_[store_idx] = sent_value;
-
-        set_current_generator(this);
-        reset_yield_counter();
-        target_yield_index_++;
-
-        Value result = body_->evaluate(*generator_context_);
-
-        set_current_generator(nullptr);
-        if (generator_context_->has_exception()) {
-            Value exc = generator_context_->get_exception();
-            generator_context_->clear_exception();
-            complete_generator(Value());
-            return GeneratorResult::make_exception(exc);
-        }
-        complete_generator(result);
-        return GeneratorResult(result, true);
-
-    } catch (const YieldException& yield_ex) {
-        set_current_generator(nullptr);
-        state_ = State::SuspendedYield;
-        return GeneratorResult(yield_ex.yielded_value, false);
-
-    } catch (const std::exception& e) {
-        set_current_generator(nullptr);
-        complete_generator(Value());
-        return GeneratorResult::make_exception(Value(std::string(e.what())));
-    }
-}
-
-Generator::GeneratorResult Generator::execute_until_yield_throw(const Value& exception) {
-    if (!body_) {
-        complete_generator(Value());
-        generator_context_->throw_exception(exception);
-        return GeneratorResult(Value(), true);
-    }
-
-    try {
-        throwing_ = true;
-        throw_value_ = exception;
-
-        // Clear any stale exception on the generator context
-        generator_context_->clear_exception();
-
-        set_current_generator(this);
-        reset_yield_counter();
-        // Do NOT increment target_yield_index_ - throw at the current suspended yield
-
-        Value result = body_->evaluate(*generator_context_);
-
-        set_current_generator(nullptr);
-        throwing_ = false;
-        if (generator_context_->has_exception()) {
-            Value exc = generator_context_->get_exception();
-            generator_context_->clear_exception();
-            complete_generator(Value());
-            return GeneratorResult::make_exception(exc);
-        }
-        complete_generator(result);
-
-        return GeneratorResult(result, true);
-
-    } catch (const YieldException& yield_ex) {
-        set_current_generator(nullptr);
-        throwing_ = false;
-        state_ = State::SuspendedYield;
-        return GeneratorResult(yield_ex.yielded_value, false);
-
-    } catch (const std::exception& e) {
-        set_current_generator(nullptr);
-        throwing_ = false;
-        complete_generator(Value());
-        return GeneratorResult::make_exception(Value(std::string(e.what())));
-    }
-}
-
-Generator::GeneratorResult Generator::execute_until_yield_return(const Value& value) {
-    if (!body_) {
-        complete_generator(value);
-        return GeneratorResult(value, true);
-    }
-
-    // If the generator is already suspended after yielding, completing it via return()
-    // should NOT re-run the body (the replay mechanism would re-execute pre-yield code).
-    // Per spec, return() causes a return completion at the current suspension point.
-    if (state_ == State::SuspendedYield && target_yield_index_ > 0) {
-        complete_generator(value);
-        return GeneratorResult(value, true);
-    }
-
-    try {
-        returning_ = true;
-        return_argument_ = value;
-
-        generator_context_->clear_exception();
-
-        set_current_generator(this);
-        reset_yield_counter();
-
-        body_->evaluate(*generator_context_);
-
-        set_current_generator(nullptr);
-        returning_ = false;
-        complete_generator(value);
-        return GeneratorResult(value, true);
-
-    } catch (const YieldException&) {
-        set_current_generator(nullptr);
-        returning_ = false;
-        complete_generator(value);
-        return GeneratorResult(value, true);
-
-    } catch (const std::exception& e) {
-        set_current_generator(nullptr);
-        returning_ = false;
-        complete_generator(Value());
-        generator_context_->throw_exception(Value(std::string(e.what())));
-        return GeneratorResult(Value(), true);
-    }
-}
-
 void Generator::complete_generator(const Value& value) {
+    (void)value;
     state_ = State::Completed;
-    last_value_ = value;
 }
 
 Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {
