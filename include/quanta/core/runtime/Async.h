@@ -12,7 +12,6 @@
 #include <memory>
 #include <functional>
 #include <vector>
-#include <deque>
 #include <queue>
 #include <unordered_set>
 #include <unordered_map>
@@ -117,7 +116,7 @@ public:
 
 class AsyncGenerator : public CustomObjectBase {
 public:
-    enum class State {
+    enum class State : uint8_t {
         SuspendedStart,
         Executing,
         SuspendedYield,
@@ -136,42 +135,42 @@ public:
     // Two reasons the fiber can suspend:
     // Yield  → body yielded a value; fulfill the pending promise
     // Await  → body hit an `await`; wait for the awaited promise to settle
-    enum class SuspendReason { Yield, Await, Done };
+    enum class SuspendReason : uint8_t { Yield, Await, Done };
 
 private:
     std::unique_ptr<Context> context_owned_;
-    Context* generator_context_;
     Context* outer_context_;
 
 public:
-    Context* get_generator_context() const { return generator_context_; }
+    Context* get_generator_context() const { return context_owned_.get(); }
     Context* get_outer_context() const { return outer_context_; }
     // Non-owning: points into owner_fn_'s own body, kept reachable by
     // trace() visiting owner_fn_.
     ASTNode* body_;
     AsyncGeneratorFunction* owner_fn_ = nullptr;
+
     State state_;
+    SuspendReason suspend_reason_ = SuspendReason::Done;
+    bool  has_exception_ = false;
+    bool  throwing_    = false;  // throw the sent_value_ into generator
+    bool  returning_   = false;  // return(sent_value_)
+    bool  await_is_throw_ = false;
 
     // Fiber infrastructure
     static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
 
     // Yield protocol (written by fiber, read by caller after suspend)
-    SuspendReason suspend_reason_ = SuspendReason::Done;
     Value yield_value_;        // value from `yield expr`
     Value return_value_;       // final return value
-    bool  has_exception_ = false;
     Value exception_value_;
 
     // next()/throw()/return() input (written by caller, read by fiber after resume)
     Value sent_value_;
-    bool  throwing_    = false;  // throw the sent_value_ into generator
-    bool  returning_   = false;  // return(sent_value_) -- close generator
     Value return_arg_;
 
     // Await protocol (internal -- fiber suspends/resumes transparently)
     Value await_result_;
-    bool  await_is_throw_ = false;
 
     // The promise belonging to the currently-in-flight next()/return()/throw() call
     Promise* pending_promise_ = nullptr;
@@ -184,7 +183,7 @@ public:
         Value value;
         Promise* promise;
     };
-    std::deque<Request> request_queue_;
+    std::vector<Request> request_queue_;
 
 public:
     AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body, AsyncGeneratorFunction* owner_fn,

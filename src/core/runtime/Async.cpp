@@ -28,9 +28,15 @@
 
 namespace Quanta {
 
+#if defined(__GLIBCXX__)
+static_assert(sizeof(AsyncGenerator) == 160);
+#else
+static_assert(sizeof(AsyncGenerator) <= 256);
+#endif
+
 void AsyncGenerator::trace(Visitor& v) {
     Object::trace_default(v);
-    v.visit_context(generator_context_);
+    v.visit_context(get_generator_context());
     v.visit_context(outer_context_);
     v.visit(yield_value_);
     v.visit(return_value_);
@@ -541,7 +547,6 @@ thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body,
                                AsyncGeneratorFunction* owner_fn, Context* outer_ctx)
     : CustomObjectBase(ObjectType::Custom), context_owned_(std::move(ctx)),
-      generator_context_(context_owned_.get()),
       outer_context_(outer_ctx),
       body_(body), owner_fn_(owner_fn), state_(State::SuspendedStart) {
     set_custom_kind(CustomKind::AsyncGenerator);
@@ -569,7 +574,7 @@ AsyncGenerator::~AsyncGenerator() {
 void AsyncGenerator::fiber_entry(mco_coro* co) {
     auto* self = static_cast<AsyncGenerator*>(mco_get_user_data(co));
 
-    Context* ctx = self->generator_context_;
+    Context* ctx = self->get_generator_context();
     try {
         if (self->body_) {
             // Same VM-or-treewalk split as Generator::run_body.
@@ -671,7 +676,7 @@ void AsyncGenerator::handle_suspension() {
 
 void AsyncGenerator::advance_queue() {
     if (!request_queue_.empty()) {
-        request_queue_.pop_front();
+        request_queue_.erase(request_queue_.begin());
     }
     pending_promise_ = nullptr;
     process_next_request();
@@ -698,7 +703,7 @@ void AsyncGenerator::process_next_request() {
                 // AsyncGeneratorAwaitReturn: PromiseResolve(%Promise%, value) unwraps a
                 // promise-valued completion; its "constructor" lookup can throw.
                 if (AsyncUtils::is_promise(front.value)) {
-                    Context* cctx = outer_context_ ? outer_context_ : generator_context_;
+                    Context* cctx = outer_context_ ? outer_context_ : get_generator_context();
                     Context* prev_cc = Object::current_context_;
                     Object::current_context_ = cctx;
                     front.value.as_object()->get_property("constructor");
@@ -753,7 +758,7 @@ void AsyncGenerator::process_next_request() {
                 break;
             }
         }
-        request_queue_.pop_front();
+        request_queue_.erase(request_queue_.begin());
         process_next_request();
         return;
     }
@@ -792,21 +797,21 @@ void AsyncGenerator::resume_from_await(Value result, bool is_throw) {
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
-    Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
+    Context* promise_ctx = outer_context_ ? outer_context_ : get_generator_context();
     auto promise_obj = ObjectFactory::create_promise(promise_ctx);
     auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
     return enqueue_request(Request::Type::Next, value, std::move(promise));
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::return_value(const Value& value) {
-    Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
+    Context* promise_ctx = outer_context_ ? outer_context_ : get_generator_context();
     auto promise_obj = ObjectFactory::create_promise(promise_ctx);
     auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
     return enqueue_request(Request::Type::Return, value, std::move(promise));
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::throw_exception(const Value& exception) {
-    Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
+    Context* promise_ctx = outer_context_ ? outer_context_ : get_generator_context();
     auto promise_obj = ObjectFactory::create_promise(promise_ctx);
     auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
     return enqueue_request(Request::Type::Throw, exception, std::move(promise));
