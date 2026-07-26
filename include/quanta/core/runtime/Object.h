@@ -103,6 +103,20 @@ private:
     static thread_local uint64_t descriptor_epoch_;
 public:
     static uint64_t descriptor_epoch() { return descriptor_epoch_; }
+
+    // Same idea as the epochs above but one-way: a "protector" for array
+    // spread's fast path. True while nothing has redefined how arrays
+    // iterate, which lets a plain Array be bulk-copied instead of driven
+    // through the iterator protocol (an iterator object plus a result object
+    // and a next() call per element). See Object.cpp for what clears it.
+    static bool array_iterator_protector_intact();
+    // Registered once by Iterator's setup so a later write to
+    // %ArrayIteratorPrototype%.next can be recognised as invalidating.
+    static void watch_array_iterator_prototype(Object* proto);
+    // Called once after the intrinsics are installed: their own @@iterator
+    // definitions would otherwise leave the protector permanently cleared
+    // before any user code has run.
+    static void arm_array_iterator_protector();
 private:
     static void bump_descriptor_epoch() { ++descriptor_epoch_; }
 
@@ -1039,7 +1053,17 @@ public:
     void assign_decl_site_name(const std::string& name) {
         if (!executable_) return;
         if (executable_->name.empty()) { executable_->name = name; return; }
-        if (executable_->name == name) return;
+        if (executable_->name == name) {
+            // Agrees with the shared decl-site value, so drop any override --
+            // a later instantiation of a literal in NamedEvaluation position
+            // is constructed anonymously and records an empty-string override
+            // here, which would otherwise keep shadowing the shared name.
+            if (auto* d = instance_data()) {
+                d->overrides.name.clear();
+                d->overrides.has_name = false;
+            }
+            return;
+        }
         auto& overrides = ensure_instance_data().overrides;
         overrides.name = name;
         overrides.has_name = true;

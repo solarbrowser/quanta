@@ -29,6 +29,11 @@
 #endif
 
 namespace Quanta {
+
+// Defined in the tree-walker's call.cpp: one shared definition of what a
+// spread expands to, so Op::SpreadInto and the tree-walker cannot drift.
+void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& out);
+
 namespace VM {
 
 bool enabled() {
@@ -1654,6 +1659,14 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
+            case Op::EvalAst: {
+                uint16_t idx = read_u16(code, pc);
+                pc += 2;
+                acc = const_cast<ASTNode*>((*chunk.treewalk_nodes)[idx])->evaluate(ctx);
+                CHECK_EXC();
+                break;
+            }
+
             case Op::DestructureBind: {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
@@ -1734,6 +1747,79 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 }
                 CHECK_EXC();
                 Collector::safepoint();
+                break;
+            }
+
+            case Op::CallSpread: {
+                uint8_t func_reg = code[pc];
+                uint8_t this_reg = code[pc + 1];
+                uint8_t args_reg = code[pc + 2];
+                uint16_t name_idx = read_u16(code, pc + 3);
+                pc += 5;
+                const Value& callee = regs[func_reg];
+                // The operand is a spread SOURCE, not necessarily a
+                // materialized argument array: a call whose whole argument
+                // list is one spread (`f(...xs)`, the common shape) hands the
+                // original iterable straight through, so nothing is
+                // allocated. Mixed lists still arrive as a prebuilt Array,
+                // which append_spread_values bulk-copies.
+                std::vector<Value> call_args;
+                ValueVectorRoot call_args_root(&call_args);
+                append_spread_values(ctx, regs[args_reg], call_args);
+                CHECK_EXC();
+                if (callee.is_function()) {
+                    acc = callee.as_function()->call(ctx, call_args, regs[this_reg]);
+                } else if (callee.is_object() &&
+                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
+                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(call_args, regs[this_reg]);
+                } else {
+                    ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
+                }
+                CHECK_EXC();
+                Collector::safepoint();
+                break;
+            }
+
+            case Op::ConstructSpread: {
+                uint8_t callee_reg = code[pc];
+                uint8_t args_reg = code[pc + 1];
+                uint16_t name_idx = read_u16(code, pc + 2);
+                pc += 4;
+                const Value& callee = regs[callee_reg];
+                std::vector<Value> call_args;   // see CallSpread: a spread source, not always an array
+                ValueVectorRoot call_args_root(&call_args);
+                append_spread_values(ctx, regs[args_reg], call_args);
+                CHECK_EXC();
+                if (callee.is_function()) {
+                    Value old_new_target = ctx.get_new_target();
+                    ctx.set_new_target(callee);
+                    acc = callee.as_function()->construct(ctx, call_args);
+                    ctx.set_new_target(old_new_target);
+                } else if (callee.is_object() &&
+                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
+                    acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
+                } else {
+                    ctx.throw_type_error(chunk.names[name_idx] + " is not a constructor");
+                }
+                CHECK_EXC();
+                Collector::safepoint();
+                break;
+            }
+
+            case Op::SpreadInto: {
+                uint8_t arr_reg = code[pc];
+                uint8_t idx_reg = code[pc + 1];
+                pc += 2;
+                std::vector<Value> expanded;
+                ValueVectorRoot expanded_root(&expanded);
+                append_spread_values(ctx, acc, expanded);
+                CHECK_EXC();
+                if (Object* target = as_object_like(regs[arr_reg])) {
+                    uint32_t idx = static_cast<uint32_t>(regs[idx_reg].to_number());
+                    for (const Value& v : expanded) target->set_element(idx++, v);
+                    regs[idx_reg] = Value(static_cast<double>(idx));
+                }
+                CHECK_EXC();
                 break;
             }
 

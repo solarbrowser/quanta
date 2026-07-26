@@ -976,7 +976,38 @@ static bool array_set_length_coerce(Context* ctx, const Value& value, double& ou
     return true;
 }
 
+namespace {
+// "Protector" cell, V8's term for a one-way validity flag guarding a fast
+// path that a rarely-used mutation would invalidate. Here: array spread may
+// bulk-copy a plain Array (skipping the iterator protocol, which costs an
+// iterator object plus a result object and a next() call PER ELEMENT) only
+// while nothing has redefined how arrays iterate. Cleared forever the first
+// time anything writes an @@iterator anywhere (covering both
+// Array.prototype and per-instance shadowing) or patches
+// %ArrayIteratorPrototype%.next. Real code never does either, so the fast
+// path effectively always holds; when it does not, correctness wins.
+thread_local bool g_array_iterator_intact = true;
+thread_local Object* g_array_iterator_prototype = nullptr;
+
+// Both checks lead with a length test so the common case costs a compare.
+inline void note_protector_write(const Object* target, const std::string& key) {
+    if (!g_array_iterator_intact) return;
+    if (key.size() == 15 && key[0] == 'S' && key == "Symbol.iterator") {
+        g_array_iterator_intact = false;
+        return;
+    }
+    if (key.size() == 4 && key[0] == 'n' && target == g_array_iterator_prototype && key == "next") {
+        g_array_iterator_intact = false;
+    }
+}
+}  // namespace
+
+bool Object::array_iterator_protector_intact() { return g_array_iterator_intact; }
+void Object::watch_array_iterator_prototype(Object* proto) { g_array_iterator_prototype = proto; }
+void Object::arm_array_iterator_protector() { g_array_iterator_intact = true; }
+
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    note_protector_write(this, key);
     switch (get_type()) {
         case ObjectType::Function: return static_cast<Function*>(this)->set_property(key, value, attrs);
         case ObjectType::TypedArray: return static_cast<TypedArrayBase*>(this)->set_property(key, value, attrs);
@@ -1690,6 +1721,7 @@ PropertyDescriptor Object::get_property_descriptor_default(const std::string& ke
 }
 
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    note_protector_write(this, key);   // defineProperty reaches the same slots
     switch (get_type()) {
         case ObjectType::Function: return static_cast<Function*>(this)->set_property_descriptor(key, desc);
         case ObjectType::TypedArray: return static_cast<TypedArrayBase*>(this)->set_property_descriptor(key, desc);

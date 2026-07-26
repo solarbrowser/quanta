@@ -10,9 +10,9 @@
 
 namespace Quanta {
 
-// 176 in-struct, but no per-executable registry allocation at all -- the
-// unordered_set this replaced cost ~33 more bytes per executable in node and
-// bucket storage, so the real per-executable total went down, not up.
+// Bigger in-struct than a hash-set registry would need, but with no
+// per-executable allocation at all: the intrusive links below cost less than
+// a set node plus its share of the bucket array.
 #if defined(__GLIBCXX__)
 static_assert(sizeof(FunctionExecutable) == 176);
 #else

@@ -219,6 +219,9 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     }
     install_next(arr_iter_proto.get());
     s_array_iterator_prototype_ = arr_iter_proto.get();
+    // Registered AFTER install_next so setting up `next` here doesn't itself
+    // trip the array-spread protector (see Object::array_iterator_protector_intact).
+    Object::watch_array_iterator_prototype(arr_iter_proto.get());
     ctx.create_binding("@@ArrayIteratorPrototype", Value(arr_iter_proto.release()));
 
     // %StringIteratorPrototype%

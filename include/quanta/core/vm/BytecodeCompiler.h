@@ -128,6 +128,16 @@ private:
     bool member_is_supported(const class MemberExpression* mem) const;
     bool emit_treewalker_delegate(const ASTNode* node);
 
+    // Builds a fresh Array from `elements`, expanding any SpreadElement
+    // through the iterator protocol, and leaves it in the returned temp
+    // register (caller frees it). Used by array literals and by the
+    // spread forms of call/new, which all need the same "flatten an element
+    // list whose length is only known at runtime" primitive. Returns -1 if
+    // the list cannot be compiled; holes are rejected alongside spread
+    // (a trailing hole's contribution to `length` cannot be expressed once
+    // the index is dynamic).
+    int emit_spread_array(const std::vector<std::unique_ptr<ASTNode>>& elements);
+
     int setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extra_vars, const ASTNode* body,
                        bool force_own_env = false,
                        const std::vector<const ASTNode*>& extra_capture_roots = {});

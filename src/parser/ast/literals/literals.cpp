@@ -18,6 +18,10 @@
 
 namespace Quanta {
 
+// Defined in call.cpp: the single definition of what a spread expands to,
+// shared with the tree-walker's argument marshalling and the VM's Op::SpreadInto.
+void append_spread_values(Context&, const Value&, std::vector<Value>&);
+
 static std::string literal_to_property_key(Context& ctx, const Value& val) {
     if (val.is_symbol()) return val.as_symbol()->to_property_key();
     if (!val.is_object() && !val.is_function()) return val.to_string();
@@ -319,68 +323,11 @@ Value ArrayLiteral::evaluate(Context& ctx) {
         if (element->get_type() == Type::SPREAD_ELEMENT) {
             Value spread_value = element->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-
-            if (spread_value.is_object() || spread_value.is_function()) {
-                Object* spread_obj = spread_value.is_function()
-                    ? static_cast<Object*>(spread_value.as_function())
-                    : spread_value.as_object();
-                bool used_iterator = false;
-                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                if (iter_sym && !spread_obj->is_array()) {
-                    Value iter_method = spread_obj->get_property(iter_sym->to_property_key());
-                    if (ctx.has_exception()) return Value();
-                    if (!iter_method.is_undefined()) {
-                        if (!iter_method.is_null() && !iter_method.is_function()) {
-                            ctx.throw_type_error("Symbol.iterator is not callable");
-                            return Value();
-                        }
-                        if (iter_method.is_null()) {
-                            ctx.throw_type_error("Symbol.iterator is not a function");
-                            return Value();
-                        }
-                        Value iter_obj = iter_method.as_function()->call(ctx, {}, spread_value);
-                        if (ctx.has_exception()) return Value();
-                        if (!iter_obj.is_object()) {
-                            ctx.throw_type_error("Symbol.iterator must return an Object");
-                            return Value();
-                        }
-                        Value next_fn = iter_obj.as_object()->get_property("next");
-                        if (next_fn.is_function()) {
-                            used_iterator = true;
-                            for (;;) {
-                                Collector::safepoint();
-                                Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                if (ctx.has_exception()) return Value();
-                                if (!res.is_object()) break;
-                                if (res.as_object()->get_property("done").to_boolean()) break;
-                                array->set_element(array_index++, res.as_object()->get_property("value"));
-                            }
-                        }
-                    }
-                }
-                if (!used_iterator) {
-                    uint32_t spread_length = spread_obj->get_length();
-                    for (uint32_t j = 0; j < spread_length; ++j) {
-                        Value item = spread_obj->get_element(j);
-                        array->set_element(array_index++, item);
-                    }
-                }
-            } else if (spread_value.is_string()) {
-                const std::string& str = spread_value.as_string()->str();
-                size_t i = 0;
-                while (i < str.size()) {
-                    unsigned char c = str[i];
-                    size_t char_len = 1;
-                    if (c >= 0xF0) char_len = 4;
-                    else if (c >= 0xE0) char_len = 3;
-                    else if (c >= 0xC0) char_len = 2;
-                    std::string ch = str.substr(i, char_len);
-                    array->set_element(array_index++, Value(ch));
-                    i += char_len;
-                }
-            } else {
-                array->set_element(array_index++, spread_value);
-            }
+            std::vector<Value> expanded;
+            ValueVectorRoot expanded_root(&expanded);
+            append_spread_values(ctx, spread_value, expanded);
+            if (ctx.has_exception()) return Value();
+            for (const Value& v : expanded) array->set_element(array_index++, v);
         } else if (element->get_type() == Type::UNDEFINED_LITERAL) {
             array_index++;
         } else {

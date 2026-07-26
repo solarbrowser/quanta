@@ -10,8 +10,12 @@
 
 namespace Quanta {
 
+// closures and treewalk_nodes are deliberately two vectors, not one: they
+// will hold different types once closures carries a prebuilt
+// FunctionExecutable, and treewalk_nodes goes away entirely once the
+// compiler can emit every construct that currently escapes (Op::EvalAst).
 #if defined(__GLIBCXX__)
-static_assert(sizeof(BytecodeChunk) == 128);
+static_assert(sizeof(BytecodeChunk) == 136);
 #else
 static_assert(sizeof(BytecodeChunk) <= 192);
 #endif
@@ -65,9 +69,11 @@ const OpInfo& op_info(Op op) {
         {"CreateForInKeys", 0, '-'},
         {"JumpIfNotNullish", 2, 'o'}, {"JumpIfNullish", 2, 'o'}, {"JumpIfNotUndefined", 2, 'o'},
         {"CreateClosure", 2, 'z'},
+        {"EvalAst", 2, 'z'},
         {"DestructureBind", 2, 'z'},
         {"CreateRestArray", 1, 'r'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
+        {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'},
         {"GetNamed", 5, 'g'}, {"SetNamed", 5, 'g'},
         {"GetPrivate", 5, 'g'}, {"SetPrivate", 5, 'g'},
         {"GetKeyed", 3, 'f'}, {"SetKeyed", 4, 'x'},
@@ -148,6 +154,23 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " this=r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " args=r" << static_cast<int>(chunk.code[operand_pc + 2])
                     << " argc=" << static_cast<int>(chunk.code[operand_pc + 3])
+                    << " '" << chunk.names[name_idx] << "'";
+                break;
+            }
+            case 'w': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
+                out << " func=r" << static_cast<int>(chunk.code[operand_pc])
+                    << " this=r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " args[]=r" << static_cast<int>(chunk.code[operand_pc + 2])
+                    << " '" << chunk.names[name_idx] << "'";
+                break;
+            }
+            case 'W': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " args[]=r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " '" << chunk.names[name_idx] << "'";
                 break;
             }

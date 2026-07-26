@@ -100,13 +100,30 @@ enum class Op : uint8_t {
     JumpIfNullish,    // o
     JumpIfNotUndefined, // o -- default-parameter check (spec: explicit undefined too, not just omitted)
 
-    CreateClosure,   // k -- runs the closure's own tree-walker evaluate()
+    CreateClosure,   // k -- instantiates a function literal (index into
+                     // BytecodeChunk::closures); still runs the literal's own
+                     // tree-walker evaluate() for now
+    EvalAst,         // k -- escape hatch: evaluates an arbitrary AST subtree
+                     // (index into BytecodeChunk::treewalk_nodes) in the
+                     // tree-walker. Every use is a construct the compiler
+                     // cannot emit yet, so the remaining uses measure how far
+                     // the VM still depends on the enclosing function's AST.
     DestructureBind, // k
     CreateRestArray, // r -- acc = Array of args[r..argc), for a `...rest` parameter
 
     Call,         // r_callee r_args_start argc n
     CallResolved, // r_func r_this r_args_start argc n -- func already resolved (spec: before args)
     Construct,    // r_callee r_args_start argc n -- new.target = callee, calls Function::construct
+    // Spread forms: argument count is only known at runtime, so the operand
+    // is a spread SOURCE (the original iterable when the whole list is one
+    // spread, otherwise an Array built by emit_spread_array).
+    CallSpread,      // r_func r_this r_args_src n
+    ConstructSpread, // r_callee r_args_src n
+    // Appends everything acc spreads to onto the array in r_arr from index
+    // r_idx, writing the next free index back. Expands in C++ rather than as
+    // a bytecode loop so a plain Array skips the per-element iterator
+    // protocol entirely.
+    SpreadInto,      // r_arr r_idx
 
     GetNamed,     // r_obj n fb
     SetNamed,     // r_obj n fb
@@ -337,11 +354,27 @@ struct BytecodeChunk {
     // (skipped otherwise -- it dominated call-heavy benchmarks).
     bool needs_arguments = false;
 
-    // Closures/destructuring/try-catch are each independently rare (a chunk
-    // can have any one without the others), so unlike IcFeedback these stay
-    // 3 separate lazy pointers rather than one bundle.
-    std::unique_ptr<std::vector<const ASTNode*>> closures; // raw pointers into the owning Function's own body_
+    // Closures/tree-walk escapes/destructuring/try-catch are each
+    // independently rare (a chunk can have any one without the others), so
+    // unlike IcFeedback these stay separate lazy pointers rather than one
+    // bundle.
+
+    // Function literals only (Op::CreateClosure) -- raw pointers into the
+    // owning Function's own body_. Separate from treewalk_nodes because this
+    // is the permanent case: a literal always needs some per-decl-site
+    // description to instantiate from, so this is where a prebuilt
+    // FunctionExecutable belongs (V8's CreateClosure reads a
+    // SharedFunctionInfo from the constant pool the same way).
+    std::unique_ptr<std::vector<const ASTNode*>> closures;
     std::vector<const ASTNode*>& ensure_closures() { if (!closures) closures = std::make_unique<std::vector<const ASTNode*>>(); return *closures; }
+
+    // Everything the compiler cannot emit and hands back to the tree-walker
+    // (Op::EvalAst): class declarations, regex literals, and subtrees from
+    // emit_treewalker_delegate. Unlike closures above every entry is a gap,
+    // and only once this is always empty (plus destructuring_patterns) can a
+    // VM-compatible function stop keeping its AST alive.
+    std::unique_ptr<std::vector<const ASTNode*>> treewalk_nodes;
+    std::vector<const ASTNode*>& ensure_treewalk_nodes() { if (!treewalk_nodes) treewalk_nodes = std::make_unique<std::vector<const ASTNode*>>(); return *treewalk_nodes; }
 
     struct DestructuringSite { const ASTNode* pattern; bool as_lexical; bool is_const; };
     std::unique_ptr<std::vector<DestructuringSite>> destructuring_patterns;

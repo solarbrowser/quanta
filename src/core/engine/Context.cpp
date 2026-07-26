@@ -726,6 +726,12 @@ void Context::initialize_global_context() {
     }
 
     setup_global_bindings();
+
+    // Standing up the intrinsics necessarily writes @@iterator onto the
+    // Array/Set/Map/String/... prototypes, which is exactly the mutation that
+    // clears the array-spread protector. Arm it here, once everything is in
+    // place, so only genuine user mutations can clear it afterwards.
+    Object::arm_array_iterator_protector();
 }
 
 void Context::initialize_built_ins() {
@@ -789,7 +795,6 @@ void Context::initialize_built_ins() {
     register_arraybuffer_builtins(*this);
     Proxy::setup_proxy(*this);
     Reflect::setup_reflect(*this);
-
 }
 
 

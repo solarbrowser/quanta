@@ -123,14 +123,11 @@ public:
     mutable std::unique_ptr<const BytecodeChunk> suspendable_chunk;
 
 private:
-    // Intrusive doubly-linked list of every live executable, replacing the
-    // thread_local unordered_set this used to be: the set cost ~33 bytes per
-    // executable in node + bucket storage (measured) on top of a malloc per
-    // construction and a hash+erase per destruction, all to serve a registry
-    // that is only ever walked front-to-back by gc_trace_roots(). Two inline
-    // pointers cost 16 bytes and no allocation at all. Doubly linked (not
-    // singly) so unlinking in ~FunctionExecutable stays O(1) -- executables
-    // die in arbitrary order, not LIFO.
+    // Intrusive list of every live executable, walked front-to-back by
+    // gc_trace_roots(). Two inline pointers and no allocation, where a hash
+    // set would cost a node plus a malloc per construction and a hash+erase
+    // per destruction. Doubly linked so unlinking stays O(1): executables die
+    // in arbitrary order, not LIFO.
     static thread_local FunctionExecutable* live_head_;
     FunctionExecutable* live_next_ = nullptr;
     FunctionExecutable* live_prev_ = nullptr;

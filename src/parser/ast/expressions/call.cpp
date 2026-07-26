@@ -41,44 +41,43 @@
 
 namespace Quanta {
 
-std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_ptr<ASTNode>>& arguments, Context& ctx) {
-    std::vector<Value> arg_values;
-    // Already-evaluated args sit in this vector's malloc'd storage while later
-    // args (which may trigger GC) evaluate; keep it reachable meanwhile.
-    ValueVectorRoot arg_root(&arg_values);
-
-    for (const auto& arg : arguments) {
-        if (arg->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
-            SpreadElement* spread = static_cast<SpreadElement*>(arg.get());
-            Value spread_value = spread->get_argument()->evaluate(ctx);
-            if (ctx.has_exception()) return arg_values;
-
+// The single definition of what a spread expands to: call arguments, array
+// literals and the VM's Op::SpreadInto all come through here, so no two can
+// disagree. A plain Array is bulk-copied while the array-iterator protector
+// holds; otherwise the full iterator protocol runs.
+void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& arg_values) {
+    {
             if (spread_value.is_object() || spread_value.is_function()) {
                 Object* spread_obj = spread_value.is_function()
                     ? static_cast<Object*>(spread_value.as_function())
                     : spread_value.as_object();
                 bool used_iterator = false;
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                if (iter_sym && !spread_obj->is_array()) {
+                // A plain Array skips the protocol only while the protector
+                // holds; once anything redefines array iteration (a replaced
+                // Array.prototype[@@iterator], an own @@iterator on an
+                // instance, or a patched %ArrayIteratorPrototype%.next) every
+                // array falls back to the spec path, permanently.
+                if (iter_sym && (!spread_obj->is_array() || !Object::array_iterator_protector_intact())) {
                     Value iter_method = spread_obj->get_property(iter_sym->to_property_key());
-                    if (ctx.has_exception()) return arg_values;
+                    if (ctx.has_exception()) return;
                     if (!iter_method.is_undefined()) {
                         // GetMethod: non-null/undefined non-callable throws TypeError
                         if (!iter_method.is_null() && !iter_method.is_function()) {
                             ctx.throw_type_error("Symbol.iterator is not callable");
-                            return arg_values;
+                            return;
                         }
                         if (iter_method.is_null()) {
                             // null means GetMethod returns undefined, Call(undefined) throws TypeError
                             ctx.throw_type_error("Symbol.iterator is not a function");
-                            return arg_values;
+                            return;
                         }
                         // iter_method is a function -- call it
                         Value iter_obj = iter_method.as_function()->call(ctx, {}, spread_value);
-                        if (ctx.has_exception()) return arg_values;
+                        if (ctx.has_exception()) return;
                         if (!iter_obj.is_object()) {
                             ctx.throw_type_error("Symbol.iterator must return an Object");
-                            return arg_values;
+                            return;
                         }
                         Value next_fn = iter_obj.as_object()->get_property("next");
                         if (next_fn.is_function()) {
@@ -86,7 +85,7 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
                             for (;;) {
                                 Collector::safepoint();
                                 Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                if (ctx.has_exception()) return arg_values;
+                                if (ctx.has_exception()) return;
                                 if (!res.is_object()) break;
                                 if (res.as_object()->get_property("done").to_boolean()) break;
                                 arg_values.push_back(res.as_object()->get_property("value"));
@@ -116,13 +115,28 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
             } else if (!spread_value.is_null() && !spread_value.is_undefined()) {
                 // Non-iterable, non-null: TypeError
                 ctx.throw_type_error("Spread syntax requires an iterable");
-                return arg_values;
+                return;
             } else {
                 // null/undefined in call spread: TypeError (unlike object spread)
                 ctx.throw_type_error("Spread syntax requires an iterable, got " +
                     std::string(spread_value.is_null() ? "null" : "undefined"));
-                return arg_values;
+                return;
             }
+    }
+}
+
+std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_ptr<ASTNode>>& arguments, Context& ctx) {
+    std::vector<Value> arg_values;
+    // Already-evaluated args sit in this vector's malloc'd storage while later
+    // args (which may trigger GC) evaluate; keep it reachable meanwhile.
+    ValueVectorRoot arg_root(&arg_values);
+
+    for (const auto& arg : arguments) {
+        if (arg->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+            Value spread_value = static_cast<SpreadElement*>(arg.get())->get_argument()->evaluate(ctx);
+            if (ctx.has_exception()) return arg_values;
+            append_spread_values(ctx, spread_value, arg_values);
+            if (ctx.has_exception()) return arg_values;
         } else {
             Value arg_value = arg->evaluate(ctx);
             if (ctx.has_exception()) return arg_values;
