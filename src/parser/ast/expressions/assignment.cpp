@@ -2417,7 +2417,8 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                             char c = (ci < vars_part.size()) ? vars_part[ci] : ',';
                             if (c == ',') {
                                 if (!cur.empty()) {
-                                    Value val = nested_obj->get_property(cur);
+                                    Value val = apply_nested_default(cur, nested_obj->get_property(cur), ctx);
+                                    if (ctx.has_exception()) return false;
                                     if (!bind_or_set(ctx, cur, val)) return false;
                                     cur.clear();
                                 }
@@ -2549,7 +2550,8 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                         if (is_nested_pattern) {
                             handle_infinite_depth_destructuring(nested_obj, var_name, ctx);
                         } else {
-                            Value prop_value = nested_obj->get_property(var_name);
+                            Value prop_value = apply_nested_default(var_name, nested_obj->get_property(var_name), ctx);
+                            if (ctx.has_exception()) return false;
                             if (!bind_or_set(ctx, var_name, prop_value)) return false;
                         }
                     }
@@ -2680,7 +2682,8 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                             if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
                                 handle_infinite_depth_destructuring(nested_obj, var_name, ctx);
                             } else {
-                                Value prop_value = nested_obj->get_property(var_name);
+                                Value prop_value = apply_nested_default(var_name, nested_obj->get_property(var_name), ctx);
+                                if (ctx.has_exception()) return false;
                                 if (!bind_or_set(ctx, var_name, prop_value)) return false;
                             }
                         }
@@ -2815,7 +2818,7 @@ void DestructuringAssignment::handle_nested_object_destructuring(Object* nested_
                             std::string variable_name = mapping.substr(mapping_colon + 1);
 
 
-                            Value prop_value = nested_obj->get_property(property_name);
+                            Value prop_value = apply_nested_default(variable_name, nested_obj->get_property(property_name), ctx);
                             bind_or_set(ctx, variable_name, prop_value);
                         }
                     }
@@ -2823,11 +2826,11 @@ void DestructuringAssignment::handle_nested_object_destructuring(Object* nested_
                     std::string property_name = var_name.substr(0, colon_pos);
                     std::string variable_name = var_name.substr(colon_pos + 1);
 
-                    Value prop_value = nested_obj->get_property(property_name);
+                    Value prop_value = apply_nested_default(variable_name, nested_obj->get_property(property_name), ctx);
                     bind_or_set(ctx, variable_name, prop_value);
                 }
             } else {
-                Value prop_value = nested_obj->get_property(var_name);
+                Value prop_value = apply_nested_default(var_name, nested_obj->get_property(var_name), ctx);
                 bind_or_set(ctx, var_name, prop_value);
             }
         }
@@ -2939,10 +2942,10 @@ void DestructuringAssignment::handle_nested_object_destructuring_with_mappings(O
                 std::string property_name = var_name.substr(0, colon_pos);
                 std::string variable_name = var_name.substr(colon_pos + 1);
 
-                Value prop_value = nested_obj->get_property(property_name);
+                Value prop_value = apply_nested_default(variable_name, nested_obj->get_property(property_name), ctx);
                 bind_or_set(ctx, variable_name, prop_value);
             } else {
-                Value prop_value = nested_obj->get_property(var_name);
+                Value prop_value = apply_nested_default(var_name, nested_obj->get_property(var_name), ctx);
                 bind_or_set(ctx, var_name, prop_value);
             }
         }
@@ -3006,7 +3009,7 @@ void DestructuringAssignment::handle_nested_object_destructuring_smart(Object* n
                 std::string property_name = var_name.substr(0, colon_pos);
                 std::string variable_name = var_name.substr(colon_pos + 1);
 
-                Value prop_value = nested_obj->get_property(property_name);
+                Value prop_value = apply_nested_default(variable_name, nested_obj->get_property(property_name), ctx);
                 bind_or_set(ctx, variable_name, prop_value);
             } else {
                 std::string target_variable = var_name;
@@ -3015,7 +3018,7 @@ void DestructuringAssignment::handle_nested_object_destructuring_smart(Object* n
                     target_variable = source_mappings[var_name];
                 }
 
-                Value prop_value = nested_obj->get_property(var_name);
+                Value prop_value = apply_nested_default(target_variable, nested_obj->get_property(var_name), ctx);
                 bind_or_set(ctx, target_variable, prop_value);
             }
         }
@@ -3105,7 +3108,7 @@ void DestructuringAssignment::handle_nested_object_destructuring_enhanced(Object
                     }
                 }
 
-                Value prop_value = nested_obj->get_property(var_name);
+                Value prop_value = apply_nested_default(target_variable, nested_obj->get_property(var_name), ctx);
                 bind_or_set(ctx, target_variable, prop_value);
             }
         }
@@ -3156,6 +3159,10 @@ std::unique_ptr<ASTNode> DestructuringAssignment::clone() const {
         cloned->add_default_value(default_val.index, default_val.expr->clone());
     }
 
+    for (const auto& nested_default : nested_default_values_) {
+        cloned->add_nested_default_value(nested_default.first, nested_default.second->clone());
+    }
+
     if (nested_rest_pattern_) {
         cloned->set_nested_rest_pattern(nested_rest_pattern_->clone());
     }
@@ -3181,6 +3188,12 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
 
         if (colon_pos == std::string::npos) {
             Value final_value = current_obj->get_property(pattern);
+            if (final_value.is_undefined()) {
+                if (const ASTNode* dv = find_nested_default_value(pattern)) {
+                    final_value = const_cast<ASTNode*>(dv)->evaluate(ctx);
+                    if (ctx.has_exception()) return;
+                }
+            }
             bind_or_set(ctx, pattern, final_value);
             return;
         }
@@ -3194,6 +3207,12 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
 
         if (is_renaming) {
             Value prop_value = current_obj->get_property(prop_name);
+            if (prop_value.is_undefined()) {
+                if (const ASTNode* dv = find_nested_default_value(remaining)) {
+                    prop_value = const_cast<ASTNode*>(dv)->evaluate(ctx);
+                    if (ctx.has_exception()) return;
+                }
+            }
             bind_or_set(ctx, remaining, prop_value);
             return;
         }

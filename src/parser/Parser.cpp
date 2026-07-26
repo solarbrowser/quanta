@@ -10092,6 +10092,12 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
         std::vector<std::pair<std::string, std::string>> property_mappings;
         std::vector<std::pair<std::string, std::shared_ptr<ASTNode>>> computed_key_exprs;
         std::vector<std::pair<size_t, std::unique_ptr<ASTNode>>> obj_default_exprs;
+        // Default expressions for identifiers at any nesting depth below this
+        // level (e.g. `d = 10` inside `b: { c, d = 10 }`) -- the flattened
+        // "__nested:" string this loop builds has no room for an ASTNode*, so
+        // these are escaped up here by name and reattached to the final
+        // DestructuringAssignment via add_nested_default_value below.
+        std::vector<std::pair<std::string, std::unique_ptr<ASTNode>>> escaped_nested_defaults;
 
         while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
             if (current_token().get_type() == TokenType::ELLIPSIS) {
@@ -10183,6 +10189,11 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                                         proper_pattern = property_name + ":" + nested_vars;
                                     }
                                 }
+                            }
+                        }
+                        if (auto* nested_destr_for_defaults = dynamic_cast<DestructuringAssignment*>(nested.get())) {
+                            for (auto& escaped : nested_destr_for_defaults->release_defaults_by_name()) {
+                                escaped_nested_defaults.push_back(std::move(escaped));
                             }
                         }
                         property_mappings.emplace_back(original_property_name, proper_pattern);
@@ -10353,9 +10364,13 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
             destructuring->add_default_value(default_pair.first, std::move(default_pair.second));
         }
 
+        for (auto& escaped : escaped_nested_defaults) {
+            destructuring->add_nested_default_value(escaped.first, std::move(escaped.second));
+        }
+
         return std::move(destructuring);
     }
-    
+
     add_error("Expected '[' or '{' for destructuring pattern");
     return nullptr;
 }

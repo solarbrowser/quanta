@@ -496,6 +496,16 @@ private:
     std::unique_ptr<ASTNode> nested_rest_pattern_;
     Type type_;
 
+    // A nested pattern (`outer: { inner, deep = expr }`) is parsed as its own
+    // throwaway DestructuringAssignment, then flattened into a colon-encoded
+    // string (see Parser::generate_proper_nested_pattern) walked at runtime by
+    // handle_infinite_depth_destructuring -- that flattening has no room for
+    // an ASTNode* default expression, so the parser moves any default it
+    // finds at any nesting depth up into this name-keyed side table on the
+    // OUTERMOST DestructuringAssignment instead (see parse_destructuring_pattern's
+    // "escaped_nested_defaults" and add_nested_default_value call sites).
+    std::vector<std::pair<std::string, std::unique_ptr<ASTNode>>> nested_default_values_;
+
 public:
     DestructuringAssignment(std::vector<std::unique_ptr<Identifier>> targets,
                            std::unique_ptr<ASTNode> source, Type type,
@@ -517,6 +527,32 @@ public:
     }
     void add_default_value(size_t index, std::unique_ptr<ASTNode> expr) {
         default_values_.emplace_back(index, std::move(expr));
+    }
+    void add_nested_default_value(const std::string& name, std::unique_ptr<ASTNode> expr) {
+        nested_default_values_.emplace_back(name, std::move(expr));
+    }
+    const ASTNode* find_nested_default_value(const std::string& name) const {
+        for (const auto& p : nested_default_values_) {
+            if (p.first == name) return p.second.get();
+        }
+        return nullptr;
+    }
+    // Moves this pattern's OWN default_values_ out, resolved to the target's
+    // real name (index is only meaningful within this object's own targets_).
+    // Used by the parser to escape a nested pattern's defaults up into its
+    // parent's nested_default_values_ before this transient object is
+    // discarded (see parse_destructuring_pattern).
+    std::vector<std::pair<std::string, std::unique_ptr<ASTNode>>> release_defaults_by_name() {
+        std::vector<std::pair<std::string, std::unique_ptr<ASTNode>>> out;
+        for (auto& dv : default_values_) {
+            if (dv.index < targets_.size()) {
+                out.emplace_back(targets_[dv.index]->get_name(), std::move(dv.expr));
+            }
+        }
+        for (auto& p : nested_default_values_) {
+            out.emplace_back(std::move(p.first), std::move(p.second));
+        }
+        return out;
     }
     void set_nested_rest_pattern(std::unique_ptr<ASTNode> pattern) {
         nested_rest_pattern_ = std::move(pattern);
@@ -541,6 +577,21 @@ private:
     void handle_nested_object_destructuring_smart(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, DestructuringAssignment* source);
     void handle_nested_object_destructuring_enhanced(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, const std::string& property_key);
     void handle_infinite_depth_destructuring(Object* obj, const std::string& nested_pattern, Context& ctx);
+    // Every nested-pattern leaf bind (handle_complex_object_destructuring's
+    // several near-duplicate branches, handle_infinite_depth_destructuring)
+    // resolves a leaf's raw property value, then must apply that leaf's own
+    // default from nested_default_values_ before binding, same as the
+    // top-level `{x: a = expr}` case already does via default_values_. Sets
+    // ctx's exception on a throwing default expression; caller checks
+    // ctx.has_exception() same as any other evaluate() call.
+    Value apply_nested_default(const std::string& name, Value value, Context& ctx) {
+        if (value.is_undefined()) {
+            if (const ASTNode* dv = find_nested_default_value(name)) {
+                return const_cast<ASTNode*>(dv)->evaluate(ctx);
+            }
+        }
+        return value;
+    }
 
     // Set once at the top of evaluate_with_value; every handle_* helper
     // above reads these instead of taking its own parameter (they recurse
