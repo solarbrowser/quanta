@@ -10,7 +10,6 @@
 #include "quanta/core/vm/Bytecode.h"
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace Quanta {
@@ -97,12 +96,21 @@ public:
     void ref() const { ++ref_count_; }
     void unref() const { if (--ref_count_ == 0) delete this; }
 
+    // Field order below is deliberately grouped widest-first (pointers and
+    // containers, then 4-byte counters, then the 1-byte flags last) so the
+    // small members share one tail block instead of each forcing its own
+    // alignment padding before the next 8-byte-aligned field.
     std::unique_ptr<ASTNode> body;
     std::vector<std::unique_ptr<Parameter>> parameter_objects;
     std::vector<std::string> parameters;
 
-    mutable std::shared_ptr<const BytecodeChunk> bytecode_chunk;
-    mutable bool vm_incompatible = false;
+    // unique_ptr, not shared_ptr: nothing ever co-owns a chunk. Both are
+    // assigned once from a factory that already returns
+    // unique_ptr<BytecodeChunk> (BytecodeCompiler::compile /
+    // VM::compile_suspendable) and every reader takes a raw
+    // `const BytecodeChunk*` out via .get(), so the second control-block
+    // pointer shared_ptr carries was pure overhead.
+    mutable std::unique_ptr<const BytecodeChunk> bytecode_chunk;
 
     // Generator/AsyncFunction/AsyncGeneratorFunction's own compiled form
     // (VM::compile_suspendable, not the plain call bytecode above -- it
@@ -112,9 +120,22 @@ public:
     // idempotent if recomputed (pure function of body), so sharing across
     // every instance from the same decl site is safe. Plain (non-suspendable)
     // Function instances never touch these.
-    mutable std::shared_ptr<const BytecodeChunk> suspendable_chunk;
-    mutable bool suspendable_incompatible = false;
+    mutable std::unique_ptr<const BytecodeChunk> suspendable_chunk;
 
+private:
+    // Intrusive doubly-linked list of every live executable, replacing the
+    // thread_local unordered_set this used to be: the set cost ~33 bytes per
+    // executable in node + bucket storage (measured) on top of a malloc per
+    // construction and a hash+erase per destruction, all to serve a registry
+    // that is only ever walked front-to-back by gc_trace_roots(). Two inline
+    // pointers cost 16 bytes and no allocation at all. Doubly linked (not
+    // singly) so unlinking in ~FunctionExecutable stays O(1) -- executables
+    // die in arbitrary order, not LIFO.
+    static thread_local FunctionExecutable* live_head_;
+    FunctionExecutable* live_next_ = nullptr;
+    FunctionExecutable* live_prev_ = nullptr;
+
+public:
     // Decl-site defaults for Function's own lazy "length"/toString() sources:
     // both are pure functions of body/params (source_text is the literal's own
     // source slice, declared_length is the ES6 spec length -- params before
@@ -125,12 +146,6 @@ public:
     // so their own per-instance equivalents live in NativeFunctionData
     // instead (see Function::native_data()).
     mutable std::string source_text;
-    mutable size_t declared_length = 0;
-    // Class field count for pre-sizing new instances' shape slots -- fixed by
-    // the class body, so identical for every evaluation of the same class
-    // declaration/expression (only ever set on a class constructor's own
-    // executable; plain functions leave this at 0).
-    mutable uint32_t construct_slot_hint = 0;
 
     // Decl-site default name -- almost always identical for every instance
     // sharing this executable (the constructor parameter or the static
@@ -140,6 +155,19 @@ public:
     // of the same literal) is handled by Function's own per-instance
     // InstanceOverrides, not here -- see Function::set_name.
     mutable std::string name;
+
+    // uint32_t, not size_t: this is a formal parameter count (the compiler
+    // itself refuses anything past 64 params). set_declared_length()/
+    // get_declared_length() still take and return size_t.
+    mutable uint32_t declared_length = 0;
+    // Class field count for pre-sizing new instances' shape slots -- fixed by
+    // the class body, so identical for every evaluation of the same class
+    // declaration/expression (only ever set on a class constructor's own
+    // executable; plain functions leave this at 0).
+    mutable uint32_t construct_slot_hint = 0;
+
+    mutable bool vm_incompatible = false;
+    mutable bool suspendable_incompatible = false;
 
     // -1 unknown, 0 no, 1 yes -- see Function::call_default's own doc
     // comments on the fields these replace.
@@ -164,7 +192,6 @@ public:
     static void gc_trace_roots(Visitor& v);
 
 private:
-    static thread_local std::unordered_set<FunctionExecutable*> live_executables_;
     mutable uint32_t ref_count_ = 0;
 };
 
