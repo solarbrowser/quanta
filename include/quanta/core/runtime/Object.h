@@ -1116,7 +1116,8 @@ public:
         return ensure_instance_data().feedback.lookup_cache;
     }
 
-    // Lazily allocated + sized by the caller (Interpreter.cpp) to chunk.private_feedback.size().
+    // Lazily allocated + sized by the caller (Interpreter.cpp) to
+    // chunk.ic_feedback->private_feedback.size() (0 if chunk.ic_feedback is null).
     // Never called for native functions (they never reach Interpreter::run()).
     std::vector<PrivateFeedback,
         SmallMapAllocator<PrivateFeedback>>& instance_private_feedback() const {

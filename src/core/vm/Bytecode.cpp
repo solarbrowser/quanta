@@ -10,6 +10,12 @@
 
 namespace Quanta {
 
+#if defined(__GLIBCXX__)
+static_assert(sizeof(BytecodeChunk) == 168);
+#else
+static_assert(sizeof(BytecodeChunk) <= 240);
+#endif
+
 void BytecodeChunk::trace(Visitor& v) const {
     for (const auto& c : constants) {
         v.visit(c);

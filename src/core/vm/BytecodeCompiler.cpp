@@ -3161,7 +3161,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             compiler.declare_local(info.name);
             if (!info.is_catch_param &&
                 (!info.is_lexical || direct_lexical_names.count(info.name))) {
-                compiler.chunk_->env_locals.push_back({info.name, info.is_lexical, info.is_const});
+                compiler.chunk_->ensure_env().env_locals.push_back({info.name, info.is_lexical, info.is_const});
                 if (flat_slot_counter < 4) {
                     auto cit = compiler.global_decl_count_.find(info.name);
                     if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
@@ -3206,7 +3206,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // those. Rest gets its own immediately-initialized slot here instead,
     // since CreateRestArray/DestructureBind below fills it, not run().
     if (has_rest) {
-        compiler.chunk_->env_locals.push_back({rest_name, false, false});
+        compiler.chunk_->ensure_env().env_locals.push_back({rest_name, false, false});
         if (flat_slot_counter < 4) {
             auto cit = compiler.global_decl_count_.find(rest_name);
             if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
@@ -3262,9 +3262,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             }
             if (p->has_destructuring()) {
                 auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
-                compiler.chunk_->destructuring_patterns.push_back({destr, true, false});
+                compiler.chunk_->ensure_destructuring_patterns().push_back({destr, true, false});
                 compiler.emit(Op::DestructureBind);
-                compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->destructuring_patterns.size() - 1));
+                compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_destructuring_patterns().size() - 1));
             } else if (params_tdz) {
                 compiler.emit_write_local(pname, /*is_declaration=*/true);
             } else {
@@ -3280,9 +3280,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         compiler.emit_u8(static_cast<uint8_t>(fixed_param_count));
         if (p->has_destructuring()) {
             auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
-            compiler.chunk_->destructuring_patterns.push_back({destr, true, false});
+            compiler.chunk_->ensure_destructuring_patterns().push_back({destr, true, false});
             compiler.emit(Op::DestructureBind);
-            compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->destructuring_patterns.size() - 1));
+            compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_destructuring_patterns().size() - 1));
         } else {
             compiler.emit_write_local(rest_name, false);
         }
@@ -3298,11 +3298,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     for (const auto& stmt : block->get_statements()) {
         if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
         if (!env_mode) return nullptr;
-        if (compiler.chunk_->closures.size() >= 0xFFFF) return nullptr;
+        if (compiler.chunk_->ensure_closures().size() >= 0xFFFF) return nullptr;
         compiler.hoisted_fn_decls_.insert(stmt.get());
-        compiler.chunk_->closures.push_back(stmt.get());
+        compiler.chunk_->ensure_closures().push_back(stmt.get());
         compiler.emit(Op::CreateClosure);
-        compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->closures.size() - 1));
+        compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_closures().size() - 1));
     }
 
     for (const auto& stmt : block->get_statements()) {
@@ -3318,7 +3318,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->env_mode = env_mode;
     compiler.chunk_->env_params_tdz = params_tdz;
     compiler.chunk_->needs_arguments = needs_arguments;
-    if (env_mode && !selective) compiler.chunk_->env_params = param_names;
+    if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
     compiler.chunk_->lookup_cache.assign(compiler.chunk_->names.size(),
                                          BytecodeChunk::LookupCacheEntry{});
     return std::move(compiler.chunk_);
@@ -3509,8 +3509,8 @@ int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extr
     std::vector<const ASTNode*> capture_roots = extra_capture_roots;
     capture_roots.push_back(body);
     loop_env_needs_fresh_.push_back(force_own_env || loop_vars_may_be_captured(capture_roots, vars));
-    chunk_->loop_envs.push_back(std::move(vars));
-    return static_cast<int>(chunk_->loop_envs.size() - 1);
+    chunk_->ensure_env().loop_envs.push_back(std::move(vars));
+    return static_cast<int>(chunk_->ensure_env().loop_envs.size() - 1);
 }
 
 void BytecodeCompiler::record_env_slot_info(const std::vector<BytecodeChunk::LoopEnvVar>& vars, int depth) {
@@ -3617,10 +3617,10 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     emit_u16(0);  // patched below to pre_exit (done, or the iterator threw)
 
     if (destr) {
-        if (chunk_->destructuring_patterns.size() >= 0xFFFF) return false;
-        chunk_->destructuring_patterns.push_back({destr, is_lexical, is_const});
+        if (chunk_->ensure_destructuring_patterns().size() >= 0xFFFF) return false;
+        chunk_->ensure_destructuring_patterns().push_back({destr, is_lexical, is_const});
         emit(Op::DestructureBind);
-        emit_u16(static_cast<uint16_t>(chunk_->destructuring_patterns.size() - 1));
+        emit_u16(static_cast<uint16_t>(chunk_->ensure_destructuring_patterns().size() - 1));
     } else {
         emit_write_local(var_name, /*is_declaration=*/declare_fresh);
     }
@@ -3660,7 +3660,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     emit(Op::IteratorClose);
     emit_u8(static_cast<uint8_t>(iterator_reg));
     emit_u8(1);  // mode 1: acc holds the pending exception -- restore + re-raise
-    chunk_->handlers.push_back({static_cast<uint32_t>(body_start),
+    chunk_->ensure_handlers().push_back({static_cast<uint32_t>(body_start),
                                  static_cast<uint32_t>(body_end),
                                  static_cast<uint32_t>(cleanup_pc)});
     if (!patch_jump(skip_cleanup)) return false;
@@ -3777,15 +3777,17 @@ uint16_t BytecodeCompiler::alloc_feedback_slot() {
 }
 
 uint16_t BytecodeCompiler::alloc_private_feedback() {
-    if (chunk_->private_feedback.size() >= 0xFFFF) { failed_ = true; return 0; }
-    chunk_->private_feedback.push_back(PrivateFeedback{});
-    return static_cast<uint16_t>(chunk_->private_feedback.size() - 1);
+    auto& pf = chunk_->ensure_ic_feedback().private_feedback;
+    if (pf.size() >= 0xFFFF) { failed_ = true; return 0; }
+    pf.push_back(PrivateFeedback{});
+    return static_cast<uint16_t>(pf.size() - 1);
 }
 
 uint16_t BytecodeCompiler::alloc_keyed_feedback() {
-    if (chunk_->keyed_feedback.size() >= 0xFFFF) { failed_ = true; return 0; }
-    chunk_->keyed_feedback.push_back(KeyedFeedback{});
-    return static_cast<uint16_t>(chunk_->keyed_feedback.size() - 1);
+    auto& kf = chunk_->ensure_ic_feedback().keyed_feedback;
+    if (kf.size() >= 0xFFFF) { failed_ = true; return 0; }
+    kf.push_back(KeyedFeedback{});
+    return static_cast<uint16_t>(kf.size() - 1);
 }
 
 bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
@@ -3822,10 +3824,10 @@ bool BytecodeCompiler::emit_treewalker_delegate(const ASTNode* node) {
             if (locals_.count(n) && !env_names_.count(n)) return false;
         }
     }
-    if (chunk_->closures.size() >= 0xFFFF) return false;
-    chunk_->closures.push_back(node);
+    if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+    chunk_->ensure_closures().push_back(node);
     emit(Op::CreateClosure);
-    emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+    emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
     return !failed_;
 }
 
@@ -3984,13 +3986,13 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 }
                 if (env_mode_ && (!env_vars.empty() || needs_own_env)) {
                     record_env_slot_info(env_vars, env_depth_ + 1);
-                    chunk_->loop_envs.push_back(std::move(env_vars));
+                    chunk_->ensure_env().loop_envs.push_back(std::move(env_vars));
                     // A plain block never emits AdvanceLoopEnv (entered/exited
                     // once, no per-iteration refresh) -- this entry only needs
                     // to keep loop_env_needs_fresh_ the same size as
-                    // chunk_->loop_envs so OTHER indices into it stay valid.
+                    // chunk_'s loop_envs so OTHER indices into it stay valid.
                     loop_env_needs_fresh_.push_back(true);
-                    block_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
+                    block_env_idx = static_cast<int>(chunk_->ensure_env().loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
                     emit_u16(static_cast<uint16_t>(block_env_idx));
                     env_depth_++;
@@ -4021,10 +4023,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (!env_mode_) return false;
                     const auto* da = static_cast<const DestructuringAssignment*>(d->get_init());
                     if (!compile_expression(da->get_source())) return false;
-                    if (chunk_->destructuring_patterns.size() >= 0xFFFF) return false;
-                    chunk_->destructuring_patterns.push_back({da, !is_var, is_const});
+                    if (chunk_->ensure_destructuring_patterns().size() >= 0xFFFF) return false;
+                    chunk_->ensure_destructuring_patterns().push_back({da, !is_var, is_const});
                     emit(Op::DestructureBind);
-                    emit_u16(static_cast<uint16_t>(chunk_->destructuring_patterns.size() - 1));
+                    emit_u16(static_cast<uint16_t>(chunk_->ensure_destructuring_patterns().size() - 1));
                     continue;
                 }
 
@@ -4405,12 +4407,12 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                         std::vector<BytecodeChunk::LoopEnvVar> vars;
                         vars.push_back({clause->get_parameter_name(), false, false, false});
                         record_env_slot_info(vars, env_depth_ + 1);
-                        chunk_->loop_envs.push_back(std::move(vars));
+                        chunk_->ensure_env().loop_envs.push_back(std::move(vars));
                         // A catch clause never emits AdvanceLoopEnv either
                         // (same reasoning as the plain-block case above) --
                         // keep loop_env_needs_fresh_ in lockstep regardless.
                         loop_env_needs_fresh_.push_back(true);
-                        catch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
+                        catch_env_idx = static_cast<int>(chunk_->ensure_env().loop_envs.size() - 1);
                         emit(Op::EnterLoopEnv);
                         emit_u16(static_cast<uint16_t>(catch_env_idx));
                         env_depth_++;
@@ -4429,8 +4431,8 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 }
                 jump_catch_ok = emit_jump(Op::Jump);
 
-                handler_idx_try = chunk_->handlers.size();
-                chunk_->handlers.push_back({static_cast<uint32_t>(try_start),
+                handler_idx_try = chunk_->ensure_handlers().size();
+                chunk_->ensure_handlers().push_back({static_cast<uint32_t>(try_start),
                                              static_cast<uint32_t>(try_end),
                                              static_cast<uint32_t>(catch_pc)});
             }
@@ -4451,13 +4453,13 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit(Op::Throw);
 
                 if (catch_node) {
-                    handler_idx_catch = chunk_->handlers.size();
-                    chunk_->handlers.push_back({static_cast<uint32_t>(catch_body_start),
+                    handler_idx_catch = chunk_->ensure_handlers().size();
+                    chunk_->ensure_handlers().push_back({static_cast<uint32_t>(catch_body_start),
                                                  static_cast<uint32_t>(catch_body_end),
                                                  static_cast<uint32_t>(reraise_pc)});
                 } else {
-                    handler_idx_try = chunk_->handlers.size();
-                    chunk_->handlers.push_back({static_cast<uint32_t>(try_start),
+                    handler_idx_try = chunk_->ensure_handlers().size();
+                    chunk_->ensure_handlers().push_back({static_cast<uint32_t>(try_start),
                                                  static_cast<uint32_t>(try_end),
                                                  static_cast<uint32_t>(reraise_pc)});
                 }
@@ -4482,10 +4484,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     emit(Op::ReraiseGeneratorReturn);
 
                     if (try_needs_genreturn && handler_idx_try != SIZE_MAX) {
-                        chunk_->handlers[handler_idx_try].genreturn_pc = static_cast<int32_t>(genreturn_pc);
+                        chunk_->ensure_handlers()[handler_idx_try].genreturn_pc = static_cast<int32_t>(genreturn_pc);
                     }
                     if (catch_needs_genreturn && handler_idx_catch != SIZE_MAX) {
-                        chunk_->handlers[handler_idx_catch].genreturn_pc = static_cast<int32_t>(genreturn_pc);
+                        chunk_->ensure_handlers()[handler_idx_catch].genreturn_pc = static_cast<int32_t>(genreturn_pc);
                     }
                 }
             }
@@ -4540,12 +4542,12 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 }
                 if (env_mode_ && (!env_vars.empty() || needs_own_env)) {
                     record_env_slot_info(env_vars, env_depth_ + 1);
-                    chunk_->loop_envs.push_back(std::move(env_vars));
+                    chunk_->ensure_env().loop_envs.push_back(std::move(env_vars));
                     // A switch body never emits AdvanceLoopEnv either (runs
                     // once, no per-iteration refresh) -- keep
                     // loop_env_needs_fresh_ in lockstep regardless.
                     loop_env_needs_fresh_.push_back(true);
-                    switch_env_idx = static_cast<int>(chunk_->loop_envs.size() - 1);
+                    switch_env_idx = static_cast<int>(chunk_->ensure_env().loop_envs.size() - 1);
                     emit(Op::EnterLoopEnv);
                     emit_u16(static_cast<uint16_t>(switch_env_idx));
                     env_depth_++;
@@ -4629,10 +4631,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // ctx.create_lexical_binding() on the environment directly, so a
             // register-resident name is never written -- force it here.
             if (!env_mode_) return false;
-            if (chunk_->closures.size() >= 0xFFFF) return false;
-            chunk_->closures.push_back(node);
+            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+            chunk_->ensure_closures().push_back(node);
             emit(Op::CreateClosure);
-            emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             const Identifier* class_id = static_cast<const ClassDeclaration*>(node)->get_id();
             if (class_id && !class_id->get_name().empty() && !env_names_.count(class_id->get_name())) {
                 emit_write_local(class_id->get_name(), /*is_declaration=*/true);
@@ -4725,10 +4727,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             // RegexLiteral::evaluate reads no bindings (built-in RegExp ctor
             // only), so this skips emit_treewalker_delegate's env_mode
             // requirement -- register-pure functions keep compiling.
-            if (chunk_->closures.size() >= 0xFFFF) return false;
-            chunk_->closures.push_back(node);
+            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+            chunk_->ensure_closures().push_back(node);
             emit(Op::CreateClosure);
-            emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             return !failed_;
 
         case ASTNode::Type::BOOLEAN_LITERAL:
@@ -5517,10 +5519,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
         case ASTNode::Type::CLASS_DECLARATION: {
             if (!env_mode_) return false;
-            if (chunk_->closures.size() >= 0xFFFF) return false;
-            chunk_->closures.push_back(node);
+            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+            chunk_->ensure_closures().push_back(node);
             emit(Op::CreateClosure);
-            emit_u16(static_cast<uint16_t>(chunk_->closures.size() - 1));
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             return true;
         }
 

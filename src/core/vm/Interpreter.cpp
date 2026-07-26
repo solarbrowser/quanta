@@ -837,22 +837,22 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     Environment* env_saves[64];
     uint8_t env_save_top = 0;
 
-    if (chunk.env_mode) {
+    if (chunk.env_mode && chunk.env) {
         Environment* env = ctx.get_lexical_environment();
         if (chunk.env_params_tdz) {
             // Spec FDI ordering: params start uninitialized (their raw values
             // sit in registers), the entry bytecode initializes each one left
             // to right, and Op::BindEnvLocals creates the body's bindings
             // only after the whole parameter list resolved.
-            for (const auto& p : chunk.env_params) {
+            for (const auto& p : chunk.env->env_params) {
                 env->create_uninitialized_binding(p, true);
             }
         } else {
-            for (size_t i = 0; i < chunk.env_params.size(); i++) {
+            for (size_t i = 0; i < chunk.env->env_params.size(); i++) {
                 Value v = i < args.size() ? args[i] : Value();
-                env->create_binding(chunk.env_params[i], v, true);
+                env->create_binding(chunk.env->env_params[i], v, true);
             }
-            for (const auto& loc : chunk.env_locals) {
+            for (const auto& loc : chunk.env->env_locals) {
                 if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
                 else env->create_binding(loc.name, Value(), true);
             }
@@ -893,10 +893,11 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     // chunk's GetPrivate/SetPrivate sites cache a resolved qualified key that
     // encodes the CALLING instance's own declaring brand (see PrivateFeedback's
     // doc comment), so every instance sharing the chunk needs its own copy.
-    PrivateFeedback* private_feedback_data = chunk.private_feedback.data();
+    size_t chunk_private_feedback_size = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.size() : 0;
+    PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
     if (owner) {
         auto& instance_pf = owner->instance_private_feedback();
-        if (instance_pf.size() < chunk.private_feedback.size()) instance_pf.resize(chunk.private_feedback.size());
+        if (instance_pf.size() < chunk_private_feedback_size) instance_pf.resize(chunk_private_feedback_size);
         private_feedback_data = instance_pf.data();
     }
 
@@ -923,7 +924,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     if (ctx.has_exception()) {                                            \
         int32_t handler_pc = -1;                                           \
         uint32_t best_width = UINT32_MAX;                                  \
-        for (const auto& h : chunk.handlers) {                            \
+        if (chunk.handlers) for (const auto& h : *chunk.handlers) {       \
             if (instr_pc >= h.start_pc && instr_pc < h.end_pc) {           \
                 uint32_t width = h.end_pc - h.start_pc;                    \
                 if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); } \
@@ -1511,7 +1512,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
 
             case Op::BindEnvLocals: {
                 Environment* env = ctx.get_lexical_environment();
-                for (const auto& loc : chunk.env_locals) {
+                if (chunk.env) for (const auto& loc : chunk.env->env_locals) {
                     if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
                     else env->create_binding(loc.name, Value(), true);
                 }
@@ -1523,7 +1524,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 pc += 2;
                 ctx.push_block_scope();
                 Environment* env = ctx.get_lexical_environment();
-                for (const auto& v : chunk.loop_envs[idx]) {
+                for (const auto& v : chunk.env->loop_envs[idx]) {
                     if (v.is_lexical) env->create_uninitialized_binding(v.name, !v.is_const);
                     else env->create_binding(v.name, Value(), true);
                 }
@@ -1532,7 +1533,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             case Op::AdvanceLoopEnv: {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
-                const auto& vars = chunk.loop_envs[idx];
+                const auto& vars = chunk.env->loop_envs[idx];
                 std::vector<Value> carried(vars.size());
                 Environment* old_env = ctx.get_lexical_environment();
                 for (size_t i = 0; i < vars.size(); i++) {
@@ -1648,7 +1649,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             case Op::CreateClosure: {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
-                acc = const_cast<ASTNode*>(chunk.closures[idx])->evaluate(ctx);
+                acc = const_cast<ASTNode*>((*chunk.closures)[idx])->evaluate(ctx);
                 CHECK_EXC();
                 break;
             }
@@ -1656,7 +1657,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             case Op::DestructureBind: {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
-                const auto& site = chunk.destructuring_patterns[idx];
+                const auto& site = (*chunk.destructuring_patterns)[idx];
                 auto* pattern = const_cast<ASTNode*>(site.pattern);
                 static_cast<DestructuringAssignment*>(pattern)->evaluate_with_value(
                     ctx, acc, site.as_lexical, site.is_const);
@@ -1785,7 +1786,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
-                acc = get_keyed(ctx, recv, key, &chunk.keyed_feedback[fb_idx]);
+                acc = get_keyed(ctx, recv, key, &chunk.ic_feedback->keyed_feedback[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -1803,7 +1804,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 }
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();
-                set_keyed(ctx, recv, key, acc, &chunk.keyed_feedback[fb_idx]);
+                set_keyed(ctx, recv, key, acc, &chunk.ic_feedback->keyed_feedback[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -2102,7 +2103,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             // up in turn.
             int32_t genreturn_pc = -1;
             uint32_t best_width = UINT32_MAX;
-            for (const auto& h : chunk.handlers) {
+            if (chunk.handlers) for (const auto& h : *chunk.handlers) {
                 if (h.genreturn_pc < 0) continue;
                 if (instr_pc >= h.start_pc && instr_pc < h.end_pc) {
                     uint32_t width = h.end_pc - h.start_pc;

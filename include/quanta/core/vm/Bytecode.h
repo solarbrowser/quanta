@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Value.h"
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -165,12 +166,6 @@ enum class Op : uint8_t {
     kCount
 };
 
-struct SourceEntry {
-    uint32_t pc;
-    uint32_t line;
-    uint32_t column;
-};
-
 // Inline-cache slot for one GetNamed/SetNamed site: mono -> poly (up to
 // kMaxEntries distinct shapes) -> mega. count==0 is Uninit, count==1 behaves
 // exactly like the old monomorphic-only cache (a length-1 scan), count>1 is
@@ -285,10 +280,21 @@ struct BytecodeChunk {
     std::vector<uint8_t> code;
     std::vector<Value> constants;   // GC-visible via Function::trace()
     std::vector<std::string> names; // identifier names for LdaLookup/Call diagnostics
-    std::vector<SourceEntry> positions;
     mutable std::vector<FeedbackSlot> feedback; // written as call sites warm up
-    mutable std::vector<PrivateFeedback> private_feedback; // GetPrivate/SetPrivate sites
-    mutable std::vector<KeyedFeedback> keyed_feedback; // GetKeyed/SetKeyed sites
+
+    // GetPrivate/SetPrivate and GetKeyed/SetKeyed sites are rare relative to
+    // ordinary named property access -- lazily allocated together since both
+    // are populated only by alloc_private_feedback()/alloc_keyed_feedback()
+    // during compilation, never resized at runtime. unique_ptr::get() hands
+    // out a non-const IcFeedback* even through a const BytecodeChunk&
+    // (unlike std::vector, pointee constness isn't propagated), so runtime
+    // readers need no `mutable` here.
+    struct IcFeedback {
+        std::vector<PrivateFeedback> private_feedback;
+        std::vector<KeyedFeedback> keyed_feedback;
+    };
+    std::unique_ptr<IcFeedback> ic_feedback;
+    IcFeedback& ensure_ic_feedback() { if (!ic_feedback) ic_feedback = std::make_unique<IcFeedback>(); return *ic_feedback; }
     // Per-name outer-variable cache for LdaLookup/StaLookup: a resolved
     // stable binding pointer is only valid for the one captured-environment
     // chain it was resolved against, so this chunk-level vector is only used
@@ -313,26 +319,41 @@ struct BytecodeChunk {
     // Top-level script chunk: the frame's lexical env is the PERSISTENT
     // script env (not per-call), so the lookup cache may point into it.
     bool script_mode = false;
-    std::vector<std::string> env_params;
-    struct EnvLocal { std::string name; bool is_lexical; bool is_const; };
-    std::vector<EnvLocal> env_locals;
 
     // Function::call materializes the real arguments object before VM::run
     // (skipped otherwise -- it dominated call-heavy benchmarks).
     bool needs_arguments = false;
 
-    std::vector<const ASTNode*> closures; // raw pointers into the owning Function's own body_
+    // Closures/destructuring/try-catch are each independently rare (a chunk
+    // can have any one without the others), so unlike IcFeedback these stay
+    // 3 separate lazy pointers rather than one bundle.
+    std::unique_ptr<std::vector<const ASTNode*>> closures; // raw pointers into the owning Function's own body_
+    std::vector<const ASTNode*>& ensure_closures() { if (!closures) closures = std::make_unique<std::vector<const ASTNode*>>(); return *closures; }
 
     struct DestructuringSite { const ASTNode* pattern; bool as_lexical; bool is_const; };
-    std::vector<DestructuringSite> destructuring_patterns;
+    std::unique_ptr<std::vector<DestructuringSite>> destructuring_patterns;
+    std::vector<DestructuringSite>& ensure_destructuring_patterns() { if (!destructuring_patterns) destructuring_patterns = std::make_unique<std::vector<DestructuringSite>>(); return *destructuring_patterns; }
 
-    std::vector<HandlerEntry> handlers;
+    std::unique_ptr<std::vector<HandlerEntry>> handlers;
+    std::vector<HandlerEntry>& ensure_handlers() { if (!handlers) handlers = std::make_unique<std::vector<HandlerEntry>>(); return *handlers; }
 
-    // Per-iteration Environment locals for one loop/block (Op::EnterLoopEnv).
-    // copy_forward: a `for` header's own let/const carries across iterations;
-    // everything else starts fresh each time.
-    struct LoopEnvVar { std::string name; bool is_lexical; bool is_const; bool copy_forward; };
-    std::vector<std::vector<LoopEnvVar>> loop_envs;
+    // env_params/env_locals/loop_envs are only ever populated when env_mode
+    // is true (see BytecodeCompiler), so they're bundled behind one lazy
+    // pointer -- unlike closures/destructuring_patterns/handlers above,
+    // these three share a single real trigger condition.
+    struct EnvBundle {
+        std::vector<std::string> env_params;
+        struct EnvLocal { std::string name; bool is_lexical; bool is_const; };
+        std::vector<EnvLocal> env_locals;
+        // Per-iteration Environment locals for one loop/block (Op::EnterLoopEnv).
+        // copy_forward: a `for` header's own let/const carries across iterations;
+        // everything else starts fresh each time.
+        struct LoopEnvVar { std::string name; bool is_lexical; bool is_const; bool copy_forward; };
+        std::vector<std::vector<LoopEnvVar>> loop_envs;
+    };
+    std::unique_ptr<EnvBundle> env;
+    EnvBundle& ensure_env() { if (!env) env = std::make_unique<EnvBundle>(); return *env; }
+    using LoopEnvVar = EnvBundle::LoopEnvVar; // BytecodeCompiler builds these before a chunk_ exists
 
     void trace(Visitor& v) const;
 };
