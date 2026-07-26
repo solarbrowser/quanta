@@ -25,7 +25,14 @@ class RegexBacktrackEngine;
 class RegExp {
 private:
     std::string pattern_;
-    std::string flags_;
+    // No separately-stored flags_ field: every flag character is already a
+    // bool below (dgimsuvy, one each), so the flags string is fully
+    // reconstructible on demand -- see flags_string(). The only subtlety is
+    // 'v' also sets unicode_ as an internal PCRE2-compilation detail
+    // (parse_flags), so reconstruction must suppress 'u' when unicode_sets_
+    // is set, matching the existing get_unicode() && !get_unicode_sets()
+    // convention already used for the JS-visible [[unicode]] slot
+    // (RegExpBuiltin.cpp).
     void* code_;  // pcre2_code* -- raw view; code_owner_ keeps it alive
     std::shared_ptr<void> code_owner_;  // owns code_ (frees it via pcre2_code_free);
                                          // shared across every RegExp with the same
@@ -60,7 +67,9 @@ public:
     void compile(const std::string& pattern, const std::string& flags = "");
 
     std::string get_source() const { return pattern_; }
-    std::string get_flags() const { return flags_; }
+    // Reconstructed in canonical ECMA-262 order (d,g,i,m,s,u,v,y) from the
+    // bools below -- see the class doc comment above for the u/v subtlety.
+    std::string get_flags() const { return flags_string(); }
     bool get_global() const { return global_; }
     bool get_ignore_case() const { return ignore_case_; }
     bool get_multiline() const { return multiline_; }
@@ -72,8 +81,6 @@ public:
     int get_last_index() const { return last_index_; }
     void set_last_index(int index) { last_index_ = index; }
 
-    std::string to_string() const;
-
     static bool is_valid_unicode_pattern(const std::string& pattern, const std::string& flags);
 
 private:
@@ -81,6 +88,7 @@ private:
     void do_compile();
     std::string preprocess_pattern(const std::string& pattern) const;
     std::string rename_named_groups(const std::string& pattern);
+    std::string flags_string() const;
 };
 
 }

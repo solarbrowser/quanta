@@ -21,6 +21,12 @@
 
 namespace Quanta {
 
+#if defined(__GLIBCXX__)
+static_assert(sizeof(RegExp) == 112);
+#else
+static_assert(sizeof(RegExp) <= 160);
+#endif
+
 // Set while a pattern is compiled purely to check validity (parser literals);
 // skips JIT compilation of the probe.
 static thread_local bool g_regexp_validation_only = false;
@@ -178,12 +184,25 @@ static std::string normalize_u_surrogate_escapes(const std::string& s) {
 }
 
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
-    : pattern_(pattern), flags_(flags), code_(nullptr),
+    : pattern_(pattern), code_(nullptr),
       global_(false), ignore_case_(false), multiline_(false),
       unicode_(false), sticky_(false), dotall_(false), unicode_sets_(false),
       has_indices_(false), last_index_(0) {
     parse_flags(flags);
     do_compile();
+}
+
+std::string RegExp::flags_string() const {
+    std::string result;
+    if (has_indices_) result += 'd';
+    if (global_) result += 'g';
+    if (ignore_case_) result += 'i';
+    if (multiline_) result += 'm';
+    if (dotall_) result += 's';
+    if (unicode_ && !unicode_sets_) result += 'u';  // 'v' also sets unicode_ internally; don't leak that into the string
+    if (unicode_sets_) result += 'v';
+    if (sticky_) result += 'y';
+    return result;
 }
 
 RegExp::~RegExp() {
@@ -2238,7 +2257,7 @@ void RegExp::do_compile() {
     if (!g_regexp_validation_only) {
         cache_key = pattern_;
         cache_key.push_back('\0');
-        cache_key += flags_;
+        cache_key += flags_string();
         auto it = g_regex_cache.find(cache_key);
         if (it != g_regex_cache.end()) {
             code_owner_ = it->second.code;
@@ -2576,15 +2595,10 @@ Value RegExp::exec(const std::string& str) {
 
 void RegExp::compile(const std::string& pattern, const std::string& flags) {
     pattern_ = pattern;
-    flags_ = flags;
     global_ = ignore_case_ = multiline_ = unicode_ = sticky_ = dotall_ = unicode_sets_ = has_indices_ = false;
     last_index_ = 0;
-    parse_flags(flags_);
+    parse_flags(flags);
     do_compile();
-}
-
-std::string RegExp::to_string() const {
-    return "/" + pattern_ + "/" + flags_;
 }
 
 bool RegExp::is_valid_unicode_pattern(const std::string& pattern, const std::string& flags) {
