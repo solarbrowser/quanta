@@ -73,7 +73,7 @@ const OpInfo& op_info(Op op) {
         {"DestructureBind", 2, 'z'},
         {"CreateRestArray", 1, 'r'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
-        {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'},
+        {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"HasPrivate", 2, 'n'},
         {"GetNamed", 5, 'g'}, {"SetNamed", 5, 'g'},
         {"GetPrivate", 5, 'g'}, {"SetPrivate", 5, 'g'},
         {"GetKeyed", 3, 'f'}, {"SetKeyed", 4, 'x'},

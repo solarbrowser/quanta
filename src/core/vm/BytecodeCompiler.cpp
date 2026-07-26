@@ -2648,6 +2648,15 @@ bool is_named_evaluation_rhs(const ASTNode* node) {
            t == ASTNode::Type::CLASS_DECLARATION;
 }
 
+// A class cannot take its inferred name from Op::SetFunctionNameIfUnnamed:
+// ClassDefinitionEvaluation applies the name before running static
+// initializers, which can observe it (`class { static f = this.name }`),
+// whereas the opcode only runs once the class is already built. Such a
+// declaration/assignment goes to the tree-walker whole.
+bool named_evaluation_needs_delegate(const ASTNode* node) {
+    return node && node->get_type() == ASTNode::Type::CLASS_DECLARATION;
+}
+
 // Maps each nested lexical/class declaration to its "declaring region": a
 // plain block/if-branch/while-body/etc is its own BlockStatement; a
 // C-style `for (let i=...)` header is the WHOLE ForStatement (test/update/
@@ -3910,6 +3919,9 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     if (expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER) {
         const std::string& name = static_cast<const Identifier*>(expr->get_left())->get_name();
         if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
+        if (named_evaluation_needs_delegate(expr->get_right())) {
+            return emit_treewalker_delegate(expr);
+        }
         // NamedEvaluation applies to the RHS of a logical assignment too
         // (spec 13.15.2 step 1.e.i): `f ??= function(){}` names it "f". The
         // opcode no-ops when the value already has a name.
@@ -4111,15 +4123,19 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     // Top-level script declaration: the binding pre-exists
                     // (vars on the global object, let/const uninitialized in
                     // the script env).
+                    if (named_evaluation_needs_delegate(d->get_init())) {
+                        if (!emit_treewalker_delegate(node)) return false;
+                        break;
+                    }
                     bool is_lex = decl->get_kind() != VariableDeclarator::Kind::VAR;
                     if (!d->get_init()) {
                         if (is_var) continue;
                         emit(Op::LdaUndefined);
                     } else {
                         if (!compile_expression(d->get_init())) return false;
-                        // NamedEvaluation: an anonymous function/class on the
-                        // RHS takes the binding's name. The opcode itself
-                        // only renames when the value is still unnamed, so a
+                        // NamedEvaluation: an anonymous function on the RHS
+                        // takes the binding's name. The opcode only renames
+                        // when the value is still unnamed, so a
                         // `function foo(){}` RHS keeps "foo" (spec 8.6.2).
                         if (is_named_evaluation_rhs(d->get_init())) {
                             emit(Op::SetFunctionNameIfUnnamed);
@@ -4141,11 +4157,12 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (is_var) continue;
                     emit(Op::LdaUndefined);
                 } else {
+                    if (named_evaluation_needs_delegate(d->get_init())) {
+                        if (!emit_treewalker_delegate(node)) return false;
+                        break;
+                    }
                     if (!compile_expression(d->get_init())) return false;
-                    // NamedEvaluation for a register-resident binding. The
-                    // tree-walker has always done this; the compiled path
-                    // silently skipped it, so a compiled `let f = function(){}`
-                    // produced an unnamed function.
+                    // NamedEvaluation for a register-resident binding.
                     if (is_named_evaluation_rhs(d->get_init())) {
                         emit(Op::SetFunctionNameIfUnnamed);
                         emit_u16(add_name(name));
@@ -4953,8 +4970,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             if (op == BinOp::IN && expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER &&
                 !static_cast<const Identifier*>(expr->get_left())->get_name().empty() &&
                 static_cast<const Identifier*>(expr->get_left())->get_name()[0] == '#') {
-                // `#name in obj`: special-cased in BinaryExpression::evaluate, not apply_operator.
-                return emit_treewalker_delegate(node);
+                // `#name in obj`: a brand check, not a property lookup, so it
+                // gets its own opcode rather than going through TestIn.
+                if (!compile_expression(expr->get_right())) return false;
+                emit(Op::HasPrivate);
+                emit_u16(add_name(static_cast<const Identifier*>(expr->get_left())->get_name()));
+                return !failed_;
             }
 
             Op vm_op;
@@ -5249,6 +5270,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 if (!is_local(name)) {
                     // Outer/global write via chain lookup.
                     if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
+                    if (!compound && named_evaluation_needs_delegate(expr->get_right())) {
+                        return emit_treewalker_delegate(node);
+                    }
                     if (!compound) {
                         // Spec 13.15.2: ResolveBinding happens before the RHS
                         // evaluates, so an unresolvable reference throws (in
@@ -5263,7 +5287,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                         if (!compile_expression(expr->get_right())) return false;
                         // NamedEvaluation: anonymous RHS takes the target's
                         // name (the opcode no-ops on an already-named value).
-                        if (is_named_evaluation_rhs(expr->get_right())) {
+                        // Only for a bare IdentifierRef -- `(fn) = function(){}`
+                        // covers the target in parentheses, which makes
+                        // IsIdentifierRef false and leaves the name empty.
+                        if (!expr->is_lhs_paren() && is_named_evaluation_rhs(expr->get_right())) {
                             emit(Op::SetFunctionNameIfUnnamed);
                             emit_u16(add_name(name));
                         }
@@ -5408,20 +5435,20 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             const ASTNode* callee = call->get_callee();
             const auto& call_args = call->get_arguments();
             if (call_args.size() > 200) return false;
-            if (has_spread(call_args)) {
-                // Only the plain `f(...xs)` shape is compiled here. A member
-                // callee additionally needs its receiver resolved (plus the
-                // optional-chaining/private variants of that), and `super(...)`
-                // needs the derived-constructor ceremony -- both still go
-                // through the tree-walker.
-                const bool super_callee =
-                    callee->get_type() == ASTNode::Type::IDENTIFIER &&
-                    static_cast<const Identifier*>(callee)->get_name() == "super";
-                if (callee->get_type() == ASTNode::Type::MEMBER_EXPRESSION ||
-                    callee->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION ||
-                    super_callee) {
+            const bool spread_args = has_spread(call_args);
+            if (spread_args) {
+                // `super(...)` needs the derived-constructor ceremony and stays
+                // on the tree-walker. A member callee falls through to the
+                // branch below, which resolves the receiver first and then
+                // emits the spread form.
+                if (callee->get_type() == ASTNode::Type::IDENTIFIER &&
+                    static_cast<const Identifier*>(callee)->get_name() == "super") {
                     return emit_treewalker_delegate(node);
                 }
+            }
+            if (spread_args &&
+                callee->get_type() != ASTNode::Type::MEMBER_EXPRESSION &&
+                callee->get_type() != ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
                 if (!compile_expression(callee)) return false;
                 int func_reg = alloc_temp();
                 if (failed_) return false;
@@ -5529,6 +5556,33 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 if (call->is_optional()) {
                     // a.b?.(...): the resolved method is still in the accumulator.
                     chain_shortcircuit_jumps_->push_back(emit_jump(Op::JumpIfNullish));
+                }
+
+                if (spread_args) {
+                    // Receiver and method are already resolved; only the
+                    // argument marshalling differs from the fixed-arity case.
+                    int args_reg;
+                    {
+                        ChainMaskScope mask(chain_shortcircuit_jumps_);
+                        if (call_args.size() == 1) {
+                            if (!compile_expression(static_cast<const SpreadElement*>(call_args[0].get())->get_argument())) return false;
+                            args_reg = alloc_temp();
+                            if (failed_) return false;
+                            emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(args_reg));
+                        } else {
+                            args_reg = emit_spread_array(call_args);
+                        }
+                    }
+                    if (args_reg < 0) { free_temp(obj_reg); return false; }
+                    emit(Op::CallSpread);
+                    emit_u8(static_cast<uint8_t>(func_reg));
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    emit_u8(static_cast<uint8_t>(args_reg));
+                    emit_u16(add_name(method_name));
+                    free_temp(args_reg);
+                    free_temp(obj_reg);
+                    return !failed_;
                 }
 
                 int args_start = next_register_;

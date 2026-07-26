@@ -103,6 +103,71 @@ Value UnaryExpression::to_numeric(Context& ctx, const Value& v) {
     return postfix_to_numeric(ctx, v);
 }
 
+// `#name in obj` (ergonomic brand check), shared with Op::HasPrivate so the
+// compiled and interpreted paths cannot disagree.
+Value private_name_in(Context& ctx, const std::string& iname, const Value& target) {
+    if (!target.is_object() && !target.is_function()) {
+        ctx.throw_type_error("Cannot use 'in' operator to search for '" + iname + "' in non-object");
+        return Value();
+    }
+    Object* obj = target.is_function()
+        ? static_cast<Object*>(target.as_function())
+        : target.as_object();
+    // Find the expected class brand for this private name from the call stack.
+    // This distinguishes Parent#field from Child#field when both have the same name.
+    Object* expected_brand = nullptr;
+    Function* brand_fn = nullptr;
+    CallStack& cs = CallStack::instance();
+    for (size_t i = cs.depth(); i > 0; --i) {
+        Function* fn = cs.at(i - 1).function_ptr;
+        if (!fn) continue;
+        Value brands_val = fn->get_property("__private_brands__");
+        if (brands_val.is_object()) {
+            Value name_brand = brands_val.as_object()->get_property(iname);
+            if (name_brand.is_object() || name_brand.is_function()) {
+                expected_brand = name_brand.is_function()
+                    ? static_cast<Object*>(name_brand.as_function())
+                    : name_brand.as_object();
+                brand_fn = fn;
+                break;
+            }
+        }
+    }
+    if (expected_brand) {
+        // Brand check: the object must be an instance of the class that owns this private name.
+        bool brand_ok = false;
+        Object* proto = obj;
+        while (proto) {
+            if (proto == expected_brand) { brand_ok = true; break; }
+            proto = proto->get_prototype();
+        }
+        if (!brand_ok) return Value(false);
+        // For private methods: also check the per-instance brand slot.
+        if (brand_fn) {
+            Value pm_names_val = brand_fn->get_property("__private_method_names__");
+            if (pm_names_val.is_object()) {
+                Value is_method = pm_names_val.as_object()->get_property(iname);
+                if (is_method.to_boolean()) {
+                    Value pm_slot_val = brand_fn->get_property("__pm_brand_slot__");
+                    if (pm_slot_val.is_string())
+                        return Value(obj->has_private_slot(pm_slot_val.to_string()));
+                }
+            }
+        }
+    }
+    // Fields are stored under a qualified key, see resolve_private_storage_key in CallStack.cpp.
+    std::string qualified = expected_brand
+        ? iname + "@" + std::to_string(reinterpret_cast<uintptr_t>(expected_brand))
+        : resolve_private_storage_key(iname, obj);
+    if (obj->has_private_slot(qualified) || obj->has_private_slot(iname)) return Value(true);
+    Object* proto = obj->get_prototype();
+    while (proto) {
+        if (proto->has_private_slot(qualified) || proto->has_private_slot(iname)) return Value(true);
+        proto = proto->get_prototype();
+    }
+    return Value(false);
+}
+
 Value BinaryExpression::evaluate(Context& ctx) {
     if (operator_ == Operator::ASSIGN ||
         operator_ == Operator::PLUS_ASSIGN ||
@@ -379,66 +444,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
         if (!iname.empty() && iname[0] == '#') {
             Value right_value = right_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            if (!right_value.is_object() && !right_value.is_function()) {
-                ctx.throw_type_error("Cannot use 'in' operator to search for '" + iname + "' in non-object");
-                return Value();
-            }
-            Object* obj = right_value.is_function()
-                ? static_cast<Object*>(right_value.as_function())
-                : right_value.as_object();
-            // Find the expected class brand for this private name from the call stack.
-            // This distinguishes Parent#field from Child#field when both have the same name.
-            Object* expected_brand = nullptr;
-            Function* brand_fn = nullptr;
-            CallStack& cs = CallStack::instance();
-            for (size_t i = cs.depth(); i > 0; --i) {
-                Function* fn = cs.at(i - 1).function_ptr;
-                if (!fn) continue;
-                Value brands_val = fn->get_property("__private_brands__");
-                if (brands_val.is_object()) {
-                    Value name_brand = brands_val.as_object()->get_property(iname);
-                    if (name_brand.is_object() || name_brand.is_function()) {
-                        expected_brand = name_brand.is_function()
-                            ? static_cast<Object*>(name_brand.as_function())
-                            : name_brand.as_object();
-                        brand_fn = fn;
-                        break;
-                    }
-                }
-            }
-            if (expected_brand) {
-                // Brand check: the object must be an instance of the class that owns this private name.
-                bool brand_ok = false;
-                Object* proto = obj;
-                while (proto) {
-                    if (proto == expected_brand) { brand_ok = true; break; }
-                    proto = proto->get_prototype();
-                }
-                if (!brand_ok) return Value(false);
-                // For private methods: also check the per-instance brand slot.
-                if (brand_fn) {
-                    Value pm_names_val = brand_fn->get_property("__private_method_names__");
-                    if (pm_names_val.is_object()) {
-                        Value is_method = pm_names_val.as_object()->get_property(iname);
-                        if (is_method.to_boolean()) {
-                            Value pm_slot_val = brand_fn->get_property("__pm_brand_slot__");
-                            if (pm_slot_val.is_string())
-                                return Value(obj->has_private_slot(pm_slot_val.to_string()));
-                        }
-                    }
-                }
-            }
-            // Fields are stored under a qualified key, see resolve_private_storage_key in CallStack.cpp.
-            std::string qualified = expected_brand
-                ? iname + "@" + std::to_string(reinterpret_cast<uintptr_t>(expected_brand))
-                : resolve_private_storage_key(iname, obj);
-            if (obj->has_private_slot(qualified) || obj->has_private_slot(iname)) return Value(true);
-            Object* proto = obj->get_prototype();
-            while (proto) {
-                if (proto->has_private_slot(qualified) || proto->has_private_slot(iname)) return Value(true);
-                proto = proto->get_prototype();
-            }
-            return Value(false);
+            return private_name_in(ctx, iname, right_value);
         }
     }
 

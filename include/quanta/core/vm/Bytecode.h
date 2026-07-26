@@ -124,6 +124,7 @@ enum class Op : uint8_t {
     // a bytecode loop so a plain Array skips the per-element iterator
     // protocol entirely.
     SpreadInto,      // r_arr r_idx
+    HasPrivate,      // n -- acc = (#name in acc), the ergonomic brand check
 
     GetNamed,     // r_obj n fb
     SetNamed,     // r_obj n fb

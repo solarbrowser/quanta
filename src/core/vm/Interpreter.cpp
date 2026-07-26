@@ -33,6 +33,8 @@ namespace Quanta {
 // Defined in the tree-walker's call.cpp: one shared definition of what a
 // spread expands to, so Op::SpreadInto and the tree-walker cannot drift.
 void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& out);
+// Likewise from binary.cpp, backing Op::HasPrivate.
+Value private_name_in(Context& ctx, const std::string& private_name, const Value& target);
 
 namespace VM {
 
@@ -1803,6 +1805,14 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 }
                 CHECK_EXC();
                 Collector::safepoint();
+                break;
+            }
+
+            case Op::HasPrivate: {
+                uint16_t name_idx = read_u16(code, pc);
+                pc += 2;
+                acc = private_name_in(ctx, chunk.names[name_idx], acc);
+                CHECK_EXC();
                 break;
             }
 
