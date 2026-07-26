@@ -3319,8 +3319,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->env_params_tdz = params_tdz;
     compiler.chunk_->needs_arguments = needs_arguments;
     if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
-    compiler.chunk_->lookup_cache.assign(compiler.chunk_->names.size(),
-                                         BytecodeChunk::LookupCacheEntry{});
+    compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
+        static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
+    compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
+    compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
+    compiler.chunk_->names = FixedArray<std::string>::from(std::move(compiler.names_));
+    compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
     return std::move(compiler.chunk_);
 }
 
@@ -3456,8 +3460,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     compiler.chunk_->parameter_count = 0;
     compiler.chunk_->env_mode = true;
     compiler.chunk_->script_mode = true;
-    compiler.chunk_->lookup_cache.assign(compiler.chunk_->names.size(),
-                                         BytecodeChunk::LookupCacheEntry{});
+    compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
+        static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
+    compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
+    compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
+    compiler.chunk_->names = FixedArray<std::string>::from(std::move(compiler.names_));
+    compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
     return std::move(compiler.chunk_);
 }
 
@@ -3609,11 +3617,11 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         emit_u16(static_cast<uint16_t>(loop_env_idx));
     }
 
-    size_t loop_start = chunk_->code.size();
+    size_t loop_start = code_.size();
     emit(Op::IteratorNextOrJump);
     emit_u8(static_cast<uint8_t>(iterator_reg));
     emit_u8(static_cast<uint8_t>(next_fn_reg));
-    size_t next_jump = chunk_->code.size();
+    size_t next_jump = code_.size();
     emit_u16(0);  // patched below to pre_exit (done, or the iterator threw)
 
     if (destr) {
@@ -3625,12 +3633,12 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         emit_write_local(var_name, /*is_declaration=*/declare_fresh);
     }
 
-    size_t body_start = chunk_->code.size();
+    size_t body_start = code_.size();
     loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels(), iterator_reg});
     if (!compile_statement(body)) return false;
     LoopScope scope = std::move(loop_stack_.back());
     loop_stack_.pop_back();
-    size_t body_end = chunk_->code.size();
+    size_t body_end = code_.size();
 
     for (size_t pos : scope.continue_patches) {
         if (!patch_jump(pos)) return false;  // continue lands on the advance step
@@ -3656,7 +3664,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     // Normal control flow ends here; skip over the exception-cleanup
     // handler below (reached only via CHECK_EXC's handler-table jump).
     size_t skip_cleanup = emit_jump(Op::Jump);
-    size_t cleanup_pc = chunk_->code.size();
+    size_t cleanup_pc = code_.size();
     emit(Op::IteratorClose);
     emit_u8(static_cast<uint8_t>(iterator_reg));
     emit_u8(1);  // mode 1: acc holds the pending exception -- restore + re-raise
@@ -3748,32 +3756,32 @@ void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declara
     }
 }
 
-void BytecodeCompiler::emit(Op op) { chunk_->code.push_back(static_cast<uint8_t>(op)); }
-void BytecodeCompiler::emit_u8(uint8_t v) { chunk_->code.push_back(v); }
+void BytecodeCompiler::emit(Op op) { code_.push_back(static_cast<uint8_t>(op)); }
+void BytecodeCompiler::emit_u8(uint8_t v) { code_.push_back(v); }
 void BytecodeCompiler::emit_u16(uint16_t v) {
-    chunk_->code.push_back(static_cast<uint8_t>(v & 0xFF));
-    chunk_->code.push_back(static_cast<uint8_t>(v >> 8));
+    code_.push_back(static_cast<uint8_t>(v & 0xFF));
+    code_.push_back(static_cast<uint8_t>(v >> 8));
 }
 
 uint16_t BytecodeCompiler::add_constant(const Value& v) {
-    if (chunk_->constants.size() >= 0xFFFF) { failed_ = true; return 0; }
-    chunk_->constants.push_back(v);
-    return static_cast<uint16_t>(chunk_->constants.size() - 1);
+    if (constants_.size() >= 0xFFFF) { failed_ = true; return 0; }
+    constants_.push_back(v);
+    return static_cast<uint16_t>(constants_.size() - 1);
 }
 
 uint16_t BytecodeCompiler::add_name(const std::string& name) {
-    for (size_t i = 0; i < chunk_->names.size(); i++) {
-        if (chunk_->names[i] == name) return static_cast<uint16_t>(i);
+    for (size_t i = 0; i < names_.size(); i++) {
+        if (names_[i] == name) return static_cast<uint16_t>(i);
     }
-    if (chunk_->names.size() >= 0xFFFF) { failed_ = true; return 0; }
-    chunk_->names.push_back(name);
-    return static_cast<uint16_t>(chunk_->names.size() - 1);
+    if (names_.size() >= 0xFFFF) { failed_ = true; return 0; }
+    names_.push_back(name);
+    return static_cast<uint16_t>(names_.size() - 1);
 }
 
 uint16_t BytecodeCompiler::alloc_feedback_slot() {
-    if (chunk_->feedback.size() >= 0xFFFF) { failed_ = true; return 0; }
-    chunk_->feedback.push_back(FeedbackSlot{});
-    return static_cast<uint16_t>(chunk_->feedback.size() - 1);
+    if (feedback_.size() >= 0xFFFF) { failed_ = true; return 0; }
+    feedback_.push_back(FeedbackSlot{});
+    return static_cast<uint16_t>(feedback_.size() - 1);
 }
 
 uint16_t BytecodeCompiler::alloc_private_feedback() {
@@ -3926,26 +3934,26 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
 
 size_t BytecodeCompiler::emit_jump(Op op) {
     emit(op);
-    size_t pos = chunk_->code.size();
+    size_t pos = code_.size();
     emit_u16(0);
     return pos;
 }
 
 bool BytecodeCompiler::patch_jump(size_t operand_pos) {
     // Offset is relative to the pc after the 2-byte operand.
-    ptrdiff_t offset = static_cast<ptrdiff_t>(chunk_->code.size()) -
+    ptrdiff_t offset = static_cast<ptrdiff_t>(code_.size()) -
                        static_cast<ptrdiff_t>(operand_pos + 2);
     if (offset < INT16_MIN || offset > INT16_MAX) { failed_ = true; return false; }
     uint16_t enc = static_cast<uint16_t>(static_cast<int16_t>(offset));
-    chunk_->code[operand_pos] = static_cast<uint8_t>(enc & 0xFF);
-    chunk_->code[operand_pos + 1] = static_cast<uint8_t>(enc >> 8);
+    code_[operand_pos] = static_cast<uint8_t>(enc & 0xFF);
+    code_[operand_pos + 1] = static_cast<uint8_t>(enc >> 8);
     return true;
 }
 
 bool BytecodeCompiler::emit_jump_back(Op op, size_t target_pc) {
     emit(op);
     ptrdiff_t offset = static_cast<ptrdiff_t>(target_pc) -
-                       static_cast<ptrdiff_t>(chunk_->code.size() + 2);
+                       static_cast<ptrdiff_t>(code_.size() + 2);
     if (offset < INT16_MIN || offset > INT16_MAX) { failed_ = true; return false; }
     emit_u16(static_cast<uint16_t>(static_cast<int16_t>(offset)));
     return true;
@@ -4095,7 +4103,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
                 env_depth_++;
             }
-            size_t loop_start = chunk_->code.size();
+            size_t loop_start = code_.size();
             if (!compile_expression(stmt->get_test())) return false;
             size_t exit_jump = emit_jump(Op::JumpIfFalse);
 
@@ -4135,7 +4143,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
                 env_depth_++;
             }
-            size_t body_start = chunk_->code.size();
+            size_t body_start = code_.size();
 
             loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels()});
             if (!compile_statement(stmt->get_body())) return false;
@@ -4195,7 +4203,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit(Op::AdvanceLoopEnv);
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
             }
-            size_t loop_start = chunk_->code.size();
+            size_t loop_start = code_.size();
             size_t exit_jump = 0;
             bool has_test = stmt->get_test() != nullptr;
             if (has_test) {
@@ -4374,9 +4382,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit(Op::SaveEnv);
             }
 
-            size_t try_start = chunk_->code.size();
+            size_t try_start = code_.size();
             if (!compile_statement(stmt->get_try_block())) return false;
-            size_t try_end = chunk_->code.size();
+            size_t try_end = code_.size();
             if (save_env) {
                 emit(Op::PopEnvSave);  // no exception: already correctly restored
                 try_env_depth_--;
@@ -4389,7 +4397,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             size_t catch_body_start = 0, catch_body_end = 0, jump_catch_ok = 0;
             if (catch_node) {
                 const auto* clause = static_cast<const CatchClause*>(catch_node);
-                size_t catch_pc = chunk_->code.size();
+                size_t catch_pc = code_.size();
                 if (save_env) emit(Op::RestoreEnv);
                 // A catch-body throw still reaches finally's own RestoreEnv --
                 // give it its own save slot or that underflows env_saves.
@@ -4421,9 +4429,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 }
                 // else: optional catch binding (`catch {}`) -- exception in
                 // acc is simply discarded, nothing to store.
-                catch_body_start = chunk_->code.size();
+                catch_body_start = code_.size();
                 if (!compile_statement(clause->get_body())) return false;
-                catch_body_end = chunk_->code.size();
+                catch_body_end = code_.size();
                 if (catch_env_idx >= 0) { emit(Op::ExitLoopEnv); env_depth_--; }
                 if (save_env_for_catch_body) {
                     emit(Op::PopEnvSave);
@@ -4440,7 +4448,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             if (finally_node) {
                 // Exception path: try (if no catch) or catch (if present)
                 // raised past this point -- save it, run finally, re-raise.
-                size_t reraise_pc = chunk_->code.size();
+                size_t reraise_pc = code_.size();
                 if (save_env) emit(Op::RestoreEnv);
                 int temp = alloc_temp();
                 if (failed_) return false;
@@ -4471,7 +4479,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 bool catch_needs_genreturn = suspendable_ && catch_node &&
                     contains_suspend(static_cast<const CatchClause*>(catch_node)->get_body());
                 if (try_needs_genreturn || catch_needs_genreturn) {
-                    size_t genreturn_pc = chunk_->code.size();
+                    size_t genreturn_pc = code_.size();
                     if (save_env) emit(Op::RestoreEnv);
                     int gr_temp = alloc_temp();
                     if (failed_) return false;

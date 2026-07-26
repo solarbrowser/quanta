@@ -2145,7 +2145,7 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     if (disasm) {
         std::fprintf(stderr, "%s", disassemble_chunk(*chunk, "<script>").c_str());
     }
-    ValueVectorRoot const_root(&chunk->constants);
+    ValueArrayRoot const_root(&chunk->constants);
     Value global_this = ctx.get_global_object()
         ? Value(ctx.get_global_object()) : Value();
     return run(*chunk, ctx, {}, &global_this);

@@ -158,6 +158,17 @@ private:
     std::vector<std::string> take_pending_labels();
 
     std::unique_ptr<BytecodeChunk> chunk_;
+    // Builder-side storage for chunk_'s 4 always-populated fields: these grow
+    // via push_back/random-access-mutate throughout compilation (jump
+    // backpatching writes code_[pos] after the fact, etc.), which
+    // BytecodeChunk's own FixedArray<T> fields can't support (fixed length
+    // once frozen). Moved into chunk_->code/constants/names/feedback via
+    // FixedArray<T>::from() exactly once, at the very end of compile()/
+    // compile_script() -- see those functions' final lines.
+    std::vector<uint8_t> code_;
+    std::vector<Value> constants_;
+    std::vector<std::string> names_;
+    std::vector<FeedbackSlot> feedback_;
     std::unordered_map<std::string, int> locals_;
     std::unordered_set<int> lexical_registers_;
     std::unordered_set<std::string> env_names_;

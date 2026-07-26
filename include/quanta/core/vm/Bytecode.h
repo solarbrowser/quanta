@@ -8,6 +8,7 @@
 #define QUANTA_VM_BYTECODE_H
 
 #include "quanta/core/runtime/Value.h"
+#include "quanta/core/vm/FixedArray.h"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -277,10 +278,17 @@ struct HandlerEntry {
 // by every Function instance built from that decl site (see
 // FunctionExecutable), not just every call of a single instance.
 struct BytecodeChunk {
-    std::vector<uint8_t> code;
-    std::vector<Value> constants;   // GC-visible via Function::trace()
-    std::vector<std::string> names; // identifier names for LdaLookup/Call diagnostics
-    mutable std::vector<FeedbackSlot> feedback; // written as call sites warm up
+    // Built via a std::vector builder in BytecodeCompiler, frozen into these
+    // FixedArray<T> (pointer+count, no capacity slack) exactly once at the
+    // end of compile()/compile_script() -- see BytecodeCompiler.h's code_/
+    // constants_/names_/feedback_ doc comment. feedback's element CONTENTS
+    // still mutate at runtime (IC warming) even though its LENGTH is frozen;
+    // FixedArray::operator[] hands out a non-const T& even through a const
+    // BytecodeChunk&, so (unlike the old std::vector) no `mutable` is needed.
+    FixedArray<uint8_t> code;
+    FixedArray<Value> constants;   // GC-visible via Function::trace()
+    FixedArray<std::string> names; // identifier names for LdaLookup/Call diagnostics
+    FixedArray<FeedbackSlot> feedback; // written as call sites warm up
 
     // GetPrivate/SetPrivate and GetKeyed/SetKeyed sites are rare relative to
     // ordinary named property access -- lazily allocated together since both
@@ -304,7 +312,12 @@ struct BytecodeChunk {
     // lookup_cache_data comment). See Environment::stable_binding_slot for
     // the guards.
     struct LookupCacheEntry { Environment* env = nullptr; Value* slot = nullptr; };
-    mutable std::vector<LookupCacheEntry> lookup_cache; // indexed by name id
+    // Same frozen-length/mutable-contents profile as feedback above -- only
+    // ever `= FixedArray<...>::filled(names.size(), ...)` once at compile
+    // end (BytecodeCompiler.cpp), individual entries written in place at
+    // runtime via a cached .data() pointer (see Interpreter.cpp's
+    // lookup_cache_data). No `mutable` needed, same reasoning as feedback.
+    FixedArray<LookupCacheEntry> lookup_cache; // indexed by name id
     uint16_t register_count = 0;
     uint8_t parameter_count = 0;    // params occupy regs[0..parameter_count)
 

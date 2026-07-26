@@ -460,6 +460,11 @@ std::vector<const std::vector<Value>*>& value_vector_roots() {
     return roots;
 }
 
+std::vector<const FixedArray<Value>*>& value_array_roots() {
+    static thread_local std::vector<const FixedArray<Value>*> roots;
+    return roots;
+}
+
 std::vector<Heap::ProbeResult>& remembered_cells() {
     static thread_local std::vector<Heap::ProbeResult> cells;
     return cells;
@@ -659,6 +664,8 @@ void run_minor_collection() {
     for (Context* c : exec_context_stack()) v.visit_context(c);
     for (const std::vector<Value>* vec : value_vector_roots())
         for (const Value& val : *vec) v.visit(val);
+    for (const FixedArray<Value>* arr : value_array_roots())
+        for (const Value& val : *arr) v.visit(val);
     Symbol::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
     FunctionExecutable::gc_trace_roots(v);
@@ -730,6 +737,8 @@ void scan_major_roots(MarkVisitor& v) {
     for (Context* c : exec_context_stack()) v.revisit_context(c);
     for (const std::vector<Value>* vec : value_vector_roots())
         for (const Value& val : *vec) v.visit(val);
+    for (const FixedArray<Value>* arr : value_array_roots())
+        for (const Value& val : *arr) v.visit(val);
     Symbol::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
     FunctionExecutable::gc_trace_roots(v);
@@ -1092,6 +1101,18 @@ void Collector::pop_value_vector(const std::vector<Value>* vec) {
     if (!roots.empty() && roots.back() == vec) { roots.pop_back(); return; }
     for (size_t i = roots.size(); i-- > 0;) {
         if (roots[i] == vec) { roots.erase(roots.begin() + i); return; }
+    }
+}
+
+void Collector::push_value_array(const FixedArray<Value>* arr) {
+    value_array_roots().push_back(arr);
+}
+
+void Collector::pop_value_array(const FixedArray<Value>* arr) {
+    auto& roots = value_array_roots();
+    if (!roots.empty() && roots.back() == arr) { roots.pop_back(); return; }
+    for (size_t i = roots.size(); i-- > 0;) {
+        if (roots[i] == arr) { roots.erase(roots.begin() + i); return; }
     }
 }
 

@@ -7,6 +7,7 @@
 #ifndef QUANTA_GC_COLLECTOR_H
 #define QUANTA_GC_COLLECTOR_H
 
+#include "quanta/core/vm/FixedArray.h"
 #include <chrono>
 #include <cstddef>
 #include <vector>
@@ -89,6 +90,16 @@ public:
     // re-read each collection, so reallocation during push_back is safe).
     static void push_value_vector(const std::vector<Value>* vec);
     static void pop_value_vector(const std::vector<Value>* vec);
+
+    // Same idea, for a frozen BytecodeChunk::constants -- used where the
+    // chunk itself isn't reachable via any owning GC object graph node at
+    // the point it's used (VM::run_script's raw top-level chunk, which
+    // isn't wrapped in a Function/FunctionExecutable the way every other
+    // chunk is). Unlike push_value_vector's target, a FixedArray never
+    // reallocates after BytecodeCompiler freezes it, but it's still
+    // re-scanned each collection the same way, for symmetry/simplicity.
+    static void push_value_array(const FixedArray<Value>* arr);
+    static void pop_value_array(const FixedArray<Value>* arr);
 };
 
 // RAII: keeps a Value vector reachable for the collector while it is built or
@@ -104,6 +115,20 @@ public:
 
 private:
     const std::vector<Value>* vec_;
+};
+
+// Same as ValueVectorRoot, for a FixedArray<Value> (BytecodeChunk::constants).
+class ValueArrayRoot {
+public:
+    explicit ValueArrayRoot(const FixedArray<Value>* arr) : arr_(arr) {
+        Collector::push_value_array(arr_);
+    }
+    ~ValueArrayRoot() { Collector::pop_value_array(arr_); }
+    ValueArrayRoot(const ValueArrayRoot&) = delete;
+    ValueArrayRoot& operator=(const ValueArrayRoot&) = delete;
+
+private:
+    const FixedArray<Value>* arr_;
 };
 
 // RAII frame registration for Function::call and friends.
