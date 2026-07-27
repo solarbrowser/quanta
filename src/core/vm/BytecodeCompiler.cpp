@@ -13,6 +13,12 @@
 
 namespace Quanta {
 
+// Defined in the tree-walker's language.cpp: the per-decl-site description a
+// function literal instantiates from, so the compiled and interpreted paths
+// build closures from the identical data.
+ClosureTemplate closure_template_for(const ASTNode* literal);
+
+
 namespace {
 
 constexpr int kMaxRegisters = 255;
@@ -3307,11 +3313,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     for (const auto& stmt : block->get_statements()) {
         if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
         if (!env_mode) return nullptr;
-        if (compiler.chunk_->ensure_closures().size() >= 0xFFFF) return nullptr;
+        if (compiler.chunk_->ensure_treewalk_nodes().size() >= 0xFFFF) return nullptr;
         compiler.hoisted_fn_decls_.insert(stmt.get());
-        compiler.chunk_->ensure_closures().push_back(stmt.get());
-        compiler.emit(Op::CreateClosure);
-        compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_closures().size() - 1));
+        // FunctionDeclaration::evaluate creates the function AND binds its name,
+        // and where it binds depends on the environment shape -- so unlike the
+        // literal forms it is still a tree-walk escape, not a ClosureTemplate.
+        compiler.chunk_->ensure_treewalk_nodes().push_back(stmt.get());
+        compiler.emit(Op::EvalAst);
+        compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_treewalk_nodes().size() - 1));
     }
 
     for (const auto& stmt : block->get_statements()) {
@@ -5961,7 +5970,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             if (!env_mode_) return false;
             if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
-            chunk_->ensure_closures().push_back(node);
+            chunk_->ensure_closures().push_back(closure_template_for(node));
             emit(Op::CreateClosure);
             emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             return true;

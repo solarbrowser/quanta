@@ -22,6 +22,7 @@ class Shape;
 class ASTNode;
 class Environment;
 class Object;
+struct ClosureTemplate;
 
 // Register-based, accumulator-centric instruction set (V8 Ignition model).
 // Encoding: u8 opcode + fixed operands -- r: u8 register, k: u16 constant-
@@ -370,14 +371,16 @@ struct BytecodeChunk {
     // unlike IcFeedback these stay separate lazy pointers rather than one
     // bundle.
 
-    // Function literals only (Op::CreateClosure) -- raw pointers into the
-    // owning Function's own body_. Separate from treewalk_nodes because this
-    // is the permanent case: a literal always needs some per-decl-site
-    // description to instantiate from, so this is where a prebuilt
-    // FunctionExecutable belongs (V8's CreateClosure reads a
-    // SharedFunctionInfo from the constant pool the same way).
-    std::unique_ptr<std::vector<const ASTNode*>> closures;
-    std::vector<const ASTNode*>& ensure_closures() { if (!closures) closures = std::make_unique<std::vector<const ASTNode*>>(); return *closures; }
+    // Function literals only (Op::CreateClosure). Separate from treewalk_nodes
+    // because this is the permanent case: a literal always needs some
+    // per-decl-site description to instantiate from. Holds prebuilt
+    // ClosureTemplates rather than AST pointers, so creating a closure no
+    // longer reaches back into the enclosing function's own body_ (V8's
+    // CreateClosure reads a SharedFunctionInfo from the constant pool the
+    // same way). Out of line: ClosureTemplate is only forward-declared here,
+    // since its own header needs BytecodeChunk.
+    std::unique_ptr<std::vector<ClosureTemplate>> closures;
+    std::vector<ClosureTemplate>& ensure_closures();
 
     // Everything the compiler cannot emit and hands back to the tree-walker
     // (Op::EvalAst): class declarations, regex literals, and subtrees from
@@ -411,6 +414,10 @@ struct BytecodeChunk {
     std::unique_ptr<EnvBundle> env;
     EnvBundle& ensure_env() { if (!env) env = std::make_unique<EnvBundle>(); return *env; }
     using LoopEnvVar = EnvBundle::LoopEnvVar; // BytecodeCompiler builds these before a chunk_ exists
+
+    BytecodeChunk();
+    // Out of line for the same reason ensure_closures is.
+    ~BytecodeChunk();
 
     void trace(Visitor& v) const;
 };

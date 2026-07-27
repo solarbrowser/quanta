@@ -254,11 +254,230 @@ static bool contains_direct_eval(ASTNode* node) {
     }
 }
 
+// Builds (once per decl site) the executable every instance of this literal
+// shares: a durable clone of the body and parameters, plus the source text
+// toString() reports. Callers pass the node's own cached_executable_ slot.
+static ExecutableRef<FunctionExecutable> ensure_shared_executable(
+        const ExecutableRef<FunctionExecutable>& cached,
+        const ASTNode* body,
+        const std::vector<std::unique_ptr<Parameter>>& params,
+        const std::string& source_text) {
+    if (cached) return cached;
+    ExecutableRef<FunctionExecutable> exe = make_executable_ref();
+    exe->body = body->clone();
+    for (const auto& param : params) {
+        exe->parameter_objects.push_back(
+            std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+        exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
+    }
+    // Function::set_source_text writes here anyway and short-circuits on an
+    // identical value, so hoisting it out of every instantiation is a no-op.
+    if (!source_text.empty()) exe->source_text = source_text;
+    return exe;
+}
+
+// ES6 `length`: parameters before the first rest or defaulted one.
+static uint32_t spec_length_of(const FunctionExecutable& exe) {
+    uint32_t n = 0;
+    for (const auto& p : exe.parameter_objects) {
+        if (p->is_rest() || p->has_default()) break;
+        n++;
+    }
+    return n;
+}
+
 bool BlockStatement::has_direct_eval_cached() const {
     if (contains_eval_cached_ >= 0) return contains_eval_cached_ != 0;
     bool found = contains_direct_eval(const_cast<BlockStatement*>(this));
     contains_eval_cached_ = found ? 1 : 0;
     return found;
+}
+
+// The source-fixed half: reads the literal node once and caches the shared
+// executable on it. Cheap enough to call per instantiation (every input is
+// itself already cached on the node), so no template needs storing there --
+// the compiler calls it once and parks the result in the chunk instead.
+//
+// needs_outer_env below is not one rule: each form pinned the closure
+// environment differently before this was shared, and those differences are
+// reproduced rather than unified.
+ClosureTemplate closure_template_for(const ASTNode* literal) {
+    ClosureTemplate tpl;
+    switch (literal->get_type()) {
+        case ASTNode::Type::FUNCTION_EXPRESSION: {
+            const auto* fe = static_cast<const FunctionExpression*>(literal);
+            tpl.form = ClosureTemplate::Form::FunctionExpr;
+            tpl.name = fe->is_named() ? fe->get_id()->get_name() : "";
+            tpl.is_generator = fe->is_generator();
+            tpl.is_async = fe->is_async();
+            tpl.is_method_shorthand = fe->is_method_shorthand();
+            tpl.needs_self_binding = fe->is_named() && !fe->is_decl_form();
+            tpl.body_is_strict = fe->get_body()->has_use_strict_directive();
+            tpl.has_direct_eval = fe->get_body()->has_direct_eval_cached();
+            tpl.declared_length = static_cast<uint32_t>(fe->get_cached_spec_length());
+            if (fe->is_generator()) {
+                tpl.needs_outer_env = true;  // suspendable body: not analyzed, keep the pin
+            } else {
+                if (fe->get_needs_outer_env_state() < 0) {
+                    fe->set_needs_outer_env_state(
+                        closure_needs_outer_environment(fe->get_params(), fe->get_body(),
+                                                        /*is_arrow=*/false) ? 1 : 0);
+                }
+                tpl.needs_outer_env = fe->get_needs_outer_env_state() != 0;
+            }
+            tpl.executable = ensure_shared_executable(fe->get_cached_executable(), fe->get_body(),
+                                                      fe->get_params(), fe->get_source_text());
+            if (!fe->get_cached_executable()) fe->set_cached_executable(tpl.executable);
+            break;
+        }
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
+            const auto* ar = static_cast<const ArrowFunctionExpression*>(literal);
+            tpl.form = ClosureTemplate::Form::Arrow;
+            tpl.is_async = ar->is_async();
+            tpl.is_arrow = true;
+            // Only the sync branch ever pinned the environment.
+            tpl.needs_outer_env = !ar->is_async();
+            tpl.has_direct_eval = contains_direct_eval(const_cast<ASTNode*>(ar->get_body()));
+            tpl.executable = ensure_shared_executable(ar->get_cached_executable(), ar->get_body(),
+                                                      ar->get_params(), ar->get_source_text());
+            if (!ar->get_cached_executable()) ar->set_cached_executable(tpl.executable);
+            tpl.declared_length = spec_length_of(*tpl.executable);
+            break;
+        }
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+            const auto* af = static_cast<const AsyncFunctionExpression*>(literal);
+            tpl.form = ClosureTemplate::Form::AsyncFunctionExpr;
+            tpl.name = af->get_id() ? af->get_id()->get_name() : "";
+            tpl.is_async = true;
+            tpl.is_arrow = af->is_arrow();
+            tpl.needs_self_binding = af->get_id() && !af->is_arrow() && !af->is_decl_form();
+            tpl.needs_outer_env = false;
+            tpl.body_is_strict = af->get_body()->has_use_strict_directive();
+            tpl.has_direct_eval = af->get_body()->has_direct_eval_cached();
+            tpl.executable = ensure_shared_executable(af->get_cached_executable(), af->get_body(),
+                                                      af->get_params(), af->get_source_text());
+            if (!af->get_cached_executable()) af->set_cached_executable(tpl.executable);
+            tpl.declared_length = spec_length_of(*tpl.executable);
+            break;
+        }
+        default:
+            break;
+    }
+    return tpl;
+}
+
+// The Context-dependent half of instantiating a function literal: everything
+// that differs between two closures born from the SAME source. Shared by the
+// four evaluate() forms below and by Op::CreateClosure, so a compiled and an
+// interpreted closure cannot come out different.
+Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
+    using Form = ClosureTemplate::Form;
+    ExecutableRef<FunctionExecutable> exe = tpl.executable;
+
+    Function* fn;
+    if (tpl.is_async && tpl.is_generator) {
+        fn = new AsyncGeneratorFunction(tpl.name, std::move(exe), &ctx);
+    } else if (tpl.is_generator) {
+        fn = new GeneratorFunction(tpl.name, std::move(exe), &ctx);
+    } else if (tpl.is_async && tpl.form != Form::FunctionExpr) {
+        fn = new AsyncFunction(tpl.name, std::move(exe), &ctx);
+    } else {
+        // Arrows are never constructible; nor is a method/getter/setter
+        // shorthand (spec 14.3.9), whose .prototype the literal finalize step
+        // would strip again immediately.
+        bool create_prototype = !tpl.is_arrow && !tpl.is_method_shorthand &&
+                                tpl.form != Form::Arrow;
+        fn = new Function(tpl.name, std::move(exe), &ctx, create_prototype);
+    }
+    std::unique_ptr<Function> function(fn);
+
+    if (tpl.needs_outer_env) function->mark_closure_environment_escaped();
+    function->set_declared_length(tpl.declared_length);
+
+    // A declaration and a sync arrow are the two forms whose own evaluate()
+    // linked [[Prototype]] explicitly, because the shared-executable
+    // constructor does not; the subclasses set their own intrinsic below.
+    bool plain = !tpl.is_async && !tpl.is_generator;
+    if (plain && (tpl.form == Form::Declaration || tpl.form == Form::Arrow)) {
+        if (Object* func_proto = ObjectFactory::get_function_prototype()) {
+            function->set_prototype(func_proto);
+        }
+    }
+
+    // NamedEvaluation (spec 15.2.5/15.5.3/15.8.4): a named function expression
+    // resolves its own name inside its body without aliasing an outer binding.
+    // The Environment must be fresh per instantiation -- sharing it would let
+    // two closures from one literal see each other's self-reference.
+    if (tpl.needs_self_binding) {
+        Environment* func_env = new Environment(Environment::Type::Declarative,
+                                                ctx.get_lexical_environment());
+        func_env->create_binding(tpl.name, Value(function.get()), false, false, false);
+        function->set_closure_environment(func_env);
+    }
+
+    if (tpl.is_arrow) {
+        function->set_is_arrow(true);
+        if (ctx.has_binding("this")) {
+            function->set_property("__arrow_this__", ctx.get_binding("this"));
+        }
+    }
+    if (tpl.form == Form::Arrow) {
+        // ContainsArguments is lexical: an arrow born inside a class field
+        // initializer keeps the direct-eval `arguments` ban for its whole life,
+        // however late it is called (marker read back in Function::call).
+        if (ctx.is_in_class_field_init()) {
+            function->set_property("__in_cfi__", Value(true));
+        }
+        if (!tpl.is_async) {
+            Value enclosing_new_target = ctx.get_new_target();
+            if (!enclosing_new_target.is_undefined()) {
+                function->set_property("__arrow_new_target__", enclosing_new_target);
+            }
+        }
+    }
+
+    // Generator/async subclasses come out of the base constructor pointing at
+    // plain Function.prototype -- retarget them so f.constructor is right.
+    const char* intrinsic_name = (tpl.is_async && tpl.is_generator) ? "AsyncGeneratorFunction"
+                                : tpl.is_generator ? "GeneratorFunction"
+                                : tpl.is_async ? "@@AsyncFunction" : nullptr;
+    if (intrinsic_name && tpl.form != Form::FunctionExpr && ctx.has_binding(intrinsic_name)) {
+        Value ctor = ctx.get_binding(intrinsic_name);
+        if (ctor.is_function()) {
+            Value proto = ctor.as_function()->get_property("prototype");
+            if (proto.is_object()) function->set_prototype(proto.as_object());
+        }
+    }
+
+    if (tpl.form == Form::FunctionExpr && ctx.is_in_param_eval()) {
+        function->set_is_param_default(true);
+    }
+
+    // ES5 10.1.1: strict if the enclosing code is strict OR the body says so.
+    if (ctx.is_strict_mode() || tpl.body_is_strict) {
+        function->set_is_strict(true);
+        if (tpl.form == Form::FunctionExpr) {
+            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+                [](Context& c, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    c.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                    return Value();
+                });
+            PropertyDescriptor d;
+            d.set_getter(thrower.get());
+            d.set_setter(thrower.get());
+            d.set_configurable(false);
+            d.set_enumerable(false);
+            function->set_property_descriptor("caller", d);
+            function->set_property_descriptor("arguments", d);
+            thrower.release();
+        }
+    }
+
+    if (tpl.has_direct_eval) {
+        function->set_property("__contains_eval__", Value(true));
+    }
+    return Value(function.release());
 }
 
 Value FunctionDeclaration::evaluate(Context& ctx) {
@@ -1512,115 +1731,9 @@ std::unique_ptr<ASTNode> MethodDefinition::clone() const {
 
 
 Value FunctionExpression::evaluate(Context& ctx) {
-    std::string name = is_named() ? id_->get_name() : "";
-
-    std::unique_ptr<Function> function;
-    // Resolved once per literal site (needs_outer_env_state_ cache), reused
-    // by every instantiation -- see closure_needs_outer_environment's doc
-    // comment (BytecodeCompiler.h) for the full contract. Only consulted
-    // below for the non-suspendable branch; generator/async bodies always
-    // keep the old unconditional pin regardless.
-    if (get_needs_outer_env_state() < 0) {
-        set_needs_outer_env_state(closure_needs_outer_environment(params_, body_.get(), /*is_arrow=*/false) ? 1 : 0);
-    }
-    bool needs_outer_env = get_needs_outer_env_state() != 0;
-    // Share one FunctionExecutable across every instantiation of this
-    // literal -- built once (durable clone of body_/params_, exactly the
-    // clone the old per-instance path made anyway), cached directly on
-    // this node (mirrors cached_param_names_'s idiom), reused by every
-    // later evaluate() of the same literal regardless of which enclosing
-    // call (if any) is currently running. Compiled bytecode is filled in
-    // lazily on first CALL of any instance sharing this executable (see
-    // Function::call_default), same as it always was for a top-level or
-    // un-nested function -- this just makes every construction path get
-    // that same one-compile-per-decl-site behavior instead of only the
-    // narrow enclosing-instance-scoped case the old mechanism covered. Now
-    // also covers the generator/async-generator forms (mutually exclusive
-    // shapes for the SAME node, so they safely share the one
-    // cached_executable_ slot with the plain form below).
-    ExecutableRef<FunctionExecutable> exe = get_cached_executable();
-    if (!exe) {
-        exe = make_executable_ref();
-        exe->body = body_->clone();
-        for (const auto& param : params_) {
-            exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-        }
-        exe->parameters = get_cached_param_names();
-        set_cached_executable(exe);
-    }
-    if (is_async_ && is_generator_) {
-        function = std::make_unique<AsyncGeneratorFunction>(name, std::move(exe), &ctx);
-        function->mark_closure_environment_escaped();  // suspendable body: not analyzed, preserve the old pin
-    } else if (is_generator_) {
-        function = std::make_unique<GeneratorFunction>(name, std::move(exe), &ctx);
-        function->mark_closure_environment_escaped();  // suspendable body: not analyzed, preserve the old pin
-    } else {
-        // Method/getter/setter shorthand is non-constructible (spec 14.3.9) -- the
-        // literal/class finalize step would strip .prototype right away, so skip
-        // building it at all.
-        function = std::make_unique<Function>(name, std::move(exe), &ctx,
-                                              /*create_prototype=*/!is_method_shorthand_);
-        if (needs_outer_env) function->mark_closure_environment_escaped();
-    }
-    function->set_declared_length(get_cached_spec_length());
-
-    // NamedEvaluation (spec 15.2.5/15.5.3): give a named function expression an immutable
-    // self-reference binding so its name resolves inside the body without aliasing an outer one.
-    if (function && is_named() && !is_decl_form_) {
-        Environment* func_env = new Environment(Environment::Type::Declarative, ctx.get_lexical_environment());
-        func_env->create_binding(name, Value(function.get()), false, false, false);
-        function->set_closure_environment(func_env);
-    }
-
-    if (function) {
-        if (ctx.is_in_param_eval()) {
-            function->set_is_param_default(true);
-        }
-
-        // Outer variables resolve through Function's closure_environment_ (the real
-        // lexical environment captured at creation time) -- no value snapshot needed here.
-        bool is_strict = ctx.is_strict_mode();
-        if (!is_strict && body_) {
-            is_strict = body_->has_use_strict_directive();
-        }
-
-        if (is_strict) {
-            function->set_is_strict(true);
-
-            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    ctx.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-                    return Value();
-                });
-
-            PropertyDescriptor caller_desc;
-            caller_desc.set_getter(thrower.get());
-            caller_desc.set_setter(thrower.get());
-            caller_desc.set_configurable(false);
-            caller_desc.set_enumerable(false);
-            function->set_property_descriptor("caller", caller_desc);
-
-            PropertyDescriptor arguments_desc;
-            arguments_desc.set_getter(thrower.get());
-            arguments_desc.set_setter(thrower.get());
-            arguments_desc.set_configurable(false);
-            arguments_desc.set_enumerable(false);
-            function->set_property_descriptor("arguments", arguments_desc);
-
-            thrower.release();
-        }
-    }
-
-    if (function && !source_text_.empty()) {
-        function->set_source_text(source_text_);
-    }
-    if (function && body_->has_direct_eval_cached()) {
-        function->set_property("__contains_eval__", Value(true));
-    }
-
-    return Value(function.release());
+    return instantiate_closure(ctx, closure_template_for(this));
 }
+
 
 std::string FunctionExpression::to_string() const {
     std::ostringstream oss;
@@ -1665,128 +1778,9 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
 
 
 Value ArrowFunctionExpression::evaluate(Context& ctx) {
-    std::string name = "";
-
-    if (is_async_) {
-        // Share one FunctionExecutable across every instantiation of this
-        // async arrow literal -- same cache-on-node pattern as the sync
-        // branch below (mutually exclusive: an arrow's is_async_ never
-        // changes, so both branches safely share the one cached_executable_
-        // slot on this node).
-        ExecutableRef<FunctionExecutable> exe = get_cached_executable();
-        if (!exe) {
-            exe = make_executable_ref();
-            exe->body = body_->clone();
-            for (const auto& param : params_) {
-                exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-                exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
-            }
-            set_cached_executable(exe);
-        }
-        size_t declared_length = 0;
-        for (const auto& p : exe->parameter_objects) {
-            if (p->is_rest() || p->has_default()) break;
-            declared_length++;
-        }
-
-        auto* async_fn = new AsyncFunction(name, std::move(exe), &ctx);
-        async_fn->set_declared_length(declared_length);
-        async_fn->set_is_arrow(true);
-        if (ctx.is_strict_mode()) async_fn->set_is_strict(true);
-
-        if (ctx.has_binding("this")) {
-            async_fn->set_property("__arrow_this__", ctx.get_binding("this"));
-        }
-        // ContainsArguments is lexical: an arrow born inside a class field
-        // initializer keeps the direct-eval `arguments` ban for its whole life,
-        // however late it's called (marker read back in Function::call).
-        if (ctx.is_in_class_field_init()) {
-            async_fn->set_property("__in_cfi__", Value(true));
-        }
-
-        if (ctx.has_binding("@@AsyncFunction")) {
-            Value async_ctor = ctx.get_binding("@@AsyncFunction");
-            if (async_ctor.is_function()) {
-                Value proto = async_ctor.as_function()->get_property("prototype");
-                if (proto.is_object()) {
-                    async_fn->set_prototype(proto.as_object());
-                }
-            }
-        }
-
-        // Outer variables resolve through Function's closure_environment_ -- no value snapshot needed here.
-        bool has_eval = contains_direct_eval(body_.get());
-
-        if (!source_text_.empty()) {
-            async_fn->set_source_text(source_text_);
-        }
-        if (has_eval) {
-            async_fn->set_property("__contains_eval__", Value(true));
-        }
-        return Value(async_fn);
-    }
-
-    // Share one FunctionExecutable across every instantiation of this arrow
-    // literal (e.g. a callback re-created on each call of an enclosing
-    // function) -- same cache-on-node pattern as FunctionExpression's plain
-    // branch.
-    ExecutableRef<FunctionExecutable> exe = get_cached_executable();
-    if (!exe) {
-        exe = make_executable_ref();
-        exe->body = body_->clone();
-        for (const auto& param : params_) {
-            exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-            exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
-        }
-        set_cached_executable(exe);
-    }
-    size_t declared_length = 0;
-    for (const auto& p : exe->parameter_objects) {
-        if (p->is_rest() || p->has_default()) break;
-        declared_length++;
-    }
-    // arrows are never constructible -- create_prototype=false
-    auto arrow_function = std::make_unique<Function>(name, std::move(exe), &ctx, /*create_prototype=*/false);
-    arrow_function->set_declared_length(declared_length);
-    // Matches create_js_function's own two follow-up steps (see
-    // FunctionDeclaration::evaluate's identical rationale).
-    arrow_function->mark_closure_environment_escaped();
-    if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-        arrow_function->set_prototype(func_proto);
-    }
-
-    arrow_function->set_is_arrow(true);
-    if (ctx.is_strict_mode()) {
-        arrow_function->set_is_strict(true);
-    }
-
-    if (ctx.has_binding("this")) {
-        Value this_value = ctx.get_binding("this");
-        arrow_function->set_property("__arrow_this__", this_value);
-    }
-    // See the async-arrow branch above: field-initializer arrows keep the
-    // direct-eval `arguments` ban for their whole life.
-    if (ctx.is_in_class_field_init()) {
-        arrow_function->set_property("__in_cfi__", Value(true));
-    }
-
-    Value enclosing_new_target = ctx.get_new_target();
-    if (!enclosing_new_target.is_undefined()) {
-        arrow_function->set_property("__arrow_new_target__", enclosing_new_target);
-    }
-
-    // Outer variables resolve through Function's closure_environment_ -- no value snapshot needed here.
-    bool has_eval = contains_direct_eval(body_.get());
-
-    if (!source_text_.empty()) {
-        arrow_function->set_source_text(source_text_);
-    }
-    if (has_eval) {
-        arrow_function->set_property("__contains_eval__", Value(true));
-    }
-
-    return Value(arrow_function.release());
+    return instantiate_closure(ctx, closure_template_for(this));
 }
+
 
 std::string ArrowFunctionExpression::to_string() const {
     std::ostringstream oss;
@@ -3080,80 +3074,9 @@ std::unique_ptr<ASTNode> YieldExpression::clone() const {
 
 
 Value AsyncFunctionExpression::evaluate(Context& ctx) {
-    std::string function_name = id_ ? id_->get_name() : "";
-
-    // Share one FunctionExecutable across every instantiation of this async
-    // function literal -- same cache-on-node pattern as FunctionExpression's
-    // plain branch.
-    ExecutableRef<FunctionExecutable> exe = get_cached_executable();
-    if (!exe) {
-        exe = make_executable_ref();
-        exe->body = body_->clone();
-        for (const auto& param : params_) {
-            exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-            exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
-        }
-        set_cached_executable(exe);
-    }
-    size_t declared_length = 0;
-    for (const auto& p : exe->parameter_objects) {
-        if (p->is_rest() || p->has_default()) break;
-        declared_length++;
-    }
-
-    auto* fn = new AsyncFunction(function_name, std::move(exe), &ctx);
-    fn->set_declared_length(declared_length);
-
-    // NamedEvaluation (spec 15.8.4): see FunctionExpression::evaluate for the same pattern.
-    if (id_ && !is_arrow_ && !is_decl_form_) {
-        Environment* func_env = new Environment(Environment::Type::Declarative, ctx.get_lexical_environment());
-        func_env->create_binding(function_name, Value(fn), false, false, false);
-        fn->set_closure_environment(func_env);
-    }
-
-    if (is_arrow_) {
-        fn->set_is_arrow(true);
-        if (ctx.has_binding("this")) {
-            fn->set_property("__arrow_this__", ctx.get_binding("this"));
-        }
-    }
-
-    {
-        bool is_strict = ctx.is_strict_mode();
-        if (!is_strict && body_) {
-            for (const auto& s : body_->get_statements()) {
-                if (s->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
-                auto* es = static_cast<ExpressionStatement*>(s.get());
-                if (!es->get_expression() || es->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
-                auto* sl = static_cast<StringLiteral*>(es->get_expression());
-                if (sl->get_value() == "use strict" && !sl->has_escapes()) {
-                    is_strict = true;
-                    break;
-                }
-            }
-        }
-        if (is_strict) fn->set_is_strict(true);
-    }
-
-    if (ctx.has_binding("@@AsyncFunction")) {
-        Value async_ctor = ctx.get_binding("@@AsyncFunction");
-        if (async_ctor.is_function()) {
-            Value proto = async_ctor.as_function()->get_property("prototype");
-            if (proto.is_object()) {
-                fn->set_prototype(proto.as_object());
-            }
-        }
-    }
-
-    // Outer variables resolve through Function's closure_environment_ -- no value snapshot needed here.
-    bool has_eval = body_->has_direct_eval_cached();
-
-    if (has_eval) {
-        fn->set_property("__contains_eval__", Value(true));
-    }
-
-    return Value(fn);
+    return instantiate_closure(ctx, closure_template_for(this));
 }
+
 
 std::string AsyncFunctionExpression::to_string() const {
     std::ostringstream oss;

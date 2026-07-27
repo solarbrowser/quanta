@@ -6,6 +6,7 @@
 
 #include "quanta/core/vm/Bytecode.h"
 #include "quanta/core/gc/Visitor.h"
+#include "quanta/parser/FunctionExecutable.h"
 #include <sstream>
 
 namespace Quanta {
@@ -19,6 +20,14 @@ static_assert(sizeof(BytecodeChunk) == 136);
 #else
 static_assert(sizeof(BytecodeChunk) <= 192);
 #endif
+
+BytecodeChunk::BytecodeChunk() = default;
+BytecodeChunk::~BytecodeChunk() = default;
+
+std::vector<ClosureTemplate>& BytecodeChunk::ensure_closures() {
+    if (!closures) closures = std::make_unique<std::vector<ClosureTemplate>>();
+    return *closures;
+}
 
 void BytecodeChunk::trace(Visitor& v) const {
     for (const auto& c : constants) {

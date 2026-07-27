@@ -196,6 +196,40 @@ inline ExecutableRef<FunctionExecutable> make_executable_ref() {
     return ExecutableRef<FunctionExecutable>(new FunctionExecutable());
 }
 
+// Everything instantiating a function literal needs that is fixed by the
+// literal's own source text: computed once per decl site, cached on the AST
+// node, shared by every instantiation. The other half of instantiation reads
+// the Context (the enclosing `this`/new.target an arrow captures, strict-mode
+// inheritance, the self-reference Environment a named function expression
+// gets) and stays in instantiate_closure.
+//
+// This is what Op::CreateClosure holds instead of an ASTNode*, so a compiled
+// function no longer needs its own AST alive just to build its closures
+// (V8's CreateClosure reads a SharedFunctionInfo the same way).
+struct ClosureTemplate {
+    // Which literal form this stands in for. The four differ in small fixed
+    // ways -- only the declaration and the sync arrow link Function.prototype
+    // explicitly, only a function expression installs the strict
+    // caller/arguments throwers, only the sync arrow captures new.target --
+    // so the form is carried rather than unified. Merging them would be a
+    // behavior change wearing a refactor's clothes.
+    enum class Form : uint8_t { FunctionExpr, Arrow, AsyncFunctionExpr, Declaration };
+
+    ExecutableRef<FunctionExecutable> executable;
+    std::string name;
+    Form form = Form::FunctionExpr;
+    bool is_async = false;
+    bool is_generator = false;
+    bool is_arrow = false;
+    bool is_method_shorthand = false;  // spec 14.3.9: no .prototype, not a constructor
+    bool needs_self_binding = false;   // named function expression: immutable self-reference
+    bool needs_outer_env = true;       // closure_needs_outer_environment, or the
+                                       // unconditional pin the other forms always took
+    bool body_is_strict = false;       // "use strict" directive in the body itself
+    bool has_direct_eval = false;
+    uint32_t declared_length = 0;
+};
+
 }
 
 #endif
