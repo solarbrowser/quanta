@@ -126,6 +126,9 @@ private:
     uint16_t alloc_keyed_feedback();
 
     bool member_is_supported(const class MemberExpression* mem) const;
+    static bool member_is_super(const class MemberExpression* mem);
+    bool super_member_emittable(const class MemberExpression* mem) const;
+    bool emit_super_load(const class MemberExpression* mem);
     bool emit_treewalker_delegate(const ASTNode* node);
 
     // Builds a fresh Array from `elements`, expanding any SpreadElement

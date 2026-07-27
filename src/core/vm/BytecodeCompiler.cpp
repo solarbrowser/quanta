@@ -3807,11 +3807,44 @@ uint16_t BytecodeCompiler::alloc_keyed_feedback() {
     return static_cast<uint16_t>(kf.size() - 1);
 }
 
-bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
-    if (mem->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
-        static_cast<const Identifier*>(mem->get_object())->get_name() == "super") {
-        return false;
+bool BytecodeCompiler::member_is_super(const MemberExpression* mem) {
+    return mem->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+           static_cast<const Identifier*>(mem->get_object())->get_name() == "super";
+}
+
+// Whether the super opcodes can express this member at all. Checked before any
+// emission so a refusal can still fall back to the tree-walker cleanly. The
+// super bindings live on the context chain, so this needs a real Environment
+// for the same reason emit_treewalker_delegate does.
+bool BytecodeCompiler::super_member_emittable(const MemberExpression* mem) const {
+    if (!env_mode_) return false;
+    if (mem->is_computed()) return true;
+    if (mem->get_property()->get_type() != ASTNode::Type::IDENTIFIER) return false;
+    const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
+    return name.empty() || name[0] != '#';
+}
+
+// Reads super.<name> / super[<expr>] into the accumulator.
+bool BytecodeCompiler::emit_super_load(const MemberExpression* mem) {
+    if (!mem->is_computed()) {
+        emit(Op::GetSuper);
+        emit_u16(add_name(static_cast<const Identifier*>(mem->get_property())->get_name()));
+        return !failed_;
     }
+    int base_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::ResolveSuperBase);
+    emit_u8(static_cast<uint8_t>(base_reg));
+    if (!compile_expression(mem->get_property())) return false;
+    emit(Op::GetSuperKeyed);
+    emit_u8(static_cast<uint8_t>(base_reg));
+    free_temp(base_reg);
+    return !failed_;
+}
+
+bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
+    // Callers that can emit super handle it before asking; the rest still delegate.
+    if (member_is_super(mem)) return false;
     if (!mem->is_computed()) {
         if (mem->get_property()->get_type() != ASTNode::Type::IDENTIFIER) return false;
         const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
@@ -3953,6 +3986,46 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     if (expr->get_left()->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return false;
     const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
     const bool priv = member_is_private(mem);
+    if (member_is_super(mem)) {
+        if (!super_member_emittable(mem)) return emit_treewalker_delegate(expr);
+        int base_reg = alloc_temp();
+        if (failed_) return false;
+        emit(Op::ResolveSuperBase);
+        emit_u8(static_cast<uint8_t>(base_reg));
+
+        uint16_t sname = 0;
+        int skey_reg = -1;
+        if (mem->is_computed()) {
+            if (!compile_expression(mem->get_property())) return false;
+            skey_reg = alloc_temp();
+            if (failed_) return false;
+            // GetValue happens before the short-circuit test, so the key is
+            // converted once here and reused by the store below.
+            emit(Op::ToPropertyKey);
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(skey_reg));
+            emit(Op::GetSuperKeyed);
+            emit_u8(static_cast<uint8_t>(base_reg));
+        } else {
+            sname = add_name(static_cast<const Identifier*>(mem->get_property())->get_name());
+            emit(Op::GetSuper);
+            emit_u16(sname);
+        }
+        size_t skip = emit_jump(skip_op);
+        if (!compile_expression(expr->get_right())) return false;
+        if (skey_reg >= 0) {
+            emit(Op::SetSuperKeyed);
+            emit_u8(static_cast<uint8_t>(base_reg));
+            emit_u8(static_cast<uint8_t>(skey_reg));
+            free_temp(skey_reg);
+        } else {
+            emit(Op::SetSuper);
+            emit_u8(static_cast<uint8_t>(base_reg));
+            emit_u16(sname);
+        }
+        free_temp(base_reg);
+        return patch_jump(skip) && !failed_;
+    }
     if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(expr);
     if (chain_contains_optional(mem)) return false;
 
@@ -4850,7 +4923,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
         case ASTNode::Type::IDENTIFIER: {
             const std::string& name = static_cast<const Identifier*>(node)->get_name();
             if (name == "this") {
-                // this_needs_super never enters the VM, so no TDZ check here.
+                // Op::LdaThis carries the derived-constructor TDZ check itself, so
+                // a `this` read before super() throws from there.
                 emit(Op::LdaThis);
                 return true;
             }
@@ -4874,6 +4948,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
         case ASTNode::Type::MEMBER_EXPRESSION: {
             const auto* mem = static_cast<const MemberExpression*>(node);
             const bool priv = member_is_private(mem);
+            if (member_is_super(mem)) {
+                if (!super_member_emittable(mem)) return emit_treewalker_delegate(node);
+                return emit_super_load(mem);
+            }
             if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
             if (!compile_expression(mem->get_object())) return false;
             int obj_reg = alloc_temp();
@@ -5079,6 +5157,58 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     if (operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                         const auto* mem = static_cast<const MemberExpression*>(operand);
                         const bool priv = member_is_private(mem);
+                        if (member_is_super(mem)) {
+                            if (!super_member_emittable(mem)) return emit_treewalker_delegate(node);
+                            int base_reg = alloc_temp();
+                            if (failed_) return false;
+                            emit(Op::ResolveSuperBase);
+                            emit_u8(static_cast<uint8_t>(base_reg));
+
+                            uint16_t sname = 0;
+                            int skey_reg = -1;
+                            if (mem->is_computed()) {
+                                if (!compile_expression(mem->get_property())) return false;
+                                skey_reg = alloc_temp();
+                                if (failed_) return false;
+                                emit(Op::ToPropertyKey);  // once; the read and write reuse the string
+                                emit(Op::Star);
+                                emit_u8(static_cast<uint8_t>(skey_reg));
+                                emit(Op::GetSuperKeyed);
+                                emit_u8(static_cast<uint8_t>(base_reg));
+                            } else {
+                                sname = add_name(
+                                    static_cast<const Identifier*>(mem->get_property())->get_name());
+                                emit(Op::GetSuper);
+                                emit_u16(sname);
+                            }
+
+                            int sold = -1;
+                            if (is_post) {
+                                emit(Op::ToNumeric);
+                                sold = alloc_temp();
+                                if (failed_) return false;
+                                emit(Op::Star);
+                                emit_u8(static_cast<uint8_t>(sold));
+                            }
+                            emit(is_inc ? Op::Inc : Op::Dec);
+                            if (skey_reg >= 0) {
+                                emit(Op::SetSuperKeyed);
+                                emit_u8(static_cast<uint8_t>(base_reg));
+                                emit_u8(static_cast<uint8_t>(skey_reg));
+                            } else {
+                                emit(Op::SetSuper);
+                                emit_u8(static_cast<uint8_t>(base_reg));
+                                emit_u16(sname);
+                            }
+                            if (is_post) {
+                                emit(Op::Ldar);
+                                emit_u8(static_cast<uint8_t>(sold));
+                                free_temp(sold);
+                            }
+                            if (skey_reg >= 0) free_temp(skey_reg);
+                            free_temp(base_reg);
+                            return !failed_;
+                        }
                         if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
                         if (chain_contains_optional(mem)) return false;
 
@@ -5347,6 +5477,67 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             if (expr->get_left()->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return false;
             const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
             const bool priv = member_is_private(mem);
+            if (member_is_super(mem)) {
+                if (!super_member_emittable(mem)) return emit_treewalker_delegate(node);
+                // PutValue resolves the base before the RHS runs, so it is parked
+                // in a register rather than resolved by the store opcode.
+                int base_reg = alloc_temp();
+                if (failed_) return false;
+                emit(Op::ResolveSuperBase);
+                emit_u8(static_cast<uint8_t>(base_reg));
+
+                int super_key_reg = -1;
+                uint16_t super_name = 0;
+                if (mem->is_computed()) {
+                    if (!compile_expression(mem->get_property())) return false;
+                    super_key_reg = alloc_temp();
+                    if (failed_) return false;
+                    if (compound) {
+                        // The read needs a property key now; a plain assign leaves
+                        // the conversion to the store, after the RHS (spec PutValue).
+                        emit(Op::ToPropertyKey);
+                    }
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(super_key_reg));
+                } else {
+                    super_name = add_name(static_cast<const Identifier*>(mem->get_property())->get_name());
+                }
+
+                if (compound) {
+                    if (super_key_reg >= 0) {
+                        emit(Op::Ldar);
+                        emit_u8(static_cast<uint8_t>(super_key_reg));
+                        emit(Op::GetSuperKeyed);
+                        emit_u8(static_cast<uint8_t>(base_reg));
+                    } else {
+                        emit(Op::GetSuper);
+                        emit_u16(super_name);
+                    }
+                    int old_val = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(old_val));
+                    if (!compile_expression(expr->get_right())) return false;
+                    emit(vm_op);
+                    emit_u8(static_cast<uint8_t>(old_val));
+                    free_temp(old_val);
+                } else if (!compile_expression(expr->get_right())) {
+                    return false;
+                }
+
+                if (super_key_reg >= 0) {
+                    emit(Op::SetSuperKeyed);
+                    emit_u8(static_cast<uint8_t>(base_reg));
+                    emit_u8(static_cast<uint8_t>(super_key_reg));
+                    free_temp(super_key_reg);
+                } else {
+                    emit(Op::SetSuper);
+                    emit_u8(static_cast<uint8_t>(base_reg));
+                    emit_u16(super_name);
+                }
+                free_temp(base_reg);
+                return !failed_;
+            }
             if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
 
             if (!compile_expression(mem->get_object())) return false;
@@ -5496,12 +5687,18 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 bool mem_computed;
                 bool mem_optional = callee->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION;
                 bool mem_private = false;
+                const MemberExpression* super_mem = nullptr;
                 if (!mem_optional) {
                     const auto* mem = static_cast<const MemberExpression*>(callee);
                     mem_private = member_is_private(mem);
-                    // super.method(...): delegate the whole call to the
-                    // tree-walker instead of bailing the function.
-                    if (!mem_private && !member_is_supported(mem)) return emit_treewalker_delegate(node);
+                    if (member_is_super(mem)) {
+                        if (!super_member_emittable(mem)) return emit_treewalker_delegate(node);
+                        super_mem = mem;
+                    } else if (!mem_private && !member_is_supported(mem)) {
+                        // Forms the register compiler doesn't implement: delegate the
+                        // whole call to the tree-walker instead of bailing the function.
+                        return emit_treewalker_delegate(node);
+                    }
                     mem_obj = mem->get_object();
                     mem_prop = mem->get_property();
                     mem_computed = mem->is_computed();
@@ -5522,7 +5719,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     mem_computed = opt->is_computed();
                 }
 
-                if (!compile_expression(mem_obj)) return false;
+                // super.m(...) calls the method found on the super base, but with
+                // the current `this` as receiver, so the two differ here where
+                // every other form uses one object for both.
+                if (super_mem) {
+                    emit(Op::LdaThis);
+                } else if (!compile_expression(mem_obj)) {
+                    return false;
+                }
                 int obj_reg = alloc_temp();
                 if (failed_) return false;
                 emit(Op::Star);
@@ -5535,7 +5739,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 // Resolve the method before compiling arguments (spec order):
                 // this throws on a null/undefined receiver, args must not run first.
                 std::string method_name;
-                if (!mem_computed) {
+                if (super_mem) {
+                    method_name = mem_computed
+                        ? "<computed>"
+                        : static_cast<const Identifier*>(mem_prop)->get_name();
+                    if (!emit_super_load(super_mem)) return false;
+                } else if (!mem_computed) {
                     method_name = static_cast<const Identifier*>(mem_prop)->get_name();
                     emit(mem_private ? Op::GetPrivate : Op::GetNamed);
                     emit_u8(static_cast<uint8_t>(obj_reg));
@@ -5611,9 +5820,25 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             if (callee->get_type() != ASTNode::Type::IDENTIFIER) return false;
             const std::string& callee_name = static_cast<const Identifier*>(callee)->get_name();
             if (callee_name == "super") {
-                // super(...) constructor call: delegate to the tree-walker, which
-                // handles the derived-constructor `this`-binding ceremony.
-                return emit_treewalker_delegate(node);
+                // The whole derived-constructor ceremony lives in
+                // perform_super_call; this only marshals the arguments. It needs
+                // the super bindings on the context chain, like the property forms.
+                if (!env_mode_) return emit_treewalker_delegate(node);
+                int super_args_start = next_register_;
+                {
+                    ChainMaskScope mask(chain_shortcircuit_jumps_);
+                    for (const auto& arg : call_args) {
+                        int arg_reg = alloc_temp();
+                        if (failed_) return false;
+                        if (!compile_expression(arg.get())) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(arg_reg));
+                    }
+                }
+                emit(Op::SuperCall);
+                emit_u8(static_cast<uint8_t>(super_args_start));
+                emit_u8(static_cast<uint8_t>(call_args.size()));
+                return !failed_;
             }
             if (callee_name == "eval" || callee_name == "import") {
                 return false;

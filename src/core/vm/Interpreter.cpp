@@ -35,6 +35,14 @@ namespace Quanta {
 void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& out);
 // Likewise from binary.cpp, backing Op::HasPrivate.
 Value private_name_in(Context& ctx, const std::string& private_name, const Value& target);
+// And from call.cpp, backing Op::SuperCall.
+Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values, bool super_already_called);
+// And from member.cpp, backing the Op::GetSuper family.
+Object* resolve_super_base(Context& ctx);
+Value super_get(Context& ctx, const std::string& prop_name);
+Value super_get_on(Context& ctx, Object* base, const std::string& prop_name);
+void super_set(Context& ctx, const std::string& prop_name, const Value& value);
+void super_set_on(Context& ctx, Object* base, const std::string& prop_name, const Value& value);
 
 namespace VM {
 
@@ -1813,6 +1821,74 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 pc += 2;
                 acc = private_name_in(ctx, chunk.names[name_idx], acc);
                 CHECK_EXC();
+                break;
+            }
+
+            case Op::GetSuper: {
+                uint16_t name_idx = read_u16(code, pc);
+                pc += 2;
+                acc = super_get(ctx, chunk.names[name_idx]);
+                CHECK_EXC();
+                break;
+            }
+
+            case Op::SetSuper: {
+                uint8_t base_reg = code[pc];
+                uint16_t name_idx = read_u16(code, pc + 1);
+                pc += 3;
+                super_set_on(ctx, as_object_like(regs[base_reg]), chunk.names[name_idx], acc);
+                CHECK_EXC();
+                break;
+            }
+
+            case Op::ResolveSuperBase: {
+                uint8_t dst = code[pc];
+                pc += 1;
+                // The this-TDZ check belongs here rather than in the keyed opcodes:
+                // GetThisBinding precedes the key expression, whose side effects must
+                // not run first (13.3.7.1 step 2).
+                if (ctx.this_needs_super()) {
+                    ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+                    CHECK_EXC();
+                    break;
+                }
+                Object* base = resolve_super_base(ctx);
+                CHECK_EXC();
+                regs[dst] = base ? Value(base) : Value();
+                break;
+            }
+
+            case Op::GetSuperKeyed: {
+                uint8_t base_reg = code[pc];
+                pc += 1;
+                std::string key = acc.to_property_key();
+                CHECK_EXC();
+                acc = super_get_on(ctx, as_object_like(regs[base_reg]), key);
+                CHECK_EXC();
+                break;
+            }
+
+            case Op::SetSuperKeyed: {
+                uint8_t base_reg = code[pc];
+                uint8_t key_reg = code[pc + 1];
+                pc += 2;
+                std::string key = regs[key_reg].to_property_key();
+                CHECK_EXC();
+                super_set_on(ctx, as_object_like(regs[base_reg]), key, acc);
+                CHECK_EXC();
+                break;
+            }
+
+            case Op::SuperCall: {
+                uint8_t args_start = code[pc];
+                uint8_t argc = code[pc + 1];
+                pc += 2;
+                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
+                // The arguments already ran, so sampling here is what the
+                // tree-walker gets by OR-ing its before/after samples.
+                acc = perform_super_call(ctx, call_args, ctx.was_super_called());
+                CHECK_EXC();
+                Collector::safepoint();
                 break;
             }
 

@@ -74,6 +74,8 @@ const OpInfo& op_info(Op op) {
         {"CreateRestArray", 1, 'r'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
         {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"HasPrivate", 2, 'n'},
+        {"GetSuper", 2, 'n'}, {"ResolveSuperBase", 1, 'r'}, {"SetSuper", 3, 'l'},
+        {"GetSuperKeyed", 1, 'r'}, {"SetSuperKeyed", 2, 'r'}, {"SuperCall", 2, 'S'},
         {"GetNamed", 5, 'g'}, {"SetNamed", 5, 'g'},
         {"GetPrivate", 5, 'g'}, {"SetPrivate", 5, 'g'},
         {"GetKeyed", 3, 'f'}, {"SetKeyed", 4, 'x'},
@@ -131,6 +133,10 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
             }
             case 'i':
                 out << " #" << static_cast<int>(static_cast<int8_t>(chunk.code[operand_pc]));
+                break;
+            case 'S':
+                out << " args=r" << static_cast<int>(chunk.code[operand_pc])
+                    << " argc=" << static_cast<int>(chunk.code[operand_pc + 1]);
                 break;
             case 'n': {
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |

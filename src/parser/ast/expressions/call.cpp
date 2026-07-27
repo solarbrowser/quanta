@@ -147,6 +147,141 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
     return arg_values;
 }
 
+// SuperCall (13.3.7.1) plus the ConstructorEvaluation bookkeeping around it.
+// Shared by the tree-walker below and Op::SuperCall. The caller evaluates the
+// arguments and samples `super_already_called` beforehand, because BindThisValue's
+// "called twice" check must see the state from before they ran (`super(super())`).
+Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values,
+                         bool super_already_called) {
+    // Note: NO already-called check here -- spec order for a second super()
+    // is args evaluated, parent [[Construct]] runs again, and only then
+    // BindThisValue throws (checked below, after the parent returns).
+
+    // Check for class extends null -- super() always throws TypeError
+    Value super_is_null = ctx.get_binding("__super_is_null__");
+    if (super_is_null.to_boolean()) {
+        ctx.throw_type_error("Super constructor is not a constructor");
+        return Value();
+    }
+
+    Value parent_constructor = ctx.get_binding("__super__");
+
+    if (parent_constructor.is_undefined()) {
+        parent_constructor = ctx.get_binding("__super_constructor__");
+    }
+
+
+    if ((parent_constructor.is_undefined() && parent_constructor.is_function()) ||
+        (parent_constructor.is_function() && parent_constructor.as_function() == nullptr)) {
+        return Value();
+    }
+
+    if (parent_constructor.is_function()) {
+        try {
+            Function* parent_func = parent_constructor.as_function();
+            if (!parent_func) {
+                return Value();
+            }
+
+            // IsConstructor check: calling super() with a non-constructor throws TypeError
+            if (!parent_func->is_constructor()) {
+                ctx.throw_type_error("Super constructor is not a constructor");
+                return Value();
+            }
+
+            Object* this_obj = ctx.get_this_binding();
+
+            bool was_in_ctor = ctx.is_in_constructor_call();
+            Value old_new_target = ctx.get_new_target();
+            ctx.set_in_constructor_call(true);
+            if (old_new_target.is_undefined()) {
+                ctx.set_new_target(Value(static_cast<Object*>(parent_func)));
+            }
+
+            ctx.set_pending_construct_call(true);
+            Value result;
+            // A default-ctor parent's own implicit super(...args) only runs via construct().
+            if (!parent_func->is_native() && parent_func->has_own_property("__default_ctor__")) {
+                result = parent_func->construct(ctx, arg_values);
+            } else if (this_obj) {
+                Value this_value(this_obj);
+                result = parent_func->call(ctx, arg_values, this_value);
+            } else {
+                result = parent_func->call(ctx, arg_values);
+            }
+            ctx.clear_return_value();
+            if (ctx.has_exception()) return Value();
+
+            ctx.set_in_constructor_call(was_in_ctor);
+            ctx.set_new_target(old_new_target);
+
+            // BindThisValue on an already-initialized binding: a second
+            // super() throws here, AFTER the parent ran -- `this` keeps
+            // its first value and field initializers don't re-run.
+            if (super_already_called) {
+                ctx.throw_reference_error("Super constructor called twice");
+                return Value();
+            }
+
+            ctx.set_super_called(true);
+            ctx.set_this_needs_super(false);
+
+            // If parent constructor explicitly returned an object, use that as new this.
+            // Resolved BEFORE adding the private-method brand slot below: the slot must
+            // land on whichever object actually ends up being `this` going forward, not
+            // the pre-override allocation (which return-override may discard entirely).
+            Object* final_this_obj = this_obj;
+            bool returned_override = false;
+            if ((result.is_object() || result.is_function()) && this_obj) {
+                Object* new_this = result.as_object();
+                if (new_this && new_this != this_obj) {
+                    ctx.set_this_binding(new_this);
+                    ctx.set_binding("this", result);
+                    final_this_obj = new_this;
+                    // Lets Function::construct tell a super-swapped `this`
+                    // (needs the subclass prototype stomped for built-in
+                    // supers) apart from an explicit `return obj` (returned
+                    // untouched). Context-side identity only: a property
+                    // marker would be observable through Proxy traps or a
+                    // deferred module namespace's [[Get]].
+                    ctx.set_last_super_override(new_this);
+                }
+                returned_override = true;
+            }
+
+            // InitializeInstanceElements: add per-instance private method brand slot.
+            // This must happen after super() returns so that accessing private methods
+            // before super() correctly throws TypeError (brand slot not yet present).
+            {
+                CallStack& pm_cs = CallStack::instance();
+                if (!pm_cs.is_empty() && pm_cs.top().function_ptr) {
+                    Value pm_slot_val = pm_cs.top().function_ptr->get_property("__pm_brand_slot__");
+                    if (pm_slot_val.is_string()) {
+                        std::string pm_slot = pm_slot_val.to_string();
+                        Object* pm_this = final_this_obj ? final_this_obj : ctx.get_this_binding();
+                        if (pm_this) pm_this->add_private_field(pm_slot);
+                        if (ctx.has_exception()) return Value();
+                    }
+                }
+            }
+
+            if (returned_override) {
+                return result;
+            }
+
+            // Return the this value
+            if (final_this_obj) {
+                return Value(final_this_obj);
+            }
+            return Value();
+        } catch (...) {
+            return Value();
+        }
+    } else {
+        return Value();
+    }
+}
+
 Value CallExpression::evaluate(Context& ctx) {
     if (callee_->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
         OptionalChainingExpression* opt = static_cast<OptionalChainingExpression*>(callee_.get());
@@ -221,139 +356,12 @@ Value CallExpression::evaluate(Context& ctx) {
     if (callee_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* identifier = static_cast<Identifier*>(callee_.get());
         if (identifier->get_name() == "super") {
-            // Note: NO already-called check here -- spec order for a second super()
-            // is args evaluated, parent [[Construct]] runs again, and only then
-            // BindThisValue throws (checked below, after the parent returns).
-
-            // Check for class extends null -- super() always throws TypeError
-            Value super_is_null = ctx.get_binding("__super_is_null__");
-            if (super_is_null.to_boolean()) {
-                ctx.throw_type_error("Super constructor is not a constructor");
-                return Value();
-            }
-
-            Value parent_constructor = ctx.get_binding("__super__");
-
-            if (parent_constructor.is_undefined()) {
-                parent_constructor = ctx.get_binding("__super_constructor__");
-            }
-
-
-            if ((parent_constructor.is_undefined() && parent_constructor.is_function()) ||
-                (parent_constructor.is_function() && parent_constructor.as_function() == nullptr)) {
-                return Value();
-            }
-
-            if (parent_constructor.is_function()) {
-                bool super_already_called = ctx.was_super_called();
-                std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
-                if (ctx.has_exception()) return Value();
-                // `super(super())`: the inner super() just ran as an argument.
-                super_already_called = super_already_called || ctx.was_super_called();
-
-                try {
-                    Function* parent_func = parent_constructor.as_function();
-                    if (!parent_func) {
-                        return Value();
-                    }
-
-                    // IsConstructor check: calling super() with a non-constructor throws TypeError
-                    if (!parent_func->is_constructor()) {
-                        ctx.throw_type_error("Super constructor is not a constructor");
-                        return Value();
-                    }
-
-                    Object* this_obj = ctx.get_this_binding();
-
-                    bool was_in_ctor = ctx.is_in_constructor_call();
-                    Value old_new_target = ctx.get_new_target();
-                    ctx.set_in_constructor_call(true);
-                    if (old_new_target.is_undefined()) {
-                        ctx.set_new_target(Value(static_cast<Object*>(parent_func)));
-                    }
-
-                    ctx.set_pending_construct_call(true);
-                    Value result;
-                    // A default-ctor parent's own implicit super(...args) only runs via construct().
-                    if (!parent_func->is_native() && parent_func->has_own_property("__default_ctor__")) {
-                        result = parent_func->construct(ctx, arg_values);
-                    } else if (this_obj) {
-                        Value this_value(this_obj);
-                        result = parent_func->call(ctx, arg_values, this_value);
-                    } else {
-                        result = parent_func->call(ctx, arg_values);
-                    }
-                    ctx.clear_return_value();
-                    if (ctx.has_exception()) return Value();
-
-                    ctx.set_in_constructor_call(was_in_ctor);
-                    ctx.set_new_target(old_new_target);
-
-                    // BindThisValue on an already-initialized binding: a second
-                    // super() throws here, AFTER the parent ran -- `this` keeps
-                    // its first value and field initializers don't re-run.
-                    if (super_already_called) {
-                        ctx.throw_reference_error("Super constructor called twice");
-                        return Value();
-                    }
-
-                    ctx.set_super_called(true);
-                    ctx.set_this_needs_super(false);
-
-                    // If parent constructor explicitly returned an object, use that as new this.
-                    // Resolved BEFORE adding the private-method brand slot below: the slot must
-                    // land on whichever object actually ends up being `this` going forward, not
-                    // the pre-override allocation (which return-override may discard entirely).
-                    Object* final_this_obj = this_obj;
-                    bool returned_override = false;
-                    if ((result.is_object() || result.is_function()) && this_obj) {
-                        Object* new_this = result.as_object();
-                        if (new_this && new_this != this_obj) {
-                            ctx.set_this_binding(new_this);
-                            ctx.set_binding("this", result);
-                            final_this_obj = new_this;
-                            // Lets Function::construct tell a super-swapped `this`
-                            // (needs the subclass prototype stomped for built-in
-                            // supers) apart from an explicit `return obj` (returned
-                            // untouched). Context-side identity only: a property
-                            // marker would be observable through Proxy traps or a
-                            // deferred module namespace's [[Get]].
-                            ctx.set_last_super_override(new_this);
-                        }
-                        returned_override = true;
-                    }
-
-                    // InitializeInstanceElements: add per-instance private method brand slot.
-                    // This must happen after super() returns so that accessing private methods
-                    // before super() correctly throws TypeError (brand slot not yet present).
-                    {
-                        CallStack& pm_cs = CallStack::instance();
-                        if (!pm_cs.is_empty() && pm_cs.top().function_ptr) {
-                            Value pm_slot_val = pm_cs.top().function_ptr->get_property("__pm_brand_slot__");
-                            if (pm_slot_val.is_string()) {
-                                std::string pm_slot = pm_slot_val.to_string();
-                                Object* pm_this = final_this_obj ? final_this_obj : ctx.get_this_binding();
-                                if (pm_this) pm_this->add_private_field(pm_slot);
-                                if (ctx.has_exception()) return Value();
-                            }
-                        }
-                    }
-
-                    if (returned_override) {
-                        return result;
-                    }
-
-                    // Return the this value
-                    if (final_this_obj) {
-                        return Value(final_this_obj);
-                    }
-                    return Value();
-                } catch (...) {
-                    return Value();
-                }
-            } else {
-                return Value();
-            }
+            bool super_already_called = ctx.was_super_called();
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
+            // `super(super())`: the inner super() just ran as an argument.
+            super_already_called = super_already_called || ctx.was_super_called();
+            return perform_super_call(ctx, arg_values, super_already_called);
         }
     }
 

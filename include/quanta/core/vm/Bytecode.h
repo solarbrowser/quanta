@@ -126,6 +126,16 @@ enum class Op : uint8_t {
     SpreadInto,      // r_arr r_idx
     HasPrivate,      // n -- acc = (#name in acc), the ergonomic brand check
 
+    // A plain read can resolve its base inline. Nothing else can: 13.3.7.1 runs
+    // GetSuperBase before the key expression, and PutValue runs it before the RHS,
+    // so those park the base in a register first and read it back from there.
+    GetSuper,        // n   -- acc = super.name
+    ResolveSuperBase,// r   -- r = GetSuperBase() (undefined when there is none)
+    SetSuper,        // r_base n     -- super.name = acc
+    GetSuperKeyed,   // r_base       -- acc = super[acc]
+    SetSuperKeyed,   // r_base r_key -- super[r_key] = acc
+    SuperCall,       // r_args_start argc -- acc = the bound `this`
+
     GetNamed,     // r_obj n fb
     SetNamed,     // r_obj n fb
     GetPrivate,   // r_obj n fb -- literal `.#name`: brand check + qualified-slot access
