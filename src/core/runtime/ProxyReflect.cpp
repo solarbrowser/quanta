@@ -31,7 +31,8 @@ static std::string to_prop_key(const Value& key) {
 }
 
 // OrdinarySet(O, P, V, Receiver), defined further below -- forward declared for set_trap's use.
-static bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx);
+// Not static: super's [[Set]] in member.cpp is the same algorithm with Receiver = this.
+bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx);
 // from_prop_key is defined further below; forward-declared for ordinary_get_with_receiver's use.
 static Value from_prop_key(const std::string& key);
 
@@ -1014,7 +1015,7 @@ Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
 // from the object being walked, data-property writes go through Receiver's own
 // [[GetOwnProperty]]/[[DefineOwnProperty]] (which fire Proxy traps if Receiver is a
 // Proxy), not a plain write on the original target.
-static bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx) {
+bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx) {
     // TypedArray's own [[Set]] bypasses OrdinarySet entirely for a canonical numeric key.
     if (O->get_type() == Object::ObjectType::TypedArray) {
         TypedArrayBase* ta = static_cast<TypedArrayBase*>(O);

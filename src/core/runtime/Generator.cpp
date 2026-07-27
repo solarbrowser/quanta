@@ -594,6 +594,21 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         gen_context.set_binding("this", bound_this_g);
     }
 
+    // Super bindings, same as Function::call and Async's exec context. Without the
+    // home object a generator method that overrides a parent method of the same
+    // name resolves super back onto itself.
+    Value gen_super_ctor = get_property("__super_constructor__");
+    if (gen_super_ctor.is_function()) {
+        gen_context.create_binding("__super__", gen_super_ctor, false);
+        if (has_property("__is_static_method__")) {
+            gen_context.create_binding("__super_is_static__", Value(true), false);
+        }
+    }
+    Value gen_home_object = get_property("__home_object__");
+    if (!gen_home_object.is_undefined() && !gen_home_object.is_null()) {
+        gen_context.create_binding("__home_object__", gen_home_object, false);
+    }
+
     // A named class's own name is bound as an immutable self-reference inside its
     // methods (__closure_const_<name>) -- see ClassDeclaration::evaluate. Everything
     // else resolves through closure_environment_, no materialization needed.

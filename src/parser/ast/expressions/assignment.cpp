@@ -43,6 +43,10 @@
 
 namespace Quanta {
 
+// Defined in member.cpp (GetSuperBase / super [[Set]]).
+Object* resolve_super_base(Context&);
+void super_set_on(Context&, Object*, const std::string&, const Value&);
+
 static bool is_anonymous_function_def(const ASTNode* node);
 
 Value AssignmentExpression::evaluate(Context& ctx) {
@@ -332,25 +336,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         Object* super_lookup_proto = nullptr;
         if (is_super_assignment) {
             write_target = ctx.get_binding("this");
-            Value super_ctor = ctx.get_binding("__super__");
-            if (super_ctor.is_function()) {
-                if (ctx.has_binding("__super_is_static__")) {
-                    super_lookup_proto = super_ctor.as_function();
-                } else {
-                    Value proto_val = super_ctor.as_function()->get_property("prototype");
-                    if (proto_val.is_object()) super_lookup_proto = proto_val.as_object();
-                }
-            } else {
-                Value home = ctx.get_binding("__home_object__");
-                if (!home.is_undefined() && !home.is_null()) {
-                    Object* home_obj = home.is_function() ? static_cast<Object*>(home.as_function()) : home.as_object();
-                    if (home_obj) super_lookup_proto = home_obj->get_prototype();
-                } else if (write_target.is_object_like()) {
-                    Object* this_obj = write_target.is_function()
-                        ? static_cast<Object*>(write_target.as_function()) : write_target.as_object();
-                    if (this_obj) super_lookup_proto = this_obj->get_prototype();
-                }
-            }
+            super_lookup_proto = resolve_super_base(ctx);
         }
 
         // Evaluate key expression once (before RHS per spec)
@@ -456,13 +442,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 lobj->set_private_slot_value(lprop, right_value);
                 return right_value;
             }
-            // The write target for super.x (op)= val is always 'this', never the super base.
-            Object* wobj = is_super_assignment
-                ? (write_target.is_function() ? static_cast<Object*>(write_target.as_function())
-                                                : (write_target.is_object() ? write_target.as_object() : nullptr))
-                : lobj;
-            if (wobj) {
-                bool ok = wobj->ordinary_set(lprop, right_value);
+            if (is_super_assignment) {
+                super_set_on(ctx, super_lookup_proto, lprop, right_value);
+                if (ctx.has_exception()) return Value();
+            } else if (lobj) {
+                bool ok = lobj->ordinary_set(lprop, right_value);
                 if (!ok && ctx.is_strict_mode()) {
                     ctx.throw_type_error("Cannot assign to read only property '" + lprop + "'");
                     return Value();
@@ -550,6 +534,24 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         
         Object* obj = nullptr;
         bool is_string_object = false;
+
+        // Stores the final value. A super write is not an ordinary write to `this`:
+        // the lookup walks the super base's chain, so a setter or a read-only data
+        // property up there still governs the result (spec super [[Set]]).
+        auto store = [&](const std::string& key, const Value& val) -> bool {
+            if (is_super_assignment) {
+                super_set_on(ctx, super_lookup_proto, key, val);
+                return !ctx.has_exception();
+            }
+            if (!obj) return true;
+            if (obj->ordinary_set(key, val)) return true;
+            if (ctx.has_exception()) return false;
+            if (ctx.is_strict_mode()) {
+                ctx.throw_type_error("Cannot assign to read only property '" + key + "'");
+                return false;
+            }
+            return true;
+        };
 
         // For super.x = val: write to 'this', not to super's prototype
         Value effective_object = is_super_assignment ? write_target : object_value;
@@ -968,13 +970,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         }
                     }
                 } else {
-                    if (obj) {
-                        bool success = obj->ordinary_set(prop_name, right_value);
-                        if (!success && ctx.is_strict_mode()) {
-                            ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
-                            return Value();
-                        }
-                    }
+                    if (!store(prop_name, right_value)) return Value();
                 }
                 break;
             case Operator::PLUS_ASSIGN: {
@@ -1043,11 +1039,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     } else {
                         computed = Value(current_value.to_number() + right_value.to_number());
                     }
-                    bool ok = obj->ordinary_set(prop_name, computed);
-                    if (!ok && ctx.is_strict_mode()) {
-                        ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
-                        return Value();
-                    }
+                    if (!store(prop_name, computed)) return Value();
                     return computed;
                 }
                 break;
@@ -1081,11 +1073,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN:result = static_cast<double>(static_cast<uint32_t>(l) >> (static_cast<uint32_t>(r) & 0x1F)); break;
                     default: result = l; break;
                 }
-                bool success = obj->ordinary_set(prop_name, Value(result));
-                if (!success && ctx.is_strict_mode()) {
-                    ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
-                    return Value();
-                }
+                if (!store(prop_name, Value(result))) return Value();
                 return Value(result);
             }
             default:

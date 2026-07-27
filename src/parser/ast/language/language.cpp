@@ -1198,10 +1198,20 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         fn->set_property(closure_key, ctor_val);
         fn->set_property(const_marker, Value(true));
     };
+    // [[HomeObject]]: super inside a method resolves against the object the method
+    // was defined on, never against its runtime receiver. Instance methods home on
+    // the prototype, static methods on the constructor.
+    auto stamp_home_object = [](Function* fn, Object* home) {
+        if (fn && home) fn->set_property("__home_object__", Value(home));
+    };
     if (!class_name.empty()) {
         // The constructor itself must see the class name as const (spec 15.7.14 step 7)
         mark_class_name_closure(constructor_fn.get(), /*force=*/true);
     }
+    // The constructor is a method definition too, so `super.x` inside it (and inside
+    // an arrow that closes over it) homes on the prototype. Binding it here also
+    // shadows any home object an enclosing method frame left on the scope chain.
+    stamp_home_object(constructor_fn.get(), proto_ptr);
     if (proto_ptr) {
         auto proto_keys = proto_ptr->get_own_property_keys_unfiltered();
         for (const auto& key : proto_keys) {
@@ -1210,14 +1220,17 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (desc.is_accessor_descriptor()) {
                 if (desc.has_getter() && desc.get_getter()) {
                     mark_class_name_closure(static_cast<Function*>(desc.get_getter()));
+                    stamp_home_object(static_cast<Function*>(desc.get_getter()), proto_ptr);
                 }
                 if (desc.has_setter() && desc.get_setter()) {
                     mark_class_name_closure(static_cast<Function*>(desc.get_setter()));
+                    stamp_home_object(static_cast<Function*>(desc.get_setter()), proto_ptr);
                 }
             } else {
                 Value method_val = proto_ptr->get_property(key);
                 if (method_val.is_function()) {
                     mark_class_name_closure(method_val.as_function());
+                    stamp_home_object(method_val.as_function(), proto_ptr);
                 }
             }
         }
@@ -1225,17 +1238,24 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     auto static_keys = constructor_fn->get_own_property_keys_unfiltered();
     for (const auto& key : static_keys) {
         if (key == "prototype" || key == "name" || key == "length" || key == "__super_constructor__") continue;
+        // Engine markers are not static methods. __closure_<name> in particular holds
+        // the constructor itself, so stamping it would overwrite the constructor's
+        // own home object with the constructor.
+        bool is_internal_marker = key.rfind("__", 0) == 0;
         // get_property invokes the getter for accessor properties (e.g. "static get foo() { ... }"), which we must not do here.
         PropertyDescriptor desc = constructor_fn->get_property_descriptor(key);
         if (desc.is_accessor_descriptor()) {
             if (desc.has_getter() && desc.get_getter()) {
                 mark_class_name_closure(static_cast<Function*>(desc.get_getter()));
+                if (!is_internal_marker) stamp_home_object(static_cast<Function*>(desc.get_getter()), constructor_fn.get());
             }
             if (desc.has_setter() && desc.get_setter()) {
                 mark_class_name_closure(static_cast<Function*>(desc.get_setter()));
+                if (!is_internal_marker) stamp_home_object(static_cast<Function*>(desc.get_setter()), constructor_fn.get());
             }
         } else if (desc.has_value() && desc.get_value().is_function()) {
             mark_class_name_closure(desc.get_value().as_function());
+            if (!is_internal_marker) stamp_home_object(desc.get_value().as_function(), constructor_fn.get());
         }
     }
 

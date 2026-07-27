@@ -242,6 +242,12 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     if (super_ctor.is_function()) {
         exec_ctx->create_binding("__super__", super_ctor, false);
     }
+    // [[HomeObject]] rides on the function, not the receiver, so an async method
+    // keeps resolving super after being detached from the object it came from.
+    Value home_object = get_property("__home_object__");
+    if (!home_object.is_undefined() && !home_object.is_null()) {
+        exec_ctx->create_binding("__home_object__", home_object, false);
+    }
 
     // A named class's own name is bound as an immutable self-reference inside its
     // methods (__closure_const_<name>) -- see ClassDeclaration::evaluate. Everything
@@ -1515,6 +1521,21 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
         gen_ctx->create_binding("this", bound_this, true);
     } catch (...) {
         gen_ctx->set_binding("this", bound_this);
+    }
+
+    // Super bindings, same as Function::call. Without the home object an async
+    // generator method that overrides a parent method of the same name resolves
+    // super back onto itself.
+    Value agen_super_ctor = get_property("__super_constructor__");
+    if (agen_super_ctor.is_function()) {
+        gen_ctx->create_binding("__super__", agen_super_ctor, false);
+        if (has_property("__is_static_method__")) {
+            gen_ctx->create_binding("__super_is_static__", Value(true), false);
+        }
+    }
+    Value agen_home_object = get_property("__home_object__");
+    if (!agen_home_object.is_undefined() && !agen_home_object.is_null()) {
+        gen_ctx->create_binding("__home_object__", agen_home_object, false);
     }
 
     // A named class's own name is bound as an immutable self-reference inside its

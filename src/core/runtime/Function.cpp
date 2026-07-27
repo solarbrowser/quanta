@@ -763,6 +763,13 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         if (this->has_property("__super_constructor__")) executable_->super_marker_state |= 1;
         if (this->has_property("__super_is_null__")) executable_->super_marker_state |= 2;
         if (this->has_property("__private_brands__")) executable_->super_marker_state |= 4;
+        if (this->has_property("__home_object__")) executable_->super_marker_state |= 8;
+    }
+    if (executable_->super_marker_state & 8) {
+        Value home = this->get_property("__home_object__");
+        if (!home.is_undefined() && !home.is_null()) {
+            function_context.create_binding("__home_object__", home, false);
+        }
     }
     if (executable_->super_marker_state & 1) {
         Value super_constructor = this->get_property("__super_constructor__");

@@ -184,6 +184,103 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
 
 std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_ptr<ASTNode>>& arguments, Context& ctx);
 
+// Defined in ProxyReflect.cpp (OrdinarySet).
+bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx);
+
+// GetSuperBase: the object `super.x` looks up on. Shared by the read path
+// below, the write path in assignment.cpp and the compiled Op::GetSuper
+// family, so all three agree on how __super__/__super_is_static__/
+// __home_object__ are interpreted.
+Object* resolve_super_base(Context& ctx) {
+    // Spec: GetSuperBase() is [[HomeObject]].[[GetPrototypeOf]](). Reading the
+    // prototype live also keeps a post-definition Object.setPrototypeOf on the
+    // home object visible, which a cached parent constructor would miss.
+    Value home = ctx.get_binding("__home_object__");
+    if (!home.is_undefined() && !home.is_null()) {
+        Object* home_obj = home.is_function() ? static_cast<Object*>(home.as_function())
+                                              : home.as_object();
+        return home_obj ? home_obj->get_prototype() : nullptr;
+    }
+    // No home object recorded (async methods, Proxy-wrapped calls): fall back to
+    // the parent constructor that the call frame bound.
+    Value super_ctor = ctx.get_binding("__super__");
+    if (super_ctor.is_function()) {
+        // Static method: super.x resolves on the parent constructor itself;
+        // an instance method goes through its prototype.
+        if (ctx.has_binding("__super_is_static__")) return super_ctor.as_function();
+        Value proto_val = super_ctor.as_function()->get_property("prototype");
+        return proto_val.is_object() ? proto_val.as_object() : nullptr;
+    }
+    Value this_val = ctx.get_binding("this");
+    if (this_val.is_object_like()) {
+        Object* this_obj = this_val.is_function()
+            ? static_cast<Object*>(this_val.as_function()) : this_val.as_object();
+        return this_obj ? this_obj->get_prototype() : nullptr;
+    }
+    return nullptr;
+}
+
+// super [[Get]] (ES2024 13.3.7.3) on an already-resolved base. Computed keys take
+// this form because MakeSuperPropertyReference runs GetSuperBase before GetValue
+// applies ToPropertyKey, and a key's toString() can mutate the prototype chain.
+Value super_get_on(Context& ctx, Object* base, const std::string& prop_name) {
+    if (!base) {
+        // RequireObjectCoercible: null prototype base throws TypeError (spec 13.3.7.3 step 5)
+        ctx.throw_type_error("Cannot read properties of null (reading super property)");
+        return Value();
+    }
+    // For getter properties, invoke with current 'this' as receiver (spec super[[Get]])
+    PropertyDescriptor desc = base->get_property_descriptor(prop_name);
+    if (desc.is_accessor_descriptor() && desc.has_getter()) {
+        Function* getter = as_function(desc.get_getter());
+        if (getter) return getter->call(ctx, {}, ctx.get_binding("this"));
+    }
+    return base->get_property(prop_name);
+}
+
+// super.<name>: no key expression, so the base can be resolved here.
+// Shared with Op::GetSuper.
+Value super_get(Context& ctx, const std::string& prop_name) {
+    if (ctx.this_needs_super()) {
+        ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+        return Value();
+    }
+    return super_get_on(ctx, resolve_super_base(ctx), prop_name);
+}
+
+// super [[Set]] (ES2024 13.3.7.4) on an already-resolved base: the lookup walks the
+// super base's chain, but a setter found there runs with `this` as receiver and a
+// plain write lands on `this`. That is exactly OrdinarySet(superBase, key, value, this).
+void super_set_on(Context& ctx, Object* base, const std::string& prop_name, const Value& value) {
+    if (!base) {
+        ctx.throw_type_error("Cannot set properties of null (super property)");
+        return;
+    }
+    Value this_val = ctx.get_binding("this");
+    Object* receiver = this_val.is_function() ? static_cast<Object*>(this_val.as_function())
+                     : this_val.is_object()   ? this_val.as_object()
+                                              : nullptr;
+    if (!receiver) {
+        ctx.throw_type_error("Cannot set properties of a non-object super receiver");
+        return;
+    }
+    bool ok = ordinary_set_with_receiver(base, prop_name, value, receiver, ctx);
+    // PutValue only turns a failed [[Set]] into a TypeError in strict code; an
+    // object-literal method holding super can be sloppy, where it stays silent.
+    if (!ok && !ctx.has_exception() && ctx.is_strict_mode()) {
+        ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "' of super");
+    }
+}
+
+// super.<name> = value. Shared with Op::SetSuper.
+void super_set(Context& ctx, const std::string& prop_name, const Value& value) {
+    if (ctx.this_needs_super()) {
+        ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+        return;
+    }
+    super_set_on(ctx, resolve_super_base(ctx), prop_name, value);
+}
+
 Value MemberExpression::evaluate(Context& ctx) {
     // ES6: super.prop / super[expr] looks up on parent prototype, not the constructor itself
     if (object_->get_type() == ASTNode::Type::IDENTIFIER &&
@@ -194,58 +291,20 @@ Value MemberExpression::evaluate(Context& ctx) {
             ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
             return Value();
         }
-        Object* lookup_proto = nullptr;
-        Value super_ctor = ctx.get_binding("__super__");
-        if (super_ctor.is_function()) {
-            if (ctx.has_binding("__super_is_static__")) {
-                // Static method: super.x resolves on the parent constructor itself.
-                lookup_proto = super_ctor.as_function();
-            } else {
-                // Instance method: super is the parent class, lookup on its prototype.
-                Value proto_val = super_ctor.as_function()->get_property("prototype");
-                if (proto_val.is_object()) lookup_proto = proto_val.as_object();
-            }
-        } else {
-            // Object literal method: super = Object.getPrototypeOf([[HomeObject]])
-            // Use __home_object__ if set, otherwise fall back to current 'this'
-            Value home = ctx.get_binding("__home_object__");
-            if (!home.is_undefined() && !home.is_null()) {
-                Object* home_obj = home.is_function() ? static_cast<Object*>(home.as_function())
-                                                      : home.as_object();
-                if (home_obj) lookup_proto = home_obj->get_prototype();
-            } else {
-                Value this_val = ctx.get_binding("this");
-                if (this_val.is_object_like()) {
-                    Object* this_obj = this_val.is_function()
-                        ? static_cast<Object*>(this_val.as_function()) : this_val.as_object();
-                    if (this_obj) lookup_proto = this_obj->get_prototype();
-                }
-            }
+        // GetSuperBase runs before the key expression and before ToPropertyKey
+        // (13.3.7.1 step 2-7); a key's valueOf/toString must not be able to change
+        // which object the lookup lands on.
+        Object* lookup_proto = resolve_super_base(ctx);
+        std::string prop_name;
+        if (computed_) {
+            Value key_val = property_->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            prop_name = to_js_property_key(ctx, key_val);
+            if (ctx.has_exception()) return Value();
+        } else if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
+            prop_name = static_cast<Identifier*>(property_.get())->get_name();
         }
-        if (lookup_proto) {
-            std::string prop_name;
-            if (computed_) {
-                Value key_val = property_->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                prop_name = to_js_property_key(ctx, key_val);
-                if (ctx.has_exception()) return Value();
-            } else if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
-                prop_name = static_cast<Identifier*>(property_.get())->get_name();
-            }
-            // For getter properties, invoke with current 'this' as receiver (spec super[[Get]])
-            PropertyDescriptor desc = lookup_proto->get_property_descriptor(prop_name);
-            if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                Function* getter = as_function(desc.get_getter());
-                if (getter) {
-                    Value this_val = ctx.get_binding("this");
-                    return getter->call(ctx, {}, this_val);
-                }
-            }
-            return lookup_proto->get_property(prop_name);
-        }
-        // RequireObjectCoercible: null prototype base throws TypeError (spec 13.3.7.3 step 5)
-        ctx.throw_type_error("Cannot read properties of null (reading super property)");
-        return Value();
+        return super_get_on(ctx, lookup_proto, prop_name);
     }
 
     // See g_optional_chain_shortcircuit's doc comment (ast_internal.h).
