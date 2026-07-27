@@ -112,7 +112,10 @@ enum class Op : uint8_t {
                      // tree-walker. Every use is a construct the compiler
                      // cannot emit yet, so the remaining uses measure how far
                      // the VM still depends on the enclosing function's AST.
-    DestructureBind, // k
+    // r_src r_keys -- acc = a fresh object with every own enumerable property
+    // of r_src whose key is not in the r_keys array (an object pattern's
+    // `...rest`).
+    CopyRestProperties, // r_src r_keys
     CreateRestArray, // r -- acc = Array of args[r..argc), for a `...rest` parameter
 
     Call,         // r_callee r_args_start argc n
@@ -388,21 +391,17 @@ struct BytecodeChunk {
     // Everything the compiler cannot emit and hands back to the tree-walker
     // (Op::EvalAst): class declarations, regex literals, and subtrees from
     // emit_treewalker_delegate. Unlike closures above every entry is a gap,
-    // and only once this is always empty (plus destructuring_patterns) can a
+    // and only once this is always empty can a
     // VM-compatible function stop keeping its AST alive.
     std::unique_ptr<std::vector<const ASTNode*>> treewalk_nodes;
     std::vector<const ASTNode*>& ensure_treewalk_nodes() { if (!treewalk_nodes) treewalk_nodes = std::make_unique<std::vector<const ASTNode*>>(); return *treewalk_nodes; }
-
-    struct DestructuringSite { const ASTNode* pattern; bool as_lexical; bool is_const; };
-    std::unique_ptr<std::vector<DestructuringSite>> destructuring_patterns;
-    std::vector<DestructuringSite>& ensure_destructuring_patterns() { if (!destructuring_patterns) destructuring_patterns = std::make_unique<std::vector<DestructuringSite>>(); return *destructuring_patterns; }
 
     std::unique_ptr<std::vector<HandlerEntry>> handlers;
     std::vector<HandlerEntry>& ensure_handlers() { if (!handlers) handlers = std::make_unique<std::vector<HandlerEntry>>(); return *handlers; }
 
     // env_params/env_locals/loop_envs are only ever populated when env_mode
     // is true (see BytecodeCompiler), so they're bundled behind one lazy
-    // pointer -- unlike closures/destructuring_patterns/handlers above,
+    // pointer -- unlike closures/treewalk_nodes/handlers above,
     // these three share a single real trigger condition.
     struct EnvBundle {
         std::vector<std::string> env_params;

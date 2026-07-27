@@ -35,6 +35,9 @@ namespace Quanta {
 void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& out);
 // Likewise from binary.cpp, backing Op::HasPrivate.
 Value private_name_in(Context& ctx, const std::string& private_name, const Value& target);
+// And from assignment.cpp, backing Op::CopyRestProperties.
+Value build_rest_object(Context& ctx, const Value& source_value, Object* source_obj,
+                        const std::vector<std::string>& assigned_keys);
 // And from language.cpp, backing Op::CreateClosure / Op::DeclareFunction.
 Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl);
 Value declare_function(Context& ctx, const ClosureTemplate& tpl);
@@ -1688,13 +1691,16 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 break;
             }
 
-            case Op::DestructureBind: {
-                uint16_t idx = read_u16(code, pc);
+            case Op::CopyRestProperties: {
+                uint8_t src_reg = code[pc];
+                uint8_t keys_reg = code[pc + 1];
                 pc += 2;
-                const auto& site = (*chunk.destructuring_patterns)[idx];
-                auto* pattern = const_cast<ASTNode*>(site.pattern);
-                static_cast<DestructuringAssignment*>(pattern)->evaluate_with_value(
-                    ctx, acc, site.as_lexical, site.is_const);
+                std::vector<std::string> taken;
+                if (Object* keys = as_object_like(regs[keys_reg])) {
+                    uint32_t n = static_cast<uint32_t>(keys->get_property("length").to_number());
+                    for (uint32_t i = 0; i < n; i++) taken.push_back(keys->get_element(i).to_string());
+                }
+                acc = build_rest_object(ctx, regs[src_reg], as_object_like(regs[src_reg]), taken);
                 CHECK_EXC();
                 break;
             }

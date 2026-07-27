@@ -125,6 +125,13 @@ private:
     uint16_t alloc_private_feedback();
     uint16_t alloc_keyed_feedback();
 
+    // Emits a destructuring pattern. Consumes the source value from the
+    // accumulator. pattern_is_emittable decides first, so a shape the emitter
+    // cannot express costs no half-written bytecode.
+    bool emit_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const);
+    bool pattern_is_emittable(const ASTNode* pattern, bool is_lexical) const;
+    bool emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const);
+
     bool member_is_supported(const class MemberExpression* mem) const;
     static bool member_is_super(const class MemberExpression* mem);
     bool super_member_emittable(const class MemberExpression* mem) const;

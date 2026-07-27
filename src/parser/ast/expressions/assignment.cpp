@@ -1123,6 +1123,78 @@ static void adopt_foreign_exception(Context& ctx) {
     }
 }
 
+// CopyDataProperties for an object pattern's `...rest`: every own enumerable
+// property of the source the pattern did not already take. Shared with
+// Op::CopyRestProperties so both paths build the same object.
+Value build_rest_object(Context& ctx, const Value& source_value, Object* source_obj,
+                        const std::vector<std::string>& assigned_keys) {
+auto rest_obj = ObjectFactory::create_object();
+if (source_value.is_string()) {
+    // For strings, create indexed char properties (spec 12.15.5.2).
+    const std::string& raw = source_value.as_string()->str();
+    uint32_t char_idx = 0;
+    size_t pos = 0;
+    while (pos < raw.size()) {
+        unsigned char c = static_cast<unsigned char>(raw[pos]);
+        size_t cl = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
+        if (pos + cl > raw.size()) cl = 1;
+        std::string char_key = std::to_string(char_idx);
+        bool already_assigned = false;
+        for (const auto& ak : assigned_keys) {
+            if (ak == char_key) { already_assigned = true; break; }
+        }
+        if (!already_assigned) {
+            PropertyDescriptor cdesc(Value(raw.substr(pos, cl)),
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                    PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+            rest_obj->set_property_descriptor(char_key, cdesc);
+        }
+        pos += cl;
+        char_idx++;
+    }
+} else if (source_obj->get_type() == Object::ObjectType::Proxy) {
+    // get_enumerable_keys()/get_property() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec.
+    Proxy* proxy = static_cast<Proxy*>(source_obj);
+    for (const auto& k : proxy->own_keys_trap()) {
+        bool already_assigned = false;
+        for (const auto& ak : assigned_keys) {
+            if (ak == k) { already_assigned = true; break; }
+        }
+        if (already_assigned) continue;
+        // own_keys_trap() returns symbol keys as their "@@sym:" string encoding; decode back to the real Symbol so traps receive the original key, not its string form.
+        Symbol* sym = Symbol::find_by_property_key(k);
+        Value key_value = sym ? Value(sym) : Value(k);
+        PropertyDescriptor kdesc = proxy->get_own_property_descriptor_trap(key_value);
+        if (!kdesc.is_data_descriptor() && !kdesc.is_accessor_descriptor()) continue;
+        if (!kdesc.is_enumerable()) continue;
+        Value val = proxy->get_trap(key_value);
+        if (ctx.has_exception()) return Value();
+        PropertyDescriptor rdesc(val,
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+        rest_obj->set_property_descriptor(k, rdesc);
+    }
+} else {
+    // For objects: use enumerable keys only (spec excludes non-enumerable).
+    auto keys = source_obj->get_enumerable_keys();
+    for (const auto& k : keys) {
+        bool already_assigned = false;
+        for (const auto& ak : assigned_keys) {
+            if (ak == k) { already_assigned = true; break; }
+        }
+        if (!already_assigned) {
+            Value val = source_obj->get_property(k);
+            if (ctx.has_exception()) return Value();
+            PropertyDescriptor rdesc(val,
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                    PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+            rest_obj->set_property_descriptor(k, rdesc);
+        }
+    }
+}
+    return Value(rest_obj.release());
+}
+
 void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value,
                                                 DestructureMode mode) {
     if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
@@ -1192,71 +1264,9 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 // Use set_property_descriptor with explicit WEC attrs so that numeric keys
                 // whose getter returns undefined still appear in Object.keys (they'd be lost
                 // as "holes" if stored via set_property/set_element with undefined value).
-                auto rest_obj = ObjectFactory::create_object();
-                if (source_value.is_string()) {
-                    // For strings, create indexed char properties (spec 12.15.5.2).
-                    const std::string& raw = source_value.as_string()->str();
-                    uint32_t char_idx = 0;
-                    size_t pos = 0;
-                    while (pos < raw.size()) {
-                        unsigned char c = static_cast<unsigned char>(raw[pos]);
-                        size_t cl = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
-                        if (pos + cl > raw.size()) cl = 1;
-                        std::string char_key = std::to_string(char_idx);
-                        bool already_assigned = false;
-                        for (const auto& ak : assigned_keys) {
-                            if (ak == char_key) { already_assigned = true; break; }
-                        }
-                        if (!already_assigned) {
-                            PropertyDescriptor cdesc(Value(raw.substr(pos, cl)),
-                                static_cast<PropertyAttributes>(PropertyAttributes::Writable |
-                                    PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
-                            rest_obj->set_property_descriptor(char_key, cdesc);
-                        }
-                        pos += cl;
-                        char_idx++;
-                    }
-                } else if (source_obj->get_type() == Object::ObjectType::Proxy) {
-                    // get_enumerable_keys()/get_property() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec.
-                    Proxy* proxy = static_cast<Proxy*>(source_obj);
-                    for (const auto& k : proxy->own_keys_trap()) {
-                        bool already_assigned = false;
-                        for (const auto& ak : assigned_keys) {
-                            if (ak == k) { already_assigned = true; break; }
-                        }
-                        if (already_assigned) continue;
-                        // own_keys_trap() returns symbol keys as their "@@sym:" string encoding; decode back to the real Symbol so traps receive the original key, not its string form.
-                        Symbol* sym = Symbol::find_by_property_key(k);
-                        Value key_value = sym ? Value(sym) : Value(k);
-                        PropertyDescriptor kdesc = proxy->get_own_property_descriptor_trap(key_value);
-                        if (!kdesc.is_data_descriptor() && !kdesc.is_accessor_descriptor()) continue;
-                        if (!kdesc.is_enumerable()) continue;
-                        Value val = proxy->get_trap(key_value);
-                        if (ctx.has_exception()) return;
-                        PropertyDescriptor rdesc(val,
-                            static_cast<PropertyAttributes>(PropertyAttributes::Writable |
-                                PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
-                        rest_obj->set_property_descriptor(k, rdesc);
-                    }
-                } else {
-                    // For objects: use enumerable keys only (spec excludes non-enumerable).
-                    auto keys = source_obj->get_enumerable_keys();
-                    for (const auto& k : keys) {
-                        bool already_assigned = false;
-                        for (const auto& ak : assigned_keys) {
-                            if (ak == k) { already_assigned = true; break; }
-                        }
-                        if (!already_assigned) {
-                            Value val = source_obj->get_property(k);
-                            if (ctx.has_exception()) return;
-                            PropertyDescriptor rdesc(val,
-                                static_cast<PropertyAttributes>(PropertyAttributes::Writable |
-                                    PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
-                            rest_obj->set_property_descriptor(k, rdesc);
-                        }
-                    }
-                }
-                assign_to_target(ctx, rest_target, Value(rest_obj.release()), nullptr, nullptr, mode);
+                Value rest_value = build_rest_object(ctx, source_value, source_obj, assigned_keys);
+                if (ctx.has_exception()) return;
+                assign_to_target(ctx, rest_target, rest_value, nullptr, nullptr, mode);
                 if (ctx.has_exception()) return;
                 continue;
             }

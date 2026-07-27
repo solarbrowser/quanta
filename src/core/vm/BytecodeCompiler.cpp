@@ -71,7 +71,23 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
             for (const auto& d : decl->get_declarations()) {
                 if (!d->get_id()) return false;
                 const std::string& name = d->get_id()->get_name();
-                if (name.empty()) continue;  // destructuring: no named slot here
+                if (name.empty()) {
+                    // A destructuring declarator has no name of its own; its
+                    // names come from the pattern. Declaring them here is what
+                    // lets emit_pattern_bind write them as ordinary locals,
+                    // with the same TDZ and const marking a plain `const x`
+                    // gets.
+                    const ASTNode* init = d->get_init();
+                    if (init && init->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                        init = static_cast<const AssignmentExpression*>(init)->get_left();
+                    }
+                    if (init && init->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                        std::vector<std::string> bound;
+                        static_cast<const DestructuringAssignment*>(init)->collect_bound_names(bound);
+                        for (const auto& bn : bound) out.push_back({bn, is_lexical, is_const});
+                    }
+                    continue;
+                }
                 out.push_back({name, is_lexical, is_const});
             }
             return true;
@@ -2365,7 +2381,7 @@ bool contains_suspend(const ASTNode* node) {
 
 
 // True if `node` contains a `let/const/var [a,b]=...` declaration anywhere.
-// Forces env_mode: Op::DestructureBind binds through a real Environment.
+// Forces env_mode: a pattern binds through a real Environment.
 bool contains_destructuring(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
@@ -2922,7 +2938,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 
     // Default/destructured/rest parameters force env_mode: rest needs a
     // fresh (not run()-auto-bound) slot, and destructuring only knows how
-    // to bind through a real Environment (see Op::DestructureBind).
+    // to bind through a real Environment.
     bool has_complex_params = false;
     for (const auto& p : params) {
         if (p->has_default() || p->has_destructuring() || p->is_rest()) {
@@ -3162,6 +3178,22 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             }
         }
     }
+    // A destructuring parameter has no name of its own, so its bound names are
+    // absent from param_names (which is positional). Declaring them here is
+    // what lets emit_pattern_bind write them. They are deliberately NOT pushed
+    // into env_locals: BindEnvLocals runs after the parameter patterns have
+    // bound and would reset them to undefined; StaEnvInit creates the binding.
+    if (env_mode) {
+        for (const auto& p : params) {
+            if (!p->has_destructuring()) continue;
+            const ASTNode* pat = p->get_destructuring_pattern();
+            if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) continue;
+            std::vector<std::string> bound;
+            static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+            for (const auto& bn : bound) compiler.declare_local(bn);
+        }
+    }
+
     compiler.temp_watermark_ = compiler.next_register_;
 
     if (!env_mode || selective) {
@@ -3189,7 +3221,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // Non-rest parameters' function-entry bindings are data-driven from the
     // chunk (env_params), set up once by VM::run -- no bytecode needed for
     // those. Rest gets its own immediately-initialized slot here instead,
-    // since CreateRestArray/DestructureBind below fills it, not run().
+    // since CreateRestArray below fills it, not run().
     if (has_rest) {
         compiler.chunk_->ensure_env().env_locals.push_back({rest_name, false, false});
         if (flat_slot_counter < 4) {
@@ -3225,6 +3257,19 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // Defaults and destructuring resolve once at entry, before the body --
     // in TDZ mode the raw values come from registers (the env binding is
     // still uninitialized); otherwise run() already bound plain parameters.
+    //
+    // Registers 0..fixed_param_count-1 hold those raw arguments until each
+    // parameter has read its own, so a pattern's temps must not be handed one
+    // a later parameter has yet to consume. In full env_mode next_register_
+    // starts at 0 (locals live in the environment), which is exactly where
+    // those arguments sit.
+    int saved_next_register = compiler.next_register_;
+    if (params_tdz && compiler.next_register_ < static_cast<int>(fixed_param_count)) {
+        compiler.next_register_ = static_cast<int>(fixed_param_count);
+        if (compiler.next_register_ > compiler.temp_watermark_) {
+            compiler.temp_watermark_ = compiler.next_register_;
+        }
+    }
     {
         uint8_t param_index = 0;
         for (const auto& p : params) {
@@ -3247,9 +3292,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             }
             if (p->has_destructuring()) {
                 auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
-                compiler.chunk_->ensure_destructuring_patterns().push_back({destr, true, false});
-                compiler.emit(Op::DestructureBind);
-                compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_destructuring_patterns().size() - 1));
+                const ASTNode* lit = destr->get_pattern_literal();
+                if (!compiler.pattern_is_emittable(lit, true)) return nullptr;
+                if (!compiler.emit_pattern_bind(lit, true, false)) return nullptr;
             } else if (params_tdz) {
                 compiler.emit_write_local(pname, /*is_declaration=*/true);
             } else {
@@ -3259,15 +3304,18 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         }
     }
     if (params_tdz) compiler.emit(Op::BindEnvLocals);
+    // Every raw argument has been read by now, so those registers are free
+    // again for the body's temps.
+    compiler.next_register_ = saved_next_register;
     if (has_rest) {
         const auto& p = params.back();
         compiler.emit(Op::CreateRestArray);
         compiler.emit_u8(static_cast<uint8_t>(fixed_param_count));
         if (p->has_destructuring()) {
             auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
-            compiler.chunk_->ensure_destructuring_patterns().push_back({destr, true, false});
-            compiler.emit(Op::DestructureBind);
-            compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_destructuring_patterns().size() - 1));
+            const ASTNode* lit = destr->get_pattern_literal();
+            if (!compiler.pattern_is_emittable(lit, true)) return nullptr;
+            if (!compiler.emit_pattern_bind(lit, true, false)) return nullptr;
         } else {
             compiler.emit_write_local(rest_name, false);
         }
@@ -3495,7 +3543,7 @@ int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extr
     record_env_slot_info(vars, env_depth_ + 1);
     // force_own_env (destructuring for-of/for-in) needs a genuinely fresh
     // binding every iteration independent of closure capture: Op::
-    // DestructureBind's create_lexical_binding silently no-ops re-declaring
+    // A pattern's own binding write silently no-ops re-declaring
     // an already-bound name (see compile_for_each_loop's own doc comment),
     // so without a fresh env each iteration keeps writing into iteration 1's
     // now-permanent binding instead of a new one.
@@ -3610,10 +3658,9 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     emit_u16(0);  // patched below to pre_exit (done, or the iterator threw)
 
     if (destr) {
-        if (chunk_->ensure_destructuring_patterns().size() >= 0xFFFF) return false;
-        chunk_->ensure_destructuring_patterns().push_back({destr, is_lexical, is_const});
-        emit(Op::DestructureBind);
-        emit_u16(static_cast<uint16_t>(chunk_->ensure_destructuring_patterns().size() - 1));
+        const ASTNode* lit = destr->get_pattern_literal();
+        if (!pattern_is_emittable(lit, is_lexical)) return false;
+        if (!emit_pattern_bind(lit, is_lexical, is_const)) return false;
     } else {
         emit_write_local(var_name, /*is_declaration=*/declare_fresh);
     }
@@ -3781,6 +3828,357 @@ uint16_t BytecodeCompiler::alloc_keyed_feedback() {
     if (kf.size() >= 0xFFFF) { failed_ = true; return 0; }
     kf.push_back(KeyedFeedback{});
     return static_cast<uint16_t>(kf.size() - 1);
+}
+
+// True if every leaf of this pattern is a shape emit_pattern_bind can express.
+// Checked up front so a refusal costs no half-emitted bytecode.
+bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexical) const {
+    if (!pattern) return false;
+    if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+        for (const auto& prop : static_cast<const ObjectLiteral*>(pattern)->get_properties()) {
+            if (!prop->value) return false;
+            if (prop->type != ObjectLiteral::PropertyType::Value) return false;
+            if (!prop->key) {
+                // `{...rest}`: the target must be a plain name, and the rest
+                // element is always last.
+                if (prop->value->get_type() != ASTNode::Type::SPREAD_ELEMENT) return false;
+                const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
+                if (!rt || rt->get_type() != ASTNode::Type::IDENTIFIER) return false;
+                const std::string& rn = static_cast<const Identifier*>(rt)->get_name();
+                if (!env_names_.count(rn) && lookup_local(rn) < 0) return false;
+                continue;
+            }
+            if (!prop->computed && prop->key->get_type() != ASTNode::Type::IDENTIFIER &&
+                prop->key->get_type() != ASTNode::Type::STRING_LITERAL &&
+                prop->key->get_type() != ASTNode::Type::NUMBER_LITERAL) return false;
+            const ASTNode* target = prop->value.get();
+            if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                const auto* ae = static_cast<const AssignmentExpression*>(target);
+                // A class on the right needs its name applied before its static
+                // initializers run, which only the tree-walker's own
+                // ClassDefinitionEvaluation ordering gives.
+                if (named_evaluation_needs_delegate(ae->get_right())) return false;
+                target = ae->get_left();
+            }
+            if (target->get_type() == ASTNode::Type::IDENTIFIER) {
+                // The name has to be a binding this chunk already knows how to
+                // write; otherwise emit_write_local has nowhere to put it.
+                const std::string& n = static_cast<const Identifier*>(target)->get_name();
+                if (!env_names_.count(n) && lookup_local(n) < 0) return false;
+                continue;
+            }
+            if (!pattern_is_emittable(target, is_lexical)) return false;
+        }
+        return true;
+    }
+    if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        for (const auto& el : static_cast<const ArrayLiteral*>(pattern)->get_elements()) {
+            // An elision is either a null slot or an UNDEFINED_LITERAL, the
+            // same two spellings array literals use for a hole.
+            if (!el || el->get_type() == ASTNode::Type::UNDEFINED_LITERAL) continue;
+            const ASTNode* target = el.get();
+            if (target->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                target = static_cast<const SpreadElement*>(target)->get_argument();
+            }
+            if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                const auto* ae = static_cast<const AssignmentExpression*>(target);
+                if (named_evaluation_needs_delegate(ae->get_right())) return false;
+                target = ae->get_left();
+            }
+            if (target->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& n = static_cast<const Identifier*>(target)->get_name();
+                if (!env_names_.count(n) && lookup_local(n) < 0) return false;
+                continue;
+            }
+            if (!pattern_is_emittable(target, is_lexical)) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Object pattern: read each property off the source, apply the element's own
+// default when it comes back undefined, then bind or recurse.
+bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const) {
+    (void)is_const;
+    if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        return emit_array_pattern_bind(pattern, is_lexical, is_const);
+    }
+    int src_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(src_reg));
+    // Destructuring null/undefined is a TypeError, and it has to be raised
+    // before any property read.
+    emit(Op::CheckObjectCoercible);
+
+    const auto& props = static_cast<const ObjectLiteral*>(pattern)->get_properties();
+    bool has_rest = false;
+    for (const auto& prop : props) if (!prop->key) has_rest = true;
+
+    // A `...rest` needs the keys the pattern already took, including any
+    // computed ones, so they are accumulated into an array as we go.
+    int keys_reg = -1, keys_idx_reg = -1;
+    if (has_rest) {
+        emit(Op::CreateArray);
+        emit_u16(0);
+        keys_reg = alloc_temp();
+        if (failed_) return false;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(keys_reg));
+        keys_idx_reg = alloc_temp();
+        if (failed_) return false;
+        emit(Op::LdaZero);
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(keys_idx_reg));
+    }
+    auto record_key = [&]() {  // key in acc; leaves it there
+        if (!has_rest) return;
+        emit(Op::DefineElement);
+        emit_u8(static_cast<uint8_t>(keys_reg));
+        emit_u8(static_cast<uint8_t>(keys_idx_reg));
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(keys_idx_reg));
+        emit(Op::Inc);
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(keys_idx_reg));
+    };
+
+    for (const auto& prop : props) {
+        if (!prop->key) {  // `...rest`
+            emit(Op::CopyRestProperties);
+            emit_u8(static_cast<uint8_t>(src_reg));
+            emit_u8(static_cast<uint8_t>(keys_reg));
+            const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
+            emit_write_local(static_cast<const Identifier*>(rt)->get_name(), is_lexical);
+            continue;
+        }
+        const ASTNode* target = prop->value.get();
+        const ASTNode* default_expr = nullptr;
+        if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+            const auto* ae = static_cast<const AssignmentExpression*>(target);
+            default_expr = ae->get_right();
+            target = ae->get_left();
+        }
+
+        if (prop->computed) {
+            if (!compile_expression(prop->key.get())) return false;
+            emit(Op::ToPropertyKey);
+            record_key();
+            emit(Op::GetKeyed);
+            emit_u8(static_cast<uint8_t>(src_reg));
+            emit_u16(alloc_keyed_feedback());
+        } else {
+            std::string key;
+            if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
+                key = static_cast<const Identifier*>(prop->key.get())->get_name();
+            } else if (prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
+                key = static_cast<const StringLiteral*>(prop->key.get())->get_value();
+            } else {
+                // Numeric keys use the canonical property-key spelling.
+                key = Value(static_cast<const NumberLiteral*>(prop->key.get())->get_value())
+                          .to_property_key();
+            }
+            if (has_rest) {
+                emit(Op::LdaConst);
+                emit_u16(add_constant(Value(key)));
+                record_key();
+            }
+            emit(Op::GetNamed);
+            emit_u8(static_cast<uint8_t>(src_reg));
+            emit_u16(add_name(key));
+            emit_u16(alloc_feedback_slot());
+        }
+
+        if (default_expr) {
+            size_t skip = emit_jump(Op::JumpIfNotUndefined);
+            if (!compile_expression(default_expr)) return false;
+            // NamedEvaluation: an anonymous function on the right of a
+            // pattern default takes the name it is being bound to.
+            if (target->get_type() == ASTNode::Type::IDENTIFIER &&
+                is_named_evaluation_rhs(default_expr)) {
+                emit(Op::SetFunctionNameIfUnnamed);
+                emit_u16(add_name(static_cast<const Identifier*>(target)->get_name()));
+            }
+            if (!patch_jump(skip)) return false;
+        }
+
+        if (target->get_type() == ASTNode::Type::IDENTIFIER) {
+            emit_write_local(static_cast<const Identifier*>(target)->get_name(), is_lexical);
+        } else if (!emit_pattern_bind(target, is_lexical, is_const)) {
+            return false;
+        }
+    }
+    if (has_rest) { free_temp(keys_idx_reg); free_temp(keys_reg); }
+    free_temp(src_reg);
+    return !failed_;
+}
+
+// Array pattern: the iterator protocol, driven one step per element. A `done`
+// register keeps a spent iterator from being stepped again -- once it reports
+// done, every remaining element binds undefined (and so gets its own default)
+// without another next() call. The whole pattern sits inside a handler that
+// closes the iterator if anything in it throws, mirroring what
+// compile_for_each_loop does for a for-of body.
+bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const) {
+    int next_fn_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::GetIterator);
+    emit_u8(static_cast<uint8_t>(next_fn_reg));
+    int iter_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(iter_reg));
+
+    int done_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::LdaFalse);
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(done_reg));
+
+    // Only the spans that must trigger IteratorClose are guarded. A throw out
+    // of next() itself (or out of the result's `value` getter) leaves
+    // [[Done]] true per spec, and must NOT close -- so the step sequences stay
+    // outside every guarded range.
+    std::vector<std::pair<size_t, size_t>> guarded;
+
+    // Leaves the next value in the accumulator, or undefined once exhausted.
+    auto step = [&]() -> bool {
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(done_reg));
+        size_t to_undef = emit_jump(Op::JumpIfTrue);
+        emit(Op::IteratorNextOrJump);
+        emit_u8(static_cast<uint8_t>(iter_reg));
+        emit_u8(static_cast<uint8_t>(next_fn_reg));
+        size_t to_set_done = code_.size();
+        emit_u16(0);
+        size_t to_have = emit_jump(Op::Jump);
+        if (!patch_jump(to_set_done)) return false;
+        emit(Op::LdaTrue);
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(done_reg));
+        if (!patch_jump(to_undef)) return false;
+        emit(Op::LdaUndefined);
+        return patch_jump(to_have);
+    };
+
+    const auto& elements = static_cast<const ArrayLiteral*>(pattern)->get_elements();
+    for (size_t i = 0; i < elements.size(); ++i) {
+        const ASTNode* el = elements[i].get();
+        if (!el || el->get_type() == ASTNode::Type::UNDEFINED_LITERAL) {
+            // Elision: advance the iterator, bind nothing.
+            if (!step()) return false;
+            continue;
+        }
+
+        if (el->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+            const ASTNode* rest_target = static_cast<const SpreadElement*>(el)->get_argument();
+            emit(Op::CreateArray);
+            emit_u16(0);
+            int arr_reg = alloc_temp();
+            if (failed_) return false;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(arr_reg));
+            int idx_reg = alloc_temp();
+            if (failed_) return false;
+            emit(Op::LdaZero);
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(idx_reg));
+
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(done_reg));
+            size_t rest_skip = emit_jump(Op::JumpIfTrue);
+            size_t loop_top = code_.size();
+            emit(Op::IteratorNextOrJump);
+            emit_u8(static_cast<uint8_t>(iter_reg));
+            emit_u8(static_cast<uint8_t>(next_fn_reg));
+            size_t rest_exit = code_.size();
+            emit_u16(0);
+            emit(Op::DefineElement);
+            emit_u8(static_cast<uint8_t>(arr_reg));
+            emit_u8(static_cast<uint8_t>(idx_reg));
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(idx_reg));
+            emit(Op::Inc);
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(idx_reg));
+            emit_jump_back(Op::Jump, loop_top);
+            if (!patch_jump(rest_exit)) return false;
+            // A rest element always drains the iterator, so nothing may step it again.
+            emit(Op::LdaTrue);
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(done_reg));
+            if (!patch_jump(rest_skip)) return false;
+
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(arr_reg));
+            size_t rest_span = code_.size();
+            if (rest_target->get_type() == ASTNode::Type::IDENTIFIER) {
+                emit_write_local(static_cast<const Identifier*>(rest_target)->get_name(), is_lexical);
+            } else if (!emit_pattern_bind(rest_target, is_lexical, is_const)) {
+                return false;
+            }
+            if (code_.size() > rest_span) guarded.emplace_back(rest_span, code_.size());
+            free_temp(idx_reg);
+            free_temp(arr_reg);
+            break;  // a rest element is always last
+        }
+
+        const ASTNode* target = el;
+        const ASTNode* default_expr = nullptr;
+        if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+            const auto* ae = static_cast<const AssignmentExpression*>(target);
+            default_expr = ae->get_right();
+            target = ae->get_left();
+        }
+
+        if (!step()) return false;
+        size_t span_start = code_.size();
+        if (default_expr) {
+            size_t skip = emit_jump(Op::JumpIfNotUndefined);
+            if (!compile_expression(default_expr)) return false;
+            // NamedEvaluation: an anonymous function on the right of a
+            // pattern default takes the name it is being bound to.
+            if (target->get_type() == ASTNode::Type::IDENTIFIER &&
+                is_named_evaluation_rhs(default_expr)) {
+                emit(Op::SetFunctionNameIfUnnamed);
+                emit_u16(add_name(static_cast<const Identifier*>(target)->get_name()));
+            }
+            if (!patch_jump(skip)) return false;
+        }
+        if (target->get_type() == ASTNode::Type::IDENTIFIER) {
+            emit_write_local(static_cast<const Identifier*>(target)->get_name(), is_lexical);
+        } else if (!emit_pattern_bind(target, is_lexical, is_const)) {
+            return false;
+        }
+        if (code_.size() > span_start) guarded.emplace_back(span_start, code_.size());
+    }
+
+    // Spec: close the iterator only when the pattern stopped before it was done.
+    emit(Op::Ldar);
+    emit_u8(static_cast<uint8_t>(done_reg));
+    size_t skip_close = emit_jump(Op::JumpIfTrue);
+    emit(Op::IteratorClose);
+    emit_u8(static_cast<uint8_t>(iter_reg));
+    emit_u8(0);
+    if (!patch_jump(skip_close)) return false;
+
+    size_t skip_cleanup = emit_jump(Op::Jump);
+    size_t cleanup_pc = code_.size();
+    emit(Op::IteratorClose);
+    emit_u8(static_cast<uint8_t>(iter_reg));
+    emit_u8(1);  // acc holds the pending exception: close, then re-raise
+    for (const auto& span : guarded) {
+        chunk_->ensure_handlers().push_back({static_cast<uint32_t>(span.first),
+                                             static_cast<uint32_t>(span.second),
+                                             static_cast<uint32_t>(cleanup_pc)});
+    }
+    if (!patch_jump(skip_cleanup)) return false;
+
+    free_temp(done_reg);
+    free_temp(iter_reg);
+    free_temp(next_fn_reg);
+    return !failed_;
 }
 
 bool BytecodeCompiler::member_is_super(const MemberExpression* mem) {
@@ -4156,14 +4554,12 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
                 if (name.empty() && d->get_init() &&
                     d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-                    // Delegates to DestructuringAssignment::evaluate_with_value via Op::DestructureBind.
                     if (!env_mode_) return false;
                     const auto* da = static_cast<const DestructuringAssignment*>(d->get_init());
                     if (!compile_expression(da->get_source())) return false;
-                    if (chunk_->ensure_destructuring_patterns().size() >= 0xFFFF) return false;
-                    chunk_->ensure_destructuring_patterns().push_back({da, !is_var, is_const});
-                    emit(Op::DestructureBind);
-                    emit_u16(static_cast<uint16_t>(chunk_->ensure_destructuring_patterns().size() - 1));
+                    const ASTNode* lit = da->get_pattern_literal();
+                    if (!pattern_is_emittable(lit, !is_var)) return false;
+                    if (!emit_pattern_bind(lit, !is_var, is_const)) return false;
                     continue;
                 }
 
@@ -6180,7 +6576,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
 
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT:
             // Bare form: targets can be arbitrary AssignmentTargets, so
-            // delegate whole rather than reuse DestructureBind.
+            // delegate whole rather than reuse the pattern emitter.
             return emit_treewalker_delegate(node);
 
         default:

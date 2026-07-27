@@ -11,12 +11,12 @@
 
 namespace Quanta {
 
-// closures and treewalk_nodes are deliberately two vectors, not one: they
-// will hold different types once closures carries a prebuilt
-// FunctionExecutable, and treewalk_nodes goes away entirely once the
-// compiler can emit every construct that currently escapes (Op::EvalAst).
+// closures and treewalk_nodes are deliberately two vectors, not one: closures
+// carries prebuilt ClosureTemplates, while treewalk_nodes goes away entirely
+// once the compiler can emit every construct that currently escapes
+// (Op::EvalAst).
 #if defined(__GLIBCXX__)
-static_assert(sizeof(BytecodeChunk) == 136);
+static_assert(sizeof(BytecodeChunk) == 128);
 #else
 static_assert(sizeof(BytecodeChunk) <= 192);
 #endif
@@ -80,7 +80,7 @@ const OpInfo& op_info(Op op) {
         {"CreateClosure", 2, 'z'},
         {"DeclareFunction", 2, 'z'},
         {"EvalAst", 2, 'z'},
-        {"DestructureBind", 2, 'z'},
+        {"CopyRestProperties", 2, 'r'},
         {"CreateRestArray", 1, 'r'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
         {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"HasPrivate", 2, 'n'},

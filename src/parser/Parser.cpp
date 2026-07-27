@@ -3514,15 +3514,23 @@ static void collect_var_declared_names(ASTNode* node, std::vector<std::string>& 
     }
 }
 
-static std::string find_block_lexical_duplicate(const std::vector<std::unique_ptr<ASTNode>>& stmts) {
+namespace { void append_declarator_names(const VariableDeclarator* d, std::vector<std::string>& out); }
+
+static std::string find_block_lexical_duplicate(const std::vector<std::unique_ptr<ASTNode>>& stmts,
+                                                bool function_body_scope = false) {
     std::vector<std::string> lexical;
     std::vector<std::string> vars;
 
     for (const auto& stmt : stmts) {
         if (!stmt) continue;
         if (stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+            // At a function body's top level a function declaration is
+            // var-scoped, so it coexists with `var` of the same name and with
+            // another function declaration. Inside a block it is lexical.
             auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
-            if (fn->get_id()) lexical.push_back(fn->get_id()->get_name());
+            if (fn->get_id()) {
+                (function_body_scope ? vars : lexical).push_back(fn->get_id()->get_name());
+            }
         } else if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
             auto* cls = static_cast<ClassDeclaration*>(stmt.get());
             if (cls->get_id()) lexical.push_back(cls->get_id()->get_name());
@@ -3530,10 +3538,7 @@ static std::string find_block_lexical_duplicate(const std::vector<std::unique_pt
             auto* vd = static_cast<VariableDeclaration*>(stmt.get());
             bool is_var = vd->get_kind() == VariableDeclarator::Kind::VAR;
             for (const auto& decl : vd->get_declarations()) {
-                if (decl->get_id()) {
-                    if (is_var) vars.push_back(decl->get_id()->get_name());
-                    else lexical.push_back(decl->get_id()->get_name());
-                }
+                append_declarator_names(decl.get(), is_var ? vars : lexical);
             }
         } else if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) {
             auto* ud = static_cast<UsingDeclaration*>(stmt.get());
@@ -3677,8 +3682,11 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         options_.strict_mode = outer_strict;
     }
 
-    if (!is_function_body) {
-        std::string dup = find_block_lexical_duplicate(statements);
+    {
+        // A function body is a declaration scope like any block: two lexical
+        // declarations of one name, or a lexical name that a `var` also
+        // declares, are both early errors there too.
+        std::string dup = find_block_lexical_duplicate(statements, is_function_body);
         if (!dup.empty()) {
             add_error("Identifier '" + dup + "' has already been declared");
             return nullptr;
