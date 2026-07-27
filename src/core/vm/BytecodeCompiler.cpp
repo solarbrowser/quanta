@@ -30,44 +30,22 @@ struct DeclInfo {
     bool is_catch_param = false;  // gets its own per-catch env; never a function-level local
 };
 
-// Parser-encoded placeholder, not a real binding name (nested patterns
-// collapse into "__nested_vars:a,b" / "b:c,d" style strings).
-bool is_encoded_pattern_name(const std::string& n) {
-    return n.rfind("__nested", 0) == 0 || n.rfind("__computed", 0) == 0 ||
-           n.find_first_of(":,>\x01") != std::string::npos;
-}
-
-// Appends every leaf binding name of a "flat" pattern (plain identifiers +
-// `...rest`). Encoded/nested patterns return false: whole function tree-walks.
+// Appends every leaf binding name a pattern declares. Nested patterns are no
+// longer opaque here: they used to be delimiter-encoded identifier strings, so
+// any nesting made this bail and dropped the whole function to the tree-walker.
 bool collect_flat_pattern_names(const ASTNode* pattern, bool is_lexical, bool is_const,
                                  std::vector<DeclInfo>& out) {
     if (!pattern) return true;
     if (pattern->get_type() == ASTNode::Type::IDENTIFIER) {
         const std::string& n = static_cast<const Identifier*>(pattern)->get_name();
-        if (n.empty()) return true;  // elision
-        if (n.size() >= 3 && n.substr(0, 3) == "...") {
-            std::string rest = n.substr(3);
-            if (rest == "__nested_rest__") return true;  // real pattern is nested_rest_pattern_, below
-            if (rest.empty() || is_encoded_pattern_name(rest)) return false;
-            out.push_back({rest, is_lexical, is_const});
-            return true;
-        }
-        if (is_encoded_pattern_name(n)) return false;
+        if (n.empty()) return true;  // elision, or a destructuring declarator's placeholder id
         out.push_back({n, is_lexical, is_const});
         return true;
     }
     if (pattern->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) return false;
-    const auto* n = static_cast<const DestructuringAssignment*>(pattern);
-    for (const auto& t : n->get_targets()) {
-        if (!collect_flat_pattern_names(t.get(), is_lexical, is_const, out)) return false;
-    }
-    for (const auto& pm : n->get_property_mappings()) {
-        if (pm.variable_name.empty() || is_encoded_pattern_name(pm.variable_name)) return false;
-        out.push_back({pm.variable_name, is_lexical, is_const});
-    }
-    if (n->get_nested_rest_pattern()) {
-        if (!collect_flat_pattern_names(n->get_nested_rest_pattern(), is_lexical, is_const, out)) return false;
-    }
+    std::vector<std::string> bound;
+    static_cast<const DestructuringAssignment*>(pattern)->collect_bound_names(bound);
+    for (const auto& n : bound) out.push_back({n, is_lexical, is_const});
     return true;
 }
 
@@ -782,8 +760,11 @@ bool contains_delegated_expr(const ASTNode* node) {
                 if (d->get_init() && d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                     const auto* da = static_cast<const DestructuringAssignment*>(d->get_init());
                     if (contains_delegated_expr(da->get_source())) return true;
-                    for (const auto& dv : da->get_default_values())
-                        if (contains_delegated_expr(dv.expr.get())) return true;
+                    bool found = false;
+                    da->for_each_expression([&](const ASTNode* e) {
+                        if (!found && contains_delegated_expr(e)) found = true;
+                    });
+                    if (found) return true;
                 }
             }
             return false;
@@ -990,10 +971,9 @@ bool uses_arguments(const ASTNode* node) {
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
             const auto* n = static_cast<const DestructuringAssignment*>(node);
             if (n->get_source() && uses_arguments(n->get_source())) return true;
-            for (const auto& dv : n->get_default_values()) {
-                if (uses_arguments(dv.expr.get())) return true;
-            }
-            return false;
+            bool found = false;
+            n->for_each_expression([&](const ASTNode* e) { if (!found && uses_arguments(e)) found = true; });
+            return found;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
@@ -1252,17 +1232,12 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             // inside_closure (same as YIELD/AWAIT below).
             const auto* n = static_cast<const DestructuringAssignment*>(node);
             collect_closure_names(n->get_source(), true, out, saw_eval, saw_class, unknown, suspendable);
-            for (const auto& t : n->get_targets())
-                collect_closure_names(t.get(), true, out, saw_eval, saw_class, unknown, suspendable);
-            for (const auto& pm : n->get_property_mappings()) {
-                out.insert(pm.variable_name);
-                if (pm.computed_key)
-                    collect_closure_names(pm.computed_key.get(), true, out, saw_eval, saw_class, unknown, suspendable);
-            }
-            for (const auto& dv : n->get_default_values())
-                collect_closure_names(dv.expr.get(), true, out, saw_eval, saw_class, unknown, suspendable);
-            if (n->get_nested_rest_pattern())
-                collect_closure_names(n->get_nested_rest_pattern(), true, out, saw_eval, saw_class, unknown, suspendable);
+            std::vector<std::string> bound;
+            n->collect_bound_names(bound);
+            for (const auto& bn : bound) out.insert(bn);
+            n->for_each_expression([&](const ASTNode* e) {
+                collect_closure_names(e, true, out, saw_eval, saw_class, unknown, suspendable);
+            });
             return;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
@@ -1892,17 +1867,14 @@ bool references_outside(const ASTNode* node, const ASTNode* region, const std::s
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
             const auto* n = static_cast<const DestructuringAssignment*>(node);
             if (references_outside(n->get_source(), region, name)) return true;
-            for (const auto& t : n->get_targets())
-                if (references_outside(t.get(), region, name)) return true;
-            for (const auto& pm : n->get_property_mappings()) {
-                if (pm.variable_name == name) return true;
-                if (pm.computed_key && references_outside(pm.computed_key.get(), region, name)) return true;
-            }
-            for (const auto& dv : n->get_default_values())
-                if (references_outside(dv.expr.get(), region, name)) return true;
-            if (n->get_nested_rest_pattern())
-                return references_outside(n->get_nested_rest_pattern(), region, name);
-            return false;
+            std::vector<std::string> bound;
+            n->collect_bound_names(bound);
+            for (const auto& bn : bound) if (bn == name) return true;
+            bool found = false;
+            n->for_each_expression([&](const ASTNode* e) {
+                if (!found && references_outside(e, region, name)) found = true;
+            });
+            return found;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
@@ -2131,10 +2103,9 @@ bool uses_super_or_private(const ASTNode* node) {
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
             const auto* n = static_cast<const DestructuringAssignment*>(node);
             if (n->get_source() && uses_super_or_private(n->get_source())) return true;
-            for (const auto& dv : n->get_default_values()) {
-                if (uses_super_or_private(dv.expr.get())) return true;
-            }
-            return false;
+            bool found = false;
+            n->for_each_expression([&](const ASTNode* e) { if (!found && uses_super_or_private(e)) found = true; });
+            return found;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
@@ -2317,10 +2288,9 @@ bool contains_suspend(const ASTNode* node) {
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
             const auto* n = static_cast<const DestructuringAssignment*>(node);
             if (n->get_source() && contains_suspend(n->get_source())) return true;
-            for (const auto& dv : n->get_default_values()) {
-                if (contains_suspend(dv.expr.get())) return true;
-            }
-            return false;
+            bool found = false;
+            n->for_each_expression([&](const ASTNode* e) { if (!found && contains_suspend(e)) found = true; });
+            return found;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);

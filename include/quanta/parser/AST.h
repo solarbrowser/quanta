@@ -13,6 +13,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <functional>
 
 namespace Quanta {
 
@@ -457,9 +458,18 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 
     // ES6: Destructuring assignment helpers
-    static void destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value);
+    // How a pattern's leaf targets are bound. Assign is the assignment form
+    // (`[a,b] = v`), which writes through existing references; the three
+    // declaration modes create fresh bindings. Only the leaf differs, so the
+    // walk itself is shared between both destructuring forms.
+    enum class DestructureMode : uint8_t { Assign, Var, Let, Const };
+
+    static void destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value,
+                                     DestructureMode mode = DestructureMode::Assign);
     static void assign_to_target(Context& ctx, ASTNode* target, const Value& value,
-                                  const Value* precomputed_obj = nullptr, const Value* precomputed_key = nullptr);
+                                  const Value* precomputed_obj = nullptr,
+                                  const Value* precomputed_key = nullptr,
+                                  DestructureMode mode = DestructureMode::Assign);
 };
 
 class DestructuringAssignment : public ASTNode {
@@ -469,31 +479,10 @@ public:
         OBJECT
     };
     
-    struct PropertyMapping {
-        std::string property_name;
-        std::string variable_name;
-        std::shared_ptr<ASTNode> computed_key;
 
-        PropertyMapping(const std::string& prop, const std::string& var)
-            : property_name(prop), variable_name(var) {}
-        PropertyMapping(const std::string& prop, const std::string& var, std::shared_ptr<ASTNode> key)
-            : property_name(prop), variable_name(var), computed_key(std::move(key)) {}
-    };
-    
-    struct DefaultValue {
-        size_t index;
-        std::unique_ptr<ASTNode> expr;
-        
-        DefaultValue(size_t idx, std::unique_ptr<ASTNode> expression)
-            : index(idx), expr(std::move(expression)) {}
-    };
 
 private:
-    std::vector<std::unique_ptr<Identifier>> targets_;
-    std::vector<PropertyMapping> property_mappings_;
-    std::vector<DefaultValue> default_values_;
     std::unique_ptr<ASTNode> source_;
-    std::unique_ptr<ASTNode> nested_rest_pattern_;
     Type type_;
 
     // A nested pattern (`outer: { inner, deep = expr }`) is parsed as its own
@@ -504,60 +493,41 @@ private:
     // finds at any nesting depth up into this name-keyed side table on the
     // OUTERMOST DestructuringAssignment instead (see parse_destructuring_pattern's
     // "escaped_nested_defaults" and add_nested_default_value call sites).
-    std::vector<std::pair<std::string, std::unique_ptr<ASTNode>>> nested_default_values_;
+
+    // The pattern itself, held as the ObjectLiteral/ArrayLiteral the cover
+    // grammar already parses (`{a, b: {c}, d = 1}` parses as an object literal
+    // and is reinterpreted here). That literal IS a proper tree, which the
+    // flat targets_/property_mappings_ representation was not: nested patterns
+    // used to be flattened into delimiter-joined identifier strings, leaving
+    // nowhere for a nested default's ASTNode* and no way to express more than
+    // one level. AssignmentExpression's own destructuring already walks this
+    // shape correctly, so both forms can share one binder.
+    std::unique_ptr<ASTNode> pattern_literal_;
 
 public:
-    DestructuringAssignment(std::vector<std::unique_ptr<Identifier>> targets,
+    ASTNode* get_pattern_literal() const { return pattern_literal_.get(); }
+    void set_pattern_literal(std::unique_ptr<ASTNode> lit) { pattern_literal_ = std::move(lit); }
+
+    // Every name this pattern binds, in source order, at any depth. Replaces
+    // the callers that walked targets_ and property_mappings_ separately and
+    // then had to filter out the property keys that shared that storage.
+    void collect_bound_names(std::vector<std::string>& out) const;
+
+    // Every expression a pattern contains: defaults and computed keys, at any
+    // depth. For the closure/env-residency analyses, which need to know what a
+    // pattern can reference without caring about its shape.
+    void for_each_expression(const std::function<void(const ASTNode*)>& fn) const;
+
+    DestructuringAssignment(std::vector<std::unique_ptr<Identifier>>,
                            std::unique_ptr<ASTNode> source, Type type,
                            const Position& start, const Position& end)
         : ASTNode(ASTNode::Type::DESTRUCTURING_ASSIGNMENT, start, end),
-          targets_(std::move(targets)), source_(std::move(source)), type_(type) {}
-    
-    const std::vector<std::unique_ptr<Identifier>>& get_targets() const { return targets_; }
-    const std::vector<PropertyMapping>& get_property_mappings() const { return property_mappings_; }
-    const std::vector<DefaultValue>& get_default_values() const { return default_values_; }
+          source_(std::move(source)), type_(type) {}
+
     ASTNode* get_source() const { return source_.get(); }
     Type get_type() const { return type_; }
     void set_source(std::unique_ptr<ASTNode> source) { source_ = std::move(source); }
-    void add_property_mapping(const std::string& property_name, const std::string& variable_name) {
-        property_mappings_.emplace_back(property_name, variable_name);
-    }
-    void add_computed_property_mapping(const std::string& property_name, const std::string& variable_name, std::shared_ptr<ASTNode> key) {
-        property_mappings_.emplace_back(property_name, variable_name, std::move(key));
-    }
-    void add_default_value(size_t index, std::unique_ptr<ASTNode> expr) {
-        default_values_.emplace_back(index, std::move(expr));
-    }
-    void add_nested_default_value(const std::string& name, std::unique_ptr<ASTNode> expr) {
-        nested_default_values_.emplace_back(name, std::move(expr));
-    }
-    const ASTNode* find_nested_default_value(const std::string& name) const {
-        for (const auto& p : nested_default_values_) {
-            if (p.first == name) return p.second.get();
-        }
-        return nullptr;
-    }
-    // Moves this pattern's OWN default_values_ out, resolved to the target's
-    // real name (index is only meaningful within this object's own targets_).
-    // Used by the parser to escape a nested pattern's defaults up into its
-    // parent's nested_default_values_ before this transient object is
-    // discarded (see parse_destructuring_pattern).
-    std::vector<std::pair<std::string, std::unique_ptr<ASTNode>>> release_defaults_by_name() {
-        std::vector<std::pair<std::string, std::unique_ptr<ASTNode>>> out;
-        for (auto& dv : default_values_) {
-            if (dv.index < targets_.size()) {
-                out.emplace_back(targets_[dv.index]->get_name(), std::move(dv.expr));
-            }
-        }
-        for (auto& p : nested_default_values_) {
-            out.emplace_back(std::move(p.first), std::move(p.second));
-        }
-        return out;
-    }
-    void set_nested_rest_pattern(std::unique_ptr<ASTNode> pattern) {
-        nested_rest_pattern_ = std::move(pattern);
-    }
-    ASTNode* get_nested_rest_pattern() const { return nested_rest_pattern_.get(); }
+
     
     Value evaluate(Context& ctx) override;
     // as_lexical: bind each target as a fresh `let`/`const` in the current
@@ -568,41 +538,6 @@ public:
                                bool as_lexical = false, bool is_const = false);
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
-
-private:
-    bool handle_complex_object_destructuring(Object* obj, Context& ctx);
-    void handle_nested_object_destructuring(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx);
-    void handle_nested_object_destructuring_with_source(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, DestructuringAssignment* source_destructuring);
-    void handle_nested_object_destructuring_with_mappings(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx);
-    void handle_nested_object_destructuring_smart(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, DestructuringAssignment* source);
-    void handle_nested_object_destructuring_enhanced(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, const std::string& property_key);
-    void handle_infinite_depth_destructuring(Object* obj, const std::string& nested_pattern, Context& ctx);
-    // Every nested-pattern leaf bind (handle_complex_object_destructuring's
-    // several near-duplicate branches, handle_infinite_depth_destructuring)
-    // resolves a leaf's raw property value, then must apply that leaf's own
-    // default from nested_default_values_ before binding, same as the
-    // top-level `{x: a = expr}` case already does via default_values_. Sets
-    // ctx's exception on a throwing default expression; caller checks
-    // ctx.has_exception() same as any other evaluate() call.
-    Value apply_nested_default(const std::string& name, Value value, Context& ctx) {
-        if (value.is_undefined()) {
-            if (const ASTNode* dv = find_nested_default_value(name)) {
-                return const_cast<ASTNode*>(dv)->evaluate(ctx);
-            }
-        }
-        return value;
-    }
-
-    // Set once at the top of evaluate_with_value; every handle_* helper
-    // above reads these instead of taking its own parameter (they recurse
-    // into each other for nested patterns).
-    bool as_lexical_ = false;
-    bool is_const_ = false;
-    // Single bind point every handle_* method (and evaluate_with_value)
-    // uses: as_lexical_ creates a fresh let/const in the current scope,
-    // otherwise the default has_binding()-then-create-or-set walk. Returns
-    // false (TypeError already set) only for a failed set on a known const.
-    bool bind_or_set(Context& ctx, const std::string& name, const Value& value);
 };
 
 

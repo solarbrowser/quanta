@@ -367,6 +367,13 @@ Value VariableDeclaration::evaluate(Context& ctx) {
     for (const auto& declarator : declarations_) {
         const std::string& name = declarator->get_id()->get_name();
 
+        // A destructuring declarator has no name of its own -- its names come
+        // from the pattern. Without an initializer there is nothing to bind
+        // either (a for-of head binds per iteration instead), so skip it rather
+        // than declaring the empty placeholder name, which two such
+        // declarations in one scope would then collide on.
+        if (name.empty() && !declarator->get_init()) continue;
+
         if (name.empty() && declarator->get_init()) {
             ASTNode* init_node = declarator->get_init();
             VariableDeclarator::Kind destr_kind = declarator->get_kind();
@@ -925,14 +932,9 @@ Value ForStatement::evaluate(Context& ctx) {
                 destr_node = static_cast<AssignmentExpression*>(destr_node)->get_left();
             }
             if (auto* destr = dynamic_cast<DestructuringAssignment*>(destr_node)) {
-                for (const auto& tgt : destr->get_targets()) {
-                    if (!tgt || tgt->get_name().empty()) continue;
-                    const std::string& tname = tgt->get_name();
-                    bool is_key = false;
-                    for (const auto& m : destr->get_property_mappings()) {
-                        if (m.property_name == tname) { is_key = true; break; }
-                    }
-                    if (is_key) continue;
+                std::vector<std::string> bound;
+                destr->collect_bound_names(bound);
+                for (const auto& tname : bound) {
                     ctx.create_lexical_binding(tname, Value(), true);
                     if (init_decl_kind_ == 1) iter_var_names.push_back(tname);
                 }
@@ -1172,14 +1174,9 @@ Value ForInStatement::evaluate(Context& ctx) {
         auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_obj_env);
         Environment* tdz_ptr = tdz_env.release();
         ctx.set_lexical_environment(tdz_ptr);
-        for (const auto& target : da->get_targets()) {
-            if (target && !target->get_name().empty())
-                tdz_ptr->create_uninitialized_binding(target->get_name());
-        }
-        for (const auto& pm : da->get_property_mappings()) {
-            if (!pm.variable_name.empty())
-                tdz_ptr->create_uninitialized_binding(pm.variable_name);
-        }
+        std::vector<std::string> bound;
+        da->collect_bound_names(bound);
+        for (const auto& bname : bound) tdz_ptr->create_uninitialized_binding(bname);
     }
 
     Value object = right_->evaluate(ctx);
@@ -1262,20 +1259,9 @@ Value ForInStatement::evaluate(Context& ctx) {
             if (forin_destr_per_iter) {
                 auto* destr = static_cast<DestructuringAssignment*>(left_.get());
                 ctx.push_block_scope();
-                for (const auto& target : destr->get_targets()) {
-                    if (!target || target->get_name().empty()) continue;
-                    const std::string& tname = target->get_name();
-                    bool is_key = false;
-                    for (const auto& pm : destr->get_property_mappings()) {
-                        if (pm.property_name == tname) { is_key = true; break; }
-                    }
-                    if (!is_key)
-                        ctx.create_lexical_binding(tname, Value(), true);
-                }
-                for (const auto& pm : destr->get_property_mappings()) {
-                    if (!pm.variable_name.empty())
-                        ctx.create_lexical_binding(pm.variable_name, Value(), true);
-                }
+                std::vector<std::string> bound;
+                destr->collect_bound_names(bound);
+                for (const auto& tname : bound) ctx.create_lexical_binding(tname, Value(), true);
                 destr->evaluate_with_value(ctx, Value(key));
                 if (!ctx.has_exception()) {
                     Value body_result = body_->evaluate(ctx);
@@ -1546,14 +1532,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
         auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_iter_env);
         Environment* tdz_ptr = tdz_env.release();
         ctx.set_lexical_environment(tdz_ptr);
-        for (const auto& target : da->get_targets()) {
-            if (target && !target->get_name().empty())
-                tdz_ptr->create_uninitialized_binding(target->get_name());
-        }
-        for (const auto& pm : da->get_property_mappings()) {
-            if (!pm.variable_name.empty())
-                tdz_ptr->create_uninitialized_binding(pm.variable_name);
-        }
+        std::vector<std::string> bound;
+        da->collect_bound_names(bound);
+        for (const auto& bname : bound) tdz_ptr->create_uninitialized_binding(bname);
     } else if (left_->get_type() == ASTNode::Type::USING_DECLARATION) {
         auto* ud = static_cast<UsingDeclaration*>(left_.get());
         pre_iter_env = ctx.get_lexical_environment();
@@ -2284,22 +2265,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     auto* da = static_cast<DestructuringAssignment*>(left_.get());
                                     loop_ctx->push_block_scope();
                                     // Pre-declare bindings so evaluate_with_value uses the inner scope.
-                                    // Skip targets that are property keys (appear as property_name in
-                                    // property_mappings) -- they are destructuring keys, not binding vars.
-                                    for (const auto& target : da->get_targets()) {
-                                        if (!target || target->get_name().empty()) continue;
-                                        const std::string& tname = target->get_name();
-                                        bool is_key = false;
-                                        for (const auto& pm : da->get_property_mappings()) {
-                                            if (pm.property_name == tname) { is_key = true; break; }
-                                        }
-                                        if (!is_key)
-                                            loop_ctx->create_lexical_binding(tname, Value(), true);
-                                    }
-                                    for (const auto& pm : da->get_property_mappings()) {
-                                        if (!pm.variable_name.empty())
-                                            loop_ctx->create_lexical_binding(pm.variable_name, Value(), true);
-                                    }
+                                    std::vector<std::string> bound;
+                                    da->collect_bound_names(bound);
+                                    for (const auto& tname : bound)
+                                        loop_ctx->create_lexical_binding(tname, Value(), true);
                                     da->evaluate_with_value(*loop_ctx, value);
                                     if (!loop_ctx->has_exception()) {
                                         Value br = body_->evaluate(*loop_ctx);
@@ -2520,20 +2489,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     bool da_per_iter = (left_decl_kind_ == 1 || left_decl_kind_ == 2);
                     if (da_per_iter) {
                         loop_ctx->push_block_scope();
-                        for (const auto& target : destructuring->get_targets()) {
-                            if (!target || target->get_name().empty()) continue;
-                            const std::string& tname = target->get_name();
-                            bool is_key = false;
-                            for (const auto& pm : destructuring->get_property_mappings()) {
-                                if (pm.property_name == tname) { is_key = true; break; }
-                            }
-                            if (!is_key)
-                                loop_ctx->create_lexical_binding(tname, Value(), true);
-                        }
-                        for (const auto& pm : destructuring->get_property_mappings()) {
-                            if (!pm.variable_name.empty())
-                                loop_ctx->create_lexical_binding(pm.variable_name, Value(), true);
-                        }
+                        std::vector<std::string> bound;
+                        destructuring->collect_bound_names(bound);
+                        for (const auto& tname : bound)
+                            loop_ctx->create_lexical_binding(tname, Value(), true);
                         destructuring->evaluate_with_value(*loop_ctx, element);
                         if (!loop_ctx->has_exception() && body_) {
                             Value result = body_->evaluate(*loop_ctx);
@@ -3044,17 +3003,10 @@ Value TryStatement::evaluate(Context& ctx) {
 
             if (param_name == "__destr_pattern__" && catch_node->get_destructuring_pattern()) {
                 auto* destr = static_cast<DestructuringAssignment*>(catch_node->get_destructuring_pattern());
-                // Pre-create lexical bindings so destructuring writes to catch scope; skip targets that are only a nested pattern's outer property key (e.g. `w` in `{w: {x,y,z}}`).
-                for (const auto& tgt : destr->get_targets()) {
-                    if (!tgt || tgt->get_name().empty()) continue;
-                    const std::string& tname = tgt->get_name();
-                    bool is_key = false;
-                    for (const auto& m : destr->get_property_mappings()) {
-                        if (m.property_name == tname) { is_key = true; break; }
-                    }
-                    if (!is_key)
-                        ctx.create_lexical_binding(tname, Value(), true);
-                }
+                // Pre-create lexical bindings so destructuring writes to the catch scope.
+                std::vector<std::string> bound;
+                destr->collect_bound_names(bound);
+                for (const auto& tname : bound) ctx.create_lexical_binding(tname, Value(), true);
                 destr->evaluate_with_value(ctx, exception_value);
                 if (ctx.has_exception()) { catch_param_ok = false; }
             } else if (param_name.length() > 14 && param_name.substr(0, 14) == "__destr_array:") {

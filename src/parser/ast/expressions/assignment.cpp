@@ -1111,7 +1111,20 @@ Value AssignmentExpression::evaluate(Context& ctx) {
 }
 
 // Helper: recursively perform destructuring assignment from an ObjectLiteral or ArrayLiteral pattern
-void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value) {
+// A getter run while destructuring throws into Object::current_context_, which
+// is not the context we are binding in whenever the two differ -- inside a
+// generator's own fiber context, notably. Adopting it here is what stops the
+// rest loop below from spinning forever on a throwing `value` getter.
+static void adopt_foreign_exception(Context& ctx) {
+    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+            && Object::current_context_->has_exception()) {
+        ctx.throw_exception(Object::current_context_->get_exception(), true);
+        Object::current_context_->clear_exception();
+    }
+}
+
+void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value,
+                                                DestructureMode mode) {
     if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
         if (source_value.is_null() || source_value.is_undefined()) {
             ctx.throw_type_error("Cannot destructure " + std::string(source_value.is_null() ? "null" : "undefined"));
@@ -1243,7 +1256,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                         }
                     }
                 }
-                assign_to_target(ctx, rest_target, Value(rest_obj.release()));
+                assign_to_target(ctx, rest_target, Value(rest_obj.release()), nullptr, nullptr, mode);
                 if (ctx.has_exception()) return;
                 continue;
             }
@@ -1253,11 +1266,10 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             if (prop->computed) {
                 Value key_val = prop->key->evaluate(ctx);
                 if (ctx.has_exception()) return;
-                if (key_val.is_symbol()) {
-                    prop_name = key_val.as_symbol()->to_property_key();
-                } else {
-                    prop_name = key_val.to_string();
-                }
+                // ToPropertyKey, not a raw stringify: an object key's own
+                // @@toPrimitive/toString has to run.
+                prop_name = key_val.to_property_key();
+                if (ctx.has_exception()) return;
             } else if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
                 prop_name = static_cast<Identifier*>(prop->key.get())->get_name();
             } else if (prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
@@ -1324,7 +1336,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 target = lhs;
             }
 
-            assign_to_target(ctx, target, prop_value);
+            assign_to_target(ctx, target, prop_value, nullptr, nullptr, mode);
             if (ctx.has_exception()) return;
         }
     } else if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
@@ -1384,8 +1396,12 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                     }
                 }
             }
-            // ES6: Check for Symbol.iterator on non-array objects
-            if (source_arr && !source_arr->is_array()) {
+            // Everything that is not a plain Array goes through the real iterator
+            // protocol -- and so does an Array once anything has replaced
+            // @@iterator or %ArrayIteratorPrototype%.next, which is what the
+            // protector tracks. Skipping it there would ignore a patched
+            // iterator, the same deviation the spread path had.
+            if (source_arr && (!source_arr->is_array() || !Object::array_iterator_protector_intact())) {
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
                 if (iter_sym) {
                     Value iter_method = source_arr->get_property(iter_sym->to_property_key());
@@ -1497,9 +1513,11 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         if (ctx.has_exception()) return;
                                         if (!res.is_object()) { iter_done = true; break; }
                                         Value done_v = res.as_object()->get_property("done");
+                                        adopt_foreign_exception(ctx);
                                         if (ctx.has_exception()) return;
                                         if (done_v.to_boolean()) { iter_done = true; break; }
                                         Value val_v = res.as_object()->get_property("value");
+                                        adopt_foreign_exception(ctx);
                                         if (ctx.has_exception()) return;
                                         temp->set_element(cnt++, val_v);
                                     }
@@ -1537,9 +1555,11 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                             if (ctx.has_exception()) return;
                                             if (!res.is_object()) { iter_done = true; break; }
                                             Value done_v = res.as_object()->get_property("done");
+                                            adopt_foreign_exception(ctx);
                                             if (ctx.has_exception()) return;
                                             if (done_v.to_boolean()) { iter_done = true; break; }
                                             Value val_v = res.as_object()->get_property("value");
+                                            adopt_foreign_exception(ctx);
                                             if (ctx.has_exception()) return;
                                             temp->set_element(cnt++, val_v);
                                         }
@@ -1592,9 +1612,11 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         if (ctx.has_exception()) return;
                                         if (!res.is_object()) { iter_done = true; break; }
                                         Value done_v = res.as_object()->get_property("done");
+                                        adopt_foreign_exception(ctx);
                                         if (ctx.has_exception()) return;
                                         if (done_v.to_boolean()) { iter_done = true; break; }
                                         Value val_v = res.as_object()->get_property("value");
+                                        adopt_foreign_exception(ctx);
                                         if (ctx.has_exception()) return;
                                         temp->set_element(cnt++, val_v);
                                     }
@@ -1637,7 +1659,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                     rest_arr->set_element(rest_idx++, val);
                 }
                 rest_arr->set_length(rest_idx);
-                assign_to_target(ctx, rest_target, Value(rest_arr.release()));
+                assign_to_target(ctx, rest_target, Value(rest_arr.release()), nullptr, nullptr, mode);
                 break;
             }
 
@@ -1694,9 +1716,9 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             }
 
             if (i < has_precomputed_member.size() && has_precomputed_member[i]) {
-                assign_to_target(ctx, target, elem_value, &precomputed_member_obj[i], &precomputed_member_key[i]);
+                assign_to_target(ctx, target, elem_value, &precomputed_member_obj[i], &precomputed_member_key[i], mode);
             } else {
-                assign_to_target(ctx, target, elem_value);
+                assign_to_target(ctx, target, elem_value, nullptr, nullptr, mode);
             }
             if (ctx.has_exception()) break;
         }
@@ -1724,11 +1746,26 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
 
 // Helper: assign a value to a target node (Identifier, MemberExpression, or nested pattern)
 void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const Value& value,
-                                              const Value* precomputed_obj, const Value* precomputed_key) {
+                                              const Value* precomputed_obj, const Value* precomputed_key,
+                                              DestructureMode mode) {
     if (!target) return;
 
     if (target->get_type() == ASTNode::Type::IDENTIFIER) {
         std::string name = static_cast<Identifier*>(target)->get_name();
+        // A declaration binds a fresh name; only the assignment form writes
+        // through an existing reference.
+        if (mode != DestructureMode::Assign) {
+            if (mode == DestructureMode::Let) {
+                ctx.create_lexical_binding(name, value, true);
+            } else if (mode == DestructureMode::Const) {
+                ctx.create_lexical_binding(name, value, false);
+            } else if (!ctx.has_binding(name)) {
+                ctx.create_binding(name, value, true);
+            } else if (!ctx.set_binding(name, value) && ctx.is_strict_const(name)) {
+                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+            }
+            return;
+        }
         if (ctx.has_binding(name)) {
             if (ctx.is_in_tdz(name)) {
                 ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
@@ -1798,7 +1835,7 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
     } else if (target->get_type() == ASTNode::Type::OBJECT_LITERAL ||
                target->get_type() == ASTNode::Type::ARRAY_LITERAL) {
         // Nested destructuring
-        destructuring_assign(ctx, target, value);
+        destructuring_assign(ctx, target, value, mode);
     }
 }
 
@@ -1835,443 +1872,84 @@ static bool is_anonymous_function_def(const ASTNode* node) {
            t == ASTNode::Type::CLASS_DECLARATION;
 }
 
-bool DestructuringAssignment::bind_or_set(Context& ctx, const std::string& name, const Value& value) {
-    if (as_lexical_) {
-        ctx.create_lexical_binding(name, value, !is_const_);
-        return true;
+// Walks the pattern literal, which is the same shape AssignmentExpression's
+// own destructuring walks: an ObjectLiteral property's value is the target
+// (an Identifier, a nested literal, or an AssignmentExpression carrying a
+// default), an ArrayLiteral element likewise, with SpreadElement for rest.
+static void walk_pattern_targets(const ASTNode* pattern,
+                                 const std::function<void(const ASTNode*)>& on_target,
+                                 const std::function<void(const ASTNode*)>& on_expression) {
+    if (!pattern) return;
+    auto visit_target = [&](const ASTNode* t) {
+        if (!t) return;
+        if (t->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+            const auto* ae = static_cast<const AssignmentExpression*>(t);
+            if (on_expression && ae->get_right()) on_expression(ae->get_right());
+            walk_pattern_targets(ae->get_left(), on_target, on_expression);
+            if (ae->get_left() && ae->get_left()->get_type() != ASTNode::Type::OBJECT_LITERAL &&
+                ae->get_left()->get_type() != ASTNode::Type::ARRAY_LITERAL) {
+                on_target(ae->get_left());
+            }
+            return;
+        }
+        if (t->get_type() == ASTNode::Type::OBJECT_LITERAL ||
+            t->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+            walk_pattern_targets(t, on_target, on_expression);
+            return;
+        }
+        if (t->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+            walk_pattern_targets(static_cast<const SpreadElement*>(t)->get_argument(),
+                                 on_target, on_expression);
+            on_target(static_cast<const SpreadElement*>(t)->get_argument());
+            return;
+        }
+        on_target(t);
+    };
+
+    if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+        for (const auto& prop : static_cast<const ObjectLiteral*>(pattern)->get_properties()) {
+            if (prop->computed && prop->key && on_expression) on_expression(prop->key.get());
+            visit_target(prop->value ? prop->value.get() : nullptr);
+        }
+    } else if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        for (const auto& el : static_cast<const ArrayLiteral*>(pattern)->get_elements()) {
+            if (el) visit_target(el.get());
+        }
     }
-    if (!ctx.has_binding(name)) {
-        ctx.create_binding(name, value, true);
-        return true;
-    }
-    bool ok = ctx.set_binding(name, value);
-    if (!ok && ctx.is_strict_const(name)) {
-        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-        return false;
-    }
-    return true;
+}
+
+void DestructuringAssignment::collect_bound_names(std::vector<std::string>& out) const {
+    walk_pattern_targets(pattern_literal_.get(),
+        [&](const ASTNode* t) {
+            if (t && t->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& n = static_cast<const Identifier*>(t)->get_name();
+                if (!n.empty()) out.push_back(n);
+            }
+        },
+        nullptr);
+}
+
+void DestructuringAssignment::for_each_expression(const std::function<void(const ASTNode*)>& fn) const {
+    walk_pattern_targets(pattern_literal_.get(),
+        [&](const ASTNode* t) {
+            // A member-expression target (`[o.x] = v`) is itself an expression.
+            if (t && t->get_type() != ASTNode::Type::IDENTIFIER) fn(t);
+        },
+        fn);
 }
 
 Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& source_value,
-                                                    bool as_lexical, bool is_const) {
-    as_lexical_ = as_lexical;
-    is_const_ = is_const;
-    if (type_ == Type::ARRAY) {
-        // ES6: Strings are iterable and can be array-destructured
-        bool is_string_source = source_value.is_string();
-        std::string str_src;
-        Object* array_obj = nullptr;
-
-        // For codepoint-aware string destructuring
-        std::vector<std::string> str_cps;
-
-        if (is_string_source) {
-            str_src = source_value.as_string()->str();
-            // Split into UTF-8 codepoints
-            size_t pos = 0;
-            while (pos < str_src.length()) {
-                unsigned char ch = static_cast<unsigned char>(str_src[pos]);
-                size_t cl = 1;
-                if (ch >= 0xF0) cl = 4;
-                else if (ch >= 0xE0) cl = 3;
-                else if (ch >= 0xC0) cl = 2;
-                if (pos + cl > str_src.length()) cl = 1;
-                str_cps.push_back(str_src.substr(pos, cl));
-                pos += cl;
-            }
-        } else if (source_value.is_object_like()) {
-            array_obj = source_value.is_object() ? source_value.as_object()
-                                                 : static_cast<Object*>(source_value.as_function());
-        } else {
-            ctx.throw_type_error("Cannot destructure non-object as array");
-            return Value();
-        }
-
-        // ES6: Check for Symbol.iterator -- use iterator protocol for all iterable objects.
-        // For arrays: Symbol.iterator MUST be callable (throw TypeError if deleted).
-        // For non-arrays: only use iterator if Symbol.iterator is present.
-        if (!is_string_source && array_obj) {
-            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-            if (iter_sym) {
-                Value iter_method = array_obj->get_property(iter_sym->to_property_key());
-                if (array_obj->is_array() && !iter_method.is_function()) {
-                    ctx.throw_type_error("Cannot destructure: object is not iterable");
-                    return Value();
-                }
-                if (iter_method.is_function()) {
-                    Value iterator_obj = iter_method.as_function()->call(ctx, {}, source_value);
-                    if (ctx.has_exception()) return Value();
-                    if (iterator_obj.is_object()) {
-                        Object* iterator = iterator_obj.as_object();
-                        Value next_method = iterator->get_property("next");
-                        if (next_method.is_function()) {
-                            // Determine how many elements we need
-                            bool has_rest = false;
-                            size_t needed = targets_.size();
-                            for (size_t ti = 0; ti < targets_.size(); ti++) {
-                                const std::string& tn = targets_[ti]->get_name();
-                                if (tn.length() >= 3 && tn.substr(0, 3) == "...") {
-                                    has_rest = true;
-                                    break;
-                                }
-                            }
-                            auto temp_arr = ObjectFactory::create_array(0);
-                            uint32_t count = 0;
-                            bool iterator_done = false;
-                            Context* prev_oc2 = Object::current_context_;
-                            Object::current_context_ = &ctx;
-                            if (has_rest) {
-                                // Rest: collect all elements
-                                for (;;) {
-                                    Collector::safepoint();
-                                    Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
-                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
-                                    if (!result.is_object()) { iterator_done = true; break; }
-                                    Value dv2 = result.as_object()->get_property("done");
-                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
-                                    if (dv2.to_boolean()) { iterator_done = true; break; }
-                                    Value vv2 = result.as_object()->get_property("value");
-                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
-                                    temp_arr->set_element(count++, vv2);
-                                }
-                            } else {
-                                // No rest: collect only needed elements
-                                for (uint32_t iter_i = 0; iter_i < needed; iter_i++) {
-                                    Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
-                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
-                                    if (!result.is_object()) { iterator_done = true; break; }
-                                    Value dv3 = result.as_object()->get_property("done");
-                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
-                                    if (dv3.to_boolean()) { iterator_done = true; break; }
-                                    Value vv3 = result.as_object()->get_property("value");
-                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
-                                    temp_arr->set_element(count++, vv3);
-                                }
-                            }
-                            Object::current_context_ = prev_oc2;
-                            // ES6: Iterator closing -- if not exhausted, call return()
-                            // Per spec, return() must return an Object or throw TypeError
-                            if (!iterator_done) {
-                                Object::current_context_ = &ctx;
-                                Value return_method = iterator->get_property("return");
-                                Object::current_context_ = prev_oc2;
-                                if (return_method.is_function()) {
-                                    Value ret_val = return_method.as_function()->call(ctx, {}, iterator_obj);
-                                    if (!ctx.has_exception() && !ret_val.is_object() && !ret_val.is_function()) {
-                                        ctx.throw_type_error("Iterator return() returned a non-object value");
-                                        return Value();
-                                    }
-                                }
-                                if (ctx.has_exception()) { return Value(); }
-                            }
-                            temp_arr->set_length(count);
-                            array_obj = temp_arr.release();
-                        }
-                    }
-                }
-            }
-        }
-
-        uint32_t src_len = is_string_source ? static_cast<uint32_t>(str_cps.size())
-                                            : array_obj->get_length();
-
-        if (true) {
-            for (size_t i = 0; i < targets_.size(); i++) {
-                const std::string& var_name = targets_[i]->get_name();
-
-                if (var_name.empty()) {
-                    continue;
-                }
-
-                if (var_name.length() >= 3 && var_name.substr(0, 3) == "...") {
-                    std::string rest_name = var_name.substr(3);
-
-                    auto rest_array = ObjectFactory::create_array(0);
-                    uint32_t rest_index = 0;
-
-                    for (size_t j = i; j < src_len; j++) {
-                        Value rest_element;
-                        if (is_string_source) {
-                            rest_element = (j < str_cps.size()) ? Value(str_cps[j]) : Value();
-                        } else {
-                            rest_element = array_obj->get_element(static_cast<uint32_t>(j));
-                        }
-                        rest_array->set_element(rest_index++, rest_element);
-                    }
-
-                    rest_array->set_length(rest_index);
-
-                    if (rest_name == "__nested_rest__" && nested_rest_pattern_) {
-                        // ...[pattern] - apply nested destructuring to rest array
-                        DestructuringAssignment* nested =
-                            static_cast<DestructuringAssignment*>(nested_rest_pattern_.get());
-                        nested->evaluate_with_value(ctx, Value(rest_array.release()), as_lexical_, is_const_);
-                    } else {
-                        if (!bind_or_set(ctx, rest_name, Value(rest_array.release()))) return Value();
-                    }
-
-                    break;
-                } else if (var_name.length() >= 14 && var_name.substr(0, 14) == "__nested_vars:") {
-                    Value nested_array;
-                    if (is_string_source) {
-                        nested_array = (i < str_cps.size()) ? Value(str_cps[i]) : Value();
-                    } else {
-                        nested_array = array_obj->get_element(static_cast<uint32_t>(i));
-                    }
-                    if (nested_array.is_undefined()) {
-                        for (const auto& dv : default_values_) {
-                            if (dv.index == i) {
-                                nested_array = dv.expr->evaluate(ctx);
-                                if (ctx.has_exception()) return Value();
-                                break;
-                            }
-                        }
-                    }
-                    if (nested_array.is_null() || nested_array.is_undefined()) {
-                        ctx.throw_type_error(std::string("Cannot destructure ") + (nested_array.is_null() ? "null" : "undefined") + " as array");
-                        return Value();
-                    }
-                    if (nested_array.is_object()) {
-                        Object* nested_obj = nested_array.as_object();
-
-                        std::string vars_string = var_name.substr(14);
-
-                        std::vector<std::string> nested_var_names;
-                        std::string current_var = "";
-                        for (char c : vars_string) {
-                            if (c == ',') {
-                                // Always push (even empty = elision sentinel)
-                                nested_var_names.push_back(current_var);
-                                current_var = "";
-                            } else {
-                                current_var += c;
-                            }
-                        }
-                        // Push last entry only if non-empty or sentinel
-                        if (!current_var.empty() || (!vars_string.empty() && vars_string.back() == ','))
-                            nested_var_names.push_back(current_var);
-
-                        // Use iterator protocol if available (e.g. generators), else direct access
-                        std::vector<Value> nested_elements;
-                        Symbol* nest_iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                        bool used_iterator = false;
-                        if (nest_iter_sym && !nested_obj->is_array()) {
-                            Value nest_iter_method = nested_obj->get_property(nest_iter_sym->to_property_key());
-                            if (nest_iter_method.is_function()) {
-                                Value nest_iter_obj = nest_iter_method.as_function()->call(ctx, {}, nested_array);
-                                if (!ctx.has_exception() && nest_iter_obj.is_object()) {
-                                    Value nest_next = nest_iter_obj.as_object()->get_property("next");
-                                    if (nest_next.is_function()) {
-                                        used_iterator = true;
-                                        for (size_t ni = 0; ni < nested_var_names.size(); ni++) {
-                                            if (nested_var_names[ni].length() >= 3 && nested_var_names[ni].substr(0,3) == "...") {
-                                                auto rest_a = ObjectFactory::create_array(0); uint32_t ri2 = 0;
-                                                for (;;) {
-                                                    Value nr = nest_next.as_function()->call(ctx, {}, nest_iter_obj);
-                                                    if (ctx.has_exception()) return Value();
-                                                    if (!nr.is_object()) break;
-                                                    if (nr.as_object()->get_property("done").to_boolean()) break;
-                                                    rest_a->set_element(ri2++, nr.as_object()->get_property("value"));
-                                                }
-                                                rest_a->set_length(ri2);
-                                                nested_elements.push_back(Value(rest_a.release()));
-                                            } else {
-                                                Value nr = nest_next.as_function()->call(ctx, {}, nest_iter_obj);
-                                                if (ctx.has_exception()) return Value();
-                                                if (!nr.is_object() || nr.as_object()->get_property("done").to_boolean())
-                                                    nested_elements.push_back(Value());
-                                                else
-                                                    nested_elements.push_back(nr.as_object()->get_property("value"));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        for (size_t j = 0; j < nested_var_names.size(); j++) {
-                            const std::string& nested_var_name = nested_var_names[j];
-                            Value val_to_bind;
-                            if (nested_var_name.length() >= 3 && nested_var_name.substr(0, 3) == "...") {
-                                std::string rest_binding = nested_var_name.substr(3);
-                                if (used_iterator && j < nested_elements.size()) {
-                                    val_to_bind = nested_elements[j];
-                                } else {
-                                    auto rest_arr = ObjectFactory::create_array(0);
-                                    uint32_t ri = 0;
-                                    for (size_t rj = j; rj < nested_obj->get_length(); rj++) {
-                                        rest_arr->set_element(ri++, nested_obj->get_element(static_cast<uint32_t>(rj)));
-                                    }
-                                    rest_arr->set_length(ri);
-                                    val_to_bind = Value(rest_arr.release());
-                                }
-                                if (!bind_or_set(ctx, rest_binding, val_to_bind)) return Value();
-                                break;
-                            } else if (nested_var_name.empty() || nested_var_name == "\x01") {
-                                // Elision or empty -- skip binding but value was consumed from iterator
-                            } else if (used_iterator && j < nested_elements.size()) {
-                                val_to_bind = nested_elements[j];
-                                if (!bind_or_set(ctx, nested_var_name, val_to_bind)) return Value();
-                            } else if (!used_iterator && j < nested_obj->get_length()) {
-                                val_to_bind = nested_obj->get_element(static_cast<uint32_t>(j));
-                                if (!bind_or_set(ctx, nested_var_name, val_to_bind)) return Value();
-                            }
-                        }
-                    }
-                } else if (var_name.length() >= 13 && var_name.substr(0, 13) == "__nested_obj:") {
-                    // Nested object destructuring in array: [a, {x:b, c}]
-                    Value element;
-                    if (is_string_source) {
-                        element = (i < str_cps.size()) ? Value(str_cps[i]) : Value();
-                    } else {
-                        element = array_obj->get_element(static_cast<uint32_t>(i));
-                    }
-                    if (element.is_undefined()) {
-                        for (const auto& dv : default_values_) {
-                            if (dv.index == i) {
-                                element = dv.expr->evaluate(ctx);
-                                if (ctx.has_exception()) return Value();
-                                break;
-                            }
-                        }
-                    }
-                    if (element.is_null() || element.is_undefined()) {
-                        ctx.throw_type_error(std::string("Cannot destructure ") + (element.is_null() ? "null" : "undefined") + " as object");
-                        return Value();
-                    }
-                    if (element.is_object() || element.is_function()) {
-                        Object* obj = element.is_function() ?
-                            static_cast<Object*>(element.as_function()) :
-                            element.as_object();
-                        // Parse mappings: prop1>var1,prop2>var2
-                        std::string mappings_str = var_name.substr(13);
-                        std::vector<std::pair<std::string,std::string>> mappings;
-                        std::string current = "";
-                        for (size_t ci = 0; ci <= mappings_str.length(); ci++) {
-                            char c = (ci < mappings_str.length()) ? mappings_str[ci] : ',';
-                            if (c == ',') {
-                                size_t arrow = current.find('>');
-                                if (arrow != std::string::npos) {
-                                    mappings.emplace_back(current.substr(0, arrow), current.substr(arrow + 1));
-                                }
-                                current = "";
-                            } else {
-                                current += c;
-                            }
-                        }
-                        for (const auto& m : mappings) {
-                            Value val = obj->get_property(m.first);
-                            if (!bind_or_set(ctx, m.second, val)) return Value();
-                        }
-                    }
-                } else {
-                    Value element;
-                    if (is_string_source) {
-                        element = (i < str_cps.size()) ? Value(str_cps[i]) : Value();
-                    } else {
-                        element = array_obj->get_element(static_cast<uint32_t>(i));
-                    }
-
-                    if (element.is_undefined()) {
-                        for (const auto& default_val : default_values_) {
-                            if (default_val.index == i) {
-                                element = default_val.expr->evaluate(ctx);
-                                if (ctx.has_exception()) return Value();
-                                if (element.is_function() && is_anonymous_function_def(default_val.expr.get()) &&
-                                    (element.as_function()->get_name().empty() || element.as_function()->get_name() == "<arrow>")) {
-                                    element.as_function()->set_name(var_name);
-                                }
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!bind_or_set(ctx, var_name, element)) return Value();
-                }
-            }
-        }
-    } else {
-        if (source_value.is_object_like()) {
-            Object* obj = source_value.is_object() ? source_value.as_object()
-                                                    : static_cast<Object*>(source_value.as_function());
-
-            if (!handle_complex_object_destructuring(obj, ctx)) {
-                return Value();
-            }
-        } else if (source_value.is_symbol()) {
-            // Symbols are object-coercible; empty object wrapper is sufficient
-            auto sym_wrapper = ObjectFactory::create_object();
-            if (!handle_complex_object_destructuring(sym_wrapper.get(), ctx)) {
-                return Value();
-            }
-        } else if (source_value.is_number() || source_value.is_string() || source_value.is_boolean() ||
-                   source_value.is_bigint()) {
-            // ES6: Primitive boxing for object destructuring
-            std::string ctor_name = source_value.is_string() ? "String"
-                                  : source_value.is_number() ? "Number"
-                                  : source_value.is_bigint() ? "BigInt" : "Boolean";
-            Value ctor = ctx.get_binding(ctor_name);
-            if (ctor.is_function()) {
-                Value proto_val = ctor.as_function()->get_property("prototype");
-                if (proto_val.is_object()) {
-                    Object* proto = proto_val.as_object();
-                    // Look up each property mapping on the prototype
-                    for (const auto& mapping : property_mappings_) {
-                        Value prop_value = proto->get_property(mapping.property_name);
-                        // Apply default if property is undefined (mirrors handle_complex_object_destructuring).
-                        if (prop_value.is_undefined()) {
-                            for (const auto& dv : default_values_) {
-                                if (dv.index < targets_.size()) {
-                                    const std::string& tname = targets_[dv.index]->get_name();
-                                    if (tname == mapping.property_name || tname == mapping.variable_name) {
-                                        prop_value = dv.expr->evaluate(ctx);
-                                        if (ctx.has_exception()) return Value();
-                                        if (prop_value.is_function() && is_anonymous_function_def(dv.expr.get()) &&
-                                            (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
-                                            prop_value.as_function()->set_name(mapping.variable_name);
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (!bind_or_set(ctx, mapping.variable_name, prop_value)) return Value();
-                    }
-                    // Also handle shorthand targets
-                    for (size_t ti = 0; ti < targets_.size(); ti++) {
-                        const std::string& name = targets_[ti]->get_name();
-                        if (name.empty() || name.find("...") == 0 || name.find("__") == 0) continue;
-                        // Only if not already handled by property_mappings_
-                        bool in_mappings = false;
-                        for (const auto& m : property_mappings_) {
-                            if (m.variable_name == name) { in_mappings = true; break; }
-                        }
-                        if (!in_mappings) {
-                            Value prop_value = proto->get_property(name);
-                            if (prop_value.is_undefined()) {
-                                for (const auto& dv : default_values_) {
-                                    if (dv.index == ti) {
-                                        prop_value = dv.expr->evaluate(ctx);
-                                        if (ctx.has_exception()) return Value();
-                                        if (prop_value.is_function() && is_anonymous_function_def(dv.expr.get()) &&
-                                            (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
-                                            prop_value.as_function()->set_name(name);
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!bind_or_set(ctx, name, prop_value)) return Value();
-                        }
-                    }
-                }
-            }
-        } else {
-            ctx.throw_type_error("Cannot destructure non-object");
-            return Value();
-        }
+                                                   bool as_lexical, bool is_const) {
+    // One binder for both destructuring forms: the pattern literal is exactly
+    // the shape AssignmentExpression::destructuring_assign already walks, so a
+    // declaration differs from an assignment only in how leaves are bound.
+    AssignmentExpression::DestructureMode mode = !as_lexical ? AssignmentExpression::DestructureMode::Var
+                         : (is_const ? AssignmentExpression::DestructureMode::Const
+                                     : AssignmentExpression::DestructureMode::Let);
+    if (pattern_literal_) {
+        AssignmentExpression::destructuring_assign(ctx, pattern_literal_.get(), source_value, mode);
     }
-    
-    return source_value;
+    return Value();
 }
 
 Value DestructuringAssignment::evaluate(Context& ctx) {
@@ -2286,935 +1964,17 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
     return evaluate_with_value(ctx, source_value);
 }
 
-bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, Context& ctx) {
-    // Helper: property getters run in Object::current_context_ which may differ from ctx.
-    // After each get_property call, propagate any exception from current_context_ to ctx.
-    auto check_getter_exc = [&]() -> bool {
-        if (ctx.has_exception()) return true;
-        Context* cur = Object::current_context_;
-        if (cur && cur != &ctx && cur->has_exception()) {
-            ctx.throw_exception(cur->get_exception(), true);
-            cur->clear_exception();
-            return true;
-        }
-        return false;
-    };
-
-    for (const auto& mapping : property_mappings_) {
-
-        if (mapping.variable_name.find("__nested:") != std::string::npos ||
-            mapping.variable_name.find(":__nested:") != std::string::npos) {
-        }
-        Value prop_value;
-        if (mapping.property_name.length() > 11 && mapping.property_name.substr(0, 11) == "__computed:") {
-            if (mapping.computed_key) {
-                Value key_val = mapping.computed_key->evaluate(ctx);
-                if (ctx.has_exception()) return false;
-                prop_value = obj->get_property(key_val.to_string());
-                if (check_getter_exc()) return false;
-            }
-        } else {
-            prop_value = obj->get_property(mapping.property_name);
-            if (check_getter_exc()) return false;
-        }
-
-        // Apply default if property is undefined (for nested patterns too)
-        if (prop_value.is_undefined()) {
-            for (const auto& dv : default_values_) {
-                if (dv.index < targets_.size()) {
-                    const std::string& tname = targets_[dv.index]->get_name();
-                    if (tname == mapping.property_name || tname == mapping.variable_name) {
-                        prop_value = dv.expr->evaluate(ctx);
-                        if (ctx.has_exception()) return false;
-                        if (prop_value.is_function() && is_anonymous_function_def(dv.expr.get()) &&
-                            (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
-                            prop_value.as_function()->set_name(mapping.variable_name);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Handle nested array-in-object: {x: [a, b]} encoded as __nested_array:a,b
-        if (mapping.variable_name.length() > 15 && mapping.variable_name.substr(0, 15) == "__nested_array:") {
-            if (prop_value.is_null() || prop_value.is_undefined()) {
-                ctx.throw_type_error(std::string("Cannot destructure ") + (prop_value.is_null() ? "null" : "undefined") + " as array");
-                return false;
-            }
-            std::string vars_str = mapping.variable_name.substr(15);
-            // Split vars by comma
-            std::vector<std::string> var_names;
-            std::string current;
-            for (size_t ci = 0; ci < vars_str.length(); ++ci) {
-                if (vars_str[ci] == ',') {
-                    if (!current.empty()) { var_names.push_back(current); current.clear(); }
-                } else {
-                    current += vars_str[ci];
-                }
-            }
-            if (!current.empty()) var_names.push_back(current);
-
-            if (prop_value.is_object()) {
-                Object* arr_obj = prop_value.as_object();
-                for (size_t ai = 0; ai < var_names.size(); ++ai) {
-                    Value elem = arr_obj->get_element(static_cast<uint32_t>(ai));
-                    if (!bind_or_set(ctx, var_names[ai], elem)) return false;
-                }
-            } else {
-                for (const auto& vn : var_names) {
-                    if (!bind_or_set(ctx, vn, Value())) return false;
-                }
-            }
-            continue;
-        }
-
-        if ((mapping.variable_name.length() > 9 && mapping.variable_name.substr(0, 9) == "__nested:") ||
-            mapping.variable_name.find(":__nested:") != std::string::npos ||
-            mapping.variable_name.find(':') != std::string::npos) {
-
-            if (prop_value.is_null() || prop_value.is_undefined()) {
-                ctx.throw_type_error(std::string("Cannot destructure ") + (prop_value.is_null() ? "null" : "undefined") + " as object");
-                return false;
-            }
-
-            if (mapping.variable_name.find(":__nested:") != std::string::npos) {
-
-                if (prop_value.is_object()) {
-                    Object* nested_obj = prop_value.as_object();
-                    handle_infinite_depth_destructuring(nested_obj, mapping.variable_name, ctx);
-                } else {
-                }
-                continue;
-            } else if (mapping.variable_name.find(':') != std::string::npos &&
-                      mapping.variable_name.find("__nested:") == std::string::npos) {
-
-                if (prop_value.is_object() || prop_value.is_function()) {
-                    Object* nested_obj = prop_value.is_function()
-                        ? static_cast<Object*>(prop_value.as_function())
-                        : prop_value.as_object();
-
-                    // "prefix:x,y,z" means shorthand multi-var pattern -- extract each var
-                    if (mapping.variable_name.find(',') != std::string::npos) {
-                        size_t colon = mapping.variable_name.find(':');
-                        std::string vars_part = (colon != std::string::npos)
-                            ? mapping.variable_name.substr(colon + 1)
-                            : mapping.variable_name;
-                        std::string cur;
-                        for (size_t ci = 0; ci <= vars_part.size(); ++ci) {
-                            char c = (ci < vars_part.size()) ? vars_part[ci] : ',';
-                            if (c == ',') {
-                                if (!cur.empty()) {
-                                    Value val = apply_nested_default(cur, nested_obj->get_property(cur), ctx);
-                                    if (ctx.has_exception()) return false;
-                                    if (!bind_or_set(ctx, cur, val)) return false;
-                                    cur.clear();
-                                }
-                            } else {
-                                cur += c;
-                            }
-                        }
-                    } else {
-                        handle_infinite_depth_destructuring(nested_obj, mapping.variable_name, ctx);
-                    }
-                }
-                continue;
-            }
-
-            std::string vars_string = mapping.variable_name.substr(9);
-
-            std::vector<std::string> nested_var_names;
-            std::string current_var = "";
-            int nested_depth = 0;
-
-            for (size_t i = 0; i < vars_string.length(); ++i) {
-                char c = vars_string[i];
-
-                if (i + 9 <= vars_string.length() &&
-                    vars_string.substr(i, 9) == "__nested:") {
-                    nested_depth++;
-                    current_var += "__nested:";
-                    i += 8;
-                } else if (c == ',' && nested_depth == 0) {
-                    if (!current_var.empty()) {
-                        nested_var_names.push_back(current_var);
-                        current_var = "";
-                    }
-                } else {
-                    current_var += c;
-                    if (nested_depth > 0 && i == vars_string.length() - 1) {
-                        nested_depth = 0;
-                    }
-                }
-            }
-            if (!current_var.empty()) {
-                nested_var_names.push_back(current_var);
-            }
-
-            if (prop_value.is_object()) {
-                Object* nested_obj = prop_value.as_object();
-
-
-                std::vector<std::string> property_aware_var_names = nested_var_names;
-
-                bool found_nested_mappings = false;
-
-                for (const auto& our_mapping : property_mappings_) {
-                    if (our_mapping.property_name == mapping.property_name &&
-                        our_mapping.variable_name.find("__nested:") == 0) {
-
-                        std::string vars_part = our_mapping.variable_name.substr(9);
-
-                        std::vector<std::string> enhanced_vars;
-                        std::stringstream ss(vars_part);
-                        std::string var;
-
-                        while (std::getline(ss, var, ',')) {
-                            enhanced_vars.push_back(var);
-                        }
-
-                        property_aware_var_names = enhanced_vars;
-                        found_nested_mappings = true;
-                        break;
-                    }
-                }
-
-                std::vector<std::string> smart_var_names = nested_var_names;
-
-
-
-
-
-                bool has_property_renaming = false;
-                std::map<std::string, std::string> detected_mappings;
-
-                for (const auto& target : targets_) {
-                    std::string target_name = target->get_name();
-                    if (target_name == mapping.property_name) {
-                        break;
-                    }
-                }
-
-                std::vector<std::string> processed_var_names;
-                for (const std::string& var_name : smart_var_names) {
-                    size_t colon_pos = var_name.find(':');
-                    bool is_malformed_nested = false;
-                    if (colon_pos != std::string::npos) {
-                        std::string after_colon = var_name.substr(colon_pos + 1);
-                        if (after_colon.length() > 9 && after_colon.substr(0, 9) == "__nested:") {
-                            is_malformed_nested = true;
-                        }
-                    }
-
-                    if (!is_malformed_nested && var_name.find(':') != std::string::npos && var_name.find("__nested:") != 0) {
-                        processed_var_names.push_back(var_name);
-                        has_property_renaming = true;
-                    } else {
-                        processed_var_names.push_back(var_name);
-                    }
-                }
-
-                for (size_t i = 0; i < smart_var_names.size(); ++i) {
-                }
-
-                if (has_property_renaming) {
-                    handle_nested_object_destructuring_with_mappings(nested_obj, processed_var_names, ctx);
-                } else {
-                    for (const std::string& var_name : smart_var_names) {
-
-                        bool is_nested_pattern = false;
-                        if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
-                            is_nested_pattern = true;
-                        } else {
-                            size_t colon_pos = var_name.find(':');
-                            if (colon_pos != std::string::npos) {
-                                std::string after_colon = var_name.substr(colon_pos + 1);
-                                if (after_colon.length() > 9 && after_colon.substr(0, 9) == "__nested:") {
-                                    is_nested_pattern = true;
-                                }
-                            }
-                        }
-
-                        if (is_nested_pattern) {
-                            handle_infinite_depth_destructuring(nested_obj, var_name, ctx);
-                        } else {
-                            Value prop_value = apply_nested_default(var_name, nested_obj->get_property(var_name), ctx);
-                            if (ctx.has_exception()) return false;
-                            if (!bind_or_set(ctx, var_name, prop_value)) return false;
-                        }
-                    }
-                }
-            }
-        } else {
-            // Apply default value if property is undefined: {x: a = expr}
-            if (prop_value.is_undefined()) {
-                for (size_t i = 0; i < targets_.size(); i++) {
-                    if (targets_[i]->get_name() == mapping.variable_name) {
-                        for (const auto& dv : default_values_) {
-                            if (dv.index == i) {
-                                prop_value = dv.expr->evaluate(ctx);
-                                if (ctx.has_exception()) return false;
-                                break;
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-            if (!bind_or_set(ctx, mapping.variable_name, prop_value)) return false;
-        }
-    }
-    
-    std::set<std::string> extracted_props;
-    
-    for (const auto& mapping : property_mappings_) {
-        extracted_props.insert(mapping.property_name);
-    }
-    
-    for (const auto& target : targets_) {
-        std::string prop_name = target->get_name();
-
-        if (prop_name.length() >= 3 && prop_name.substr(0, 3) == "...") {
-            std::string rest_name = prop_name.substr(3);
-
-            auto rest_obj = std::make_unique<Object>(Object::ObjectType::Ordinary);
-
-            if (obj->get_type() == Object::ObjectType::Proxy) {
-                // get_own_property_keys()/get_property_descriptor() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec (CopyDataProperties).
-                Proxy* proxy = static_cast<Proxy*>(obj);
-                for (const auto& key : proxy->own_keys_trap()) {
-                    if (extracted_props.find(key) != extracted_props.end()) continue;
-                    // own_keys_trap() returns symbol keys as their "@@sym:" string encoding; decode back to the real Symbol so traps receive the original key, not its string form.
-                    Symbol* sym = Symbol::find_by_property_key(key);
-                    Value key_value = sym ? Value(sym) : Value(key);
-                    PropertyDescriptor pd = proxy->get_own_property_descriptor_trap(key_value);
-                    if (!pd.is_data_descriptor() && !pd.is_accessor_descriptor()) continue;
-                    if (!pd.is_enumerable()) continue;
-                    Value prop_value = proxy->get_trap(key_value);
-                    if (ctx.has_exception()) return false;
-                    rest_obj->set_property(key, prop_value);
-                }
-            } else {
-                auto keys = obj->get_own_property_keys();
-                for (const auto& key : keys) {
-                    if (extracted_props.find(key) == extracted_props.end()) {
-                        // Only copy enumerable own properties (spec: CopyDataProperties)
-                        PropertyDescriptor pd = obj->get_property_descriptor(key);
-                        if (pd.is_data_descriptor() && !pd.is_enumerable()) continue;
-                        Value prop_value = obj->get_property(key);
-                        rest_obj->set_property(key, prop_value);
-                    }
-                }
-            }
-
-            if (!bind_or_set(ctx, rest_name, Value(rest_obj.release()))) return false;
-
-            continue;
-        }
-        
-        bool has_mapping = false;
-        for (const auto& mapping : property_mappings_) {
-            if (mapping.property_name == prop_name || mapping.variable_name == prop_name) {
-                has_mapping = true;
-                break;
-            }
-        }
-
-        if (!has_mapping) {
-            if (prop_name.length() >= 9 && prop_name.substr(0, 9) == "__nested:") {
-
-                std::string vars_string = prop_name.substr(9);
-
-                std::vector<std::string> nested_var_names;
-                std::string current_var = "";
-                int nested_depth = 0;
-
-                for (size_t i = 0; i < vars_string.length(); ++i) {
-                    char c = vars_string[i];
-
-                    if (i + 9 <= vars_string.length() &&
-                        vars_string.substr(i, 9) == "__nested:") {
-                        nested_depth++;
-                        current_var += "__nested:";
-                        i += 8;
-                    } else if (c == ',' && nested_depth == 0) {
-                        if (!current_var.empty()) {
-                            nested_var_names.push_back(current_var);
-                            current_var = "";
-                        }
-                    } else {
-                        current_var += c;
-                        if (nested_depth > 0 && i == vars_string.length() - 1) {
-                            nested_depth = 0;
-                        }
-                    }
-                }
-                if (!current_var.empty()) {
-                    nested_var_names.push_back(current_var);
-                }
-
-                std::string actual_prop = "";
-                for (const auto& mapping : property_mappings_) {
-                    if (mapping.variable_name == prop_name) {
-                        actual_prop = mapping.property_name;
-                        break;
-                    }
-                }
-
-                if (!actual_prop.empty()) {
-                    Value nested_object = obj->get_property(actual_prop);
-                    if (nested_object.is_object()) {
-                        Object* nested_obj = nested_object.as_object();
-
-                        for (const std::string& var_name : nested_var_names) {
-                            if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
-                                handle_infinite_depth_destructuring(nested_obj, var_name, ctx);
-                            } else {
-                                Value prop_value = apply_nested_default(var_name, nested_obj->get_property(var_name), ctx);
-                                if (ctx.has_exception()) return false;
-                                if (!bind_or_set(ctx, var_name, prop_value)) return false;
-                            }
-                        }
-                    }
-                }
-            } else {
-                Value prop_value = obj->get_property(prop_name);
-                if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-                        && Object::current_context_->has_exception()) {
-                    ctx.throw_exception(Object::current_context_->get_exception(), true);
-                    Object::current_context_->clear_exception();
-                }
-                if (ctx.has_exception()) return false;
-
-                // Apply default value if property is undefined: {a = expr}
-                if (prop_value.is_undefined()) {
-                    for (size_t ti = 0; ti < targets_.size(); ti++) {
-                        if (targets_[ti]->get_name() == prop_name) {
-                            for (const auto& dv : default_values_) {
-                                if (dv.index == ti) {
-                                    prop_value = dv.expr->evaluate(ctx);
-                                    if (ctx.has_exception()) return false;
-                                    if (prop_value.is_function() && is_anonymous_function_def(dv.expr.get()) &&
-                                        (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
-                                        prop_value.as_function()->set_name(prop_name);
-                                    }
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                extracted_props.insert(prop_name);
-
-                if (!bind_or_set(ctx, prop_name, prop_value)) return false;
-            }
-        }
-    }
-    
-    return true;
-}
-
-void DestructuringAssignment::handle_nested_object_destructuring(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx) {
-
-    for (const std::string& var_name : var_names) {
-
-        if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
-            std::string deeper_vars_string = var_name.substr(9);
-
-            std::vector<std::string> deeper_var_names;
-            std::string current_var = "";
-            int nested_depth = 0;
-
-            for (size_t i = 0; i < deeper_vars_string.length(); ++i) {
-                char c = deeper_vars_string[i];
-
-                if (i + 9 <= deeper_vars_string.length() &&
-                    deeper_vars_string.substr(i, 9) == "__nested:") {
-                    nested_depth++;
-                    current_var += "__nested:";
-                    i += 8;
-                } else if (c == ',' && nested_depth == 0) {
-                    if (!current_var.empty()) {
-                        deeper_var_names.push_back(current_var);
-                        current_var = "";
-                    }
-                } else {
-                    current_var += c;
-                    if (nested_depth > 0 && i == deeper_vars_string.length() - 1) {
-                        nested_depth = 0;
-                    }
-                }
-            }
-            if (!current_var.empty()) {
-                deeper_var_names.push_back(current_var);
-            }
-
-            for (const auto& property_name : nested_obj->get_own_property_keys()) {
-                Value property_value = nested_obj->get_property(property_name);
-                if (property_value.is_object()) {
-                    Object* deeper_obj = property_value.as_object();
-                    for (const std::string& deep_var_name : deeper_var_names) {
-                        if (deep_var_name.length() > 9 && deep_var_name.substr(0, 9) == "__nested:") {
-                            handle_infinite_depth_destructuring(deeper_obj, deep_var_name, ctx);
-                        } else {
-                            Value prop_value = deeper_obj->get_property(deep_var_name);
-                            bind_or_set(ctx, deep_var_name, prop_value);
-                        }
-                    }
-                    break;
-                }
-            }
-        } else {
-            size_t colon_pos = var_name.find(':');
-            if (colon_pos != std::string::npos && colon_pos > 0 && colon_pos < var_name.length() - 1) {
-                if (var_name.find(',') != std::string::npos) {
-
-                    std::vector<std::string> mappings;
-                    std::string current_mapping = "";
-                    int nested_depth = 0;
-
-                    for (size_t i = 0; i < var_name.length(); ++i) {
-                        char c = var_name[i];
-
-                        if (i + 9 <= var_name.length() &&
-                            var_name.substr(i, 9) == "__nested:") {
-                            nested_depth++;
-                            current_mapping += "__nested:";
-                            i += 8;
-                        } else if (c == ',' && nested_depth == 0) {
-                            if (!current_mapping.empty()) {
-                                mappings.push_back(current_mapping);
-                                current_mapping = "";
-                            }
-                        } else {
-                            current_mapping += c;
-                            if (nested_depth > 0 && i == var_name.length() - 1) {
-                                nested_depth = 0;
-                            }
-                        }
-                    }
-                    if (!current_mapping.empty()) {
-                        mappings.push_back(current_mapping);
-                    }
-
-                    for (const auto& mapping : mappings) {
-                        size_t mapping_colon = mapping.find(':');
-                        if (mapping_colon != std::string::npos) {
-                            std::string property_name = mapping.substr(0, mapping_colon);
-                            std::string variable_name = mapping.substr(mapping_colon + 1);
-
-
-                            Value prop_value = apply_nested_default(variable_name, nested_obj->get_property(property_name), ctx);
-                            bind_or_set(ctx, variable_name, prop_value);
-                        }
-                    }
-                } else {
-                    std::string property_name = var_name.substr(0, colon_pos);
-                    std::string variable_name = var_name.substr(colon_pos + 1);
-
-                    Value prop_value = apply_nested_default(variable_name, nested_obj->get_property(property_name), ctx);
-                    bind_or_set(ctx, variable_name, prop_value);
-                }
-            } else {
-                Value prop_value = apply_nested_default(var_name, nested_obj->get_property(var_name), ctx);
-                bind_or_set(ctx, var_name, prop_value);
-            }
-        }
-    }
-}
-
-void DestructuringAssignment::handle_nested_object_destructuring_with_source(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, DestructuringAssignment* source_destructuring) {
-
-    for (const std::string& var_name : var_names) {
-        if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
-            std::string deeper_vars_string = var_name.substr(9);
-            std::vector<std::string> deeper_var_names;
-            std::string current_var = "";
-            int nested_depth = 0;
-
-            for (size_t i = 0; i < deeper_vars_string.length(); ++i) {
-                char c = deeper_vars_string[i];
-                if (i + 9 <= deeper_vars_string.length() &&
-                    deeper_vars_string.substr(i, 9) == "__nested:") {
-                    nested_depth++;
-                    current_var += "__nested:";
-                    i += 8;
-                } else if (c == ',' && nested_depth == 0) {
-                    if (!current_var.empty()) {
-                        deeper_var_names.push_back(current_var);
-                        current_var = "";
-                    }
-                } else {
-                    current_var += c;
-                    if (nested_depth > 0 && i == deeper_vars_string.length() - 1) {
-                        nested_depth = 0;
-                    }
-                }
-            }
-            if (!current_var.empty()) {
-                deeper_var_names.push_back(current_var);
-            }
-
-            for (const auto& property_name : nested_obj->get_own_property_keys()) {
-                Value property_value = nested_obj->get_property(property_name);
-                if (property_value.is_object()) {
-                    Object* deeper_obj = property_value.as_object();
-                    handle_nested_object_destructuring_with_source(deeper_obj, deeper_var_names, ctx, source_destructuring);
-                    break;
-                }
-            }
-        } else {
-            size_t colon_pos = var_name.find(':');
-            if (colon_pos != std::string::npos && colon_pos > 0 && colon_pos < var_name.length() - 1) {
-                std::string property_name = var_name.substr(0, colon_pos);
-                std::string variable_name = var_name.substr(colon_pos + 1);
-
-                Value prop_value = nested_obj->get_property(property_name);
-                bind_or_set(ctx, variable_name, prop_value);
-            } else {
-                std::string actual_property = var_name;
-                std::string target_variable = var_name;
-
-                Value prop_value = nested_obj->get_property(actual_property);
-                bind_or_set(ctx, target_variable, prop_value);
-            }
-        }
-    }
-}
-
-void DestructuringAssignment::handle_nested_object_destructuring_with_mappings(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx) {
-
-    for (const std::string& var_name : var_names) {
-        if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
-            std::string deeper_vars_string = var_name.substr(9);
-            std::vector<std::string> deeper_var_names;
-            std::string current_var = "";
-            int nested_depth = 0;
-
-            for (size_t i = 0; i < deeper_vars_string.length(); ++i) {
-                char c = deeper_vars_string[i];
-                if (i + 9 <= deeper_vars_string.length() &&
-                    deeper_vars_string.substr(i, 9) == "__nested:") {
-                    nested_depth++;
-                    current_var += "__nested:";
-                    i += 8;
-                } else if (c == ',' && nested_depth == 0) {
-                    if (!current_var.empty()) {
-                        deeper_var_names.push_back(current_var);
-                        current_var = "";
-                    }
-                } else {
-                    current_var += c;
-                    if (nested_depth > 0 && i == deeper_vars_string.length() - 1) {
-                        nested_depth = 0;
-                    }
-                }
-            }
-            if (!current_var.empty()) {
-                deeper_var_names.push_back(current_var);
-            }
-
-            for (const auto& property_name : nested_obj->get_own_property_keys()) {
-                Value property_value = nested_obj->get_property(property_name);
-                if (property_value.is_object()) {
-                    Object* deeper_obj = property_value.as_object();
-                    handle_nested_object_destructuring_with_mappings(deeper_obj, deeper_var_names, ctx);
-                    break;
-                }
-            }
-        } else {
-            size_t colon_pos = var_name.find(':');
-            if (colon_pos != std::string::npos && colon_pos > 0 && colon_pos < var_name.length() - 1) {
-                std::string property_name = var_name.substr(0, colon_pos);
-                std::string variable_name = var_name.substr(colon_pos + 1);
-
-                Value prop_value = apply_nested_default(variable_name, nested_obj->get_property(property_name), ctx);
-                bind_or_set(ctx, variable_name, prop_value);
-            } else {
-                Value prop_value = apply_nested_default(var_name, nested_obj->get_property(var_name), ctx);
-                bind_or_set(ctx, var_name, prop_value);
-            }
-        }
-    }
-}
-
-void DestructuringAssignment::handle_nested_object_destructuring_smart(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, DestructuringAssignment* source) {
-
-    static std::map<std::string, std::map<std::string, std::string>> global_property_mappings;
-
-    std::string source_key = "destructuring_" + std::to_string(reinterpret_cast<uintptr_t>(source));
-    auto& source_mappings = global_property_mappings[source_key];
-
-    for (const auto& mapping : source->get_property_mappings()) {
-        if (mapping.property_name != mapping.variable_name) {
-            source_mappings[mapping.property_name] = mapping.variable_name;
-        }
-    }
-
-    for (const std::string& var_name : var_names) {
-        if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
-            std::string deeper_vars_string = var_name.substr(9);
-            std::vector<std::string> deeper_var_names;
-            std::string current_var = "";
-            int nested_depth = 0;
-
-            for (size_t i = 0; i < deeper_vars_string.length(); ++i) {
-                char c = deeper_vars_string[i];
-                if (i + 9 <= deeper_vars_string.length() &&
-                    deeper_vars_string.substr(i, 9) == "__nested:") {
-                    nested_depth++;
-                    current_var += "__nested:";
-                    i += 8;
-                } else if (c == ',' && nested_depth == 0) {
-                    if (!current_var.empty()) {
-                        deeper_var_names.push_back(current_var);
-                        current_var = "";
-                    }
-                } else {
-                    current_var += c;
-                    if (nested_depth > 0 && i == deeper_vars_string.length() - 1) {
-                        nested_depth = 0;
-                    }
-                }
-            }
-            if (!current_var.empty()) {
-                deeper_var_names.push_back(current_var);
-            }
-
-            for (const auto& property_name : nested_obj->get_own_property_keys()) {
-                Value property_value = nested_obj->get_property(property_name);
-                if (property_value.is_object()) {
-                    Object* deeper_obj = property_value.as_object();
-                    handle_nested_object_destructuring_smart(deeper_obj, deeper_var_names, ctx, source);
-                    break;
-                }
-            }
-        } else {
-            size_t colon_pos = var_name.find(':');
-            if (colon_pos != std::string::npos && colon_pos > 0 && colon_pos < var_name.length() - 1) {
-                std::string property_name = var_name.substr(0, colon_pos);
-                std::string variable_name = var_name.substr(colon_pos + 1);
-
-                Value prop_value = apply_nested_default(variable_name, nested_obj->get_property(property_name), ctx);
-                bind_or_set(ctx, variable_name, prop_value);
-            } else {
-                std::string target_variable = var_name;
-
-                if (source_mappings.find(var_name) != source_mappings.end()) {
-                    target_variable = source_mappings[var_name];
-                }
-
-                Value prop_value = apply_nested_default(target_variable, nested_obj->get_property(var_name), ctx);
-                bind_or_set(ctx, target_variable, prop_value);
-            }
-        }
-    }
-
-    global_property_mappings.erase(source_key);
-}
-
-void DestructuringAssignment::handle_nested_object_destructuring_enhanced(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, const std::string& property_key) {
-
-
-    static std::map<std::string, std::string> runtime_property_mappings;
-
-
-    for (const std::string& var_name : var_names) {
-        if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
-            std::string deeper_vars_string = var_name.substr(9);
-            std::vector<std::string> deeper_var_names;
-            std::string current_var = "";
-            int nested_depth = 0;
-
-            for (size_t i = 0; i < deeper_vars_string.length(); ++i) {
-                char c = deeper_vars_string[i];
-                if (i + 9 <= deeper_vars_string.length() &&
-                    deeper_vars_string.substr(i, 9) == "__nested:") {
-                    nested_depth++;
-                    current_var += "__nested:";
-                    i += 8;
-                } else if (c == ',' && nested_depth == 0) {
-                    if (!current_var.empty()) {
-                        deeper_var_names.push_back(current_var);
-                        current_var = "";
-                    }
-                } else {
-                    current_var += c;
-                    if (nested_depth > 0 && i == deeper_vars_string.length() - 1) {
-                        nested_depth = 0;
-                    }
-                }
-            }
-            if (!current_var.empty()) {
-                deeper_var_names.push_back(current_var);
-            }
-
-
-            for (const auto& prop_name : nested_obj->get_own_property_keys()) {
-                Value property_value = nested_obj->get_property(prop_name);
-                if (property_value.is_object()) {
-                    Object* deeper_obj = property_value.as_object();
-                    handle_nested_object_destructuring_enhanced(deeper_obj, deeper_var_names, ctx, prop_name);
-                    break;
-                }
-            }
-        } else {
-            size_t colon_pos = var_name.find(':');
-            if (colon_pos != std::string::npos && colon_pos > 0 && colon_pos < var_name.length() - 1) {
-                std::string property_name = var_name.substr(0, colon_pos);
-                std::string variable_name = var_name.substr(colon_pos + 1);
-
-                Value prop_value = nested_obj->get_property(property_name);
-                bind_or_set(ctx, variable_name, prop_value);
-            } else {
-                std::string target_variable = var_name;
-
-                static std::map<std::string, std::vector<std::pair<std::string, std::string>>> global_nested_mappings;
-
-                for (const std::string& check_var : var_names) {
-                    if (check_var.find("REGISTRY:") == 0) {
-                        size_t first_colon = check_var.find(':', 9);
-                        if (first_colon != std::string::npos) {
-                            size_t second_colon = check_var.find(':', first_colon + 1);
-                            if (second_colon != std::string::npos) {
-                                std::string registry_key = check_var.substr(9, first_colon - 9);
-
-                                if (global_nested_mappings.find(registry_key) != global_nested_mappings.end()) {
-                                    auto& mappings = global_nested_mappings[registry_key];
-                                    for (const auto& mapping_pair : mappings) {
-                                        if (mapping_pair.first == var_name) {
-                                            target_variable = mapping_pair.second;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-
-                Value prop_value = apply_nested_default(target_variable, nested_obj->get_property(var_name), ctx);
-                bind_or_set(ctx, target_variable, prop_value);
-            }
-        }
-    }
-}
-
 std::string DestructuringAssignment::to_string() const {
-    std::string targets_str;
-    if (type_ == Type::ARRAY) {
-        targets_str = "[";
-        for (size_t i = 0; i < targets_.size(); i++) {
-            if (i > 0) targets_str += ", ";
-            targets_str += targets_[i]->get_name();
-        }
-        targets_str += "]";
-    } else {
-        targets_str = "{";
-        for (size_t i = 0; i < targets_.size(); i++) {
-            if (i > 0) targets_str += ", ";
-            targets_str += targets_[i]->get_name();
-        }
-        targets_str += "}";
-    }
-    return targets_str + " = " + source_->to_string();
+    return pattern_literal_ ? pattern_literal_->to_string() : std::string("[destructuring]");
 }
 
 std::unique_ptr<ASTNode> DestructuringAssignment::clone() const {
-    std::vector<std::unique_ptr<Identifier>> cloned_targets;
-    for (const auto& target : targets_) {
-        cloned_targets.push_back(
-            std::unique_ptr<Identifier>(static_cast<Identifier*>(target->clone().release()))
-        );
-    }
-
     auto cloned = std::make_unique<DestructuringAssignment>(
-        std::move(cloned_targets), source_ ? source_->clone() : nullptr, type_, start_, end_
-    );
-
-    for (const auto& mapping : property_mappings_) {
-        if (mapping.computed_key) {
-            cloned->add_computed_property_mapping(mapping.property_name, mapping.variable_name, mapping.computed_key);
-        } else {
-            cloned->add_property_mapping(mapping.property_name, mapping.variable_name);
-        }
-    }
-
-    for (const auto& default_val : default_values_) {
-        cloned->add_default_value(default_val.index, default_val.expr->clone());
-    }
-
-    for (const auto& nested_default : nested_default_values_) {
-        cloned->add_nested_default_value(nested_default.first, nested_default.second->clone());
-    }
-
-    if (nested_rest_pattern_) {
-        cloned->set_nested_rest_pattern(nested_rest_pattern_->clone());
-    }
-
-    return std::move(cloned);
+        std::vector<std::unique_ptr<Identifier>>{}, source_ ? source_->clone() : nullptr,
+        type_, start_, end_);
+    if (pattern_literal_) cloned->set_pattern_literal(pattern_literal_->clone());
+    return cloned;
 }
 
-
-void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, const std::string& nested_pattern, Context& ctx) {
-
-
-    std::string pattern = nested_pattern;
-    Object* current_obj = obj;
-
-    while (!pattern.empty()) {
-
-        if (pattern.length() > 9 && pattern.substr(0, 9) == "__nested:") {
-            pattern = pattern.substr(9);
-            continue;
-        }
-
-        size_t colon_pos = pattern.find(':');
-
-        if (colon_pos == std::string::npos) {
-            Value final_value = current_obj->get_property(pattern);
-            if (final_value.is_undefined()) {
-                if (const ASTNode* dv = find_nested_default_value(pattern)) {
-                    final_value = const_cast<ASTNode*>(dv)->evaluate(ctx);
-                    if (ctx.has_exception()) return;
-                }
-            }
-            bind_or_set(ctx, pattern, final_value);
-            return;
-        }
-
-        std::string prop_name = pattern.substr(0, colon_pos);
-        std::string remaining = pattern.substr(colon_pos + 1);
-
-
-        bool is_renaming = (remaining.find(':') == std::string::npos &&
-                           remaining.find("__nested:") == std::string::npos);
-
-        if (is_renaming) {
-            Value prop_value = current_obj->get_property(prop_name);
-            if (prop_value.is_undefined()) {
-                if (const ASTNode* dv = find_nested_default_value(remaining)) {
-                    prop_value = const_cast<ASTNode*>(dv)->evaluate(ctx);
-                    if (ctx.has_exception()) return;
-                }
-            }
-            bind_or_set(ctx, remaining, prop_value);
-            return;
-        }
-
-
-        Value prop_value = current_obj->get_property(prop_name);
-        if (!prop_value.is_object()) {
-            return;
-        }
-
-        current_obj = prop_value.as_object();
-        pattern = remaining;
-
-    }
-}
 
 } // namespace Quanta

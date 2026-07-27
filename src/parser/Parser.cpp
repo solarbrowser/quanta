@@ -49,6 +49,26 @@ Parser::Parser(TokenSequence tokens, const ParseOptions& options)
     }
 }
 
+namespace {
+
+// A destructuring declarator's own id is an empty placeholder -- the names it
+// declares live in the pattern. Appends whichever applies, so duplicate-name
+// checks see real bindings instead of colliding on the empty placeholder.
+void append_declarator_names(const VariableDeclarator* d, std::vector<std::string>& out) {
+    if (!d || !d->get_id()) return;
+    const std::string& n = d->get_id()->get_name();
+    if (!n.empty()) { out.push_back(n); return; }
+    const ASTNode* init = d->get_init();
+    if (init && init->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+        init = static_cast<const AssignmentExpression*>(init)->get_left();
+    }
+    if (init && init->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+        static_cast<const DestructuringAssignment*>(init)->collect_bound_names(out);
+    }
+}
+
+}
+
 std::unique_ptr<Program> Parser::parse_program() {
     std::vector<std::unique_ptr<ASTNode>> statements;
     Position start = get_current_position();
@@ -87,10 +107,10 @@ std::unique_ptr<Program> Parser::parse_program() {
                 auto* vd = static_cast<VariableDeclaration*>(stmt.get());
                 if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
                     for (const auto& d : vd->get_declarations())
-                        if (d->get_id()) lex_only.push_back(d->get_id()->get_name());
+                        append_declarator_names(d.get(), lex_only);
                 } else {
                     for (const auto& d : vd->get_declarations())
-                        if (d->get_id()) var_names.push_back(d->get_id()->get_name());
+                        append_declarator_names(d.get(), var_names);
                 }
             } else if (stmt->get_type() == ASTNode::Type::EXPORT_STATEMENT && options_.source_type_module) {
                 auto* exp = static_cast<ExportStatement*>(stmt.get());
@@ -113,10 +133,10 @@ std::unique_ptr<Program> Parser::parse_program() {
                         auto* vd = static_cast<VariableDeclaration*>(decl);
                         if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
                             for (const auto& d : vd->get_declarations())
-                                if (d->get_id()) lex_only.push_back(d->get_id()->get_name());
+                                append_declarator_names(d.get(), lex_only);
                         } else {
                             for (const auto& d : vd->get_declarations())
-                                if (d->get_id()) var_names.push_back(d->get_id()->get_name());
+                                append_declarator_names(d.get(), var_names);
                         }
                     }
                 }
@@ -3129,10 +3149,9 @@ std::string Parser::find_forbidden_expr_in_params(
             ASTNode* pat = p->get_destructuring_pattern();
             if (pat && pat->get_type() == T::DESTRUCTURING_ASSIGNMENT) {
                 auto* da = static_cast<DestructuringAssignment*>(pat);
-                for (const auto& dv : da->get_default_values()) { walk(dv.expr.get()); if (!found.empty()) break; }
-                if (found.empty()) {
-                    for (const auto& pm : da->get_property_mappings()) { walk(pm.computed_key.get()); if (!found.empty()) break; }
-                }
+                da->for_each_expression([&](const ASTNode* e) {
+                    if (found.empty()) walk(const_cast<ASTNode*>(e));
+                });
             }
         }
     }
@@ -4131,12 +4150,10 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     auto* da = dynamic_cast<DestructuringAssignment*>(destructuring.get());
                     if (da) {
                         std::unordered_set<std::string> seen;
-                        for (const auto& t : da->get_targets()) {
-                            if (!t) continue;
-                            std::string nm = t->get_name();
-                            if (nm.empty() || nm[0] == '_') continue;
-                            if (nm.length() >= 3 && nm.substr(0,3) == "...") nm = nm.substr(3);
-                            if (!nm.empty() && !seen.insert(nm).second) {
+                        std::vector<std::string> bound;
+                        da->collect_bound_names(bound);
+                        for (const auto& nm : bound) {
+                            if (!seen.insert(nm).second) {
                                 add_error("SyntaxError: Identifier '" + nm + "' has already been declared");
                                 return nullptr;
                             }
@@ -5246,23 +5263,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                 ASTNode* pattern = param->get_destructuring_pattern();
                 if (pattern && pattern->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                     DestructuringAssignment* da = static_cast<DestructuringAssignment*>(pattern);
-                    if (da->get_type() == DestructuringAssignment::Type::ARRAY) {
-                        for (const auto& target : da->get_targets()) {
-                            if (!target) continue;
-                            const std::string& name = target->get_name();
-                            if (name.empty() || name[0] == '_') continue;
-                            if (!seen_bindings.insert(name).second) {
-                                add_error("Duplicate binding identifier '" + name + "' in destructuring parameter");
-                                return nullptr;
-                            }
-                        }
-                    } else {
-                        for (const auto& pm : da->get_property_mappings()) {
-                            if (pm.variable_name.empty() || pm.variable_name[0] == '_') continue;
-                            if (!seen_bindings.insert(pm.variable_name).second) {
-                                add_error("Duplicate binding identifier '" + pm.variable_name + "' in destructuring parameter");
-                                return nullptr;
-                            }
+                    std::vector<std::string> bound;
+                    da->collect_bound_names(bound);
+                    for (const auto& name : bound) {
+                        if (!seen_bindings.insert(name).second) {
+                            add_error("Duplicate binding identifier '" + name + "' in destructuring parameter");
+                            return nullptr;
                         }
                     }
                 }
@@ -6901,23 +6907,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                 ASTNode* pattern = param->get_destructuring_pattern();
                 if (pattern && pattern->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                     DestructuringAssignment* da = static_cast<DestructuringAssignment*>(pattern);
-                    if (da->get_type() == DestructuringAssignment::Type::ARRAY) {
-                        for (const auto& target : da->get_targets()) {
-                            if (!target) continue;
-                            const std::string& name = target->get_name();
-                            if (name.empty() || name[0] == '_') continue;
-                            if (!seen_bindings.insert(name).second) {
-                                add_error("Duplicate binding identifier '" + name + "' in destructuring parameter");
-                                return nullptr;
-                            }
-                        }
-                    } else {
-                        for (const auto& pm : da->get_property_mappings()) {
-                            if (pm.variable_name.empty() || pm.variable_name[0] == '_') continue;
-                            if (!seen_bindings.insert(pm.variable_name).second) {
-                                add_error("Duplicate binding identifier '" + pm.variable_name + "' in destructuring parameter");
-                                return nullptr;
-                            }
+                    std::vector<std::string> bound;
+                    da->collect_bound_names(bound);
+                    for (const auto& name : bound) {
+                        if (!seen_bindings.insert(name).second) {
+                            add_error("Duplicate binding identifier '" + name + "' in destructuring parameter");
+                            return nullptr;
                         }
                     }
                 }
@@ -7739,14 +7734,10 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             if (p->has_destructuring()) {
                 ASTNode* pat = p->get_destructuring_pattern();
                 if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-                    auto* da = static_cast<DestructuringAssignment*>(pat);
-                    // For both ARRAY and OBJECT, get_targets() contains the binding variable names
-                    for (const auto& tgt : da->get_targets()) {
-                        if (!tgt) continue;
-                        const std::string& tname = tgt->get_name();
-                        if (tname.empty() || tname[0] == '_' || tname[0] == '.') continue;
+                    std::vector<std::string> bound;
+                    static_cast<DestructuringAssignment*>(pat)->collect_bound_names(bound);
+                    for (const auto& tname : bound)
                         if (!check_name(tname)) return nullptr;
-                    }
                 }
             }
         }
@@ -9000,10 +8991,9 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
             if (catch_destr_pattern->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                 auto* da = static_cast<DestructuringAssignment*>(catch_destr_pattern.get());
                 std::unordered_set<std::string> seen_names;
-                for (const auto& t : da->get_targets()) {
-                    if (!t) continue;
-                    const std::string& nm = t->get_name();
-                    if (nm.empty() || nm[0] == '_') continue;
+                std::vector<std::string> bound;
+                da->collect_bound_names(bound);
+                for (const auto& nm : bound) {
                     if (!seen_names.insert(nm).second) {
                         add_error("SyntaxError: Duplicate binding '" + nm + "' in catch parameter");
                         return nullptr;
@@ -9881,498 +9871,94 @@ std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
     return std::make_unique<ExportSpecifier>(local_name, exported_name, start, end);
 }
 
-std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
-
-    Position start = get_current_position();
-    
-    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-        advance();
-        
-        std::vector<std::unique_ptr<Identifier>> targets;
-        std::vector<std::pair<size_t, std::unique_ptr<ASTNode>>> default_exprs;
-        std::unique_ptr<ASTNode> nested_rest_pat;
-
-        while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
-            if (current_token().get_type() == TokenType::ELLIPSIS) {
-                advance();
-
-                if (current_token().get_type() == TokenType::LEFT_BRACKET ||
-                    current_token().get_type() == TokenType::LEFT_BRACE) {
-                    // ...[pattern] or ...{pattern}: nested rest destructuring
-                    auto nested_pattern = parse_destructuring_pattern(depth + 1);
-                    if (!nested_pattern) {
-                        add_error("Invalid nested pattern after '...' in array destructuring");
-                        return nullptr;
-                    }
-                    auto rest_id = std::make_unique<Identifier>(
-                        "...__nested_rest__",
-                        nested_pattern->get_start(),
-                        nested_pattern->get_end()
-                    );
-                    targets.push_back(std::move(rest_id));
-                    nested_rest_pat = std::move(nested_pattern);
-                } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-                    auto rest_id = std::make_unique<Identifier>(
-                        "..." + current_token().get_value(),
-                        current_token().get_start(),
-                        current_token().get_end()
-                    );
-                    targets.push_back(std::move(rest_id));
-                    advance();
-                } else {
-                    add_error("Expected identifier after '...' in array destructuring");
-                    return nullptr;
+// A rest element is the one place where the object/array literal grammar is
+// strictly wider than the pattern grammar: `[...a, b]` and `[...a = 1]` both
+// parse as an array literal and neither is a legal binding or assignment
+// pattern. Recurses so a nested pattern is checked too.
+bool Parser::validate_binding_pattern(ASTNode* pattern) {
+    if (!pattern) return true;
+    if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        const auto& els = static_cast<ArrayLiteral*>(pattern)->get_elements();
+        for (size_t i = 0; i < els.size(); ++i) {
+            ASTNode* el = els[i].get();
+            if (!el) continue;
+            if (el->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                if (i + 1 != els.size()) {
+                    add_error("SyntaxError: Rest element must be last element");
+                    return false;
                 }
-
-                if (match(TokenType::COMMA)) {
-                    add_error("Rest element must be last element in array destructuring");
-                    return nullptr;
+                ASTNode* arg = static_cast<SpreadElement*>(el)->get_argument();
+                if (arg && arg->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                    add_error("SyntaxError: Rest element may not have a default");
+                    return false;
                 }
-                break;
-                
-            } else if (current_token().get_type() == TokenType::IDENTIFIER ||
-                       (current_token().get_type() == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) ||
-                       (current_token().get_type() == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode)) {
-                auto id = std::make_unique<Identifier>(
-                    current_token().get_value(),
-                    current_token().get_start(),
-                    current_token().get_end()
-                );
-                targets.push_back(std::move(id));
-                advance();
-
-                if (match(TokenType::ASSIGN)) {
-                    advance();
-                    auto default_expr = parse_assignment_expression();
-                    if (!default_expr) {
-                        add_error("Expected expression after '=' in array destructuring");
-                        return nullptr;
-                    }
-                    size_t target_index = targets.size() - 1;
-                    default_exprs.emplace_back(target_index, std::move(default_expr));
-                }
-            } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                // Nested array destructuring: recurse
-                auto nested = parse_destructuring_pattern(depth + 1);
-                if (!nested) {
-                    add_error("Invalid nested array destructuring");
-                    return nullptr;
-                }
-                // Encode all leaf variable names from the nested pattern
-                std::function<std::string(ASTNode*)> extract_vars = [&](ASTNode* nd) -> std::string {
-                    if (!nd) return "";
-                    auto* da = dynamic_cast<DestructuringAssignment*>(nd);
-                    if (!da) return "";
-                    std::string result;
-                    bool first = true;
-                    for (const auto& t : da->get_targets()) {
-                        if (!first) result += ",";
-                        const std::string& nm = t->get_name();
-                        if (nm.empty()) {
-                            result += "\x01"; // elision sentinel -- runtime advances iterator without binding
-                        } else {
-                            result += nm;
-                        }
-                        first = false;
-                    }
-                    return result;
-                };
-                std::string nested_vars = extract_vars(nested.get());
-                Position np_start = nested->get_start();
-                Position np_end = nested->get_end();
-                auto nested_placeholder = std::make_unique<Identifier>(
-                    "__nested_vars:" + nested_vars,
-                    np_start, np_end
-                );
-                targets.push_back(std::move(nested_placeholder));
-
-                if (match(TokenType::ASSIGN)) {
-                    advance();
-                    auto default_expr = parse_assignment_expression();
-                    if (!default_expr) {
-                        add_error("Expected expression after '=' in nested array destructuring");
-                        return nullptr;
-                    }
-                    size_t target_index = targets.size() - 1;
-                    default_exprs.emplace_back(target_index, std::move(default_expr));
-                }
-            } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                // Nested object destructuring inside array: [a, {x:b, c}]
-                auto nested = parse_destructuring_pattern(depth + 1);
-                if (!nested) {
-                    add_error("Invalid nested object destructuring in array");
-                    return nullptr;
-                }
-                // Encode as __nested_obj:prop1>var1,prop2>var2
-                std::string encoding = "__nested_obj:";
-                if (auto* nd = dynamic_cast<DestructuringAssignment*>(nested.get())) {
-                    const auto& nt = nd->get_targets();
-                    const auto& nm = nd->get_property_mappings();
-                    bool first = true;
-                    // Add shorthand properties (those without explicit mappings)
-                    for (const auto& t : nt) {
-                        const std::string& name = t->get_name();
-                        bool in_mappings = false;
-                        for (const auto& m : nm) {
-                            // Check if this target is the variable_name of a mapping
-                            if (m.variable_name == name) { in_mappings = true; break; }
-                        }
-                        if (!in_mappings &&
-                            name.find("__nested") == std::string::npos) {
-                            if (!first) encoding += ",";
-                            encoding += name + ">" + name;
-                            first = false;
-                        }
-                    }
-                    // Add explicitly mapped properties
-                    for (const auto& m : nm) {
-                        if (!first) encoding += ",";
-                        encoding += m.property_name + ">" + m.variable_name;
-                        first = false;
-                    }
-                }
-                auto nested_id = std::make_unique<Identifier>(
-                    encoding, nested->get_start(), nested->get_end()
-                );
-                targets.push_back(std::move(nested_id));
-
-                if (match(TokenType::ASSIGN)) {
-                    advance();
-                    auto default_expr = parse_assignment_expression();
-                    if (!default_expr) {
-                        add_error("Expected expression after '=' in nested object destructuring");
-                        return nullptr;
-                    }
-                    size_t target_index = targets.size() - 1;
-                    default_exprs.emplace_back(target_index, std::move(default_expr));
-                }
-            } else if (current_token().get_type() == TokenType::COMMA) {
-                auto placeholder = std::make_unique<Identifier>(
-                    "",
-                    current_token().get_start(),
-                    current_token().get_end()
-                );
-                targets.push_back(std::move(placeholder));
-            } else {
-                add_error("Expected identifier or ',' in array destructuring");
-                return nullptr;
+                if (!validate_binding_pattern(arg)) return false;
+                continue;
             }
-            
-            if (match(TokenType::COMMA)) {
-                advance();
-            } else {
-                break;
+            if (el->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                el = static_cast<AssignmentExpression*>(el)->get_left();
             }
+            if (!validate_binding_pattern(el)) return false;
         }
-        
-        if (!consume(TokenType::RIGHT_BRACKET)) {
-            add_error("Expected ']' to close array destructuring");
-            return nullptr;
-        }
-        
-        Position end = get_current_position();
-        auto destructuring = std::make_unique<DestructuringAssignment>(
-            std::move(targets), nullptr, DestructuringAssignment::Type::ARRAY, start, end
-        );
-
-        for (auto& default_pair : default_exprs) {
-            destructuring->add_default_value(default_pair.first, std::move(default_pair.second));
-        }
-
-        if (nested_rest_pat) {
-            destructuring->set_nested_rest_pattern(std::move(nested_rest_pat));
-        }
-
-        return std::move(destructuring);
-        
-    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-        advance();
-        
-        std::vector<std::unique_ptr<Identifier>> targets;
-        std::vector<std::pair<std::string, std::string>> property_mappings;
-        std::vector<std::pair<std::string, std::shared_ptr<ASTNode>>> computed_key_exprs;
-        std::vector<std::pair<size_t, std::unique_ptr<ASTNode>>> obj_default_exprs;
-        // Default expressions for identifiers at any nesting depth below this
-        // level (e.g. `d = 10` inside `b: { c, d = 10 }`) -- the flattened
-        // "__nested:" string this loop builds has no room for an ASTNode*, so
-        // these are escaped up here by name and reattached to the final
-        // DestructuringAssignment via add_nested_default_value below.
-        std::vector<std::pair<std::string, std::unique_ptr<ASTNode>>> escaped_nested_defaults;
-
-        while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
-            if (current_token().get_type() == TokenType::ELLIPSIS) {
-                advance();
-
-                if (current_token().get_type() != TokenType::IDENTIFIER) {
-                    add_error("Expected identifier after '...' in object destructuring");
-                    return nullptr;
-                }
-
-                auto rest_id = std::make_unique<Identifier>(
-                    "..." + current_token().get_value(),
-                    current_token().get_start(),
-                    current_token().get_end()
-                );
-                targets.push_back(std::move(rest_id));
-                advance();
-
-                if (match(TokenType::COMMA)) {
-                    add_error("Rest element must be last element in object destructuring");
-                    return nullptr;
-                }
-                break;
-
-            } else if (current_token().get_type() == TokenType::IDENTIFIER ||
-                       current_token().get_type() == TokenType::NUMBER ||
-                       current_token().get_type() == TokenType::STRING ||
-                       current_token().get_type() == TokenType::BIGINT_LITERAL ||
-                       current_token().get_type() == TokenType::ASYNC ||
-                       (current_token().get_type() == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) ||
-                       (current_token().get_type() == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode)) {
-                // ASYNC/AWAIT/YIELD used as identifier bindings are NOT literal keys (they behave like IDENTIFIER)
-                bool is_literal_key = (current_token().get_type() == TokenType::NUMBER ||
-                                       current_token().get_type() == TokenType::STRING ||
-                                       current_token().get_type() == TokenType::BIGINT_LITERAL);
-                if (!is_literal_key && current_token().has_escaped_keyword()) {
-                    add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
-                    return nullptr;
-                }
-                auto id = std::make_unique<Identifier>(
-                    current_token().get_value(),
-                    current_token().get_start(),
-                    current_token().get_end()
-                );
-                targets.push_back(std::move(id));
-                advance();
-
-                if (match(TokenType::COLON)) {
-                    advance();
-                    
-                    if (match(TokenType::LEFT_BRACE)) {
-                        auto nested = parse_destructuring_pattern(depth + 1);
-                        if (!nested) {
-                            add_error("Invalid nested object destructuring");
-                            return nullptr;
-                        }
-
-                        std::string nested_vars = extract_nested_variable_names(nested.get());
-
-                        std::string original_property_name = targets.back()->get_name();
-
-
-                        std::string proper_pattern = nested_vars;
-                        if (auto nested_destructuring = dynamic_cast<DestructuringAssignment*>(nested.get())) {
-                            const auto& mappings = nested_destructuring->get_property_mappings();
-
-                            std::string property_name = "";
-                            if (!mappings.empty()) {
-                                property_name = mappings[0].property_name;
-                            } else {
-                                const auto& targets = nested_destructuring->get_targets();
-                                if (!targets.empty()) {
-                                    std::string first_target = targets[0]->get_name();
-
-                                    if (first_target.find("__nested") == std::string::npos) {
-                                        property_name = first_target;
-                                    }
-                                }
-                            }
-
-                            if (!property_name.empty()) {
-                                size_t nested_pos = nested_vars.find("__nested:");
-                                if (nested_pos != std::string::npos && nested_pos + 9 < nested_vars.length()) {
-                                    proper_pattern = property_name + ":" + nested_vars;
-                                } else {
-                                    if (property_name == nested_vars) {
-                                        proper_pattern = "__nested:" + nested_vars;
-                                    } else {
-                                        proper_pattern = property_name + ":" + nested_vars;
-                                    }
-                                }
-                            }
-                        }
-                        if (auto* nested_destr_for_defaults = dynamic_cast<DestructuringAssignment*>(nested.get())) {
-                            for (auto& escaped : nested_destr_for_defaults->release_defaults_by_name()) {
-                                escaped_nested_defaults.push_back(std::move(escaped));
-                            }
-                        }
-                        property_mappings.emplace_back(original_property_name, proper_pattern);
-
-                        if (match(TokenType::ASSIGN)) {
-                            advance();
-                            auto default_expr = parse_assignment_expression();
-                            if (!default_expr) {
-                                add_error("Expected expression after '=' in object destructuring default");
-                                return nullptr;
-                            }
-                            size_t target_index = targets.size() - 1;
-                            obj_default_exprs.emplace_back(target_index, std::move(default_expr));
-                        }
-
-                    } else if (match(TokenType::LEFT_BRACKET)) {
-                        auto nested = parse_destructuring_pattern(depth + 1);
-                        if (!nested) {
-                            add_error("Invalid nested array destructuring");
-                            return nullptr;
-                        }
-
-                        std::string nested_vars = extract_nested_variable_names(nested.get());
-
-                        std::string original_property_name = targets.back()->get_name();
-
-                        auto nested_id = std::make_unique<Identifier>(
-                            "__nested_array:" + nested_vars,
-                            nested->get_start(),
-                            nested->get_end()
-                        );
-
-                        targets.pop_back();
-                        targets.push_back(std::move(nested_id));
-
-                        property_mappings.emplace_back(original_property_name, "__nested_array:" + nested_vars);
-
-                        if (match(TokenType::ASSIGN)) {
-                            advance();
-                            auto default_expr = parse_assignment_expression();
-                            if (!default_expr) {
-                                add_error("Expected expression after '=' in object destructuring default");
-                                return nullptr;
-                            }
-                            size_t target_index = targets.size() - 1;
-                            obj_default_exprs.emplace_back(target_index, std::move(default_expr));
-                        }
-                    } else if (match(TokenType::IDENTIFIER)) {
-                        std::string new_name = current_token().get_value();
-                        Position new_pos = current_token().get_start();
-                        Position new_end = current_token().get_end();
-                        
-                        std::string original_name = targets.back()->get_name();
-                        
-                        targets.pop_back();
-                        auto new_id = std::make_unique<Identifier>(new_name, new_pos, new_end);
-                        targets.push_back(std::move(new_id));
-                        
-                        property_mappings.emplace_back(original_name, new_name);
-                        advance();
-
-                        // Handle default value after renamed identifier: {x: a = expr}
-                        if (match(TokenType::ASSIGN)) {
-                            advance();
-                            auto default_expr = parse_assignment_expression();
-                            if (!default_expr) {
-                                add_error("Expected expression after '=' in object destructuring default");
-                                return nullptr;
-                            }
-                            size_t target_index = targets.size() - 1;
-                            obj_default_exprs.emplace_back(target_index, std::move(default_expr));
-                        }
-                    } else {
-                        add_error("Expected identifier or nested pattern after ':'");
-                        return nullptr;
-                    }
-                } else if (!is_literal_key && match(TokenType::ASSIGN)) {
-                    // Handle shorthand default: {a = expr}  (only valid for identifier keys)
-                    advance();
-                    auto default_expr = parse_assignment_expression();
-                    if (!default_expr) {
-                        add_error("Expected expression after '=' in object destructuring default");
-                        return nullptr;
-                    }
-                    size_t target_index = targets.size() - 1;
-                    obj_default_exprs.emplace_back(target_index, std::move(default_expr));
-                } else if (is_literal_key) {
-                    add_error("Expected ':' after numeric/string key in object destructuring");
-                    return nullptr;
-                }
-            } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                // Computed property key: { [expr]: varName }
-                advance(); // skip '['
-                auto key_expr = parse_assignment_expression();
-                if (!key_expr) {
-                    add_error("Expected expression in computed destructuring key");
-                    return nullptr;
-                }
-                if (!consume(TokenType::RIGHT_BRACKET)) {
-                    add_error("Expected ']' after computed destructuring key");
-                    return nullptr;
-                }
-                if (!consume(TokenType::COLON)) {
-                    add_error("Expected ':' after computed destructuring key");
-                    return nullptr;
-                }
-                if (current_token().get_type() != TokenType::IDENTIFIER) {
-                    add_error("Expected identifier after ':' in computed destructuring");
-                    return nullptr;
-                }
-                std::string var_name = current_token().get_value();
-                Position vstart = current_token().get_start();
-                Position vend = current_token().get_end();
-                advance();
-
-                // Store: target is the variable, mapping uses __computed_N as property placeholder
-                auto var_id = std::make_unique<Identifier>(var_name, vstart, vend);
-                targets.push_back(std::move(var_id));
-
-                // Store the computed key expression -- shared_ptr so clone() works
-                std::string key_str = "__computed:" + key_expr->to_string();
-                property_mappings.emplace_back(key_str, var_name);
-                computed_key_exprs.emplace_back(key_str, std::shared_ptr<ASTNode>(key_expr.release()));
-
-                if (match(TokenType::ASSIGN)) {
-                    advance();
-                    auto default_expr = parse_assignment_expression();
-                    if (!default_expr) {
-                        add_error("Expected expression after '=' in computed destructuring default");
-                        return nullptr;
-                    }
-                    size_t target_index = targets.size() - 1;
-                    obj_default_exprs.emplace_back(target_index, std::move(default_expr));
-                }
-            } else {
-                add_error("Expected identifier in object destructuring");
-                return nullptr;
-            }
-
-            if (match(TokenType::COMMA)) {
-                advance();
-            } else {
-                break;
-            }
-        }
-
-        if (!consume(TokenType::RIGHT_BRACE)) {
-            add_error("Expected '}' to close object destructuring");
-            return nullptr;
-        }
-        
-        Position end = get_current_position();
-        auto destructuring = std::make_unique<DestructuringAssignment>(
-            std::move(targets), nullptr, DestructuringAssignment::Type::OBJECT, start, end
-        );
-        
-        for (const auto& mapping : property_mappings) {
-            auto it = std::find_if(computed_key_exprs.begin(), computed_key_exprs.end(),
-                [&](const auto& p){ return p.first == mapping.first; });
-            if (it != computed_key_exprs.end()) {
-                destructuring->add_computed_property_mapping(mapping.first, mapping.second, it->second);
-            } else {
-                destructuring->add_property_mapping(mapping.first, mapping.second);
-            }
-        }
-
-        for (auto& default_pair : obj_default_exprs) {
-            destructuring->add_default_value(default_pair.first, std::move(default_pair.second));
-        }
-
-        for (auto& escaped : escaped_nested_defaults) {
-            destructuring->add_nested_default_value(escaped.first, std::move(escaped.second));
-        }
-
-        return std::move(destructuring);
+        return true;
     }
+    if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+        const auto& props = static_cast<ObjectLiteral*>(pattern)->get_properties();
+        for (size_t i = 0; i < props.size(); ++i) {
+            const auto& prop = props[i];
+            if (!prop->key && prop->value &&
+                prop->value->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                if (i + 1 != props.size()) {
+                    add_error("SyntaxError: Rest element must be last element");
+                    return false;
+                }
+                ASTNode* arg = static_cast<SpreadElement*>(prop->value.get())->get_argument();
+                if (arg && arg->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                    add_error("SyntaxError: Rest element may not have a default");
+                    return false;
+                }
+                continue;
+            }
+            ASTNode* v = prop->value.get();
+            if (v && v->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                v = static_cast<AssignmentExpression*>(v)->get_left();
+            }
+            if (!validate_binding_pattern(v)) return false;
+        }
+        return true;
+    }
+    return true;
+}
 
-    add_error("Expected '[' or '{' for destructuring pattern");
-    return nullptr;
+std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
+    (void)depth;
+    // Cover grammar: a binding pattern is parsed by the ordinary object/array
+    // literal parser (which already accepts the pattern-only forms, e.g. the
+    // CoverInitializedName in `{a = 1}`) and reinterpreted here. That literal
+    // is the pattern tree -- see DestructuringAssignment::pattern_literal_ for
+    // why the previous flattened representation could not be one.
+    Position start = get_current_position();
+    DestructuringAssignment::Type kind;
+    std::unique_ptr<ASTNode> literal;
+    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+        kind = DestructuringAssignment::Type::ARRAY;
+        literal = parse_array_literal();
+    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+        kind = DestructuringAssignment::Type::OBJECT;
+        literal = parse_object_literal();
+    } else {
+        return nullptr;
+    }
+    if (!literal) return nullptr;
+    // Refine the cover grammar: the literal parser accepts forms that are legal
+    // as an expression but not as a pattern.
+    if (!validate_binding_pattern(literal.get())) return nullptr;
+
+    auto destructuring = std::make_unique<DestructuringAssignment>(
+        std::vector<std::unique_ptr<Identifier>>{}, nullptr, kind,
+        start, get_current_position());
+    destructuring->set_pattern_literal(std::move(literal));
+    return destructuring;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_spread_element() {
@@ -10863,91 +10449,6 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
     );
 }
 
-std::string Parser::extract_nested_variable_names(ASTNode* node) {
-    if (!node) {
-        return "";
-    }
-
-    std::string result = generate_proper_nested_pattern(node, 0);
-    return result;
-}
-
-std::string Parser::generate_proper_nested_pattern(ASTNode* node, int depth) {
-    if (!node) return "";
-
-    if (node->get_type() == ASTNode::Type::IDENTIFIER) {
-        auto* id = static_cast<Identifier*>(node);
-        return id->get_name();
-    }
-    else if (node->get_type() == ASTNode::Type::OBJECT_LITERAL) {
-        auto* obj = static_cast<ObjectLiteral*>(node);
-        std::vector<std::string> nested_vars;
-
-        for (const auto& prop : obj->get_properties()) {
-            std::string prop_name = "";
-            if (prop->key && prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
-                prop_name = static_cast<Identifier*>(prop->key.get())->get_name();
-            }
-
-            std::string value_pattern = generate_proper_nested_pattern(prop->value.get(), depth + 1);
-            if (!value_pattern.empty()) {
-                std::string prefixed_pattern = value_pattern;
-                if (depth > 0 && !prop_name.empty()) {
-                    prefixed_pattern = prop_name + ":__nested:" + value_pattern;
-                } else if (!prop_name.empty()) {
-                    prefixed_pattern = prop_name + ":" + value_pattern;
-                } else {
-                    prefixed_pattern = value_pattern;
-                }
-                nested_vars.push_back(prefixed_pattern);
-            }
-        }
-
-        std::string result;
-        for (size_t i = 0; i < nested_vars.size(); ++i) {
-            if (i > 0) result += ",";
-            result += nested_vars[i];
-        }
-        return result;
-    }
-    else if (node->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-        auto* destructuring = static_cast<DestructuringAssignment*>(node);
-        const auto& mappings = destructuring->get_property_mappings();
-
-        if (!mappings.empty()) {
-            std::vector<std::string> nested_vars;
-            for (const auto& mapping : mappings) {
-                nested_vars.push_back(mapping.variable_name);
-                break;
-            }
-
-            std::string result;
-            for (size_t i = 0; i < nested_vars.size(); ++i) {
-                if (i > 0) result += ",";
-                result += nested_vars[i];
-            }
-            return result;
-        } else {
-            std::vector<std::string> nested_vars;
-            for (const auto& target : destructuring->get_targets()) {
-                std::string target_pattern = generate_proper_nested_pattern(target.get(), depth);
-                if (!target_pattern.empty()) {
-                    nested_vars.push_back(target_pattern);
-                }
-            }
-
-            std::string result;
-            for (size_t i = 0; i < nested_vars.size(); ++i) {
-                if (i > 0) result += ",";
-                result += nested_vars[i];
-            }
-            return result;
-        }
-    }
-
-    return "";
-}
-
 void Parser::extract_variable_names_recursive(ASTNode* node, std::vector<std::string>& names) {
     if (!node) return;
 
@@ -10956,10 +10457,7 @@ void Parser::extract_variable_names_recursive(ASTNode* node, std::vector<std::st
         names.push_back(id->get_name());
     }
     else if (node->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-        auto* destructuring = static_cast<DestructuringAssignment*>(node);
-        for (const auto& target : destructuring->get_targets()) {
-            extract_variable_names_recursive(target.get(), names);
-        }
+        static_cast<DestructuringAssignment*>(node)->collect_bound_names(names);
     }
     else if (node->get_type() == ASTNode::Type::OBJECT_LITERAL) {
         auto* obj = static_cast<ObjectLiteral*>(node);
