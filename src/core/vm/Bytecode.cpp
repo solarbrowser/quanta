@@ -78,6 +78,7 @@ const OpInfo& op_info(Op op) {
         {"CreateForInKeys", 0, '-'},
         {"JumpIfNotNullish", 2, 'o'}, {"JumpIfNullish", 2, 'o'}, {"JumpIfNotUndefined", 2, 'o'},
         {"CreateClosure", 2, 'z'},
+        {"DeclareFunction", 2, 'z'},
         {"EvalAst", 2, 'z'},
         {"DestructureBind", 2, 'z'},
         {"CreateRestArray", 1, 'r'},

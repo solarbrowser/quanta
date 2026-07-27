@@ -104,6 +104,9 @@ enum class Op : uint8_t {
     CreateClosure,   // k -- instantiates a function literal (index into
                      // BytecodeChunk::closures); still runs the literal's own
                      // tree-walker evaluate() for now
+    DeclareFunction, // k -- instantiates a hoisted function declaration from
+                     // closures[k] AND binds its name (the binding target
+                     // depends on the environment shape, not on the literal)
     EvalAst,         // k -- escape hatch: evaluates an arbitrary AST subtree
                      // (index into BytecodeChunk::treewalk_nodes) in the
                      // tree-walker. Every use is a construct the compiler

@@ -330,6 +330,22 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             if (!fe->get_cached_executable()) fe->set_cached_executable(tpl.executable);
             break;
         }
+        case ASTNode::Type::FUNCTION_DECLARATION: {
+            const auto* fd = static_cast<const FunctionDeclaration*>(literal);
+            tpl.form = ClosureTemplate::Form::Declaration;
+            tpl.name = fd->get_id()->get_name();
+            tpl.is_generator = fd->is_generator();
+            tpl.is_async = fd->is_async();
+            // Only the plain branch ever pinned the environment.
+            tpl.needs_outer_env = !fd->is_generator() && !fd->is_async();
+            tpl.body_is_strict = fd->get_body()->has_use_strict_directive();
+            tpl.has_direct_eval = fd->get_body()->has_direct_eval_cached();
+            tpl.executable = ensure_shared_executable(fd->get_cached_executable(), fd->get_body(),
+                                                      fd->get_params(), fd->get_source_text());
+            if (!fd->get_cached_executable()) fd->set_cached_executable(tpl.executable);
+            tpl.declared_length = spec_length_of(*tpl.executable);
+            break;
+        }
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
             const auto* ar = static_cast<const ArrowFunctionExpression*>(literal);
             tpl.form = ClosureTemplate::Form::Arrow;
@@ -480,106 +496,12 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
     return Value(function.release());
 }
 
-Value FunctionDeclaration::evaluate(Context& ctx) {
-    const std::string& function_name = id_->get_name();
-
-    std::unique_ptr<Function> function_obj;
-    {
-        // Share one FunctionExecutable across every instantiation of this
-        // declaration site (e.g. a nested declaration re-hoisted on every
-        // call of an enclosing function) -- same cache-on-node pattern as
-        // FunctionExpression::evaluate's plain branch, now also covering the
-        // generator/async/async-generator forms (each is a mutually
-        // exclusive shape for the SAME node, so they all share the one
-        // cached_executable_ slot safely).
-        ExecutableRef<FunctionExecutable> exe = get_cached_executable();
-        if (!exe) {
-            exe = make_executable_ref();
-            exe->body = body_->clone();
-            for (const auto& param : params_) {
-                exe->parameter_objects.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-                exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
-            }
-            set_cached_executable(exe);
-        }
-        size_t declared_length = 0;
-        for (const auto& p : exe->parameter_objects) {
-            if (p->is_rest() || p->has_default()) break;
-            declared_length++;
-        }
-
-        if (is_async_ && is_generator_) {
-            function_obj = std::make_unique<AsyncGeneratorFunction>(function_name, std::move(exe), &ctx);
-        } else if (is_generator_) {
-            function_obj = std::make_unique<GeneratorFunction>(function_name, std::move(exe), &ctx);
-        } else if (is_async_) {
-            function_obj = std::make_unique<AsyncFunction>(function_name, std::move(exe), &ctx);
-        } else {
-            function_obj = std::make_unique<Function>(function_name, std::move(exe), &ctx);
-            // Matches create_js_function's own two follow-up steps: this call
-            // site isn't analyzed for closure_needs_outer_environment, so
-            // preserve the old unconditional pin, and link [[Prototype]] since
-            // the shared-executable constructor doesn't do it automatically.
-            // Generator/AsyncFunction/AsyncGeneratorFunction never called this
-            // here even before this change (their own constructors set
-            // [[Prototype]] to the matching intrinsic themselves), so this
-            // stays plain-Function-only to preserve existing behavior exactly.
-            function_obj->mark_closure_environment_escaped();
-            if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-                function_obj->set_prototype(func_proto);
-            }
-        }
-        function_obj->set_declared_length(declared_length);
-    }
-
-    // Generator/async function declarations get a Function subclass that the base
-    // Function constructor links to plain Function.prototype -- override with the
-    // matching intrinsic (GeneratorFunction.prototype etc.) so f.constructor is correct.
-    if (function_obj) {
-        const char* intrinsic_name = (is_async_ && is_generator_) ? "AsyncGeneratorFunction"
-                                    : is_generator_ ? "GeneratorFunction"
-                                    : is_async_ ? "@@AsyncFunction" : nullptr;
-        if (intrinsic_name && ctx.has_binding(intrinsic_name)) {
-            Value ctor = ctx.get_binding(intrinsic_name);
-            if (ctor.is_function()) {
-                Value proto = ctor.as_function()->get_property("prototype");
-                if (proto.is_object()) function_obj->set_prototype(proto.as_object());
-            }
-        }
-    }
-
-    // Outer variables resolve through Function's closure_environment_ (the real
-    // lexical environment captured at creation time, wired in by create_function_context)
-    // -- no value snapshot needed here.
-
-    if (function_obj && !source_text_.empty()) {
-        function_obj->set_source_text(source_text_);
-    }
-    if (function_obj && body_->has_direct_eval_cached()) {
-        function_obj->set_property("__contains_eval__", Value(true));
-    }
-
-    if (function_obj) {
-        // ES5 10.1.1: a function is strict if the outer code is strict OR its body has "use strict"
-        if (ctx.is_strict_mode()) {
-            function_obj->set_is_strict(true);
-        } else if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            BlockStatement* blk = static_cast<BlockStatement*>(body_.get());
-            for (const auto& s : blk->get_statements()) {
-                if (s->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
-                auto* es = static_cast<ExpressionStatement*>(s.get());
-                if (!es->get_expression() || es->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
-                auto* sl = static_cast<StringLiteral*>(es->get_expression());
-                if (sl->get_value() == "use strict" && !sl->has_escapes()) {
-                    function_obj->set_is_strict(true);
-                    break;
-                }
-            }
-        }
-    }
-
-    Function* func_ptr = function_obj.release();
-    Value function_value(func_ptr);
+// FunctionDeclaration's own second half: instantiate, then bind the name where
+// the environment shape says it belongs. Shared with Op::DeclareFunction.
+Value declare_function(Context& ctx, const ClosureTemplate& tpl) {
+    Value function_value = instantiate_closure(ctx, tpl);
+    if (ctx.has_exception()) return Value();
+    const std::string& function_name = tpl.name;
 
     // At the script top level the variable environment is the global Object env.
     // Function declarations there must become own properties of the global object regardless of strict mode.
@@ -600,7 +522,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         // In strict mode inside a block/function where lex != var env, use lexical binding
         // so block-scoped function declarations don't bleed into the outer function scope.
         // Annex B.3.3's sloppy-mode var-scope leak applies only to plain FunctionDeclarations.
-        bool use_lexical = (ctx.is_strict_mode() || is_generator_ || is_async_) &&
+        bool use_lexical = (ctx.is_strict_mode() || tpl.is_generator || tpl.is_async) &&
             ctx.get_lexical_environment() != ctx.get_variable_environment();
         if (use_lexical) {
             if (!ctx.create_lexical_binding(function_name, function_value, true)) {
@@ -616,11 +538,13 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
             }
         }
     }
-
-
-
     return Value();
 }
+
+Value FunctionDeclaration::evaluate(Context& ctx) {
+    return declare_function(ctx, closure_template_for(this));
+}
+
 
 std::string FunctionDeclaration::to_string() const {
     std::ostringstream oss;

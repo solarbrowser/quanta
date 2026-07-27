@@ -35,8 +35,9 @@ namespace Quanta {
 void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& out);
 // Likewise from binary.cpp, backing Op::HasPrivate.
 Value private_name_in(Context& ctx, const std::string& private_name, const Value& target);
-// And from language.cpp, backing Op::CreateClosure.
+// And from language.cpp, backing Op::CreateClosure / Op::DeclareFunction.
 Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl);
+Value declare_function(Context& ctx, const ClosureTemplate& tpl);
 // And from call.cpp, backing Op::SuperCall.
 Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values, bool super_already_called);
 // And from member.cpp, backing the Op::GetSuper family.
@@ -1667,6 +1668,14 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
                 acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+                CHECK_EXC();
+                break;
+            }
+
+            case Op::DeclareFunction: {
+                uint16_t idx = read_u16(code, pc);
+                pc += 2;
+                declare_function(ctx, (*chunk.closures)[idx]);
                 CHECK_EXC();
                 break;
             }
