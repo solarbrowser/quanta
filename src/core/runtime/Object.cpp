@@ -171,6 +171,39 @@ void Object::erase_extra_property_order(const std::string& key) {
         [&](const auto& p) { return p.first == key; }), order.end());
 }
 
+bool Object::cacheable_data_slot(const std::string& key, uint32_t& slot_index) const {
+    if (get_type() != ObjectType::Ordinary || !shape_) return false;
+    int32_t idx = shape_->find_data_slot(key);
+    if (idx < 0) return false;
+    if (HybridDescriptorMap* d = descriptors()) {
+        const PropertyDescriptor* pd = d->find(key);
+        if (pd && pd->is_accessor_descriptor()) return false;
+    }
+    if (!get_shape_slot_unchecked(static_cast<uint32_t>(idx))) return false;
+    slot_index = static_cast<uint32_t>(idx);
+    return true;
+}
+
+bool Object::try_read_own_data_slot(const std::string& key, Value& out) const {
+    if (get_type() != ObjectType::Ordinary || !shape_) return false;
+    int32_t idx = shape_->find_data_slot(key);
+    if (idx < 0) return false;
+    // Same rule get_own_property follows: for a data property the shape slot
+    // holds the live value and any descriptors_ entry only carries attributes,
+    // so only an accessor entry disqualifies the slot. This matters for the
+    // global object in particular -- every `var` there is defined with explicit
+    // attributes (non-configurable), so treating any entry as disqualifying
+    // would give up on every global.
+    if (HybridDescriptorMap* d = descriptors()) {
+        const PropertyDescriptor* pd = d->find(key);
+        if (pd && pd->is_accessor_descriptor()) return false;
+    }
+    const Value* slot = get_shape_slot_unchecked(static_cast<uint32_t>(idx));
+    if (!slot) return false;
+    out = *slot;
+    return true;
+}
+
 bool Object::has_descriptor_override(const std::string& key) const {
     // An accessor living in shape_slots_ (see add_accessor_shape_property_cached)
     // has no descriptors_ entry at all, but every IC fast path across the VM
@@ -407,6 +440,21 @@ void Function::trace(Visitor& v) {
     }
 }
 
+void Function::set_home_object(Object* home) {
+    Collector::write_barrier(this);
+    mutable_class_slots().home_object = home;
+}
+
+void Function::set_super_constructor(Function* super_ctor) {
+    Collector::write_barrier(this);
+    mutable_class_slots().super_ctor = super_ctor;
+}
+
+void Function::set_private_brands(Object* brands) {
+    Collector::write_barrier(this);
+    mutable_class_slots().private_brands = brands;
+}
+
 void Function::trace_default(Visitor& v) {
     Object::trace_default(v);
     v.visit_context(closure_context_);
@@ -416,6 +464,11 @@ void Function::trace_default(Visitor& v) {
     // its owned AST clone alive, no GC pinning needed. Only its compiled
     // chunk holds GC references (constants) that still need tracing.
     if (executable_ && executable_->bytecode_chunk) executable_->bytecode_chunk->trace(v);
+    if (NonNativeInstanceData* d = instance_data()) {
+        v.visit_object(d->class_slots.home_object);
+        v.visit_object(d->class_slots.super_ctor);
+        v.visit_object(d->class_slots.private_brands);
+    }
 }
 
 static Value make_prop_key_value(const std::string& key) {

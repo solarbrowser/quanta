@@ -166,10 +166,6 @@ Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values,
 
     Value parent_constructor = ctx.get_binding("__super__");
 
-    if (parent_constructor.is_undefined()) {
-        parent_constructor = ctx.get_binding("__super_constructor__");
-    }
-
 
     if ((parent_constructor.is_undefined() && parent_constructor.is_function()) ||
         (parent_constructor.is_function() && parent_constructor.as_function() == nullptr)) {
@@ -201,7 +197,7 @@ Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values,
             ctx.set_pending_construct_call(true);
             Value result;
             // A default-ctor parent's own implicit super(...args) only runs via construct().
-            if (!parent_func->is_native() && parent_func->has_own_property("__default_ctor__")) {
+            if (!parent_func->is_native() && parent_func->is_default_ctor()) {
                 result = parent_func->construct(ctx, arg_values);
             } else if (this_obj) {
                 Value this_value(this_obj);
@@ -255,9 +251,8 @@ Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values,
             {
                 CallStack& pm_cs = CallStack::instance();
                 if (!pm_cs.is_empty() && pm_cs.top().function_ptr) {
-                    Value pm_slot_val = pm_cs.top().function_ptr->get_property("__pm_brand_slot__");
-                    if (pm_slot_val.is_string()) {
-                        std::string pm_slot = pm_slot_val.to_string();
+                    const std::string& pm_slot = pm_cs.top().function_ptr->pm_brand_slot();
+                    if (!pm_slot.empty()) {
                         Object* pm_this = final_this_obj ? final_this_obj : ctx.get_this_binding();
                         if (pm_this) pm_this->add_private_field(pm_slot);
                         if (ctx.has_exception()) return Value();

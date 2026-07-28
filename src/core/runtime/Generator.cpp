@@ -597,16 +597,15 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     // Super bindings, same as Function::call and Async's exec context. Without the
     // home object a generator method that overrides a parent method of the same
     // name resolves super back onto itself.
-    Value gen_super_ctor = get_property("__super_constructor__");
-    if (gen_super_ctor.is_function()) {
-        gen_context.create_binding("__super__", gen_super_ctor, false);
-        if (has_property("__is_static_method__")) {
+    const ClassSlots& gen_slots = class_slots();
+    if (gen_slots.super_ctor) {
+        gen_context.create_binding("__super__", Value(gen_slots.super_ctor), false);
+        if (gen_slots.is_static_method) {
             gen_context.create_binding("__super_is_static__", Value(true), false);
         }
     }
-    Value gen_home_object = get_property("__home_object__");
-    if (!gen_home_object.is_undefined() && !gen_home_object.is_null()) {
-        gen_context.create_binding("__home_object__", gen_home_object, false);
+    if (gen_slots.home_object) {
+        gen_context.create_binding("__home_object__", Value(gen_slots.home_object), false);
     }
 
     // A named class's own name is bound as an immutable self-reference inside its

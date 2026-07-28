@@ -573,8 +573,14 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // needs no per-call Environment (every binding insert is already skipped)
     // and no heap Context / survivor-pool bookkeeping -- a stack Context
     // pointing straight at the captured chain suffices.
+    // A class constructor is allowed in as long as it is a base class: a
+    // derived one needs the this-TDZ and super bookkeeping the full path sets
+    // up. The [[HomeObject]]/private-brand bindings the full path also creates
+    // cannot be missed here, because `super`, a private name and a direct eval
+    // each force env_mode, which this same condition already excludes.
+    bool ctor_ok = !is_class_constructor_ || !is_derived_ctor();
     if (VM::enabled() && executable_ && !executable_->vm_incompatible && executable_->bytecode_chunk && !executable_->bytecode_chunk->env_mode &&
-        !is_class_constructor_ && executable_->strict_directive_state >= 0 &&
+        ctor_ok && executable_->strict_directive_state >= 0 &&
         executable_->closure_props_state == 0 && (executable_->self_name_state == 0 || executable_->self_name_state == 2) &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
         // The Context must be heap-allocated and survivor-managed like the
@@ -710,9 +716,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // `extends null` is still ConstructorKind "derived": this stays uninitialized
     // (its super() always throws TypeError, so it can never become initialized).
     if (is_class_constructor_) {
-        Value scp = get_property("__super_constructor__");
-        if (!has_own_property("__default_ctor__") &&
-            (scp.is_function() || has_property("__super_is_null__"))) {
+        if (!is_default_ctor() && is_derived_ctor()) {
             function_context.set_this_needs_super(true);
             function_context.set_super_called(false);
         }
@@ -758,37 +762,22 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // super.x and #private access delegate to the tree-walker's own evaluate()
     // (BytecodeCompiler::emit_treewalker_delegate) and resolve these via
     // normal environment lookup, same as the tree-walker path below.
-    if (executable_->super_marker_state < 0) {
-        executable_->super_marker_state = 0;
-        if (this->has_property("__super_constructor__")) executable_->super_marker_state |= 1;
-        if (this->has_property("__super_is_null__")) executable_->super_marker_state |= 2;
-        if (this->has_property("__private_brands__")) executable_->super_marker_state |= 4;
-        if (this->has_property("__home_object__")) executable_->super_marker_state |= 8;
+    const ClassSlots& slots = class_slots();
+    if (slots.home_object) {
+        function_context.create_binding("__home_object__", Value(slots.home_object), false);
     }
-    if (executable_->super_marker_state & 8) {
-        Value home = this->get_property("__home_object__");
-        if (!home.is_undefined() && !home.is_null()) {
-            function_context.create_binding("__home_object__", home, false);
+    if (slots.super_ctor) {
+        function_context.create_binding("__super__", Value(slots.super_ctor), false);
+        // member.cpp's super lookup needs to know if this is a static method (resolves on the parent constructor itself) or an instance method (resolves on its .prototype).
+        if (slots.is_static_method) {
+            function_context.create_binding("__super_is_static__", Value(true), false);
         }
     }
-    if (executable_->super_marker_state & 1) {
-        Value super_constructor = this->get_property("__super_constructor__");
-        if (!super_constructor.is_undefined() && !super_constructor.is_null()) {
-            function_context.create_binding("__super__", super_constructor, false);
-            // member.cpp's super lookup needs to know if this is a static method (resolves on the parent constructor itself) or an instance method (resolves on its .prototype).
-            if (this->has_property("__is_static_method__")) {
-                function_context.create_binding("__super_is_static__", Value(true), false);
-            }
-        }
-    }
-    if (executable_->super_marker_state & 2) {
+    if (slots.super_is_null) {
         function_context.create_binding("__super_is_null__", Value(true), false);
     }
-    if (!vm_register_fast && (executable_->super_marker_state & 4)) {
-        Value brands = this->get_property("__private_brands__");
-        if (!brands.is_undefined() && !brands.is_null()) {
-            function_context.create_binding("__eval_private_names__", brands, false);
-        }
+    if (!vm_register_fast && slots.private_brands) {
+        function_context.create_binding("__eval_private_names__", Value(slots.private_brands), false);
     }
 
     // VM execution branches off BEFORE parameter/arguments materialization:
@@ -1422,7 +1411,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     }
     Value this_value(new_object.get());
 
-    Value constructor_prototype = get_property("prototype");
+    Value constructor_prototype = this->constructor_prototype();
     // GetPrototypeFromConstructor: initial prototype comes from new.target, which may already differ from `this`.
     Value initial_proto = constructor_prototype;
     Value existing_new_target = ctx.get_new_target();
@@ -1442,9 +1431,8 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         new_object->initialize_prototype(proto_obj);
     }
     
-    Value super_constructor_prop = get_property("__super_constructor__");
-    // Use has_own_property to avoid inheriting __default_ctor__ from parent class
-    bool is_default_ctor = has_own_property("__default_ctor__");
+    Function* super_constructor_fn = super_constructor();
+    bool default_ctor = is_default_ctor();
 
     ctx.set_in_constructor_call(true);
     ctx.set_super_called(false);
@@ -1455,10 +1443,10 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     }
 
     // A synthesized default derived constructor is spec'd as `constructor(...args) { super(...args); }`, so auto-super must run before the constructor body (which here only contains field initializers) -- otherwise a super-chain override (e.g. a base constructor returning `new Proxy(this, ...)`) takes effect too late and fields get written to the object that's about to be discarded.
-    if (is_default_ctor && super_constructor_prop.is_function()) {
-        Function* super_constructor = super_constructor_prop.as_function();
+    if (default_ctor && super_constructor_fn) {
+        Function* super_constructor = super_constructor_fn;
         Value super_result;
-        if (super_constructor->is_native() || super_constructor->has_own_property("__default_ctor__")) {
+        if (super_constructor->is_native() || super_constructor->is_default_ctor()) {
             // Native built-ins need construct semantics; so does a default-ctor JS parent,
             // whose own implicit super(...args) only runs inside construct().
             super_result = super_constructor->construct(ctx, args);
@@ -1475,9 +1463,8 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
             this_value = super_result;
         }
         // InitializeInstanceElements after auto-super: add per-instance private method brand slot.
-        Value pm_slot_val = get_property("__pm_brand_slot__");
-        if (pm_slot_val.is_string()) {
-            std::string pm_slot = pm_slot_val.to_string();
+        const std::string& pm_slot = pm_brand_slot();
+        if (!pm_slot.empty()) {
             Object* pm_this = this_value.is_object() ? this_value.as_object() : nullptr;
             if (pm_this) pm_this->add_private_field(pm_slot);
         }
@@ -1498,7 +1485,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 
     // `extends null` is also derived: super() can never succeed there, so a
     // completed constructor still has an uninitialized this -> ReferenceError below.
-    bool is_derived = !super_constructor_prop.is_undefined() || has_own_property("__super_is_null__");
+    bool is_derived = is_derived_ctor();
 
     // TypeError for explicit non-object return must come before ReferenceError for missing super (spec 13c)
     if (is_derived && !result.is_undefined() && !result.is_object() && !result.is_function()) {

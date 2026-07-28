@@ -1011,6 +1011,11 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
     return Value();
 }
 
+bool Environment::cacheable_object_binding(const std::string& name, uint32_t& slot_index) const {
+    if (type_ != Type::Object || !binding_object_ || is_with_environment_) return false;
+    return binding_object_->cacheable_data_slot(name, slot_index);
+}
+
 Value* Environment::stable_binding_slot(const std::string& name) {
     if (type_ == Type::Object || is_with_environment_) return nullptr;
     BindingSlot* slot = slots_.find(name);
@@ -1164,6 +1169,29 @@ static bool is_internal_binding_name(const std::string& name) {
     if (name == "this") return true;
     return name.size() > 4 && name[0] == '_' && name[1] == '_' &&
            name[name.size() - 1] == '_' && name[name.size() - 2] == '_';
+}
+
+bool Environment::try_get_binding(const std::string& name, Value& out, Context* ctx) const {
+    if (type_ != Type::Object || !binding_object_) {
+        const BindingSlot* slot = slots_.find(name);
+        if (!slot) return false;
+        out = slot->value;
+        return true;
+    }
+    // A `with` environment still needs the full HasBinding, @@unscopables and
+    // all, before any read -- only an ordinary object environment can be asked
+    // once. GetBindingValue's re-check exists because a @@unscopables getter
+    // may have deleted the property between the two steps; without a with
+    // environment there is nothing to run in between.
+    if (is_with_environment_) {
+        if (!has_own_binding(name)) return false;
+        out = get_binding_direct(name, ctx);
+        return true;
+    }
+    if (binding_object_->try_read_own_data_slot(name, out)) return true;
+    if (!binding_object_->has_property(name)) return false;
+    out = binding_object_->get_property(name);
+    return true;
 }
 
 bool Environment::has_own_binding(const std::string& name) const {

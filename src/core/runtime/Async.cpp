@@ -238,15 +238,14 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     exec_ctx->create_binding("this", bound_this, true);
 
     // Set up __super__ for class methods
-    Value super_ctor = get_property("__super_constructor__");
-    if (super_ctor.is_function()) {
-        exec_ctx->create_binding("__super__", super_ctor, false);
+    const ClassSlots& async_slots = class_slots();
+    if (async_slots.super_ctor) {
+        exec_ctx->create_binding("__super__", Value(async_slots.super_ctor), false);
     }
     // [[HomeObject]] rides on the function, not the receiver, so an async method
     // keeps resolving super after being detached from the object it came from.
-    Value home_object = get_property("__home_object__");
-    if (!home_object.is_undefined() && !home_object.is_null()) {
-        exec_ctx->create_binding("__home_object__", home_object, false);
+    if (async_slots.home_object) {
+        exec_ctx->create_binding("__home_object__", Value(async_slots.home_object), false);
     }
 
     // A named class's own name is bound as an immutable self-reference inside its
@@ -1526,16 +1525,15 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     // Super bindings, same as Function::call. Without the home object an async
     // generator method that overrides a parent method of the same name resolves
     // super back onto itself.
-    Value agen_super_ctor = get_property("__super_constructor__");
-    if (agen_super_ctor.is_function()) {
-        gen_ctx->create_binding("__super__", agen_super_ctor, false);
-        if (has_property("__is_static_method__")) {
+    const ClassSlots& agen_slots = class_slots();
+    if (agen_slots.super_ctor) {
+        gen_ctx->create_binding("__super__", Value(agen_slots.super_ctor), false);
+        if (agen_slots.is_static_method) {
             gen_ctx->create_binding("__super_is_static__", Value(true), false);
         }
     }
-    Value agen_home_object = get_property("__home_object__");
-    if (!agen_home_object.is_undefined() && !agen_home_object.is_null()) {
-        gen_ctx->create_binding("__home_object__", agen_home_object, false);
+    if (agen_slots.home_object) {
+        gen_ctx->create_binding("__home_object__", Value(agen_slots.home_object), false);
     }
 
     // A named class's own name is bound as an immutable self-reference inside its

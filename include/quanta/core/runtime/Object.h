@@ -422,6 +422,14 @@ public:
     // Out-of-line: descriptors_'s value type (PropertyDescriptor) is only
     // forward-declared this early in the header.
     bool has_descriptor_override(const std::string& key) const;
+    // One shape probe for "is `key` a plain own data property of this ordinary
+    // object, readable straight from its slot?". Answers false for anything
+    // that needs the general path -- an accessor, a descriptor override, a
+    // non-ordinary object -- so a false is never a claim that the key is
+    // absent, only that this shortcut cannot serve it.
+    bool try_read_own_data_slot(const std::string& key, Value& out) const;
+    // try_read_own_data_slot's slot index, for a caller that wants to cache it.
+    bool cacheable_data_slot(const std::string& key, uint32_t& slot_index) const;
     // Single descriptors_ lookup shared by get_named's cacheable-gate and
     // accessor branch -- calling has_descriptor_override() then
     // get_property_descriptor() back to back re-scans the same map for the
@@ -956,9 +964,24 @@ private:
     // this saving entirely). Manual new/delete instead of unique_ptr: the
     // pointee's static type depends on a runtime flag, not a compile-time
     // one, so ~Function() below does the delete by hand instead.
+public:
+    // The spec's internal slots for a method or class constructor. These used
+    // to be string properties on the function object, which also left
+    // `"__super_constructor__" in C` answering true where V8 says false.
+    struct ClassSlots {
+        Object* home_object = nullptr;      // [[HomeObject]]
+        Function* super_ctor = nullptr;     // the parent constructor super() calls
+        Object* private_brands = nullptr;
+        std::string pm_brand_slot;
+        bool is_default_ctor = false;
+        bool super_is_null = false;         // `extends null`: derived, but super() cannot succeed
+        bool is_static_method = false;
+    };
+private:
     struct NonNativeInstanceData {
         InstanceFeedback feedback;
         InstanceOverrides overrides;
+        ClassSlots class_slots;
     };
     mutable void* instance_data_ = nullptr;
     // Every one of these four checks is_native_ itself (not just
@@ -1150,6 +1173,44 @@ public:
     std::vector<PrivateFeedback,
         SmallMapAllocator<PrivateFeedback>>& instance_private_feedback() const {
         return ensure_instance_data().feedback.private_feedback;
+    }
+
+    // The spec's internal slots (see ClassSlots). Reading never allocates: a
+    // function that is neither a method nor a class constructor answers from
+    // one shared empty instance, so the common call pays a null check.
+    const ClassSlots& class_slots() const {
+        static const ClassSlots kNone;
+        NonNativeInstanceData* d = instance_data();
+        return d ? d->class_slots : kNone;
+    }
+    ClassSlots& mutable_class_slots() { return ensure_instance_data().class_slots; }
+
+    // Out of line: the three pointer slots need a write barrier, which would
+    // pull the collector into this header.
+    void set_home_object(Object* home);
+    void set_super_constructor(Function* super_ctor);
+    void set_private_brands(Object* brands);
+    void set_super_is_null() { mutable_class_slots().super_is_null = true; }
+    void set_default_ctor() { mutable_class_slots().is_default_ctor = true; }
+    void set_static_method() { mutable_class_slots().is_static_method = true; }
+    void set_pm_brand_slot(const std::string& slot) { mutable_class_slots().pm_brand_slot = slot; }
+
+    Object* home_object() const { return class_slots().home_object; }
+    Function* super_constructor() const { return class_slots().super_ctor; }
+    Object* private_brands() const { return class_slots().private_brands; }
+    const std::string& pm_brand_slot() const { return class_slots().pm_brand_slot; }
+    bool is_default_ctor() const { return class_slots().is_default_ctor; }
+    bool super_is_null() const { return class_slots().super_is_null; }
+    bool is_static_method() const { return class_slots().is_static_method; }
+    // Derived in the spec sense: `extends <anything>`, `extends null` included.
+    bool is_derived_ctor() const { const ClassSlots& s = class_slots(); return s.super_ctor || s.super_is_null; }
+
+    // GetPrototypeFromConstructor's read. get_property("prototype") answers
+    // from prototype_ when it is set, but only after comparing the key against
+    // "name" and "length" on the way in.
+    Value constructor_prototype() const {
+        if (prototype_) return Value(prototype_);
+        return get_property("prototype");
     }
 
     // Shared decl-site data (null only for native functions).

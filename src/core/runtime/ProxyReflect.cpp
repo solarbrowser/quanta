@@ -820,9 +820,9 @@ Value Proxy::construct_trap(const std::vector<Value>& args, Object* new_target) 
 
     Value this_value(new_object.get());
 
-    Value super_constructor_prop = target_fn->get_property("__super_constructor__");
-    if (!super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
-        ctx->create_binding("__super__", super_constructor_prop);
+    Function* target_super = target_fn->super_constructor();
+    if (target_super) {
+        ctx->create_binding("__super__", Value(target_super));
     }
 
     ctx->set_in_constructor_call(true);
@@ -836,8 +836,8 @@ Value Proxy::construct_trap(const std::vector<Value>& args, Object* new_target) 
     ctx->set_new_target(Value());
     if (ctx->has_exception()) return Value();
 
-    if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
-        Function* super_ctor = super_constructor_prop.as_function();
+    if (!super_was_called && target_super) {
+        Function* super_ctor = target_super;
         ctx->set_in_constructor_call(true);
         ctx->set_new_target(nt_value);
         ctx->set_pending_construct_call(true);

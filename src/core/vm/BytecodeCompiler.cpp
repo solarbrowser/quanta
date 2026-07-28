@@ -6411,7 +6411,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             };
 
             // Op::FinalizeStaticProperty/FinalizeComputedProperty's method
-            // branch unconditionally writes a "__super_constructor__" marker
+            // branch unconditionally writes the [[HomeObject]] marker
             // property, needed only so a `super.x`/`super()` inside the
             // method body can resolve -- but that write pays a full
             // Object::set_property() [[Set]] (Proxy check + a two-pass walk
@@ -6441,8 +6441,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
             };
             // kind's low 2 bits are the existing 0/1/2 (Method/Getter/Setter);
             // bit 0x4 is new: "method body proved super-free, the
-            // __super_constructor__ write was skipped" (Interpreter.cpp masks
-            // it off before comparing against 0/1/2).
+            // [[HomeObject]] write was skipped" (Interpreter.cpp masks it off
+            // before comparing against 0/1/2).
             constexpr uint8_t kSuperFreeFlag = 0x4;
 
             for (const auto& prop : lit->get_properties()) {

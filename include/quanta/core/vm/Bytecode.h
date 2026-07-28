@@ -350,7 +350,21 @@ struct BytecodeChunk {
     // Function's own instance_lookup_cache() instead (see Interpreter.cpp's
     // lookup_cache_data comment). See Environment::stable_binding_slot for
     // the guards.
-    struct LookupCacheEntry { Environment* env = nullptr; Value* slot = nullptr; };
+    struct LookupCacheEntry {
+        Environment* env = nullptr;
+        Value* slot = nullptr;
+        // Object-environment read form, for a global. The value lives in a
+        // shape slot of env's binding object, whose ADDRESS moves when the
+        // object grows, so the INDEX is cached and re-resolved through the
+        // object. A non-null obj_shape selects this form; only LdaLookup takes
+        // it, since writing a global needs the full [[Set]] path. Valid while
+        // the object still has this shape (a property add or delete changes
+        // it) and descriptor_epoch has not moved (an accessor may have
+        // replaced the data property without changing the shape).
+        Shape* obj_shape = nullptr;
+        uint64_t descriptor_epoch = 0;
+        uint32_t obj_slot_index = 0;
+    };
     // Same frozen-length/mutable-contents profile as feedback above -- only
     // ever `= FixedArray<...>::filled(names.size(), ...)` once at compile
     // end (BytecodeCompiler.cpp), individual entries written in place at

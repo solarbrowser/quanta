@@ -121,9 +121,8 @@ Value private_name_in(Context& ctx, const std::string& iname, const Value& targe
     for (size_t i = cs.depth(); i > 0; --i) {
         Function* fn = cs.at(i - 1).function_ptr;
         if (!fn) continue;
-        Value brands_val = fn->get_property("__private_brands__");
-        if (brands_val.is_object()) {
-            Value name_brand = brands_val.as_object()->get_property(iname);
+        if (Object* brands = fn->private_brands()) {
+            Value name_brand = brands->get_property(iname);
             if (name_brand.is_object() || name_brand.is_function()) {
                 expected_brand = name_brand.is_function()
                     ? static_cast<Object*>(name_brand.as_function())
@@ -148,9 +147,9 @@ Value private_name_in(Context& ctx, const std::string& iname, const Value& targe
             if (pm_names_val.is_object()) {
                 Value is_method = pm_names_val.as_object()->get_property(iname);
                 if (is_method.to_boolean()) {
-                    Value pm_slot_val = brand_fn->get_property("__pm_brand_slot__");
-                    if (pm_slot_val.is_string())
-                        return Value(obj->has_private_slot(pm_slot_val.to_string()));
+                    const std::string& pm_slot = brand_fn->pm_brand_slot();
+                    if (!pm_slot.empty())
+                        return Value(obj->has_private_slot(pm_slot));
                 }
             }
         }

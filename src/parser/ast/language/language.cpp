@@ -679,8 +679,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     CallStack& outer_cs_ = CallStack::instance();
     Object* outer_brands_ptr = nullptr;
     if (!outer_cs_.is_empty() && outer_cs_.top().function_ptr) {
-        Value ob_ = outer_cs_.top().function_ptr->get_property("__private_brands__");
-        if (ob_.is_object()) outer_brands_ptr = ob_.as_object();
+        outer_brands_ptr = outer_cs_.top().function_ptr->private_brands();
     }
     std::vector<std::string> private_instance_names;
     std::vector<std::string> private_instance_method_names;
@@ -1174,13 +1173,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             for (const auto& pn : private_static_names)
                 instance_brands->set_property(pn, Value(constructor_fn.get()));
             instance_brands_raw = instance_brands.release();
-            constructor_fn->set_property("__private_brands__", Value(instance_brands_raw));
+            constructor_fn->set_private_brands(instance_brands_raw);
             if (!private_instance_method_names.empty()) {
                 // Per-class unique brand slot: use prototype address so each class evaluation
                 // gets its own slot name. This prevents cross-class brand confusion when
                 // multiple evaluations of the same class body produce different brands.
                 std::string pm_slot = "#[[pm:" + std::to_string(reinterpret_cast<uintptr_t>(proto_ptr)) + "]]";
-                constructor_fn->set_property("__pm_brand_slot__", Value(pm_slot));
+                constructor_fn->set_pm_brand_slot(pm_slot);
                 // Mark which private names are methods (not fields) so the brand check
                 // can distinguish "must have per-instance slot" from "must have method slot".
                 auto method_names_obj = ObjectFactory::create_object();
@@ -1191,7 +1190,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
 
         if (!has_explicit_constructor) {
-            constructor_fn->set_property("__default_ctor__", Value(true));
+            constructor_fn->set_default_ctor();
         }
         if (!source_text_.empty()) {
             constructor_fn->set_source_text(source_text_);
@@ -1284,9 +1283,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     static_method->set_is_strict(true);
                     static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
                     if (instance_brands_raw)
-                        static_method->set_property("__private_brands__", Value(instance_brands_raw));
+                        static_method->set_private_brands(instance_brands_raw);
                     // member.cpp's super lookup needs to know this resolves on the constructor itself, not its .prototype.
-                    static_method->set_property("__is_static_method__", Value(true));
+                    static_method->set_static_method();
 
                     // Same qualified-key scheme as instance private methods; the
                     // static brand is the constructor itself.
@@ -1337,7 +1336,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 proto_ptr->set_prototype(nullptr);
             }
             // Mark constructor so super() throws TypeError (spec: superclass null -> FunctionPrototype, not a constructor)
-            constructor_fn->set_property("__super_is_null__", Value(true));
+            constructor_fn->set_super_is_null();
         } else if (!super_constructor.is_object_like()) {
             // extends non-object (number, string, boolean, etc.) -> TypeError
             ctx.throw_type_error("Class extends value " + super_constructor.to_string() + " is not a constructor or null");
@@ -1374,7 +1373,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             }
             if (super_fn && constructor_fn.get()) {
                 constructor_fn->set_prototype(super_fn);
-                constructor_fn->set_property("__super_constructor__", Value(super_fn));
+                constructor_fn->set_super_constructor(super_fn);
 
                 if (proto_ptr) {
                     auto method_keys = proto_ptr->get_own_property_keys_unfiltered();
@@ -1384,33 +1383,32 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         PropertyDescriptor mdesc = proto_ptr->get_property_descriptor(mkey);
                         if (mdesc.is_accessor_descriptor()) {
                             if (mdesc.has_getter() && mdesc.get_getter()) {
-                                static_cast<Function*>(mdesc.get_getter())->set_property("__super_constructor__", Value(super_fn));
+                                static_cast<Function*>(mdesc.get_getter())->set_super_constructor(super_fn);
                             }
                             if (mdesc.has_setter() && mdesc.get_setter()) {
-                                static_cast<Function*>(mdesc.get_setter())->set_property("__super_constructor__", Value(super_fn));
+                                static_cast<Function*>(mdesc.get_setter())->set_super_constructor(super_fn);
                             }
                         } else if (mdesc.has_value() && mdesc.get_value().is_function()) {
-                            mdesc.get_value().as_function()->set_property("__super_constructor__", Value(super_fn));
+                            mdesc.get_value().as_function()->set_super_constructor(super_fn);
                         }
                     }
                 }
 
-                // Static methods/getters/setters need __super_constructor__ too, or "static get foo() { return super.bar(); }" falls back to this's [[Prototype]] instead of the real binding.
+                // Static methods/getters/setters need the super constructor too, or "static get foo() { return super.bar(); }" falls back to this's [[Prototype]] instead of the real binding.
                 {
                     auto static_method_keys = constructor_fn->get_own_property_keys_unfiltered();
                     for (const auto& skey : static_method_keys) {
-                        if (skey == "prototype" || skey == "name" || skey == "length" ||
-                            skey == "__super_constructor__") continue;
+                        if (skey == "prototype" || skey == "name" || skey == "length") continue;
                         PropertyDescriptor sdesc = constructor_fn->get_property_descriptor(skey);
                         if (sdesc.is_accessor_descriptor()) {
                             if (sdesc.has_getter() && sdesc.get_getter()) {
-                                static_cast<Function*>(sdesc.get_getter())->set_property("__super_constructor__", Value(super_fn));
+                                static_cast<Function*>(sdesc.get_getter())->set_super_constructor(super_fn);
                             }
                             if (sdesc.has_setter() && sdesc.get_setter()) {
-                                static_cast<Function*>(sdesc.get_setter())->set_property("__super_constructor__", Value(super_fn));
+                                static_cast<Function*>(sdesc.get_setter())->set_super_constructor(super_fn);
                             }
                         } else if (sdesc.has_value() && sdesc.get_value().is_function()) {
-                            sdesc.get_value().as_function()->set_property("__super_constructor__", Value(super_fn));
+                            sdesc.get_value().as_function()->set_super_constructor(super_fn);
                         }
                     }
                 }
@@ -1455,7 +1453,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     // was defined on, never against its runtime receiver. Instance methods home on
     // the prototype, static methods on the constructor.
     auto stamp_home_object = [](Function* fn, Object* home) {
-        if (fn && home) fn->set_property("__home_object__", Value(home));
+        if (fn && home) fn->set_home_object(home);
     };
     if (!class_name.empty()) {
         // The constructor sees the class name as const (15.7.14 step 7) -- but
@@ -1492,7 +1490,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     }
     auto static_keys = constructor_fn->get_own_property_keys_unfiltered();
     for (const auto& key : static_keys) {
-        if (key == "prototype" || key == "name" || key == "length" || key == "__super_constructor__") continue;
+        if (key == "prototype" || key == "name" || key == "length") continue;
         // Engine markers are not static methods. __closure_<name> in particular holds
         // the constructor itself, so stamping it would overwrite the constructor's
         // own home object with the constructor.
@@ -1520,12 +1518,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         // Base classes install the pm_brand_slot at the START of the constructor via __pfadd__, so any method call after construction always passes the check.
         // Derived classes install it AFTER super() returns, so we need the check to block access from public methods called during super() execution.
         bool is_derived = has_superclass();
-        Value pm_slot_for_methods = is_derived ? constructor_fn->get_property("__pm_brand_slot__") : Value();
+        const std::string& pm_slot_for_methods = constructor_fn->pm_brand_slot();
         Value pm_names_for_methods = is_derived ? constructor_fn->get_property("__private_method_names__") : Value();
         auto propagate_private_meta = [&](Function* fn) {
-            fn->set_property("__private_brands__", Value(instance_brands_raw));
-            if (pm_slot_for_methods.is_string())
-                fn->set_property("__pm_brand_slot__", pm_slot_for_methods);
+            fn->set_private_brands(instance_brands_raw);
+            if (is_derived && !pm_slot_for_methods.empty())
+                fn->set_pm_brand_slot(pm_slot_for_methods);
             if (pm_names_for_methods.is_object())
                 fn->set_property("__private_method_names__", pm_names_for_methods);
         };

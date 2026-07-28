@@ -114,9 +114,7 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
         Function* fn = cs.at(i - 1).function_ptr;
         if (!fn) continue;
 
-        Value brands_val = fn->get_property("__private_brands__");
-        if (brands_val.is_object()) {
-            Object* brands = brands_val.as_object();
+        if (Object* brands = fn->private_brands()) {
             Value name_brand = brands->get_property(prop_name);
             if (name_brand.is_object() || name_brand.is_function()) {
                 Object* expected = name_brand.is_function()
@@ -131,9 +129,9 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
                 Value pm_names_val = fn->get_property("__private_method_names__");
                 if (pm_names_val.is_object() &&
                     pm_names_val.as_object()->get_property(prop_name).to_boolean()) {
-                    Value pm_slot_val = fn->get_property("__pm_brand_slot__");
-                    if (pm_slot_val.is_string()) {
-                        return obj->has_private_slot(pm_slot_val.to_string());
+                    const std::string& pm_slot = fn->pm_brand_slot();
+                    if (!pm_slot.empty()) {
+                        return obj->has_private_slot(pm_slot);
                     }
                     return do_brand_check(obj, expected);
                 }

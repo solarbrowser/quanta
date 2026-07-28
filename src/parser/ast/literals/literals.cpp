@@ -219,8 +219,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             // super resolves against the literal the method was written in, no matter
             // which receiver it is later called with.
             if (prop->type == ObjectLiteral::PropertyType::Method || is_getter_setter) {
-                fn->set_property("__super_constructor__", Value(true));
-                fn->set_property("__home_object__", Value(object.get()));
+                fn->set_home_object(object.get());
             }
             if (prop->type == ObjectLiteral::PropertyType::Method) {
                 // Spec 14.3.9: non-generator methods are not constructors and have no .prototype

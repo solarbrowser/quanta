@@ -1275,7 +1275,16 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     // Captured-chain fast path: the resolved binding address is
                     // stable for this chunk's lifetime (see lookup_cache).
                     const auto& entry = lookup_cache_data[name_idx];
-                    if (entry.slot) { acc = *entry.slot; break; }
+                    if (entry.obj_shape) {
+                        Object* bo = entry.env->get_binding_object();
+                        if (bo && bo->get_shape() == entry.obj_shape &&
+                            entry.descriptor_epoch == Object::descriptor_epoch()) {
+                            if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
+                                acc = *s;
+                                break;
+                            }
+                        }
+                    } else if (entry.slot) { acc = *entry.slot; break; }
                 }
                 // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
                 const std::string& name = chunk.names[name_idx];
@@ -1284,14 +1293,22 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
-                CHECK_EXC();
-                if (env) {
-                    acc = env->get_binding_direct(name, &ctx);
+                Environment* env = ctx.get_lexical_environment();
+                bool found = false;
+                for (; env; env = env->get_outer()) {
+                    if (env->try_get_binding(name, acc, &ctx)) { found = true; break; }
                     CHECK_EXC();
+                }
+                CHECK_EXC();
+                if (found) {
                     if (env != entry_env) {
+                        uint32_t obj_slot = 0;
                         if (Value* slot = env->stable_binding_slot(name)) {
-                            lookup_cache_data[name_idx] = {env, slot};
+                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0};
+                        } else if (env->cacheable_object_binding(name, obj_slot)) {
+                            lookup_cache_data[name_idx] = {env, nullptr,
+                                env->get_binding_object()->get_shape(),
+                                Object::descriptor_epoch(), obj_slot};
                         }
                     }
                 } else if (ctx.has_binding(name)) {
@@ -1332,7 +1349,9 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 pc += 2;
                 {
                     const auto& entry = lookup_cache_data[sta_name_idx];
-                    if (entry.slot) {
+                    // The obj_shape form is LdaLookup's alone -- writing a
+                    // global needs [[Set]]'s readonly/setter handling.
+                    if (entry.slot && !entry.obj_shape) {
                         // The barrier records "env gained a reference" for the
                         // remembered set -- storing a non-heap value can't.
                         if (acc.is_object() || acc.is_function() || acc.is_string() ||
@@ -1382,7 +1401,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                     } else if (ok && env != entry_env) {
                         if (Value* slot = env->stable_binding_slot(name)) {
-                            lookup_cache_data[sta_name_idx] = {env, slot};
+                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0};
                         }
                     }
                 }
@@ -2129,9 +2148,9 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t display_name_idx = read_u16(code, pc + 3);
                 uint8_t raw_kind = code[pc + 5];
                 // Bit 0x4: the compiler proved this method's body never
-                // references `super`, so the __super_constructor__ write
-                // below (needed only for super resolution, see member.cpp)
-                // was skipped entirely -- see BytecodeCompiler.cpp's
+                // references `super`, so the [[HomeObject]] write below
+                // (needed only for super resolution, see member.cpp) was
+                // skipped entirely -- see BytecodeCompiler.cpp's
                 // method_references_super. Getter/Setter never set this bit.
                 uint8_t kind = raw_kind & 0x3;
                 bool super_free = (raw_kind & 0x4) != 0;
@@ -2151,7 +2170,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     if (kind == 0) {
                         // Method: spec 14.3.9 -- non-generator methods are not
                         // constructors and have no .prototype.
-                        if (!super_free) fn->set_property("__super_constructor__", Value(true));
+                        if (!super_free && obj) fn->set_home_object(obj);
                         if (fn->is_constructor()) {
                             fn->set_is_constructor(false);
                             fn->set_function_prototype(nullptr);
@@ -2210,7 +2229,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 if (kind == 2 && acc.is_function()) {
                     // Method finalize (spec 14.3.9), same as FinalizeStaticProperty.
                     Function* fn = acc.as_function();
-                    if (!super_free) fn->set_property("__super_constructor__", Value(true));
+                    if (!super_free && obj) fn->set_home_object(obj);
                     if (fn->is_constructor()) {
                         fn->set_is_constructor(false);
                         fn->set_function_prototype(nullptr);

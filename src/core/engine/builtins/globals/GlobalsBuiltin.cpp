@@ -381,8 +381,10 @@ void register_global_builtins(Context& ctx) {
                 parse_opts.eval_in_function_code = (ctx.get_type() == Context::Type::Function ||
                                                     ctx.get_type() == Context::Type::Eval) &&
                                                    !ctx.is_arrow_function_context();
-                // super in eval is valid if we're inside a method/derived-class context (__super__ present)
-                parse_opts.eval_in_method_code = ctx.has_binding("__super__");
+                // super in eval is valid inside method code -- a method frame binds
+                // its [[HomeObject]], a derived constructor its parent constructor.
+                parse_opts.eval_in_method_code =
+                    ctx.has_binding("__super__") || ctx.has_binding("__home_object__");
                 // Propagate class field initializer context so eval enforces ContainsArguments early error.
                 // Only direct eval inherits this flag -- indirect eval is a fresh context per spec.
                 parse_opts.in_class_field_init = ctx.is_direct_eval_call() && ctx.is_in_class_field_init();

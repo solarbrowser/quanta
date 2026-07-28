@@ -19,9 +19,9 @@ std::string resolve_private_storage_key(const std::string& bare_name, Object* ob
     for (size_t i = cs.depth(); i > 0; --i) {
         Function* fn = cs.at(i - 1).function_ptr;
         if (!fn) continue;
-        Value brands_val = fn->get_property("__private_brands__");
-        if (!brands_val.is_object()) continue;
-        Value name_brand = brands_val.as_object()->get_property(bare_name);
+        Object* brands_obj = fn->private_brands();
+        if (!brands_obj) continue;
+        Value name_brand = brands_obj->get_property(bare_name);
         if (!name_brand.is_object() && !name_brand.is_function()) continue;
         Object* expected = name_brand.is_function()
             ? static_cast<Object*>(name_brand.as_function())
@@ -49,9 +49,9 @@ Object* resolve_private_accessor_owner(const std::string& bare_name) {
     for (size_t i = cs.depth(); i > 0; --i) {
         Function* fn = cs.at(i - 1).function_ptr;
         if (!fn) continue;
-        Value brands_val = fn->get_property("__private_brands__");
-        if (!brands_val.is_object()) continue;
-        Value name_brand = brands_val.as_object()->get_property(bare_name);
+        Object* brands_obj = fn->private_brands();
+        if (!brands_obj) continue;
+        Value name_brand = brands_obj->get_property(bare_name);
         if (!name_brand.is_object() && !name_brand.is_function()) continue;
         return name_brand.is_function() ? static_cast<Object*>(name_brand.as_function()) : name_brand.as_object();
     }

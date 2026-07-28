@@ -639,6 +639,10 @@ public:
     // non-deletable declarative binding (unordered_map nodes never move).
     // Backbone of the VM's outer-variable cache; null when any guard fails.
     Value* stable_binding_slot(const std::string& name);
+    // The object-environment counterpart: the shape slot index a plain own data
+    // property of this environment's binding object lives at, for LdaLookup's
+    // cache. False for anything the general path has to serve.
+    bool cacheable_object_binding(const std::string& name, uint32_t& slot_index) const;
     // Guarded direct-index access to slots_'s inline array, backing
     // Op::LdaEnvSlot/StaEnvSlot/StaEnvSlotInit. The compiler's predicted
     // index can be wrong (see BytecodeCompiler.h's EnvSlotInfo for why), so
@@ -668,6 +672,12 @@ public:
     void mark_references() const;
 
     bool has_own_binding(const std::string& name) const;
+    // has_own_binding + get_binding_direct in one pass. A chain walk that then
+    // re-reads the winning environment asks an object environment the same
+    // question up to three times (HasBinding, GetBindingValue's own re-check,
+    // then the Get), each a hash on the global object. Returns false when this
+    // environment does not bind `name` at all, leaving `out` untouched.
+    bool try_get_binding(const std::string& name, Value& out, Context* ctx) const;
     bool has_lexical_declaration(const std::string& name) const {
         return lexical_names_ && lexical_names_->lexical.count(name) > 0;
     }

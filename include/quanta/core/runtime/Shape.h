@@ -65,6 +65,9 @@ public:
     // True if `key` names an accessor-kind slot (its value at find_slot(key)
     // is a getter Value; the paired setter Value lives at find_slot(key)+1).
     bool is_accessor_slot(const std::string& key) const { return slots_.is_accessor(key); }
+    // find_slot + is_accessor_slot from ONE probe: SlotMap keeps both in the
+    // same entry, so asking separately hashes the key twice.
+    int32_t find_data_slot(const std::string& key) const { return slots_.find_data(key); }
 
     uint32_t slot_count() const { return slot_count_; }
 
@@ -166,6 +169,22 @@ private:
             if (overflow) {
                 auto it = overflow->find(key);
                 if (it != overflow->end()) return static_cast<int32_t>(it->second.first);
+            }
+            return -1;
+        }
+        // -1 when absent OR when the entry is an accessor pair, which the
+        // callers that want a plain readable value must not treat as one.
+        int32_t find_data(const std::string& key) const {
+            for (const auto& e : inline_entries) {
+                if (e.in_use && *e.key == key) {
+                    return e.is_accessor ? -1 : static_cast<int32_t>(e.value);
+                }
+            }
+            if (overflow) {
+                auto it = overflow->find(key);
+                if (it != overflow->end()) {
+                    return it->second.second ? -1 : static_cast<int32_t>(it->second.first);
+                }
             }
             return -1;
         }
