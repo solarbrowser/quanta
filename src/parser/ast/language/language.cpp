@@ -1432,11 +1432,14 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     std::string const_marker = "__closure_const_" + class_name; // marks binding as immutable
     Value ctor_val(constructor_fn.get());
     // Skip methods that never read the class name -- its presence alone
-    // disqualifies a call from Function::call's register-mode fast path.
-    // force=true for the constructor, which must always see it (15.7.14 step 7).
+    // disqualifies a call from Function::call's register-mode fast path, and
+    // costs an own-key scan plus three property lookups on every call.
+    // references_identifier answers true for direct eval, a nested class, and
+    // anything it cannot follow, so an unread binding is also an unobservable
+    // one. force=true only when there is no body to inspect.
     auto mark_class_name_closure = [&](Function* fn, bool force = false) {
-        if (!force) {
-            bool refs = fn->get_body() && BytecodeCompiler::references_identifier(fn->get_body(), class_name);
+        if (!force && fn->get_body()) {
+            bool refs = BytecodeCompiler::references_identifier(fn->get_body(), class_name);
             if (!refs) {
                 for (const auto& p : fn->get_parameter_objects()) {
                     if (p->has_default() && BytecodeCompiler::references_identifier(p->get_default_value(), class_name)) { refs = true; break; }
@@ -1455,8 +1458,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         if (fn && home) fn->set_property("__home_object__", Value(home));
     };
     if (!class_name.empty()) {
-        // The constructor itself must see the class name as const (spec 15.7.14 step 7)
-        mark_class_name_closure(constructor_fn.get(), /*force=*/true);
+        // The constructor sees the class name as const (15.7.14 step 7) -- but
+        // its body here already has the field initialisers merged in, so the
+        // same reference test that covers the methods covers it too.
+        mark_class_name_closure(constructor_fn.get(), /*force=*/!constructor_fn->get_body());
     }
     // The constructor is a method definition too, so `super.x` inside it (and inside
     // an arrow that closes over it) homes on the prototype. Binding it here also

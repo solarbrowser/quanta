@@ -537,27 +537,14 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
 void define_own_cached(Object* obj, const std::string& key, const Value& value, FeedbackSlot* fb) {
     if (!obj) return;
     Collector::write_barrier(obj);
-    // Only a plain extensible ordinary object may take the shape-transition path
-    // below. Anything else has to go through [[DefineOwnProperty]] proper, which
-    // can run a Proxy trap, evaluate a deferred module, or fail -- and a failure
-    // throws. An object literal is always plain; `this` in a class field
-    // initialiser is whatever the base constructor returned.
-    if (obj->get_type() != Object::ObjectType::Ordinary || !obj->is_extensible() ||
-        obj->has_descriptor_override(key)) {
-        PropertyDescriptor fdesc(value, static_cast<PropertyAttributes>(
-            PropertyAttributes::Writable | PropertyAttributes::Enumerable |
-            PropertyAttributes::Configurable));
-        if (!obj->set_property_descriptor(key, fdesc) &&
-            Object::current_context_ && !Object::current_context_->has_exception()) {
-            Object::current_context_->throw_type_error("Cannot define field '" + key + "'");
-        }
-        return;
-    }
-    // from_shape alone is the whole guard, unlike SetNamed's version:
-    // CreateDataProperty never consults the prototype chain, and the two
-    // per-object facts that do matter -- extensible, no descriptor override --
-    // were re-checked above rather than cached.
-    if (fb && !fb->transition_mega) {
+    bool plain = obj->get_type() == Object::ObjectType::Ordinary && obj->is_extensible();
+    // from_shape alone is the whole shape-side guard, unlike SetNamed's
+    // version: CreateDataProperty never consults the prototype chain, and a
+    // matching from_shape already proves the key has no slot there at all --
+    // accessor slots included, since a transition is only ever learned for a
+    // key the shape lacked. That leaves descriptors_, which is per-object and
+    // usually absent outright, as the one override still worth asking about.
+    if (plain && fb && !fb->transition_mega && !obj->find_descriptor_override(key)) {
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->transition_count; i++) {
             const auto& te = fb->transitions[i];
@@ -566,6 +553,20 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
                 return;
             }
         }
+    }
+    // Anything not plain has to go through [[DefineOwnProperty]] proper, which
+    // can run a Proxy trap, evaluate a deferred module, or fail -- and a failure
+    // throws. An object literal is always plain; `this` in a class field
+    // initialiser is whatever the base constructor returned.
+    if (!plain || obj->has_descriptor_override(key)) {
+        PropertyDescriptor fdesc(value, static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Enumerable |
+            PropertyAttributes::Configurable));
+        if (!obj->set_property_descriptor(key, fdesc) &&
+            Object::current_context_ && !Object::current_context_->has_exception()) {
+            Object::current_context_->throw_type_error("Cannot define field '" + key + "'");
+        }
+        return;
     }
     Shape* shape_before = obj->get_shape();
     bool was_new = fb && shape_before && shape_before->find_slot(key) < 0;
