@@ -525,6 +525,20 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
 void define_own_cached(Object* obj, const std::string& key, const Value& value, FeedbackSlot* fb) {
     if (!obj) return;
     Collector::write_barrier(obj);
+    if (obj->get_type() == Object::ObjectType::Proxy) {
+        // CreateDataPropertyOrThrow on a Proxy is its defineProperty trap. An
+        // object literal never has a Proxy target, but a class field does: a
+        // base constructor may return one, and `this` is that Proxy by the time
+        // the fields run.
+        PropertyDescriptor fdesc(value, static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Enumerable |
+            PropertyAttributes::Configurable));
+        if (!static_cast<Proxy*>(obj)->define_property_trap(Value(key), fdesc) &&
+            Object::current_context_ && !Object::current_context_->has_exception()) {
+            Object::current_context_->throw_type_error("Cannot define field '" + key + "'");
+        }
+        return;
+    }
     if (fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
         !obj->has_descriptor_override(key) && obj->is_extensible()) {
         Shape* shape = obj->get_shape();

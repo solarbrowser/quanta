@@ -6216,6 +6216,35 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 return false;
             }
 
+            // Class field initialisers are synthesised as
+            // `__deffield__(this, "key", value)` -- a global lookup and a native
+            // call per field, on every construction. The accumulator opcode for
+            // exactly that semantic (CreateDataProperty, never a prototype
+            // setter) already exists, so emit it directly. Guarded on the exact
+            // synthesised shape; user code writing the same call gets the same
+            // semantics from the opcode anyway.
+            if (callee_name == "__deffield__" && call_args.size() == 3 &&
+                call_args[0]->get_type() == ASTNode::Type::IDENTIFIER &&
+                static_cast<const Identifier*>(call_args[0].get())->get_name() == "this" &&
+                call_args[1]->get_type() == ASTNode::Type::STRING_LITERAL) {
+                const std::string& field_key =
+                    static_cast<const StringLiteral*>(call_args[1].get())->get_value();
+                emit(Op::LdaThis);
+                int this_reg = alloc_temp();
+                if (failed_) return false;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(this_reg));
+                if (!compile_expression(call_args[2].get())) return false;
+                emit(Op::DefineOwn);
+                emit_u8(static_cast<uint8_t>(this_reg));
+                emit_u16(add_name(field_key));
+                emit_u16(alloc_feedback_slot());
+                free_temp(this_reg);
+                // The call's own value is undefined; the statement discards it.
+                emit(Op::LdaUndefined);
+                return !failed_;
+            }
+
             if (!compile_expression(callee)) return false;
             int callee_reg = alloc_temp();
             if (failed_) return false;
