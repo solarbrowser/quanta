@@ -625,6 +625,36 @@ static bool is_direct_super_call_statement(const ASTNode* stmt) {
            static_cast<const Identifier*>(call->get_callee())->get_name() == "super";
 }
 
+// The in_class_field_init flag is read by a direct eval inside an initialiser
+// (ContainsArguments early error) and by a closure born in one, which carries
+// the same ban for life. Rather than detect every shape that needs the flag,
+// recognise the ones that provably cannot observe it.
+static bool field_init_cannot_observe_cfi(const ASTNode* n) {
+    if (!n) return true;  // `x;` with no initialiser
+    switch (n->get_type()) {
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::IDENTIFIER:
+            return true;
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* m = static_cast<const MemberExpression*>(n);
+            if (m->is_computed()) return false;
+            return field_init_cannot_observe_cfi(m->get_object());
+        }
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* b = static_cast<const BinaryExpression*>(n);
+            return field_init_cannot_observe_cfi(b->get_left()) &&
+                   field_init_cannot_observe_cfi(b->get_right());
+        }
+        default:
+            return false;
+    }
+}
+
 Value ClassDeclaration::evaluate(Context& ctx) {
     std::string class_name = id_->get_name();
 
@@ -921,13 +951,24 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(pfadd_call), z, z));
         }
 
-        // Mark we're executing class field initializers so direct eval enforces ContainsArguments.
-        if (!field_initializers.empty()) {
-        Position z{0,0};
-        auto enter_id = std::make_unique<Identifier>("__cfi_enter__", z, z);
-        std::vector<std::unique_ptr<ASTNode>> no_args;
-        auto enter_call = std::make_unique<CallExpression>(std::move(enter_id), std::move(no_args), z, z, false);
-        new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(enter_call), z, z));
+        // Otherwise the enter/exit pair costs a global lookup and a native call
+        // per construction for a flag nothing will read.
+        bool needs_cfi_flag = false;
+        for (const auto& fi : field_initializers) {
+            const ASTNode* init_value = fi->get_type() == Type::CLASS_FIELD
+                ? static_cast<ClassField*>(fi.get())->get_value() : fi.get();
+            if (fi->get_type() != Type::CLASS_FIELD ||
+                !field_init_cannot_observe_cfi(init_value)) {
+                needs_cfi_flag = true;
+                break;
+            }
+        }
+        if (needs_cfi_flag) {
+            Position z{0,0};
+            auto enter_id = std::make_unique<Identifier>("__cfi_enter__", z, z);
+            std::vector<std::unique_ptr<ASTNode>> no_args;
+            auto enter_call = std::make_unique<CallExpression>(std::move(enter_id), std::move(no_args), z, z, false);
+            new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(enter_call), z, z));
         }
 
         if (!field_initializers.empty()) {
@@ -996,7 +1037,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             }
         }
 
-        {
+        if (needs_cfi_flag) {
             Position z{0,0};
             auto exit_id = std::make_unique<Identifier>("__cfi_exit__", z, z);
             std::vector<std::unique_ptr<ASTNode>> no_args;

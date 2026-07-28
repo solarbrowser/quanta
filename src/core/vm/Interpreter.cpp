@@ -525,22 +525,23 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
 void define_own_cached(Object* obj, const std::string& key, const Value& value, FeedbackSlot* fb) {
     if (!obj) return;
     Collector::write_barrier(obj);
-    if (obj->get_type() == Object::ObjectType::Proxy) {
-        // CreateDataPropertyOrThrow on a Proxy is its defineProperty trap. An
-        // object literal never has a Proxy target, but a class field does: a
-        // base constructor may return one, and `this` is that Proxy by the time
-        // the fields run.
+    // Only a plain extensible ordinary object may take the shape-transition path
+    // below. Anything else has to go through [[DefineOwnProperty]] proper, which
+    // can run a Proxy trap, evaluate a deferred module, or fail -- and a failure
+    // throws. An object literal is always plain; `this` in a class field
+    // initialiser is whatever the base constructor returned.
+    if (obj->get_type() != Object::ObjectType::Ordinary || !obj->is_extensible() ||
+        obj->has_descriptor_override(key)) {
         PropertyDescriptor fdesc(value, static_cast<PropertyAttributes>(
             PropertyAttributes::Writable | PropertyAttributes::Enumerable |
             PropertyAttributes::Configurable));
-        if (!static_cast<Proxy*>(obj)->define_property_trap(Value(key), fdesc) &&
+        if (!obj->set_property_descriptor(key, fdesc) &&
             Object::current_context_ && !Object::current_context_->has_exception()) {
             Object::current_context_->throw_type_error("Cannot define field '" + key + "'");
         }
         return;
     }
-    if (fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
-        !obj->has_descriptor_override(key) && obj->is_extensible()) {
+    if (fb && !fb->transition_mega) {
         Shape* shape = obj->get_shape();
         uint64_t epoch = Object::proto_epoch();
         for (uint8_t i = 0; i < fb->transition_count; i++) {
@@ -552,12 +553,9 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
         }
     }
     Shape* shape_before = obj->get_shape();
-    bool was_new = fb && obj->get_type() == Object::ObjectType::Ordinary &&
-                    !obj->has_descriptor_override(key) &&
-                    shape_before && shape_before->find_slot(key) < 0;
+    bool was_new = fb && shape_before && shape_before->find_slot(key) < 0;
     obj->create_own_data_property(key, value);
-    if (was_new && fb && !fb->transition_mega &&
-        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
+    if (was_new && fb && !fb->transition_mega && !obj->has_descriptor_override(key)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(key) : -1;
         if (idx >= 0) {
