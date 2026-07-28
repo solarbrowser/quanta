@@ -295,6 +295,10 @@ public:
     // For internal bookkeeping (e.g. checking whether a freshly-constructed object already has a prototype) where invoking a user trap would be observably wrong.
     Object* get_prototype_raw() const { return proto_; }
     void set_prototype(Object* prototype);
+    // set_prototype for an object that has not been handed to JS yet: no site
+    // can have cached a lookup through a chain no one has seen, so this skips
+    // the proto_epoch bump. Only call it before the object escapes.
+    void initialize_prototype(Object* prototype);
     bool has_prototype(Object* prototype) const;
     
     // Non-virtual: switch on get_type() dispatches to TypedArray/Proxy/Custom

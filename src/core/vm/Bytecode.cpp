@@ -34,11 +34,14 @@ void BytecodeChunk::trace(Visitor& v) const {
         v.visit(c);
     }
     // feedback's Shape* fields need no tracing (immortal, not a GC cell), but
-    // the prototype-chain read cache's holder/prototype are real cells.
+    // every Object* in a cache entry is a real cell.
     for (const auto& fb : feedback) {
         for (uint8_t i = 0; i < fb.proto_count; i++) {
             v.visit_object(fb.proto_entries[i].holder);
             v.visit_object(fb.proto_entries[i].prototype);
+        }
+        for (uint8_t i = 0; i < fb.transition_count; i++) {
+            v.visit_object(fb.transitions[i].prototype);
         }
     }
 }

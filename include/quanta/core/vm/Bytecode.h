@@ -225,11 +225,15 @@ struct FeedbackSlot {
     // SetNamed-only: caches adding a brand-new own property (a shape
     // transition), keyed by the shape BEFORE the add. `proto_epoch` is
     // Object::proto_epoch() when last validated blocker-free -- only
-    // trusted while it still matches. GetNamed sites carry these fields
-    // too but never touch them.
+    // trusted while it still matches. `prototype` must match too, for the
+    // reason spelled out for ProtoEntry below: a shape does not encode a
+    // prototype, so `class A {}` and `class B {}` instances both arrive
+    // here as Shape::root() while only one chain may carry a setter for
+    // this key. GetNamed sites carry these fields but never touch them.
     struct TransitionEntry {
         Shape* from_shape = nullptr;
         Shape* to_shape = nullptr;
+        Object* prototype = nullptr;
         uint32_t slot_index = 0;
         uint64_t proto_epoch = 0;
     };

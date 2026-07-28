@@ -231,16 +231,26 @@ void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, uint64_
 // Like learn_feedback, but a duplicate from_shape REFRESHES the entry rather
 // than no-opping: to_shape/slot_index are deterministic for (from_shape, key),
 // but proto_epoch goes stale and a re-hit needs the current value to trust it.
+//
+// `prototype` is recorded only by SetNamed, whose cached fact ("no [[Set]]
+// blocker on the chain") depends on which chain the receiver has. It is a real
+// GC cell, so recording one needs an owner to barrier against and to keep the
+// entry traced -- the gate learn_proto already uses.
 void learn_transition(FeedbackSlot* fb, Shape* from_shape, Shape* to_shape,
-                       uint32_t slot_index, uint64_t epoch) {
+                       Object* prototype, uint32_t slot_index, uint64_t epoch,
+                       Function* owner) {
+    if (prototype) {
+        if (!owner) return;
+        Collector::write_barrier(owner);
+    }
     for (uint8_t i = 0; i < fb->transition_count; i++) {
         if (fb->transitions[i].from_shape == from_shape) {
-            fb->transitions[i] = {from_shape, to_shape, slot_index, epoch};
+            fb->transitions[i] = {from_shape, to_shape, prototype, slot_index, epoch};
             return;
         }
     }
     if (fb->transition_count < FeedbackSlot::kMaxEntries) {
-        fb->transitions[fb->transition_count++] = {from_shape, to_shape, slot_index, epoch};
+        fb->transitions[fb->transition_count++] = {from_shape, to_shape, prototype, slot_index, epoch};
     } else {
         fb->transition_mega = true;
     }
@@ -422,7 +432,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
 }
 
 void set_named(Context& ctx, const Value& receiver, const std::string& name,
-               const Value& value, FeedbackSlot* fb) {
+               const Value& value, FeedbackSlot* fb, Function* owner) {
     if (receiver.is_null() || receiver.is_undefined()) {
         ctx.throw_type_error(std::string("Cannot set properties of ") +
             (receiver.is_null() ? "null" : "undefined"));
@@ -469,10 +479,11 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     if (fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
         !obj->has_descriptor_override(name) && obj->is_extensible()) {
         Shape* shape = obj->get_shape();
+        Object* proto0 = obj->get_prototype_raw();
         uint64_t epoch = Object::proto_epoch();
         for (uint8_t i = 0; i < fb->transition_count; i++) {
             const auto& te = fb->transitions[i];
-            if (te.from_shape == shape && te.proto_epoch == epoch) {
+            if (te.from_shape == shape && te.prototype == proto0 && te.proto_epoch == epoch) {
                 obj->add_shape_property_cached(name, value, te.to_shape);
                 return;
             }
@@ -510,7 +521,8 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
         if (idx >= 0) {
-            learn_transition(fb, shape_before, s, static_cast<uint32_t>(idx), Object::proto_epoch());
+            learn_transition(fb, shape_before, s, obj->get_prototype_raw(),
+                              static_cast<uint32_t>(idx), Object::proto_epoch(), owner);
         }
     }
 }
@@ -541,12 +553,15 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
         }
         return;
     }
+    // from_shape alone is the whole guard, unlike SetNamed's version:
+    // CreateDataProperty never consults the prototype chain, and the two
+    // per-object facts that do matter -- extensible, no descriptor override --
+    // were re-checked above rather than cached.
     if (fb && !fb->transition_mega) {
         Shape* shape = obj->get_shape();
-        uint64_t epoch = Object::proto_epoch();
         for (uint8_t i = 0; i < fb->transition_count; i++) {
             const auto& te = fb->transitions[i];
-            if (te.from_shape == shape && te.proto_epoch == epoch) {
+            if (te.from_shape == shape) {
                 obj->add_shape_property_cached(key, value, te.to_shape);
                 return;
             }
@@ -559,7 +574,7 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(key) : -1;
         if (idx >= 0) {
-            learn_transition(fb, shape_before, s, static_cast<uint32_t>(idx), Object::proto_epoch());
+            learn_transition(fb, shape_before, s, nullptr, static_cast<uint32_t>(idx), 0, nullptr);
         }
     }
 }
@@ -586,12 +601,12 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
     if (fast_path_eligible) {
         Value getter_v = is_getter ? Value(fn) : Value();
         Value setter_v = is_getter ? Value() : Value(fn);
+        // from_shape alone, same reasoning as define_own_cached's.
         if (fb && !fb->transition_mega) {
             Shape* shape = obj->get_shape();
-            uint64_t epoch = Object::proto_epoch();
             for (uint8_t i = 0; i < fb->transition_count; i++) {
                 const auto& te = fb->transitions[i];
-                if (te.from_shape == shape && te.proto_epoch == epoch) {
+                if (te.from_shape == shape) {
                     obj->add_accessor_shape_property_cached(key, getter_v, setter_v, te.to_shape);
                     return;
                 }
@@ -602,7 +617,7 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
         if (to_shape) {
             obj->add_accessor_shape_property_cached(key, getter_v, setter_v, to_shape);
             if (fb && !fb->transition_mega) {
-                learn_transition(fb, shape_before, to_shape, 0, Object::proto_epoch());
+                learn_transition(fb, shape_before, to_shape, nullptr, 0, 0, nullptr);
             }
             return;
         }
@@ -681,7 +696,7 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
             }
         }
     }
-    set_named(ctx, receiver, key, value, nullptr);
+    set_named(ctx, receiver, key, value, nullptr, nullptr);
     if (!ctx.has_exception() && obj && fb && !fb->mega &&
         obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
         Shape* s = obj->get_shape();
@@ -1952,7 +1967,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                set_named(ctx, regs[obj_reg], chunk.names[name_idx], acc, &chunk.feedback[fb_idx]);
+                set_named(ctx, regs[obj_reg], chunk.names[name_idx], acc, &chunk.feedback[fb_idx], owner);
                 CHECK_EXC();
                 break;
             }

@@ -444,19 +444,23 @@ Object::~Object() {
 }
 
 Object::Object(Object* prototype, ObjectType type) : Object(type) {
-    // Must go through set_prototype, not a direct proto_ write -- it marks
-    // `prototype` used_as_prototype(), which the transition-cache relies on
+    // Must go through one of the two setters, not a direct proto_ write -- they
+    // mark `prototype` used_as_prototype(), which the transition-cache relies on
     // for every object ever installed as a prototype, including via this
     // constructor (Object.create(proto), Error-hierarchy bootstrap).
-    if (prototype) set_prototype(prototype);
+    if (prototype) initialize_prototype(prototype);
+}
+
+void Object::initialize_prototype(Object* prototype) {
+    Collector::write_barrier(this);
+    proto_ = prototype;
+    if (prototype) prototype->mark_used_as_prototype();
 }
 
 void Object::set_prototype(Object* prototype) {
-    Collector::write_barrier(this);
-    proto_ = prototype;
-    // The engine's single [[Prototype]]-change choke point, so marking+bumping
-    // here covers every caller (setPrototypeOf, __proto__, class extends, ...).
-    if (prototype) prototype->mark_used_as_prototype();
+    // The engine's single [[Prototype]]-CHANGE choke point, so bumping here
+    // covers every caller (setPrototypeOf, __proto__, class extends, ...).
+    initialize_prototype(prototype);
     Object::bump_proto_epoch();
 }
 
@@ -3146,7 +3150,7 @@ std::unique_ptr<Object> get_pooled_object() {
     auto obj = std::make_unique<Object>(Object::ObjectType::Ordinary);
     Object* obj_proto = get_object_prototype();
     if (obj_proto) {
-        obj->set_prototype(obj_proto);
+        obj->initialize_prototype(obj_proto);
     }
     return obj;
 }
@@ -3155,7 +3159,7 @@ std::unique_ptr<Object> get_pooled_array() {
     auto array = std::make_unique<Object>(Object::ObjectType::Array);
     Object* array_proto = get_array_prototype();
     if (array_proto) {
-        array->set_prototype(array_proto);
+        array->initialize_prototype(array_proto);
     }
     return array;
 }

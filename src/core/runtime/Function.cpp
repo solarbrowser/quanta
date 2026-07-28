@@ -1438,7 +1438,8 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         Object* proto_obj = initial_proto.is_function()
             ? static_cast<Object*>(initial_proto.as_function())
             : initial_proto.as_object();
-        new_object->set_prototype(proto_obj);
+        // Allocated a few lines up, constructor body not run yet.
+        new_object->initialize_prototype(proto_obj);
     }
     
     Value super_constructor_prop = get_property("__super_constructor__");
