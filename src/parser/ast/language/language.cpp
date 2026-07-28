@@ -661,6 +661,15 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
     std::unique_ptr<ASTNode> constructor_body = nullptr;
     std::vector<std::unique_ptr<Parameter>> constructor_params;
+    // The constructor's own literal. Cloning its body here on every evaluation
+    // is what a class defined inside a hot function used to pay; the clone is
+    // now deferred to the paths that actually rewrite the body, and the
+    // untouched case shares one executable through the node, exactly as the
+    // methods below already do.
+    FunctionExpression* ctor_func_expr = nullptr;
+    // A computed field key is resolved on each evaluation and baked into the
+    // synthesised constructor, so that body cannot be shared.
+    bool has_computed_field_key = false;
     std::vector<std::unique_ptr<ASTNode>> field_initializers;
     std::vector<std::unique_ptr<ASTNode>> static_field_initializers;
     bool has_explicit_constructor = false;
@@ -679,6 +688,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 ClassField* cf = static_cast<ClassField*>(stmt.get());
                 std::unique_ptr<ASTNode> resolved_stmt = stmt->clone();
                 if (cf->is_computed()) {
+                    has_computed_field_key = true;
                     // Computed field keys are evaluated exactly once, right here, in strict
                     // declaration order (interleaved with methods and static/instance fields
                     // alike) -- per spec, only the field's VALUE is deferred (instance: to
@@ -747,14 +757,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
                 if (method->is_constructor()) {
                     has_explicit_constructor = true;
-                    constructor_body = method->get_value()->get_body()->clone();
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
-                        FunctionExpression* func_expr = static_cast<FunctionExpression*>(method->get_value());
-                        const auto& params = func_expr->get_params();
-                        constructor_params.reserve(params.size());
-                        for (const auto& param : params) {
-                            constructor_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-                        }
+                        ctor_func_expr = static_cast<FunctionExpression*>(method->get_value());
                     }
                 } else if (method->is_static()) {
                     if (!method_name.empty() && method_name[0] == '#')
@@ -766,16 +770,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     }
                     bool method_is_gen = false;
                     bool method_is_async = false;
-                    std::vector<std::unique_ptr<Parameter>> method_params;
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* func_expr = static_cast<FunctionExpression*>(method->get_value());
                         method_is_gen = func_expr->is_generator();
                         method_is_async = func_expr->is_async();
-                        const auto& params = func_expr->get_params();
-                        method_params.reserve(params.size());
-                        for (const auto& param : params) {
-                            method_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-                        }
                     }
                     std::unique_ptr<Function> instance_method;
                     // Method syntax parses to a FunctionExpression internally -- share its
@@ -790,11 +788,19 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                             ? static_cast<FunctionExpression*>(method->get_value()) : nullptr;
                     if (method_func_expr) exe = method_func_expr->get_cached_executable();
                     if (!exe) {
+                        // Only the first evaluation of this method literal clones;
+                        // every later one reuses the executable off the node.
                         exe = make_executable_ref();
                         exe->body = method->get_value()->get_body()->clone();
-                        for (const auto& p : method_params) exe->parameters.push_back(p->get_name()->get_name());
-                        exe->parameter_objects = std::move(method_params);
-                        if (method_func_expr) method_func_expr->set_cached_executable(exe);
+                        if (method_func_expr) {
+                            for (const auto& param : method_func_expr->get_params()) {
+                                exe->parameter_objects.push_back(
+                                    std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+                                exe->parameters.push_back(
+                                    exe->parameter_objects.back()->get_name()->get_name());
+                            }
+                            method_func_expr->set_cached_executable(exe);
+                        }
                     }
                     size_t method_declared_length = 0;
                     for (const auto& p : exe->parameter_objects) {
@@ -864,19 +870,38 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
     }
 
-    if (!constructor_body) {
-        std::vector<std::unique_ptr<ASTNode>> empty_statements;
-        constructor_body = std::make_unique<BlockStatement>(
-            std::move(empty_statements),
-            Position{0, 0},
-            Position{0, 0}
-        );
-    }
-
     // Base classes with private methods need the brand slot added in the constructor.
     // Derived classes get it after super() returns (handled in call.cpp / Function.cpp).
     bool needs_pm_brand_in_ctor = !private_instance_method_names.empty() && !has_superclass();
-    if (!field_initializers.empty() || needs_pm_brand_in_ctor) {
+    // The rewritten body embeds a per-evaluation brand slot name, so only the
+    // untouched body can be shared across evaluations.
+    const bool ctor_body_rewritten = !field_initializers.empty() || needs_pm_brand_in_ctor;
+
+    // A synthesised body is deterministic unless it carries a per-evaluation
+    // brand slot or a resolved computed key, so the usual case is shareable
+    // across every evaluation of this class site.
+    const bool ctor_exe_cacheable = !needs_pm_brand_in_ctor && !has_computed_field_key;
+    ExecutableRef<FunctionExecutable> cached_ctor =
+        ctor_exe_cacheable ? get_cached_ctor_exe() : ExecutableRef<FunctionExecutable>();
+    const bool build_ctor_body = !cached_ctor && (ctor_body_rewritten || !ctor_func_expr);
+
+    if (build_ctor_body) {
+        if (ctor_func_expr) {
+            constructor_body = ctor_func_expr->get_body()->clone();
+            const auto& ctor_ps = ctor_func_expr->get_params();
+            constructor_params.reserve(ctor_ps.size());
+            for (const auto& param : ctor_ps) {
+                constructor_params.push_back(
+                    std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+            }
+        } else {
+            std::vector<std::unique_ptr<ASTNode>> empty_statements;
+            constructor_body = std::make_unique<BlockStatement>(
+                std::move(empty_statements), Position{0, 0}, Position{0, 0});
+        }
+    }
+
+    if (ctor_body_rewritten && build_ctor_body) {
         BlockStatement* body_block = static_cast<BlockStatement*>(constructor_body.get());
         std::vector<std::unique_ptr<ASTNode>> new_statements;
 
@@ -1030,12 +1055,53 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     // Anonymous class expressions take their binding site's inferred name for
     // SetFunctionName only -- class_name itself stays empty so no inner
     // self-reference binding is created for it.
-    auto constructor_fn = ObjectFactory::create_js_function(
-        (class_name.empty() && !inferred_name_.empty()) ? inferred_name_ : class_name,
-        std::move(constructor_params),
-        std::move(constructor_body),
-        &ctx
-    );
+    const std::string ctor_name =
+        (class_name.empty() && !inferred_name_.empty()) ? inferred_name_ : class_name;
+    std::unique_ptr<Function> constructor_fn;
+    ExecutableRef<FunctionExecutable> ctor_exe;
+    if (ctor_func_expr && !ctor_body_rewritten) {
+        // Explicit constructor whose body is used as written: shared through
+        // the constructor literal's own node, like any other method.
+        ctor_exe = ctor_func_expr->get_cached_executable();
+        if (!ctor_exe) {
+            ctor_exe = make_executable_ref();
+            ctor_exe->body = ctor_func_expr->get_body()->clone();
+            for (const auto& param : ctor_func_expr->get_params()) {
+                ctor_exe->parameter_objects.push_back(
+                    std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
+                ctor_exe->parameters.push_back(
+                    ctor_exe->parameter_objects.back()->get_name()->get_name());
+            }
+            ctor_func_expr->set_cached_executable(ctor_exe);
+        }
+    } else {
+        // Synthesised (fields, brand slot) or default empty body: shared through
+        // the class node, but only when it comes out the same every time.
+        ctor_exe = std::move(cached_ctor);
+        if (!ctor_exe) {
+            ctor_exe = make_executable_ref();
+            ctor_exe->body = std::move(constructor_body);
+            ctor_exe->parameter_objects = std::move(constructor_params);
+            for (const auto& p : ctor_exe->parameter_objects) {
+                ctor_exe->parameters.push_back(p->get_name()->get_name());
+            }
+            if (ctor_exe_cacheable) set_cached_ctor_exe(ctor_exe);
+        }
+    }
+
+    size_t ctor_length = 0;
+    for (const auto& p : ctor_exe->parameter_objects) {
+        if (p->is_rest() || p->has_default()) break;
+        ctor_length++;
+    }
+    constructor_fn = std::make_unique<Function>(ctor_name, std::move(ctor_exe), &ctx,
+                                               /*create_prototype=*/true);
+    // Matches create_js_function's own two follow-up steps.
+    constructor_fn->mark_closure_environment_escaped();
+    if (Object* func_proto = ObjectFactory::get_function_prototype()) {
+        constructor_fn->set_prototype(func_proto);
+    }
+    constructor_fn->set_declared_length(ctor_length);
 
     Object* proto_ptr = prototype.get();
     if (constructor_fn.get() && proto_ptr) {

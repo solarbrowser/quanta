@@ -1047,6 +1047,15 @@ private:
     std::string source_text_;
     std::string inferred_name_;
     bool is_expression_ = false;
+    // The constructor executable for this class site. Building it means cloning
+    // the constructor body -- and, when the class has fields, synthesising a new
+    // body around them -- which a class defined inside a repeatedly-called
+    // function otherwise paid on every evaluation. Only shared when the result
+    // is the same every time: a private-method brand slot embeds the prototype
+    // address, and a computed field key is resolved per evaluation, so neither
+    // is cacheable.
+    mutable ExecutableRef<FunctionExecutable> cached_ctor_exe_;
+
 
 public:
     void set_is_expression(bool v) { is_expression_ = v; }
@@ -1074,6 +1083,8 @@ public:
     ASTNode* get_superclass() const { return superclass_.get(); }
     BlockStatement* get_body() const { return body_.get(); }
     bool has_superclass() const { return superclass_ != nullptr; }
+    const ExecutableRef<FunctionExecutable>& get_cached_ctor_exe() const { return cached_ctor_exe_; }
+    void set_cached_ctor_exe(ExecutableRef<FunctionExecutable> e) const { cached_ctor_exe_ = std::move(e); }
     void set_source_text(const std::string& s) { source_text_ = s; }
     const std::string& get_source_text() const { return source_text_; }
 
