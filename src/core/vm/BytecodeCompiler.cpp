@@ -5233,6 +5233,15 @@ bool BytecodeCompiler::operand_cannot_write_registers(const ASTNode* node) {
         case ASTNode::Type::BIGINT_LITERAL:
         case ASTNode::Type::IDENTIFIER:
             return true;
+        // Arithmetic over safe operands stays safe: writing to a register-
+        // resident local takes an assignment lexically inside this function,
+        // and there is none here. An operand's valueOf can run arbitrary code
+        // but still cannot reach one, for the same reason a call cannot.
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* b = static_cast<const BinaryExpression*>(node);
+            return operand_cannot_write_registers(b->get_left()) &&
+                   operand_cannot_write_registers(b->get_right());
+        }
         default:
             return false;
     }
