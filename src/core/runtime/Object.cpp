@@ -1266,6 +1266,7 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
     // fallback inside store_in_overflow may have just created.
     if (attrs != PropertyAttributes::Default) {
         bump_descriptor_epoch();
+        note_descriptor_key(key);
         ensure_descriptors()[key] = PropertyDescriptor(value, attrs);
     }
 
@@ -1402,6 +1403,28 @@ bool Object::delete_property_default(const std::string& key) {
     return false;
 }
 
+bool Object::proto_chain_has_no_indices() const {
+    for (Object* p = proto_; p; p = p->get_prototype()) {
+        if (p->get_type() == ObjectType::Proxy) return false;
+        if (p->elements_length() != 0) return false;
+        if (p->has_index_descriptor()) return false;
+        if (auto* sparse = p->sparse_overflow(); sparse && !sparse->empty()) return false;
+    }
+    return true;
+}
+
+bool Object::has_only_dense_elements() const {
+    if (get_type() != ObjectType::Array) return false;
+    // Every Array keeps `length` in descriptors_, so their mere presence says
+    // nothing. Only an INDEX-keyed entry matters -- that index's value lives in
+    // the descriptor, not where the dense vector puts it -- and the object
+    // remembers whether it has ever had one.
+    if (has_index_descriptor()) return false;
+    if (auto* holes = deleted_elements(); holes && !holes->empty()) return false;
+    if (auto* sparse = sparse_overflow(); sparse && !sparse->empty()) return false;
+    return get_length() == elements_length();
+}
+
 Value Object::get_element(uint32_t index) const {
     if (get_type() == ObjectType::Proxy) {
         return static_cast<const Proxy*>(this)->get_element(index);
@@ -1432,7 +1455,7 @@ Value Object::get_element(uint32_t index) const {
     // For all other types: check descriptors_ for both accessor and data properties.
     // Data descriptor values are kept in sync by set_element, so prefer them over elements_.
     if (get_type() != ObjectType::Arguments) {
-      if (auto* d = descriptors()) {
+      if (auto* d = has_index_descriptor() ? descriptors() : nullptr) {
         auto* it = d->find(std::to_string(index));
         if (it) {
             if (it->is_accessor_descriptor()) {
@@ -1485,7 +1508,10 @@ bool Object::set_element(uint32_t index, const Value& value) {
             ->set_element(static_cast<size_t>(index), value);
     }
     // Check descriptors_ for all types: respect accessor setters and writable flags.
-    if (auto* d = descriptors()) {
+    // Skipped outright when no index has ever had one -- building the key's
+    // string form to look it up is the single most expensive thing an element
+    // write does, and `length` alone keeps descriptors_ non-empty on any array.
+    if (auto* d = has_index_descriptor() ? descriptors() : nullptr) {
         auto* it = d->find(std::to_string(index));
         if (it) {
             if (it->is_accessor_descriptor()) {
@@ -2038,14 +2064,14 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
                         if (desc.has_writable())     merged.set_writable(desc.is_writable());
                         if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
                         if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
-                        descs[key] = merged;
+                        note_descriptor_key(key); descs[key] = merged;
                     }
                 } else if (existed_before_this_call) {
                     set_property(key, coerced_value, desc.get_attributes());
                 } else {
                     // [[DefineOwnProperty]] creates own property directly, bypassing inherited setters
                     store_in_overflow(key, coerced_value);
-                    descs[key] = desc;
+                    note_descriptor_key(key); descs[key] = desc;
                 }
             }
             if (length_shrink_blocked) {
@@ -2142,7 +2168,7 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
             if (desc.has_writable())     merged.set_writable(desc.is_writable());
             if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
             if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
-            descs[key] = merged;
+            note_descriptor_key(key); descs[key] = merged;
             push_extra_property_order(key);
         }
     } else {
@@ -2180,7 +2206,7 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
                     if (!desc.has_setter() && existing.has_setter()) merged.set_setter(existing.get_setter());
                 }
             }
-            descs[key] = merged;
+            note_descriptor_key(key); descs[key] = merged;
         } else {
             // No existing descriptor entry. For a property already in shape/overflow,
             // preserve the unspecified attributes (shape default is WEC=true) so that
@@ -2191,9 +2217,9 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
                 if (!desc.has_writable()     && current.has_writable())     merged.set_writable(current.is_writable());
                 if (!desc.has_enumerable()   && current.has_enumerable())   merged.set_enumerable(current.is_enumerable());
                 if (!desc.has_configurable() && current.has_configurable()) merged.set_configurable(current.is_configurable());
-                descs[key] = merged;
+                note_descriptor_key(key); descs[key] = merged;
             } else {
-                descs[key] = desc;
+                note_descriptor_key(key); descs[key] = desc;
             }
             push_extra_property_order(key);
         }
@@ -2957,7 +2983,7 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
         if (it) {
             it->set_value(value);
         } else {
-            descs[key] = PropertyDescriptor(value, PropertyAttributes::Default);
+            note_descriptor_key(key); descs[key] = PropertyDescriptor(value, PropertyAttributes::Default);
         }
     }
 

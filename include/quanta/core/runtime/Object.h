@@ -144,7 +144,9 @@ private:
         void clear_flag(uintptr_t m) { bits_ &= ~m; }
         void clear_flags() { bits_ &= ~kMask; }
     private:
-        static constexpr uintptr_t kMask = 0x3;
+        // Objects are at least 16-byte aligned (HeapBlock::kCellAlign), so the
+        // low four bits are always free; three are in use.
+        static constexpr uintptr_t kMask = 0x7;
         uintptr_t bits_ = 0;
     };
     TaggedProto proto_;
@@ -345,6 +347,21 @@ public:
         return *element_ptr(index);
     }
 
+    // True when every index this object claims to have really is in the dense
+    // element vector: a genuine Array, no per-index attributes, no holes,
+    // nothing spilled to sparse storage, and length matching the storage. Only
+    // then may get_element_unchecked stand in for a keyed read -- a hole has to
+    // resolve against the prototype, and an index with a descriptor is not
+    // where the raw slot says it is.
+    bool has_only_dense_elements() const;
+
+    // True when nothing on this object's prototype chain carries an index
+    // property. [[Set]] on an index the receiver does not own consults that
+    // chain -- an inherited setter has to run, an inherited non-writable data
+    // property has to block -- so a direct element write may only stand in for
+    // it while the chain is clear.
+    bool proto_chain_has_no_indices() const;
+
     bool set_element(uint32_t index, const Value& value);
     bool delete_element(uint32_t index);
     
@@ -372,6 +389,20 @@ public:
     static constexpr uintptr_t kUsedAsPrototype = 0x02;
     bool used_as_prototype() const { return proto_.flag(kUsedAsPrototype); }
     void mark_used_as_prototype() { proto_.set_flag(kUsedAsPrototype); }
+
+    // Sticky: set the first time any descriptors_ entry is made under an index
+    // key. Without it every element read and write has to build the index's
+    // string form just to ask whether such an entry exists -- and it almost
+    // never does, while `length` keeps descriptors_ itself non-empty on every
+    // array. Only ever set, never cleared except by clear_properties, so a
+    // stale true costs one redundant probe rather than a wrong answer.
+    static constexpr uintptr_t kHasIndexDescriptor = 0x04;
+    bool has_index_descriptor() const { return proto_.flag(kHasIndexDescriptor); }
+    void note_descriptor_key(const std::string& key) {
+        if (!proto_.flag(kHasIndexDescriptor) && is_array_index(key)) {
+            proto_.set_flag(kHasIndexDescriptor);
+        }
+    }
     
     // Only Proxy overrides this -- out-of-line in Object.cpp.
     uint32_t get_length() const;

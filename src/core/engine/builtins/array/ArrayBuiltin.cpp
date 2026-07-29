@@ -100,6 +100,23 @@ static double to_number_throwing(Context& ctx, const Value& v) {
 
 // LengthOfArrayLike: ToLength(Get(obj, "length")), clamped to [0, 2^53-1] -- unlike
 // Object::get_length() this isn't capped to uint32_t.
+// Whether every index of `o` can be read straight out of the dense element
+// vector. The generics otherwise build a string key per element and look it up
+// twice (has_property then get_property), which allocates and walks the
+// prototype chain each time.
+//
+// A whitelist, and holes are deliberately excluded rather than handled: a hole
+// has to be resolved against the prototype, and each method treats one
+// differently -- indexOf skips it, includes reads it as undefined, map keeps
+// it, forEach skips it. Letting a hole near this path would break all four at
+// once, so anything but a fully dense array takes the code that was always
+// there. Same for a receiver that is not a real Array: a typed array, a Proxy,
+// an arguments object and a plain {length} array-like all reach these methods
+// through .call().
+static bool dense_fast(Object* o) {
+    return o && o->has_only_dense_elements();
+}
+
 static double array_like_length(Context& ctx, Object* obj) {
     Value len_val = obj->get_property("length");
     if (ctx.has_exception()) return 0;
@@ -127,6 +144,34 @@ static void fa_request_arraylike_next(Context& ctx, Promise* result_promise);
 
 // CreateDataPropertyOrThrow: just [[DefineOwnProperty]], throwing if it returns false.
 // No has_own_property/is_extensible pre-check -- on a Proxy those fire extra traps.
+// CreateDataProperty for an index the caller is filling in order. A plain
+// Array with nothing but dense elements takes the element write, which is the
+// same observable result without building a key string; anything else -- a
+// species-created object, an array that already has per-index attributes --
+// goes through the keyed form below.
+static bool create_indexed_data_property(Context& ctx, Object* target, double index, const Value& v) {
+    // Appending at exactly the end of the dense region is the shape every one
+    // of these builders has: it grows by one, so no gap is opened and the
+    // result is the same own data property the keyed form would define.
+    // Writing PAST the end would fill the skipped slots with undefined where a
+    // hole belongs, which is why the index has to match element_count exactly.
+    if (target->get_type() == Object::ObjectType::Array &&
+        !target->has_index_descriptor() &&
+        index >= 0 && index == static_cast<double>(target->element_count())) {
+        target->set_element(static_cast<uint32_t>(index), v);
+        if (ctx.has_exception()) return false;
+        return true;
+    }
+    bool ok = target->set_property_descriptor(Value(index).to_string(),
+                                              PropertyDescriptor(v, PropertyAttributes::Default));
+    if (ctx.has_exception()) return false;
+    if (!ok) {
+        ctx.throw_type_error("Cannot define property: " + Value(index).to_string());
+        return false;
+    }
+    return true;
+}
+
 static bool create_data_property_or_throw(Context& ctx, Object* target, const std::string& key, const Value& v) {
     bool ok = target->set_property_descriptor(key, PropertyDescriptor(v, PropertyAttributes::Default));
     if (ctx.has_exception()) return false;
@@ -1121,9 +1166,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 from_index = std::max(length + from_index, 0.0);
             }
 
+            bool inc_fast = dense_fast(this_obj);
             for (double i = from_index; i < length; i++) {
-                Value element = this_obj->get_property(Value(i).to_string());
-                if (ctx.has_exception()) return Value();
+                Value element;
+                if (inc_fast) {
+                    element = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                } else {
+                    element = this_obj->get_property(Value(i).to_string());
+                    if (ctx.has_exception()) return Value();
+                }
 
                 if (search_element.is_number() && element.is_number()) {
                     double search_num = search_element.to_number();
@@ -1348,11 +1399,31 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             for (const auto& arg : args) {
-                bool ok = this_obj->set_property(Value(length).to_string(), arg);
-                if (ctx.has_exception()) return Value();
-                if (!ok) {
-                    ctx.throw_type_error("Cannot add property, object is not extensible");
-                    return Value();
+                // Appending to a plain dense array is an element write; the
+                // keyed [[Set]] below is for array-likes, a Proxy, an array
+                // whose indices carry attributes, or a length that has run
+                // ahead of the storage. push does a full [[Set]], so the
+                // prototype chain has to be clear of index properties too --
+                // an inherited setter at that index is entitled to run, and
+                // may make the array non-extensible from inside itself.
+                if (this_obj->get_type() == Object::ObjectType::Array &&
+                    !this_obj->has_index_descriptor() &&
+                    length == static_cast<double>(this_obj->element_count()) &&
+                    this_obj->is_extensible() &&
+                    this_obj->proto_chain_has_no_indices()) {
+                    this_obj->set_element(static_cast<uint32_t>(length), arg);
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    // Set(O, key, value, true): OrdinarySet, which reports
+                    // failure when an inherited non-writable data property at
+                    // that index blocks the write -- set_property would just
+                    // shadow it.
+                    bool ok = this_obj->ordinary_set(Value(length).to_string(), arg);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) {
+                        ctx.throw_type_error("Cannot add property, object is not extensible");
+                        return Value();
+                    }
                 }
                 length++;
             }
@@ -1471,13 +1542,19 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (fromIndex == 0) fromIndex = 0; // normalize -0 to +0
             }
 
+            bool last_fast = dense_fast(this_obj);
             for (double i = fromIndex; i >= 0; i--) {
-                std::string key = Value(i).to_string();
-                bool present = this_obj->has_property(key);
-                if (ctx.has_exception()) return Value();
-                if (!present) continue;
-                Value element = this_obj->get_property(key);
-                if (ctx.has_exception()) return Value();
+                Value element;
+                if (last_fast) {
+                    element = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                } else {
+                    std::string key = Value(i).to_string();
+                    bool present = this_obj->has_property(key);
+                    if (ctx.has_exception()) return Value();
+                    if (!present) continue;
+                    element = this_obj->get_property(key);
+                    if (ctx.has_exception()) return Value();
+                }
                 if (element.strict_equals(searchElement)) {
                     return Value(i);
                 }
@@ -1804,14 +1881,24 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     ctx.throw_type_error("Array.prototype.concat: resulting length would exceed 2**53 - 1");
                     return false;
                 }
+                bool src_fast = dense_fast(obj);
                 for (double i = 0; i < obj_length; i++) {
-                    std::string key = Value(i).to_string();
-                    bool present = obj->has_property(key);
-                    if (ctx.has_exception()) return false;
-                    if (present) {
-                        Value elem = obj->get_property(key);
+                    bool present;
+                    Value elem;
+                    if (src_fast && i < obj->element_count()) {
+                        present = true;
+                        elem = obj->get_element_unchecked(static_cast<uint32_t>(i));
+                    } else {
+                        std::string key = Value(i).to_string();
+                        present = obj->has_property(key);
                         if (ctx.has_exception()) return false;
-                        if (!create_data_property_or_throw(ctx, result, Value(n).to_string(), elem)) return false;
+                        if (present) {
+                            elem = obj->get_property(key);
+                            if (ctx.has_exception()) return false;
+                        }
+                    }
+                    if (present) {
+                        if (!create_indexed_data_property(ctx, result, n, elem)) return false;
                     }
                     n++;
                 }
@@ -1870,9 +1957,14 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             for (uint32_t i = 0; i < length; i++) {
-                if (!this_obj->has_property(std::to_string(i))) continue;
-                Value element = this_obj->get_property(std::to_string(i));
-                if (ctx.has_exception()) return Value();
+                Value element;
+                if (dense_fast(this_obj) && i < this_obj->element_count()) {
+                    element = this_obj->get_element_unchecked(i);
+                } else {
+                    if (!this_obj->has_property(std::to_string(i))) continue;
+                    element = this_obj->get_property(std::to_string(i));
+                    if (ctx.has_exception()) return Value();
+                }
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value result = callback->call(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
@@ -1909,17 +2001,22 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             double to = 0;
             for (double k = 0; k < length; k++) {
-                std::string key = Value(k).to_string();
-                bool present = this_obj->has_property(key);
-                if (ctx.has_exception()) return Value();
-                if (!present) continue;
-                Value element = this_obj->get_property(key);
-                if (ctx.has_exception()) return Value();
+                Value element;
+                if (dense_fast(this_obj) && k < this_obj->element_count()) {
+                    element = this_obj->get_element_unchecked(static_cast<uint32_t>(k));
+                } else {
+                    std::string key = Value(k).to_string();
+                    bool present = this_obj->has_property(key);
+                    if (ctx.has_exception()) return Value();
+                    if (!present) continue;
+                    element = this_obj->get_property(key);
+                    if (ctx.has_exception()) return Value();
+                }
                 std::vector<Value> callback_args = { element, Value(k), Value(this_obj) };
                 Value test_result = callback->call(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (test_result.to_boolean()) {
-                    if (!create_data_property_or_throw(ctx, result, Value(to).to_string(), element)) return Value();
+                    if (!create_indexed_data_property(ctx, result, to, element)) return Value();
                     to++;
                 }
             }
@@ -1952,10 +2049,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value this_arg = args.size() > 1 ? args[1] : Value();
 
             for (uint32_t i = 0; i < length; i++) {
-                if (!this_obj->has_property(std::to_string(i))) {
-                    continue;
+                Value element;
+                if (dense_fast(this_obj) && i < this_obj->element_count()) {
+                    element = this_obj->get_element_unchecked(i);
+                } else {
+                    if (!this_obj->has_property(std::to_string(i))) {
+                        continue;
+                    }
+                    element = this_obj->get_element(i);
                 }
-                Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
                 callback->call(ctx, callback_args, this_arg);
                 if (ctx.has_exception()) return Value();
@@ -1987,13 +2089,19 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (start_index == 0) start_index = 0; // normalize -0 to +0
             }
 
+            bool fast = dense_fast(this_obj);
             for (double i = start_index; i < length; i++) {
-                std::string key = Value(i).to_string();
-                bool present = this_obj->has_property(key);
-                if (ctx.has_exception()) return Value();
-                if (!present) continue;
-                Value element = this_obj->get_property(key);
-                if (ctx.has_exception()) return Value();
+                Value element;
+                if (fast) {
+                    element = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                } else {
+                    std::string key = Value(i).to_string();
+                    bool present = this_obj->has_property(key);
+                    if (ctx.has_exception()) return Value();
+                    if (!present) continue;
+                    element = this_obj->get_property(key);
+                    if (ctx.has_exception()) return Value();
+                }
                 if (element.strict_equals(search_element)) {
                     return Value(i);
                 }
@@ -2028,16 +2136,28 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
             for (double k = 0; k < length; k++) {
-                std::string key = Value(k).to_string();
-                bool present = this_obj->has_property(key);
-                if (ctx.has_exception()) return Value();
-                if (present) {
-                    Value element = this_obj->get_property(key);
+                // Re-asked every turn: the callback may have punched a hole,
+                // shortened the array or given an index attributes.
+                bool present;
+                Value element;
+                std::string key;
+                if (dense_fast(this_obj) && k < this_obj->element_count()) {
+                    present = true;
+                    element = this_obj->get_element_unchecked(static_cast<uint32_t>(k));
+                } else {
+                    key = Value(k).to_string();
+                    present = this_obj->has_property(key);
                     if (ctx.has_exception()) return Value();
+                    if (present) {
+                        element = this_obj->get_property(key);
+                        if (ctx.has_exception()) return Value();
+                    }
+                }
+                if (present) {
                     std::vector<Value> callback_args = { element, Value(k), Value(this_obj) };
                     Value mapped = callback->call(ctx, callback_args, thisArg);
                     if (ctx.has_exception()) return Value();
-                    if (!create_data_property_or_throw(ctx, result, key, mapped)) return Value();
+                    if (!create_indexed_data_property(ctx, result, k, mapped)) return Value();
                 }
             }
             return result_val;
@@ -2091,12 +2211,17 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             for (; k < length; k++) {
-                std::string key = Value(k).to_string();
-                bool present = this_obj->has_property(key);
-                if (ctx.has_exception()) return Value();
-                if (!present) continue;
-                Value element = this_obj->get_property(key);
-                if (ctx.has_exception()) return Value();
+                Value element;
+                if (dense_fast(this_obj) && k < this_obj->element_count()) {
+                    element = this_obj->get_element_unchecked(static_cast<uint32_t>(k));
+                } else {
+                    std::string key = Value(k).to_string();
+                    bool present = this_obj->has_property(key);
+                    if (ctx.has_exception()) return Value();
+                    if (!present) continue;
+                    element = this_obj->get_property(key);
+                    if (ctx.has_exception()) return Value();
+                }
                 std::vector<Value> callback_args = { accumulator, element, Value(k), Value(this_obj) };
                 accumulator = callback->call(ctx, callback_args);
                 if (ctx.has_exception()) return Value();
@@ -2126,10 +2251,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             for (uint32_t i = 0; i < length; i++) {
-                if (!this_obj->has_property(std::to_string(i))) {
-                    continue;
+                Value element;
+                if (dense_fast(this_obj) && i < this_obj->element_count()) {
+                    element = this_obj->get_element_unchecked(i);
+                } else {
+                    if (!this_obj->has_property(std::to_string(i))) {
+                        continue;
+                    }
+                    element = this_obj->get_element(i);
                 }
-                Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value result = callback->call(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
@@ -2195,8 +2325,14 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             for (double i = 0; i < length; i++) {
                 if (i > 0) result += separator;
-                Value element = this_obj->get_property(Value(i).to_string());
-                if (ctx.has_exception()) return Value();
+                // An element's toString can run, so the shape is re-asked.
+                Value element;
+                if (dense_fast(this_obj) && i < this_obj->element_count()) {
+                    element = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                } else {
+                    element = this_obj->get_property(Value(i).to_string());
+                    if (ctx.has_exception()) return Value();
+                }
                 if (!element.is_undefined() && !element.is_null()) {
                     result += sort_default_to_string(ctx, element);
                     if (ctx.has_exception()) return Value();
@@ -2396,14 +2532,24 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
             double n = 0;
+            bool slice_fast = dense_fast(this_obj);
             for (double k = start; k < end; k++) {
-                std::string pk = Value(k).to_string();
-                bool present = this_obj->has_property(pk);
-                if (ctx.has_exception()) return Value();
-                if (present) {
-                    Value elem = this_obj->get_property(pk);
+                bool present;
+                Value elem;
+                if (slice_fast && k < this_obj->element_count()) {
+                    present = true;
+                    elem = this_obj->get_element_unchecked(static_cast<uint32_t>(k));
+                } else {
+                    std::string pk = Value(k).to_string();
+                    present = this_obj->has_property(pk);
                     if (ctx.has_exception()) return Value();
-                    if (!create_data_property_or_throw(ctx, result, Value(n).to_string(), elem)) return Value();
+                    if (present) {
+                        elem = this_obj->get_property(pk);
+                        if (ctx.has_exception()) return Value();
+                    }
+                }
+                if (present) {
+                    if (!create_indexed_data_property(ctx, result, n, elem)) return Value();
                 }
                 n++;
             }
