@@ -460,13 +460,18 @@ static double flatten_into_array(Context& ctx, Object* target, Object* source, d
                                   const Value& this_arg = Value()) {
     double target_index = start;
     for (double source_index = 0; source_index < source_len; source_index++) {
-        std::string key = Value(source_index).to_string();
-        bool exists = source->has_property(key);
-        if (ctx.has_exception()) return -1;
-        if (!exists) continue;
-
-        Value element = source->get_property(key);
-        if (ctx.has_exception()) return -1;
+        Value element;
+        // Re-asked every turn: a mapper callback may have reshaped the source.
+        if (source->has_only_dense_elements() && source_index < static_cast<double>(source->element_count())) {
+            element = source->get_element_unchecked(static_cast<uint32_t>(source_index));
+        } else {
+            std::string key = Value(source_index).to_string();
+            bool exists = source->has_property(key);
+            if (ctx.has_exception()) return -1;
+            if (!exists) continue;
+            element = source->get_property(key);
+            if (ctx.has_exception()) return -1;
+        }
         if (mapper_fn) {
             std::vector<Value> call_args = {element, Value(source_index), Value(source)};
             element = mapper_fn->call(ctx, call_args, this_arg);
@@ -486,7 +491,7 @@ static double flatten_into_array(Context& ctx, Object* target, Object* source, d
                 ctx.throw_type_error("flatten target index exceeded 2**53 - 1");
                 return -1;
             }
-            if (!create_data_property_or_throw(ctx, target, Value(target_index).to_string(), element)) return -1;
+            if (!create_indexed_data_property(ctx, target, target_index, element)) return -1;
             target_index++;
         }
     }
@@ -1295,7 +1300,16 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.has_exception()) return Value();
             double end = end_raw < 0 ? std::max(length + end_raw, 0.0) : std::min(end_raw, length);
 
+            bool fill_fast = dense_fast(this_obj);
             for (double k = start; k < end; k++) {
+                // Within a dense array the receiver already owns the index, so
+                // [[Set]] never reaches the prototype and the element write is
+                // the same operation.
+                if (fill_fast && k < this_obj->element_count()) {
+                    this_obj->set_element(static_cast<uint32_t>(k), fill_value);
+                    if (ctx.has_exception()) return Value();
+                    continue;
+                }
                 bool ok = this_obj->set_property(Value(k).to_string(), fill_value);
                 if (ctx.has_exception()) return Value();
                 if (!ok) { ctx.throw_type_error("Cannot set property '" + Value(k).to_string() + "'"); return Value(); }
@@ -2394,6 +2408,19 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             // a getter can mutate the object mid-loop (e.g. array.length = 0).
             // A present-vs-absent pair sets one side and deletes the other.
             double middle = std::floor(length / 2.0);
+            if (dense_fast(this_obj) && length == static_cast<double>(this_obj->element_count())) {
+                // Both sides are present and owned, so the pair is a plain swap
+                // with none of the present-vs-absent bookkeeping below.
+                for (double lower = 0; lower != middle; lower++) {
+                    uint32_t lo = static_cast<uint32_t>(lower);
+                    uint32_t hi = static_cast<uint32_t>(length - lower - 1);
+                    Value tmp = this_obj->get_element_unchecked(lo);
+                    this_obj->set_element(lo, this_obj->get_element_unchecked(hi));
+                    this_obj->set_element(hi, tmp);
+                    if (ctx.has_exception()) return Value();
+                }
+                return Value(this_obj);
+            }
             for (double lower = 0; lower != middle; lower++) {
                 double upper = length - lower - 1;
                 std::string lower_key = Value(lower).to_string();
@@ -2607,8 +2634,11 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             std::vector<Value> items;
             ValueVectorRoot items_root(&items);
             items.reserve(length);
+            bool sort_fast = dense_fast(this_obj);
             for (uint32_t i = 0; i < length; i++) {
-                if (this_obj->has_property(std::to_string(i))) {
+                if (sort_fast && i < this_obj->element_count()) {
+                    items.push_back(this_obj->get_element_unchecked(i));
+                } else if (this_obj->has_property(std::to_string(i))) {
                     items.push_back(this_obj->get_property(std::to_string(i)));
                     if (ctx.has_exception()) return Value();
                 }
@@ -2620,7 +2650,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.has_exception()) return Value();
 
             uint32_t item_count = static_cast<uint32_t>(items.size());
+            // The comparator has run by now, so the shape is asked again.
+            bool writeback_fast = dense_fast(this_obj);
             for (uint32_t j = 0; j < item_count; j++) {
+                if (writeback_fast && j < this_obj->element_count()) {
+                    this_obj->set_element(j, items[j]);
+                    continue;
+                }
                 this_obj->set_property(std::to_string(j), items[j]);
                 if (ctx.has_exception()) return Value();
             }
@@ -2675,7 +2711,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                            : nullptr;
             if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
+            bool splice_fast = dense_fast(this_obj);
             for (double k = 0; k < delete_count; k++) {
+                if (splice_fast && (start + k) < static_cast<double>(this_obj->element_count())) {
+                    Value v = this_obj->get_element_unchecked(static_cast<uint32_t>(start + k));
+                    if (!create_indexed_data_property(ctx, result, k, v)) return Value();
+                    continue;
+                }
                 std::string from_key = Value(start + k).to_string();
                 bool present = this_obj->has_property(from_key);
                 if (ctx.has_exception()) return Value();
