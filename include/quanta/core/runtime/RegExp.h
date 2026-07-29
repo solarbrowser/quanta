@@ -8,6 +8,7 @@
 #define QUANTA_REGEXP_H
 
 #include "quanta/core/runtime/Value.h"
+#include "quanta/core/runtime/Object.h"
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -89,6 +90,30 @@ private:
     std::string preprocess_pattern(const std::string& pattern) const;
     std::string rename_named_groups(const std::string& pattern);
     std::string flags_string() const;
+};
+
+// The JS-visible object. Everything a regex knows about itself lives in the
+// RegExp above; the object used to carry a copy of each flag as its own
+// property under a [[name]] key, which cost a descriptor apiece on every
+// construction and left them reachable through `in` and
+// getOwnPropertyNames. Per spec an instance has exactly one own property,
+// lastIndex.
+class RegExpObject : public Object {
+public:
+    explicit RegExpObject(std::shared_ptr<RegExp> impl)
+        : Object(ObjectType::RegExp), impl_(std::move(impl)) {}
+
+    const std::shared_ptr<RegExp>& impl() const { return impl_; }
+    void set_impl(std::shared_ptr<RegExp> impl) { impl_ = std::move(impl); }
+
+    // The brand check every RegExp.prototype accessor needs, replacing the
+    // `_isRegExp` own property it used to look for.
+    static RegExpObject* from(Object* o) {
+        return (o && o->get_type() == ObjectType::RegExp) ? static_cast<RegExpObject*>(o) : nullptr;
+    }
+
+private:
+    std::shared_ptr<RegExp> impl_;
 };
 
 }

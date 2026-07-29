@@ -175,7 +175,7 @@ void register_regexp_builtins(Context& ctx) {
     auto compile_fn = ObjectFactory::create_native_function("compile",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->get_own_property("_isRegExp").to_boolean()) {
+            if (!RegExpObject::from(this_obj)) {
                 ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
                 return Value();
             }
@@ -228,9 +228,8 @@ void register_regexp_builtins(Context& ctx) {
                 if (!sym_match.is_undefined()) {
                     pattern_is_regexp = sym_match.to_boolean();
                 } else {
-                    // Fallback: check internal _isRegExp flag
-                    Value is_regexp = pat_obj->get_property("_isRegExp");
-                    pattern_is_regexp = is_regexp.is_boolean() && is_regexp.to_boolean();
+                    // Fallback: the object's own internal slot.
+                    pattern_is_regexp = RegExpObject::from(pat_obj) != nullptr;
                 }
 
                 if (pattern_is_regexp) {
@@ -287,24 +286,11 @@ void register_regexp_builtins(Context& ctx) {
             try {
                 // ObjectType::RegExp so toString's internal-slot tag and String.prototype's
                 // is_native_regexp checks (match/replace/split) see this the same as regex literals.
-                auto regex_obj = std::make_unique<Object>(Object::ObjectType::RegExp);
-
                 auto regexp_impl = std::make_shared<RegExp>(pattern, flags);
-
-                regex_obj->set_property("_isRegExp", Value(true), PropertyAttributes::Writable);
-                // Internal flag slots: stored under [[name]] keys so they don't shadow the prototype accessor getters (the correct public interface per ES2015+).
-                regex_obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::Configurable));
-                {
-                    PropertyDescriptor us_desc(Value(regexp_impl->get_unicode_sets()), PropertyAttributes::BuiltinFunction);
-                    regex_obj->set_property_descriptor("unicodeSets", us_desc);
-                }
+                // Every flag used to be copied onto the object under a [[name]]
+                // key; the prototype accessors read them off the impl instead,
+                // so lastIndex is the one own property an instance has.
+                auto regex_obj = std::make_unique<RegExpObject>(regexp_impl);
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())), PropertyAttributes::Writable);
                 
                 Object* regex_obj_ptr = regex_obj.get();
@@ -358,30 +344,14 @@ void register_regexp_builtins(Context& ctx) {
 
                         regexp_impl->compile(pattern, flags);
 
-                        regex_obj_ptr->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::Configurable));
-                        regex_obj_ptr->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::Configurable));
-                        regex_obj_ptr->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::Configurable));
-                        regex_obj_ptr->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::Configurable));
-                        regex_obj_ptr->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::Configurable));
-                        regex_obj_ptr->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::Configurable));
-                        regex_obj_ptr->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::Configurable));
-                        regex_obj_ptr->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::Configurable));
+                        // The accessors read regexp_impl, which compile() just
+                        // rewrote in place, so nothing has to be copied out.
                         regex_obj_ptr->set_property("lastIndex", Value(0.0));
 
                         return Value(regex_obj_ptr);
                     }, 2);
                 regex_obj->set_property_descriptor("[[compile]]",
                     PropertyDescriptor(Value(compile_inst_fn.release()), PropertyAttributes::None));
-
-                regex_obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::Configurable));
-                regex_obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::Configurable));
-                regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
 
                 Object* regex_raw = regex_obj.release();
                 Value new_target = ctx.get_new_target();
@@ -431,15 +401,16 @@ void register_regexp_builtins(Context& ctx) {
 
     // ES2015+: flag properties are ACCESSOR getters on RegExp.prototype (not own data on instances). Each getter throws TypeError for non-RegExp this (including RegExp.prototype itself), else reads flag from [[name]] internal slot on the instance.
     {
-        auto make_flag_getter = [regexp_proto_ptr](const char* getter_name, const char* flag_key) {
+        using FlagReader = bool (*)(const RegExp&);
+        auto make_flag_getter = [regexp_proto_ptr](const char* getter_name, FlagReader read) {
             return ObjectFactory::create_native_function(getter_name,
-                [regexp_proto_ptr, flag_key](Context& ctx, const std::vector<Value>&) -> Value {
+                [regexp_proto_ptr, read](Context& ctx, const std::vector<Value>&) -> Value {
                     Object* self = ctx.get_this_binding();
                     if (!self) { ctx.throw_type_error("RegExp flag getter requires a RegExp"); return Value(); }
                     if (self == regexp_proto_ptr) return Value(); // spec: return undefined for RegExp.prototype
-                    Value is_re = self->get_own_property("_isRegExp");
-                    if (!is_re.is_boolean() || !is_re.to_boolean()) { ctx.throw_type_error("RegExp flag getter requires a RegExp"); return Value(); }
-                    return Value(self->get_own_property(flag_key).to_boolean());
+                    RegExpObject* re = RegExpObject::from(self);
+                    if (!re || !re->impl()) { ctx.throw_type_error("RegExp flag getter requires a RegExp"); return Value(); }
+                    return Value(read(*re->impl()));
                 }, 0);
         };
         auto make_flag_desc = [](std::unique_ptr<Function> getter_fn) {
@@ -449,13 +420,13 @@ void register_regexp_builtins(Context& ctx) {
             d.set_configurable(true);
             return d;
         };
-        regexp_prototype->set_property_descriptor("hasIndices", make_flag_desc(make_flag_getter("get hasIndices", "[[hasIndices]]")));
-        regexp_prototype->set_property_descriptor("global",     make_flag_desc(make_flag_getter("get global",     "[[global]]")));
-        regexp_prototype->set_property_descriptor("ignoreCase", make_flag_desc(make_flag_getter("get ignoreCase", "[[ignoreCase]]")));
-        regexp_prototype->set_property_descriptor("multiline",  make_flag_desc(make_flag_getter("get multiline",  "[[multiline]]")));
-        regexp_prototype->set_property_descriptor("dotAll",     make_flag_desc(make_flag_getter("get dotAll",     "[[dotAll]]")));
-        regexp_prototype->set_property_descriptor("unicode",    make_flag_desc(make_flag_getter("get unicode",    "[[unicode]]")));
-        regexp_prototype->set_property_descriptor("sticky",     make_flag_desc(make_flag_getter("get sticky",     "[[sticky]]")));
+        regexp_prototype->set_property_descriptor("hasIndices", make_flag_desc(make_flag_getter("get hasIndices", [](const RegExp& r){ return r.get_flags().find('d') != std::string::npos; })));
+        regexp_prototype->set_property_descriptor("global",     make_flag_desc(make_flag_getter("get global",     [](const RegExp& r){ return r.get_global(); })));
+        regexp_prototype->set_property_descriptor("ignoreCase", make_flag_desc(make_flag_getter("get ignoreCase", [](const RegExp& r){ return r.get_ignore_case(); })));
+        regexp_prototype->set_property_descriptor("multiline",  make_flag_desc(make_flag_getter("get multiline",  [](const RegExp& r){ return r.get_multiline(); })));
+        regexp_prototype->set_property_descriptor("dotAll",     make_flag_desc(make_flag_getter("get dotAll",     [](const RegExp& r){ return r.get_dotall(); })));
+        regexp_prototype->set_property_descriptor("unicode",    make_flag_desc(make_flag_getter("get unicode",    [](const RegExp& r){ return r.get_unicode() && !r.get_unicode_sets(); })));
+        regexp_prototype->set_property_descriptor("sticky",     make_flag_desc(make_flag_getter("get sticky",     [](const RegExp& r){ return r.get_sticky(); })));
         // source accessor: empty pattern renders as "(?:)" and slashes in pattern are escaped.
         regexp_prototype->set_property_descriptor("source", make_flag_desc(
             ObjectFactory::create_native_function("get source",
@@ -463,10 +434,9 @@ void register_regexp_builtins(Context& ctx) {
                     Object* self = ctx.get_this_binding();
                     if (!self) { ctx.throw_type_error("get source requires a RegExp"); return Value(); }
                     if (self == regexp_proto_ptr) return Value(std::string("(?:)")); // spec: return "(?:)" for RegExp.prototype
-                    Value is_re = self->get_own_property("_isRegExp");
-                    if (!is_re.is_boolean() || !is_re.to_boolean()) { ctx.throw_type_error("get source requires a RegExp"); return Value(); }
-                    Value src = self->get_own_property("[[source]]");
-                    std::string s = src.to_string();
+                    RegExpObject* sre = RegExpObject::from(self);
+                    if (!sre || !sre->impl()) { ctx.throw_type_error("get source requires a RegExp"); return Value(); }
+                    std::string s = sre->impl()->get_source();
                     if (s.empty()) return Value(std::string("(?:)"));
                     // EscapeRegExpPattern: escape '/' and line terminators so the result
                     // round-trips through a regex literal.
@@ -539,12 +509,12 @@ void register_regexp_builtins(Context& ctx) {
                     return Value();
                 }
                 if (this_obj == regexp_proto_ptr) return Value();
-                Value is_regexp = this_obj->get_property("_isRegExp");
-                if (!(is_regexp.is_boolean() && is_regexp.to_boolean())) {
+                RegExpObject* ure = RegExpObject::from(this_obj);
+                if (!ure || !ure->impl()) {
                     ctx.throw_type_error("RegExp.prototype.unicodeSets getter called on incompatible receiver");
                     return Value();
                 }
-                return Value(this_obj->get_property("unicodeSets").to_boolean());
+                return Value(ure->impl()->get_unicode_sets());
             });
         PropertyDescriptor unicode_sets_desc;
         unicode_sets_desc.set_getter(unicode_sets_getter_fn.release());
@@ -557,7 +527,7 @@ void register_regexp_builtins(Context& ctx) {
     auto regexp_exec_proto_fn = ObjectFactory::create_native_function("exec",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->get_own_property("_isRegExp").to_boolean()) {
+            if (!RegExpObject::from(this_obj)) {
                 ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
                 return Value();
             }
@@ -574,7 +544,7 @@ void register_regexp_builtins(Context& ctx) {
     auto regexp_test_fn = ObjectFactory::create_native_function("test",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->get_own_property("_isRegExp").to_boolean()) {
+            if (!RegExpObject::from(this_obj)) {
                 ctx.throw_type_error("RegExp.prototype.test called on incompatible receiver");
                 return Value();
             }

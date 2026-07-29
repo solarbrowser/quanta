@@ -1013,7 +1013,7 @@ bool Value::instanceof_check(const Value& constructor) const {
     }
     
     if (ctor_name == "RegExp") {
-        return obj->has_property("_isRegExp");
+        return obj->get_type() == Object::ObjectType::RegExp;
     }
     
     if (ctor_name == "Date") {
