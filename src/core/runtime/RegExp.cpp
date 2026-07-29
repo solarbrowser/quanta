@@ -2528,8 +2528,10 @@ Value RegExp::exec(const std::string& str) {
     auto result_owner = ObjectFactory::create_array(capture_count + 1);
     Object* result = result_owner.get();
     result->set_element(0, Value(slice(match_start, match_end)));
-    result->set_property("index", Value(static_cast<double>(match_start)));
-    result->set_property("input", Value(str));
+    // RegExpBuiltinExec steps 25-26 are CreateDataProperty, not Set: an own data
+    // property outright, with no walk up the prototype chain looking for a setter.
+    result->create_own_data_property("index", Value(static_cast<double>(match_start)));
+    result->create_own_data_property("input", Value(str));
 
     for (uint32_t i = 1; i <= capture_count; ++i) {
         if (saved[2 * i] == PCRE2_UNSET)
