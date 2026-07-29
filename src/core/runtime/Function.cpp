@@ -448,22 +448,12 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
             return Value();
         }
         
-        Object* old_this = ctx.get_this_binding();
-        // get_binding answers undefined for a name it cannot find rather than
-        // throwing, so there is nothing here to catch and no "was it bound"
-        // question to ask. The receiver is installed once, below.
-        Value old_this_value = ctx.get_binding("this");
-
+        Value old_this_value = ctx.get_this_value();
 
         // Annex B's sloppy-mode null/undefined-this-becomes-global substitution only
         // applies to ECMAScript function code, never to native functions -- they must see
         // the real this_value (e.g. Object.prototype.toString branches on it).
         Value actual_this = this_value;
-
-        if (actual_this.is_object() || actual_this.is_function()) {
-            Object* this_obj = actual_this.is_object() ? actual_this.as_object() : actual_this.as_function();
-            ctx.set_this_binding(this_obj);
-        }
 
         // Preserve caller's "this" for direct eval inside native functions.
         // Native function call sets "this" to the native's receiver, but eval must
@@ -475,30 +465,13 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
             saved_caller_this = true;
         }
 
-        ctx.set_binding("this", actual_this);
+        // One write covers the receiver in every form -- object, primitive or
+        // nullish -- where an Object* field and a parallel binding were both
+        // being maintained before.
+        ctx.set_this_value(actual_this);
 
-        // Track whether current call's this is primitive (always reset to avoid stale values).
-        if (actual_this.is_number() || actual_this.is_string() || actual_this.is_boolean() ||
-            actual_this.is_null() || actual_this.is_undefined() || actual_this.is_symbol() ||
-            actual_this.is_bigint()) {
-            if (!ctx.has_binding("__primitive_this__")) {
-                ctx.create_binding("__primitive_this__", actual_this, true);
-            } else {
-                ctx.set_binding("__primitive_this__", actual_this);
-            }
-        } else {
-            // Object this: clear so array helpers can detect primitive vs object.
-            if (ctx.has_binding("__primitive_this__")) {
-                ctx.set_binding("__primitive_this__", Value());
-            }
-        }
-
-        // Native functions need to see null/undefined this as nullptr (per spec: ToObject throws).
         bool was_nullish = this_value.is_null() || this_value.is_undefined();
         bool was_primitive = !was_nullish && !this_value.is_object() && !this_value.is_function();
-        if (was_nullish) {
-            ctx.set_this_binding(nullptr);
-        }
         bool prev_nullish = ctx.original_this_was_nullish();
         bool prev_primitive = ctx.original_this_was_primitive();
         ctx.set_original_this_nullish(was_nullish);
@@ -523,9 +496,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 
         if (!is_construct_invocation) ctx.set_new_target(saved_new_target);
 
-        ctx.set_this_binding(old_this);
-
-        ctx.set_binding("this", old_this_value);
+        ctx.set_this_value(old_this_value);
 
         if (saved_caller_this) {
             try { ctx.delete_binding("__eval_caller_this__"); } catch (...) {}

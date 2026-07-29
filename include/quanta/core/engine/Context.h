@@ -86,7 +86,7 @@ private:
 
     Environment* lexical_environment_;
     Environment* variable_environment_;
-    Object* this_binding_;
+    Value this_value_;
 
     std::vector<std::unique_ptr<StackFrame>> call_stack_;
 
@@ -234,8 +234,18 @@ public:
     Object* get_global_object() const { return global_object_; }
     void set_global_object(Object* global);
 
-    Object* get_this_binding() const { return this_binding_; }
-    void set_this_binding(Object* this_obj) { this_binding_ = this_obj; }
+    Object* get_this_binding() const {
+        return (this_value_.is_object() || this_value_.is_function())
+            ? this_value_.as_object() : nullptr;
+    }
+    void set_this_binding(Object* this_obj) {
+        this_value_ = this_obj ? Value(this_obj) : Value();
+    }
+    // The receiver as it really is, primitive included. `this` is a frame's
+    // own state, not a scope-chain binding, so the binding API below routes
+    // the name straight here.
+    const Value& get_this_value() const { return this_value_; }
+    void set_this_value(const Value& v) { this_value_ = v; }
 
     Environment* get_lexical_environment() const { return lexical_environment_; }
     // The env created FOR this context (function/eval env); dies with the

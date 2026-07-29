@@ -27,9 +27,9 @@ namespace Quanta {
 static Object* array_to_object(Context& ctx) {
     if (ctx.original_this_was_nullish()) return nullptr;
     Object* obj = ctx.get_this_binding();
-    // Check if this call's this was primitive (set by Function::call)
-    if (!ctx.has_binding("__primitive_this__")) return obj;
-    Value prim = ctx.get_binding("__primitive_this__");
+    // The receiver as it really is: get_this_binding above answers null for a
+    // primitive, which these generics still have to box.
+    Value prim = ctx.get_this_value();
     if (prim.is_symbol() || prim.is_bigint()) {
         // Reuse Object()'s wrapper setup rather than duplicating it here.
         Value obj_ctor_val = ctx.get_binding("Object");
@@ -37,7 +37,7 @@ static Object* array_to_object(Context& ctx) {
             Value boxed = obj_ctor_val.as_function()->call(ctx, {prim});
             if (boxed.is_object()) {
                 Object* raw = boxed.as_object();
-                ctx.set_binding("__primitive_this__", Value(raw));
+                ctx.set_this_value(Value(raw));
                 return raw;
             }
         }
@@ -58,7 +58,7 @@ static Object* array_to_object(Context& ctx) {
     }
     Object* raw = boxed.release();
     // Pin in context so GC can't collect during this call
-    ctx.set_binding("__primitive_this__", Value(raw));
+    ctx.set_this_value(Value(raw));
     return raw;
 }
 

@@ -85,7 +85,7 @@ void StackFrame::gc_trace(Visitor& v) const {
 void Context::gc_trace(Visitor& v) const {
     v.visit_environment(lexical_environment_);
     v.visit_environment(variable_environment_);
-    v.visit_object(this_binding_);
+    v.visit(this_value_);
     v.visit_object(global_object_);
     if (builtins_) {
         for (const auto& e : builtins_->objects) v.visit_object(e.second);
@@ -164,7 +164,7 @@ Context::Context(Engine* engine, Type type)
       has_exception_(false), has_return_value_(false), has_break_(false), has_continue_(false),
       is_in_constructor_call_(false), super_called_(false), this_needs_super_(false),
       strict_mode_(false),
-      lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
+      lexical_environment_(nullptr), variable_environment_(nullptr),
       execution_depth_(0), global_object_(nullptr), current_exception_(),
       return_value_(),
       engine_(engine), current_filename_(Shape::intern("<unknown>")) {
@@ -179,7 +179,8 @@ Context::Context(Engine* engine, Context* parent, Type type)
       has_exception_(false), has_return_value_(false), has_break_(false), has_continue_(false),
       is_in_constructor_call_(false), super_called_(false), this_needs_super_(false),
       strict_mode_(parent && type != Type::Function ? parent->strict_mode_ : false),
-      lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
+      lexical_environment_(nullptr), variable_environment_(nullptr),
+      this_value_(parent ? parent->this_value_ : Value()),
       execution_depth_(0), global_object_(parent ? parent->global_object_ : nullptr),
       current_exception_(), return_value_(),
       engine_(engine), current_filename_(parent ? parent->current_filename_ : Shape::intern("<unknown>")) {
@@ -210,6 +211,8 @@ void Context::set_global_object(Object* global) {
 }
 
 bool Context::has_binding(const std::string& name) const {
+    // `this` is frame state, always present, never a scope-chain binding.
+    if (name == "this") return true;
     if (lexical_environment_) {
         return lexical_environment_->has_binding(name);
     }
@@ -217,6 +220,7 @@ bool Context::has_binding(const std::string& name) const {
 }
 
 Value Context::get_binding(const std::string& name) const {
+    if (name == "this") return this_value_;
     if (!check_execution_depth()) {
         const_cast<Context*>(this)->throw_exception(Value(std::string("execution depth exceeded")));
         return Value();
@@ -236,6 +240,7 @@ Value Context::get_binding(const std::string& name) const {
 }
 
 bool Context::set_binding(const std::string& name, const Value& value) {
+    if (name == "this") { this_value_ = value; return true; }
     if (lexical_environment_) {
         return lexical_environment_->set_binding(name, value);
     }
@@ -243,6 +248,9 @@ bool Context::set_binding(const std::string& name, const Value& value) {
 }
 
 Environment* Context::find_binding_env(const std::string& name) const {
+    // No environment owns `this` any more -- callers fall back to get_binding,
+    // which answers from the frame.
+    if (name == "this") return nullptr;
     Environment* env = lexical_environment_;
     while (env) {
         if (env->has_own_binding(name)) return env;
@@ -311,6 +319,7 @@ bool Context::is_strict_const(const std::string& name) const {
 }
 
 bool Context::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable, bool enumerable) {
+    if (name == "this") { this_value_ = value; return true; }
     if (variable_environment_) {
         return variable_environment_->create_binding(name, value, mutable_binding, deletable, enumerable);
     }
@@ -318,6 +327,7 @@ bool Context::create_binding(const std::string& name, const Value& value, bool m
 }
 
 void Context::create_binding_force(const std::string& name, const Value& value) {
+    if (name == "this") { this_value_ = value; return; }
     if (variable_environment_) {
         variable_environment_->force_set_binding(name, value);
     }
@@ -711,7 +721,7 @@ bool Context::check_execution_depth() const {
 
 void Context::initialize_global_context() {
     global_object_ = ObjectFactory::create_object().release();
-    this_binding_ = global_object_;
+    this_value_ = global_object_ ? Value(global_object_) : Value();
 
     auto global_env = std::make_unique<Environment>(global_object_);
     lexical_environment_ = global_env.release();
@@ -962,12 +972,10 @@ static bool is_internal_binding_name(const std::string& name) {
 }
 
 static bool is_internal_env_slot(const std::string& name) {
-    return name == "this" ||
-           name == "__super__" ||
+    return name == "__super__" ||
            name == "__super_is_null__" ||
            name == "__super_is_static__" ||
            name == "__home_object__" ||
-           name == "__primitive_this__" ||
            name == "__eval_caller_this__" ||
            name == "__eval_private_names__";
 }

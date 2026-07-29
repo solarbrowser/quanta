@@ -289,6 +289,10 @@ Value Identifier::evaluate(Context& ctx) {
         return Value();
     }
 
+    // `this` is frame state, not a scope-chain binding -- no environment owns
+    // it, so the walk below would report it undefined.
+    if (name_ == "this") return ctx.get_this_value();
+
     // find_binding_env walks the scope chain exactly once (checking @@unscopables/Proxy traps at most once per env);
     // avoid has_binding + get_binding which would each re-walk the chain and double-fire traps.
     Environment* ref_env = ctx.find_binding_env(name_);

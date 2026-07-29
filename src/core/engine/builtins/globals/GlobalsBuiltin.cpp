@@ -498,8 +498,8 @@ void register_global_builtins(Context& ctx) {
                         Object* this_obj = caller_this_val.is_object() ? caller_this_val.as_object()
                                          : caller_this_val.is_function() ? caller_this_val.as_function()
                                          : ctx.get_this_binding();
-                        eval_ctx.set_this_binding(this_obj);
-                        eval_env->create_binding("this", caller_this_val, true, false);
+                        (void)this_obj;
+                        eval_ctx.set_this_value(caller_this_val);
                     }
 
                     // Pre-create var bindings in isolated env so hoist doesn't find them in
@@ -669,10 +669,7 @@ void register_global_builtins(Context& ctx) {
                     // recover the caller's real "this" from the backup (mirrors the strict path).
                     if (is_direct && ctx.has_binding("__eval_caller_this__")) {
                         Value caller_this_val = ctx.get_binding("__eval_caller_this__");
-                        eval_lex_env->create_binding("this", caller_this_val, true, false);
-                        Object* cto = caller_this_val.is_object() ? caller_this_val.as_object()
-                                    : caller_this_val.is_function() ? static_cast<Object*>(caller_this_val.as_function()) : nullptr;
-                        if (cto) eval_ctx.set_this_binding(cto);
+                        eval_ctx.set_this_value(caller_this_val);
                     }
                     eval_ctx.set_strict_mode(false);
 
@@ -709,7 +706,7 @@ void register_global_builtins(Context& ctx) {
         ctx.get_lexical_environment()->create_binding("globalThis", Value(ctx.get_global_object()), true, true, false);
         ctx.get_lexical_environment()->create_binding("global", Value(ctx.get_global_object()), true);
         ctx.get_lexical_environment()->create_binding("window", Value(ctx.get_global_object()), true);
-        ctx.get_lexical_environment()->create_binding("this", Value(ctx.get_global_object()), true);
+        ctx.set_this_value(Value(ctx.get_global_object()));
 
         PropertyDescriptor global_ref_desc(Value(ctx.get_global_object()), PropertyAttributes::BuiltinFunction);
         ctx.get_global_object()->set_property_descriptor("globalThis", global_ref_desc);

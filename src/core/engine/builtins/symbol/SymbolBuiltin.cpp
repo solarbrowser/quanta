@@ -163,7 +163,7 @@ void register_symbol_builtins(Context& ctx) {
         auto desc_getter = ObjectFactory::create_native_function("get description",
             [](Context& ctx, const std::vector<Value>&) -> Value {
                 // Primitive symbol this
-                Value prim = ctx.get_binding("__primitive_this__");
+                Value prim = ctx.get_this_value();
                 if (prim.is_symbol()) return prim.as_symbol()->get_has_description() ? Value(prim.as_symbol()->get_description()) : Value();
                 // Symbol wrapper object this (e.g. Object(sym))
                 Object* obj = ctx.get_this_binding();
@@ -182,7 +182,7 @@ void register_symbol_builtins(Context& ctx) {
 
         auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
             [](Context& ctx, const std::vector<Value>&) -> Value {
-                Value prim = ctx.get_binding("__primitive_this__");
+                Value prim = ctx.get_this_value();
                 if (prim.is_symbol()) return prim;
                 Object* obj = ctx.get_this_binding();
                 if (obj) {
@@ -196,7 +196,7 @@ void register_symbol_builtins(Context& ctx) {
 
         auto toString_fn = ObjectFactory::create_native_function("toString",
             [](Context& ctx, const std::vector<Value>&) -> Value {
-                Value prim = ctx.get_binding("__primitive_this__");
+                Value prim = ctx.get_this_value();
                 if (prim.is_symbol()) return Value(prim.as_symbol()->to_string());
                 Object* obj = ctx.get_this_binding();
                 if (obj) {
@@ -214,7 +214,7 @@ void register_symbol_builtins(Context& ctx) {
         if (toPrim_sym) {
             auto sym_toPrimitive = ObjectFactory::create_native_function("[Symbol.toPrimitive]",
                 [](Context& ctx, const std::vector<Value>&) -> Value {
-                    Value prim = ctx.get_binding("__primitive_this__");
+                    Value prim = ctx.get_this_value();
                     if (prim.is_symbol()) return prim;
                     Object* obj = ctx.get_this_binding();
                     if (obj) {

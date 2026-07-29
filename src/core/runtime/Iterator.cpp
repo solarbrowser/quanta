@@ -155,7 +155,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
                 // Spec: return the this value (primitives included, same as Symbol.prototype.valueOf).
-                Value prim = ctx.get_binding("__primitive_this__");
+                Value prim = ctx.get_this_value();
                 if (prim.is_number() || prim.is_string() || prim.is_boolean() ||
                     prim.is_bigint() || prim.is_symbol()) return prim;
                 if (ctx.original_this_was_nullish()) {
