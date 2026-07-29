@@ -404,6 +404,30 @@ private:
     static std::string number_to_string(double num);
 };
 
+// ToInt32 / ToUint32 (ES 7.1.6, 7.1.7) for an operand already known to be a
+// number. Inline and shared: the interpreter's bitwise opcodes take a direct
+// path for two numbers while Value::bitwise_* handles everything else, and
+// the two must not drift.
+// The order matters -- truncate toward zero FIRST, then reduce modulo 2^32.
+// Reducing first turns a fractional operand into the wrong integer (2^31+0.5
+// came out one short).
+inline int32_t js_to_int32(double number) {
+    // Anything already representable in int32 needs only the truncation,
+    // which is what the cast does.
+    if (number >= -2147483648.0 && number <= 2147483647.0) {
+        return static_cast<int32_t>(number);
+    }
+    if (!std::isfinite(number)) return 0;
+    double d = std::fmod(std::trunc(number), 4294967296.0);
+    if (d >= 2147483648.0) d -= 4294967296.0;
+    else if (d < -2147483648.0) d += 4294967296.0;
+    return static_cast<int32_t>(d);
+}
+
+inline uint32_t js_to_uint32(double number) {
+    return static_cast<uint32_t>(js_to_int32(number));
+}
+
 namespace ValueFactory {
     inline Value undefined() { return Value(); }
     inline Value null() { return Value::null(); }

@@ -1023,6 +1023,24 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
         }                                                                  \
     } while (0)
 
+// Same shape as BINARY_OP for the bitwise operators, whose operands go
+// through ToInt32 first. Two numbers is the whole whitelist; BigInt, strings,
+// objects with valueOf and everything else keep the shared slow path, which
+// is where these opcodes used to go unconditionally.
+#define BITWISE_OP(binop, expr)                                            \
+    do {                                                                   \
+        const Value& lhs = regs[code[pc]];                                 \
+        pc += 1;                                                           \
+        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
+            int32_t l = js_to_int32(lhs.as_number());                      \
+            int32_t r = js_to_int32(acc.as_number());                      \
+            acc = (expr);                                                  \
+        } else {                                                           \
+            acc = binary_slow(ctx, binop, lhs, acc);                       \
+            CHECK_EXC();                                                   \
+        }                                                                  \
+    } while (0)
+
     // The try sits OUTSIDE the dispatch loop, not around each instruction: a
     // handler that has to be live at every throwing call in the loop body keeps
     // the compiler from holding pc/acc in registers across them. Recovery
@@ -1156,48 +1174,17 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 CHECK_EXC();
                 break;
             }
-            case Op::BitAnd: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::BITWISE_AND, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
-            case Op::BitOr: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::BITWISE_OR, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
-            case Op::BitXor: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::BITWISE_XOR, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
-            case Op::Shl: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::LEFT_SHIFT, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
-            case Op::Shr: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::UNSIGNED_RIGHT_SHIFT, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
-            case Op::Sar: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::RIGHT_SHIFT, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
+            case Op::BitAnd: BITWISE_OP(BinOp::BITWISE_AND, Value(static_cast<double>(l & r))); break;
+            case Op::BitOr:  BITWISE_OP(BinOp::BITWISE_OR,  Value(static_cast<double>(l | r))); break;
+            case Op::BitXor: BITWISE_OP(BinOp::BITWISE_XOR, Value(static_cast<double>(l ^ r))); break;
+            // Shift counts use only the low 5 bits, and the left shift runs
+            // unsigned so an overflowing result stays defined.
+            case Op::Shl: BITWISE_OP(BinOp::LEFT_SHIFT,
+                Value(static_cast<double>(static_cast<int32_t>(static_cast<uint32_t>(l) << (r & 31))))); break;
+            case Op::Sar: BITWISE_OP(BinOp::RIGHT_SHIFT,
+                Value(static_cast<double>(l >> (r & 31)))); break;
+            case Op::Shr: BITWISE_OP(BinOp::UNSIGNED_RIGHT_SHIFT,
+                Value(static_cast<double>(static_cast<uint32_t>(l) >> (r & 31)))); break;
 
             case Op::TestEq:       BINARY_OP(BinOp::EQUAL, Value(l == r)); break;
             case Op::TestNe:       BINARY_OP(BinOp::NOT_EQUAL, Value(l != r)); break;
@@ -2401,6 +2388,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     }
 
 #undef BINARY_OP
+#undef BITWISE_OP
 #undef CHECK_EXC
 }
 

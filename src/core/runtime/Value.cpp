@@ -26,23 +26,10 @@
 
 namespace Quanta {
 
-// ES1 9.5 ToInt32: Convert to signed 32-bit integer
+// ES 7.1.6 ToInt32. Shared with the interpreter's bitwise fast path, so both
+// answer identically (see js_to_int32 in Value.h).
 static int32_t ToInt32(double number) {
-    if (std::isnan(number) || std::isinf(number) || number == 0.0) {
-        return 0;
-    }
-
-    // 2. Compute number modulo 2^32
-    double int32bit = std::fmod(number, 4294967296.0);  // 2^32
-
-    // 3. If result >= 2^31, subtract 2^32 to get signed value
-    if (int32bit >= 2147483648.0) {  // 2^31
-        int32bit -= 4294967296.0;  // 2^32
-    } else if (int32bit < -2147483648.0) {  // -2^31
-        int32bit += 4294967296.0;  // 2^32
-    }
-
-    return static_cast<int32_t>(int32bit);
+    return js_to_int32(number);
 }
 
 #if PLATFORM_POINTER_COMPRESSION
@@ -851,7 +838,9 @@ Value Value::left_shift(const Value& other) const {
     if (is_bigint()) return Value(new BigInt(as_bigint()->left_shift(*other.as_bigint())));
     int32_t left = ToInt32(to_number());
     int32_t right = ToInt32(other.to_number()) & 0x1F;
-    return Value(static_cast<double>(left << right));
+    // Shift as unsigned: shifting a negative or overflowing int32 is undefined
+    // behaviour, while the spec asks for the low 32 bits.
+    return Value(static_cast<double>(static_cast<int32_t>(static_cast<uint32_t>(left) << right)));
 }
 
 Value Value::right_shift(const Value& other) const {
