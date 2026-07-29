@@ -87,6 +87,7 @@ const OpInfo& op_info(Op op) {
         {"CreateRestArray", 1, 'r'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
         {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"HasPrivate", 2, 'n'},
+        {"CreateRegExp", 4, 'X'},
         {"GetSuper", 2, 'n'}, {"ResolveSuperBase", 1, 'r'}, {"SetSuper", 3, 'l'},
         {"GetSuperKeyed", 1, 'r'}, {"SetSuperKeyed", 2, 'r'}, {"SuperCall", 2, 'S'},
         {"GetNamed", 5, 'g'}, {"SetNamed", 5, 'g'},
@@ -222,6 +223,14 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
                     << " r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " fb=" << fb_idx;
+                break;
+            }
+            case 'X': {
+                uint16_t p_idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
+                                 (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
+                uint16_t f_idx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
+                                 (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
+                out << " /" << chunk.names[p_idx] << "/" << chunk.names[f_idx];
                 break;
             }
             case 'l': {

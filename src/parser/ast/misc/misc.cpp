@@ -44,7 +44,9 @@ std::unique_ptr<ASTNode> ConditionalExpression::clone() const {
 }
 
 
-Value RegexLiteral::evaluate(Context& ctx) {
+// Backs both RegexLiteral::evaluate and Op::CreateRegExp, so a literal cannot
+// mean one thing compiled and another interpreted.
+Value create_regexp_literal(Context& ctx, const std::string& pattern, const std::string& flags) {
     // Regex literals share the RegExp constructor implementation so exec/test and
     // lastIndex semantics can never diverge between literals and new RegExp().
     Object* ctor = ctx.get_built_in_object("RegExp");
@@ -56,9 +58,13 @@ Value RegexLiteral::evaluate(Context& ctx) {
     // must not inherit that constructor's prototype.
     Value saved_new_target = ctx.get_new_target();
     ctx.set_new_target(Value());
-    Value re = static_cast<Function*>(ctor)->construct(ctx, { Value(pattern_), Value(flags_) });
+    Value re = static_cast<Function*>(ctor)->construct(ctx, { Value(pattern), Value(flags) });
     ctx.set_new_target(saved_new_target);
     return re;
+}
+
+Value RegexLiteral::evaluate(Context& ctx) {
+    return create_regexp_literal(ctx, pattern_, flags_);
 }
 
 std::string RegexLiteral::to_string() const {

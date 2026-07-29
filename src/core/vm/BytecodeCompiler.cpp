@@ -5323,15 +5323,13 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             return !failed_;
         }
 
-        case ASTNode::Type::REGEX_LITERAL:
-            // RegexLiteral::evaluate reads no bindings (built-in RegExp ctor
-            // only), so this skips emit_treewalker_delegate's env_mode
-            // requirement -- register-pure functions keep compiling.
-            if (chunk_->ensure_treewalk_nodes().size() >= 0xFFFF) return false;
-            chunk_->ensure_treewalk_nodes().push_back(node);
-            emit(Op::EvalAst);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_treewalk_nodes().size() - 1));
+        case ASTNode::Type::REGEX_LITERAL: {
+            const auto* re = static_cast<const RegexLiteral*>(node);
+            emit(Op::CreateRegExp);
+            emit_u16(add_name(re->get_pattern()));
+            emit_u16(add_name(re->get_flags()));
             return !failed_;
+        }
 
         case ASTNode::Type::BOOLEAN_LITERAL:
             emit(static_cast<const BooleanLiteral*>(node)->get_value() ? Op::LdaTrue : Op::LdaFalse);

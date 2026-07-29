@@ -33,6 +33,8 @@ namespace Quanta {
 // Defined in the tree-walker's call.cpp: one shared definition of what a
 // spread expands to, so Op::SpreadInto and the tree-walker cannot drift.
 void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& out);
+// From the tree-walker's misc.cpp, backing Op::CreateRegExp.
+Value create_regexp_literal(Context& ctx, const std::string& pattern, const std::string& flags);
 // Likewise from binary.cpp, backing Op::HasPrivate.
 Value private_name_in(Context& ctx, const std::string& private_name, const Value& target);
 // And from assignment.cpp, backing Op::CopyRestProperties.
@@ -1902,6 +1904,15 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 }
                 CHECK_EXC();
                 Collector::safepoint();
+                break;
+            }
+
+            case Op::CreateRegExp: {
+                uint16_t pat_idx = read_u16(code, pc);
+                uint16_t flg_idx = read_u16(code, pc + 2);
+                pc += 4;
+                acc = create_regexp_literal(ctx, chunk.names[pat_idx], chunk.names[flg_idx]);
+                CHECK_EXC();
                 break;
             }
 
