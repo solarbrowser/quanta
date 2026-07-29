@@ -2944,13 +2944,6 @@ std::unique_ptr<ASTNode> ContinueStatement::clone() const {
 
 
 Value TryStatement::evaluate(Context& ctx) {
-    static int try_recursion_depth = 0;
-    if (try_recursion_depth > 10) {
-        return Value(std::string("Max try-catch recursion exceeded"));
-    }
-
-    try_recursion_depth++;
-
     Value result;
     Value exception_value;
     bool caught_exception = false;
@@ -2964,12 +2957,10 @@ Value TryStatement::evaluate(Context& ctx) {
             ctx.clear_exception();
         }
     } catch (const YieldException&) {
-        try_recursion_depth--;
         throw;
     } catch (const GeneratorReturnException&) {
         // Generator return: run finally (if any), then re-throw.
         // Return here to prevent the normal finally block below from running twice.
-        try_recursion_depth--;
         if (!finally_block_) {
             throw;
         }
@@ -3058,11 +3049,9 @@ Value TryStatement::evaluate(Context& ctx) {
                 result = catch_node->get_body()->evaluate(ctx);
             } catch (const YieldException&) {
                 ctx.set_lexical_environment(catch_old_env);
-                try_recursion_depth--;
                 throw;
             } catch (const GeneratorReturnException&) {
                 ctx.set_lexical_environment(catch_old_env);
-                try_recursion_depth--;
                 if (!finally_block_) throw;
                 finally_block_->evaluate(ctx);
                 if (ctx.has_exception() || ctx.has_return_value() || ctx.has_break() || ctx.has_continue()) {
@@ -3127,7 +3116,6 @@ Value TryStatement::evaluate(Context& ctx) {
         // Destructuring threw -- let exception propagate (don't clear it)
     }
 
-    try_recursion_depth--;
     return result;
 }
 

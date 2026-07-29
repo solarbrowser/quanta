@@ -398,6 +398,13 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // (e.g. a native function calling another function) doesn't inherit it.
     bool is_construct_invocation = ctx.consume_pending_construct_call();
     CallStack& stack = CallStack::instance();
+    // Runaway recursion has to become a catchable error before it becomes a
+    // segfault: past this depth the C++ stack under the interpreter is nearly
+    // spent, and nothing below here would get the chance to report it.
+    if (stack.depth() >= CallStack::MAX_STACK_DEPTH) {
+        ctx.throw_range_error("Maximum call stack size exceeded");
+        return Value();
+    }
     ASTNode* ast = ast_body();
     // Shadows the old parameter_objects_/body_ member names so the rest of
     // this function (both the compiled-chunk path and the tree-walker slow

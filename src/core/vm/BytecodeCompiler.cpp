@@ -3725,6 +3725,9 @@ bool BytecodeCompiler::declare_local(const std::string& name) {
     if (locals_.count(name)) return false;
     if (next_register_ >= kMaxRegisters) return false;
     locals_[name] = next_register_++;
+    // Keeps register_count an upper bound even if a local is ever declared
+    // after the setup pass that seeds the watermark.
+    if (next_register_ > temp_watermark_) temp_watermark_ = next_register_;
     return true;
 }
 
@@ -3754,6 +3757,9 @@ void BytecodeCompiler::emit_read_local(const std::string& name) {
         return;
     }
     int reg = lookup_local(name);
+    // Not register-resident after all: the name lives further out, so read it
+    // the way an outer name is read rather than encoding register -1.
+    if (reg < 0) { emit(Op::LdaLookup); emit_u16(add_name(name)); return; }
     if (lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) {
         emit(Op::LdarChecked);
         emit_u8(static_cast<uint8_t>(reg));
@@ -3778,6 +3784,7 @@ void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declara
         return;
     }
     int reg = lookup_local(name);
+    if (reg < 0) { emit(Op::StaLookup); emit_u16(add_name(name)); return; }
     if (!is_declaration && lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) {
         emit(Op::StarChecked);
         emit_u8(static_cast<uint8_t>(reg));
@@ -5193,8 +5200,14 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             chunk_->ensure_treewalk_nodes().push_back(node);
             emit(Op::EvalAst);
             emit_u16(static_cast<uint16_t>(chunk_->ensure_treewalk_nodes().size() - 1));
+            // ClassDeclaration::evaluate binds the name itself, so this only
+            // has to mirror it into a register when the name has one. A module
+            // or script top level has neither a register nor an env slot for
+            // it, and asking for one there used to yield register -1.
             const Identifier* class_id = static_cast<const ClassDeclaration*>(node)->get_id();
-            if (class_id && !class_id->get_name().empty() && !env_names_.count(class_id->get_name())) {
+            if (class_id && !class_id->get_name().empty() &&
+                !env_names_.count(class_id->get_name()) &&
+                lookup_local(class_id->get_name()) >= 0) {
                 emit_write_local(class_id->get_name(), /*is_declaration=*/true);
             }
             return true;

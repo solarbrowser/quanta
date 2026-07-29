@@ -41,9 +41,11 @@ private:
     std::vector<CallStackFrame> frames_;
     static thread_local CallStack* instance_;
     
-    static constexpr size_t MAX_STACK_DEPTH = 1000;
-    
 public:
+    // The point at which a JS call is refused with a RangeError. Has to stay
+    // under what the C++ stack beneath the interpreter can actually take.
+    static constexpr size_t MAX_STACK_DEPTH = 3000;
+
     CallStack() = default;
     ~CallStack() = default;
     

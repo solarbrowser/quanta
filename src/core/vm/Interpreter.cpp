@@ -873,9 +873,29 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
 
 Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
           const Value* this_val, Function* owner) {
-    // Zero-initialized so leftover stack garbage in an unused slot can't look
-    // like a live heap pointer to the conservative GC scan.
-    Value regs[256] = {};
+    // Only the registers the chunk actually uses: a fixed 256 put the whole
+    // bank on the C++ stack and zeroed it on every call, when the compiler
+    // already knows the real count and it is small for most functions.
+    // Zero-initialized either way, so leftover stack garbage in an unused slot
+    // can't look like a live heap pointer to the conservative GC scan.
+    constexpr uint16_t kInlineRegs = 32;
+    Value inline_regs[kInlineRegs] = {};
+    Value* regs = inline_regs;
+    std::vector<Value> spill_regs;
+    if (chunk.register_count > kInlineRegs) {
+        // Off the C++ stack, so the conservative scan cannot see it: rooted
+        // explicitly for as long as this frame runs.
+        spill_regs.resize(chunk.register_count);
+        regs = spill_regs.data();
+    }
+    struct SpillRoot {
+        const std::vector<Value>* v;
+        ~SpillRoot() { if (v) Collector::pop_value_vector(v); }
+    } spill_root{nullptr};
+    if (!spill_regs.empty()) {
+        Collector::push_value_vector(&spill_regs);
+        spill_root.v = &spill_regs;
+    }
     const uint8_t param_count = chunk.parameter_count;
     for (uint8_t i = 0; i < param_count && i < args.size(); i++) {
         regs[i] = args[i];
@@ -1001,10 +1021,15 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
         }                                                                  \
     } while (0)
 
+    // The try sits OUTSIDE the dispatch loop, not around each instruction: a
+    // handler that has to be live at every throwing call in the loop body keeps
+    // the compiler from holding pc/acc in registers across them. Recovery
+    // re-enters the loop instead of continuing it.
     for (;;) {
+      try {
+        for (;;) {
         instr_pc = pc;
         Op op = static_cast<Op>(code[pc++]);
-        try {
         switch (op) {
             case Op::LdaConst:
                 acc = constants[read_u16(code, pc)];
@@ -2328,9 +2353,13 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 ctx.throw_exception(Value(std::string("VM: invalid opcode")));
                 return Value();
         }
-        } catch (const YieldException&) {
+        // Every opcode that can raise checks for itself; this catches the few
+        // that set an exception on the context without saying so.
+        CHECK_EXC();
+        }
+      } catch (const YieldException&) {
             throw;
-        } catch (const GeneratorReturnException& gen_ret) {
+      } catch (const GeneratorReturnException& gen_ret) {
             // .return() resumed a suspended yield/await mid-try: skip any
             // catch clause (spec) and run the covering try/catch's finally,
             // same handler-table lookup as CHECK_EXC but keyed off
@@ -2350,14 +2379,14 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             acc = gen_ret.return_value;
             pc = static_cast<uint32_t>(genreturn_pc);
             continue;
-        } catch (const std::exception& e) {
+      } catch (const std::exception& e) {
             // A native call (e.g. Proxy invariant violation) threw a raw C++
             // exception; CHECK_EXC below routes it like a normal JS throw.
             if (!ctx.has_exception()) ctx.throw_exception(Value(std::string(e.what())));
-        } catch (...) {
+      } catch (...) {
             if (!ctx.has_exception()) ctx.throw_exception(Value(std::string("Error: Unknown error")));
-        }
-        CHECK_EXC();
+      }
+      CHECK_EXC();
     }
 
 #undef BINARY_OP
