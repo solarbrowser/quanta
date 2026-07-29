@@ -715,7 +715,6 @@ void register_global_builtins(Context& ctx) {
         ctx.get_global_object()->set_property_descriptor("globalThis", global_ref_desc);
         ctx.get_global_object()->set_property_descriptor("global", global_ref_desc);
         ctx.get_global_object()->set_property_descriptor("window", global_ref_desc);
-        ctx.get_global_object()->set_property_descriptor("this", global_ref_desc);
     }
 
     // test262 host API ($262)

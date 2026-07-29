@@ -449,18 +449,10 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         }
         
         Object* old_this = ctx.get_this_binding();
-        if (this_value.is_object() || this_value.is_function()) {
-            Object* this_obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
-            ctx.set_this_binding(this_obj);
-        }
-
-        Value old_this_value = Value();
-        bool had_this_binding = false;
-        try {
-            old_this_value = ctx.get_binding("this");
-            had_this_binding = true;
-        } catch (...) {
-        }
+        // get_binding answers undefined for a name it cannot find rather than
+        // throwing, so there is nothing here to catch and no "was it bound"
+        // question to ask. The receiver is installed once, below.
+        Value old_this_value = ctx.get_binding("this");
 
 
         // Annex B's sloppy-mode null/undefined-this-becomes-global substitution only
@@ -477,7 +469,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         // Native function call sets "this" to the native's receiver, but eval must
         // inherit the calling function's "this" (the value that existed before this overwrite).
         bool saved_caller_this = false;
-        if (is_eval_native_ && had_this_binding && !old_this_value.is_undefined() &&
+        if (is_eval_native_ && !old_this_value.is_undefined() &&
             !ctx.has_binding("__eval_caller_this__")) {
             ctx.create_binding("__eval_caller_this__", old_this_value, true);
             saved_caller_this = true;
@@ -533,14 +525,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 
         ctx.set_this_binding(old_this);
 
-        if (had_this_binding) {
-            ctx.set_binding("this", old_this_value);
-        } else {
-            try {
-                ctx.delete_binding("this");
-            } catch (...) {
-            }
-        }
+        ctx.set_binding("this", old_this_value);
 
         if (saved_caller_this) {
             try { ctx.delete_binding("__eval_caller_this__"); } catch (...) {}

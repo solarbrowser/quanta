@@ -947,6 +947,31 @@ bool Environment::has_binding(const std::string& name) const {
     return false;
 }
 
+// The engine's own frame bookkeeping, which per spec is not a property of an
+// object environment record's binding object. Keeping it in the environment's
+// own slots is also what stops every native call from writing to the global
+// object. An explicit list, not a __name__ pattern: the synthesised global
+// helpers (__pfadd__, __deffield__, __cfi_enter__, ...) match that pattern and
+// really do live on the global object, so a pattern would hide them.
+// The broader __name__ shape, kept for `with`: an object handed to `with`
+// must not let a property called __anything__ shadow the engine's own names.
+static bool is_internal_binding_name(const std::string& name) {
+    if (name == "this") return true;
+    return name.size() > 4 && name[0] == '_' && name[1] == '_' &&
+           name[name.size() - 1] == '_' && name[name.size() - 2] == '_';
+}
+
+static bool is_internal_env_slot(const std::string& name) {
+    return name == "this" ||
+           name == "__super__" ||
+           name == "__super_is_null__" ||
+           name == "__super_is_static__" ||
+           name == "__home_object__" ||
+           name == "__primitive_this__" ||
+           name == "__eval_caller_this__" ||
+           name == "__eval_private_names__";
+}
+
 Value Environment::get_binding(const std::string& name) const {
     return get_binding_with_depth(name, 0);
 }
@@ -957,7 +982,7 @@ Value Environment::get_binding_with_depth(const std::string& name, int depth) co
     }
 
     if (has_own_binding(name)) {
-        if (type_ == Type::Object && binding_object_) {
+        if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
             return binding_object_->get_property(name);
         } else {
             if (const BindingSlot* slot = slots_.find(name)) {
@@ -976,7 +1001,7 @@ Value Environment::get_binding_with_depth(const std::string& name, int depth) co
 bool Environment::set_binding(const std::string& name, const Value& value) {
     Collector::write_barrier_env(this);
     if (has_own_binding(name)) {
-        if (type_ == Type::Object && binding_object_) {
+        if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
             return binding_object_->set_property(name, value);
         } else {
             if (is_mutable_binding(name)) {
@@ -995,7 +1020,7 @@ bool Environment::set_binding(const std::string& name, const Value& value) {
 }
 
 Value Environment::get_binding_direct(const std::string& name, Context* ctx) const {
-    if (type_ == Type::Object && binding_object_) {
+    if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         // GetBindingValue step 2: its own HasProperty check, independent of (and without re-checking @@unscopables like) the HasBinding call that already resolved this environment.
         // A side effect of that earlier @@unscopables  getter (or other code) may have deleted the property in the meantime
         // step 3a: strict mode throws ReferenceError, otherwise return undefined.
@@ -1028,7 +1053,7 @@ Value* Environment::stable_binding_slot(const std::string& name) {
 
 bool Environment::set_binding_direct(const std::string& name, const Value& value, Context* ctx) {
     Collector::write_barrier_env(this);
-    if (type_ == Type::Object && binding_object_) {
+    if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         // SetMutableBinding step 2-3: strict mode throws if the binding vanished (e.g. a `with` getter deleted it mid-update).
         bool still_exists = binding_object_->has_property(name);
         if (!still_exists && ctx && ctx->is_strict_mode()) {
@@ -1046,7 +1071,7 @@ bool Environment::set_binding_direct(const std::string& name, const Value& value
 
 void Environment::force_set_binding(const std::string& name, const Value& value) {
     Collector::write_barrier_env(this);
-    if (type_ == Type::Object && binding_object_) {
+    if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         binding_object_->set_property(name, value);
     } else {
         auto& slot = slots_.get_or_create(name);
@@ -1064,7 +1089,7 @@ void Environment::create_uninitialized_binding(const std::string& name, bool is_
 
 void Environment::create_global_function_binding(const std::string& name, const Value& value, bool configurable) {
     Collector::write_barrier_env(this);
-    if (type_ == Type::Object && binding_object_) {
+    if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         PropertyDescriptor existing = binding_object_->get_property_descriptor(name);
         PropertyDescriptor desc;
         if (!binding_object_->has_own_property(name) || existing.is_configurable()) {
@@ -1086,7 +1111,7 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
         return false;
     }
 
-    if (type_ == Type::Object && binding_object_) {
+    if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         int attrs_value = 0;
         if (enumerable) attrs_value |= PropertyAttributes::Enumerable;
         if (mutable_binding) attrs_value |= PropertyAttributes::Writable;
@@ -1102,7 +1127,7 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
 
 bool Environment::delete_binding(const std::string& name) {
     if (has_own_binding(name)) {
-        if (type_ == Type::Object && binding_object_) {
+        if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
             return binding_object_->delete_property(name);
         } else {
             // ES1: Check if binding is deletable (DontDelete attribute)
@@ -1148,6 +1173,10 @@ std::vector<std::string> Environment::get_binding_names() const {
     if (type_ == Type::Object && binding_object_) {
         auto keys = binding_object_->get_own_property_keys();
         names.insert(names.end(), keys.begin(), keys.end());
+        // An object environment can still hold internal bindings of its own.
+        slots_.for_each([&names](const std::string& key, const BindingSlot&) {
+            names.push_back(key);
+        });
     } else {
         slots_.for_each([&names](const std::string& key, const BindingSlot&) {
             names.push_back(key);
@@ -1162,13 +1191,6 @@ std::string Environment::debug_string() const {
     oss << "Environment(type=" << static_cast<int>(type_)
         << ", bindings=" << slots_.size() << ")";
     return oss.str();
-}
-
-// Internal engine bookkeeping bindings (this, __super__, __eval_caller_this__, ...) are never realized as actual object-environment-record properties per spec
-static bool is_internal_binding_name(const std::string& name) {
-    if (name == "this") return true;
-    return name.size() > 4 && name[0] == '_' && name[1] == '_' &&
-           name[name.size() - 1] == '_' && name[name.size() - 2] == '_';
 }
 
 bool Environment::try_get_binding(const std::string& name, Value& out, Context* ctx) const {
@@ -1195,7 +1217,7 @@ bool Environment::try_get_binding(const std::string& name, Value& out, Context* 
 }
 
 bool Environment::has_own_binding(const std::string& name) const {
-    if (type_ == Type::Object && binding_object_) {
+    if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         if (is_with_environment_ && is_internal_binding_name(name)) return false;
         if (!binding_object_->has_property(name)) return false;
         // ES6 8.1.1.2.1 HasBinding: @@unscopables is only consulted when the
