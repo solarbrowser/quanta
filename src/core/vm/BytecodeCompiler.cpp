@@ -3754,7 +3754,7 @@ void BytecodeCompiler::emit_read_local(const std::string& name) {
         return;
     }
     int reg = lookup_local(name);
-    if (lexical_registers_.count(reg)) {
+    if (lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) {
         emit(Op::LdarChecked);
         emit_u8(static_cast<uint8_t>(reg));
         emit_u16(add_name(name));
@@ -3778,13 +3778,16 @@ void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declara
         return;
     }
     int reg = lookup_local(name);
-    if (!is_declaration && lexical_registers_.count(reg)) {
+    if (!is_declaration && lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) {
         emit(Op::StarChecked);
         emit_u8(static_cast<uint8_t>(reg));
         emit_u16(add_name(name));
     } else {
         emit(Op::Star);
         emit_u8(static_cast<uint8_t>(reg));
+        if (is_declaration && switch_body_depth_ == 0 && lexical_registers_.count(reg)) {
+            initialized_lexicals_.insert(reg);
+        }
     }
 }
 
@@ -4542,7 +4545,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::EXPRESSION_STATEMENT: {
             const auto* stmt = static_cast<const ExpressionStatement*>(node);
-            return compile_expression(stmt->get_expression());
+            return compile_expression(stmt->get_expression(), /*discard=*/true);
         }
 
         case ASTNode::Type::VARIABLE_DECLARATION: {
@@ -4765,7 +4768,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit_u16(static_cast<uint16_t>(loop_env_idx));
             }
             if (stmt->get_update()) {
-                if (!compile_expression(stmt->get_update())) return false;
+                if (!compile_expression(stmt->get_update(), /*discard=*/true)) return false;
             }
             if (!emit_jump_back(Op::Jump, loop_start)) return false;
             if (has_test && !patch_jump(exit_jump)) return false;
@@ -5119,17 +5122,23 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_,
                                     /*is_switch=*/true, take_pending_labels()});
 
+            // All the cases share one scope but control enters it at whichever
+            // case matched, so a declaration in an earlier case says nothing
+            // about whether it has run by the time a later one is reached.
+            switch_body_depth_++;
             for (size_t i = 0; i < cases.size(); i++) {
                 const auto* cc = static_cast<const CaseClause*>(cases[i].get());
                 if (cc->is_default()) {
-                    if (!patch_jump(jump_to_default_or_end)) return false;
+                    if (!patch_jump(jump_to_default_or_end)) { switch_body_depth_--; return false; }
                 } else if (!patch_jump(test_jumps[i])) {
+                    switch_body_depth_--;
                     return false;
                 }
                 for (const auto& s : cc->get_consequent()) {
-                    if (!compile_statement(s.get())) return false;
+                    if (!compile_statement(s.get())) { switch_body_depth_--; return false; }
                 }
             }
+            switch_body_depth_--;
             if (default_index < 0 && !patch_jump(jump_to_default_or_end)) return false;
 
             LoopScope scope = std::move(loop_stack_.back());
@@ -5196,7 +5205,27 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
     }
 }
 
-bool BytecodeCompiler::compile_expression(const ASTNode* node) {
+// Whether evaluating `node` provably cannot store to any of this frame's
+// registers. A whitelist: a literal computes nothing, and reading a name never
+// writes one back -- a global read can run a getter, but a getter cannot reach
+// a register-resident local, since anything a closure captures is env-resident.
+bool BytecodeCompiler::operand_cannot_write_registers(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::IDENTIFIER:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
     if (!node || failed_) return false;
 
     // Optional chaining: once any link's base is nullish, skip the rest of
@@ -5455,6 +5484,28 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                 default:
                     return false;
             }
+            // `vm_op reg` reads regs[reg] as the left operand, so a left side
+            // already living in a register needs no copy into a temp. It is
+            // read after the right side has run, so this holds only while the
+            // right side cannot write to it; anything else keeps the copy.
+            int left_reg = -1;
+            if (expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& lname =
+                    static_cast<const Identifier*>(expr->get_left())->get_name();
+                int reg = env_names_.count(lname) ? -1 : lookup_local(lname);
+                bool tdz_free = !lexical_registers_.count(reg) ||
+                                initialized_lexicals_.count(reg) > 0;
+                if (reg >= 0 && tdz_free &&
+                    operand_cannot_write_registers(expr->get_right())) {
+                    left_reg = reg;
+                }
+            }
+            if (left_reg >= 0) {
+                if (!compile_expression(expr->get_right())) return false;
+                emit(vm_op);
+                emit_u8(static_cast<uint8_t>(left_reg));
+                return !failed_;
+            }
             if (!compile_expression(expr->get_left())) return false;
             int temp = alloc_temp();
             if (failed_) return false;
@@ -5523,8 +5574,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node) {
                     const ASTNode* operand = expr->get_operand();
                     bool is_inc = expr->get_operator() == UnOp::PRE_INCREMENT ||
                                   expr->get_operator() == UnOp::POST_INCREMENT;
-                    bool is_post = expr->get_operator() == UnOp::POST_INCREMENT ||
-                                   expr->get_operator() == UnOp::POST_DECREMENT;
+                    // Discarded, a postfix update is a prefix one: both read,
+                    // coerce with ToNumeric and store the same way, and differ
+                    // only in which of the two values they leave behind.
+                    bool is_post = !discard &&
+                                   (expr->get_operator() == UnOp::POST_INCREMENT ||
+                                    expr->get_operator() == UnOp::POST_DECREMENT);
 
                     if (operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                         const auto* mem = static_cast<const MemberExpression*>(operand);

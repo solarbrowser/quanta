@@ -64,7 +64,12 @@ private:
     std::unordered_set<std::string> env_resident_;
 
     bool compile_statement(const ASTNode* node);
-    bool compile_expression(const ASTNode* node);  // result in accumulator
+    // `discard`: the caller will not read the accumulator afterwards. Only the
+    // forms that do extra work purely to produce a value act on it (postfix
+    // ++/-- keeps the old one around); everything else ignores it, and no
+    // recursive call inherits it -- a subexpression's value is always needed.
+    bool compile_expression(const ASTNode* node, bool discard = false);  // result in accumulator
+    static bool operand_cannot_write_registers(const ASTNode* node);
 
     bool compile_for_each_loop(const ASTNode* left, const ASTNode* right,
                                const ASTNode* body, bool is_for_in,
@@ -191,6 +196,13 @@ private:
     std::vector<FeedbackSlot> feedback_;
     std::unordered_map<std::string, int> locals_;
     std::unordered_set<int> lexical_registers_;
+    // Lexical registers whose declaration has provably run by every point that
+    // reads them, so the dead-zone check is dead code. A register joins when
+    // its declaration is emitted, which leaves uses compiled before that point
+    // -- the ones that can still be in the dead zone -- checked. Suppressed
+    // inside a switch, whose control flow enters the middle of a scope.
+    std::unordered_set<int> initialized_lexicals_;
+    int switch_body_depth_ = 0;
     std::unordered_set<std::string> env_names_;
     bool env_mode_ = false;
     int next_register_ = 0;
