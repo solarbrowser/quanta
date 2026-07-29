@@ -699,6 +699,7 @@ void register_global_builtins(Context& ctx) {
                 return Value();
             }
         }, 1);
+    eval_fn->mark_eval_native();
     ctx.get_lexical_environment()->create_binding("eval", Value(eval_fn.release()), true, true, false);
 
     ctx.get_lexical_environment()->create_binding("undefined", Value(), false, false, false);
@@ -758,6 +759,7 @@ void register_global_builtins(Context& ctx) {
                     }
                     return result.value;
                 }, 1);
+            eval_fn->mark_eval_native();
             realm_obj->set_property("eval", Value(eval_fn.release()), PropertyAttributes::BuiltinFunction);
             realm_obj->set_property("evalScript", realm_obj->get_property("eval"));
 

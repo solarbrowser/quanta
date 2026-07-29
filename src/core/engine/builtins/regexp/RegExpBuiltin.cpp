@@ -147,17 +147,51 @@ static std::string regexp_escape_string(const std::string& s) {
     return out;
 }
 
+// RegExpBuiltinExec: the match itself, with lastIndex read and written around
+// it. Shared by RegExp.prototype.exec and by the abstract operation below,
+// which needs it when a user has replaced exec with something uncallable.
+Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str) {
+    RegExpObject* reo = RegExpObject::from(r);
+    if (!reo || !reo->impl()) {
+        ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
+        return Value();
+    }
+    const std::shared_ptr<RegExp>& re = reo->impl();
+
+    Value lastIndex_val = r->get_property("lastIndex");
+    double li = lastIndex_val.to_number();
+    if (ctx.has_exception()) return Value();
+    if (std::isnan(li) || li < 0) li = 0;
+    re->set_last_index(li > static_cast<double>(std::numeric_limits<int>::max())
+                           ? std::numeric_limits<int>::max() : static_cast<int>(li));
+
+    Value result = re->exec(str);
+
+    int new_last = re->get_last_index();
+    if (re->get_global() || re->get_sticky()) {
+        bool li_ok = r->set_property("lastIndex", Value(static_cast<double>(new_last)));
+        if (!li_ok || ctx.has_exception()) {
+            if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
+            return Value();
+        }
+    }
+    return result;
+}
+
 // RegExpExec abstract operation: use a callable "exec" property when present,
-// otherwise fall back to the builtin [[exec]] slot; TypeError when neither exists.
+// otherwise RegExpBuiltinExec -- replacing RegExp.prototype.exec with a
+// non-callable is legal and must not stop a real RegExp from matching.
 static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str, Value& out) {
     Value exec_fn = r->get_property("exec");
     if (ctx.has_exception()) return false;
     if (!exec_fn.is_function()) {
-        exec_fn = r->get_own_property("[[exec]]");
-        if (!exec_fn.is_function()) {
+        if (!RegExpObject::from(r)) {
             ctx.throw_type_error("RegExpExec requires a RegExp or an object with a callable exec");
             return false;
         }
+        out = regexp_builtin_exec(ctx, r, str);
+        if (ctx.has_exception()) return false;
+        return true;
     }
     out = exec_fn.as_function()->call(ctx, {Value(str)}, Value(r));
     if (ctx.has_exception()) return false;
@@ -179,12 +213,19 @@ void register_regexp_builtins(Context& ctx) {
                 ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
                 return Value();
             }
-            Value own_compile = this_obj->get_own_property("[[compile]]");
-            if (own_compile.is_function()) {
-                return own_compile.as_function()->call(ctx, args, Value(this_obj));
+            const std::shared_ptr<RegExp>& re = RegExpObject::from(this_obj)->impl();
+            if (!re) {
+                ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
+                return Value();
             }
-            ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
-            return Value();
+            std::string pattern = args.size() > 0 ? args[0].to_string() : std::string();
+            std::string flags = args.size() > 1 ? args[1].to_string() : std::string();
+            if (ctx.has_exception()) return Value();
+            re->compile(pattern, flags);
+            // The accessors read the implementation, which compile() just
+            // rewrote in place, so nothing has to be copied out.
+            this_obj->set_property("lastIndex", Value(0.0));
+            return Value(this_obj);
         }, 2);
     regexp_prototype->set_property("compile", Value(compile_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -293,66 +334,6 @@ void register_regexp_builtins(Context& ctx) {
                 auto regex_obj = std::make_unique<RegExpObject>(regexp_impl);
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())), PropertyAttributes::Writable);
                 
-                Object* regex_obj_ptr = regex_obj.get();
-
-                auto exec_fn = ObjectFactory::create_native_function("exec",
-                    [regexp_impl, regex_obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                        // ToString(string): spec treats no-arg as exec("undefined"), not early null.
-                        Value arg0 = args.empty() ? Value() : args[0];
-                        std::string str;
-                        if (arg0.is_symbol()) {
-                            ctx.throw_type_error("Cannot convert Symbol to string");
-                            return Value();
-                        } else if (arg0.is_object() || arg0.is_function()) {
-                            // ToPrimitive(arg, "string"): go through JS-level toString/valueOf.
-                            str = arg0.to_property_key();
-                            if (ctx.has_exception()) return Value();
-                        } else {
-                            str = arg0.to_string();
-                        }
-
-                        Value lastIndex_val = regex_obj_ptr->get_property("lastIndex");
-                        double li = lastIndex_val.to_number();
-                        if (ctx.has_exception()) return Value();
-                        if (std::isnan(li) || li < 0) li = 0;
-                        regexp_impl->set_last_index(li > static_cast<double>(std::numeric_limits<int>::max()) ? std::numeric_limits<int>::max() : static_cast<int>(li));
-
-                        Value result = regexp_impl->exec(str);
-
-                        int new_last = regexp_impl->get_last_index();
-                        if (regexp_impl->get_global() || regexp_impl->get_sticky()) {
-                            bool li_ok = regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
-                            if (!li_ok || ctx.has_exception()) {
-                                if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
-                                return Value();
-                            }
-                        }
-
-                        return result;
-                    });
-                // Internal slot, not an own "exec" property: RegExp.prototype.exec (and
-                // subclass overrides) must stay reachable through the prototype chain.
-                regex_obj->set_property_descriptor("[[exec]]",
-                    PropertyDescriptor(Value(exec_fn.release()), PropertyAttributes::None));
-
-                auto compile_inst_fn = ObjectFactory::create_native_function("compile",
-                    [regexp_impl, regex_obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                        std::string pattern = "";
-                        std::string flags = "";
-                        if (args.size() > 0) pattern = args[0].to_string();
-                        if (args.size() > 1) flags = args[1].to_string();
-
-                        regexp_impl->compile(pattern, flags);
-
-                        // The accessors read regexp_impl, which compile() just
-                        // rewrote in place, so nothing has to be copied out.
-                        regex_obj_ptr->set_property("lastIndex", Value(0.0));
-
-                        return Value(regex_obj_ptr);
-                    }, 2);
-                regex_obj->set_property_descriptor("[[compile]]",
-                    PropertyDescriptor(Value(compile_inst_fn.release()), PropertyAttributes::None));
-
                 Object* regex_raw = regex_obj.release();
                 Value new_target = ctx.get_new_target();
                 if (!new_target.is_undefined()) {
@@ -531,12 +512,20 @@ void register_regexp_builtins(Context& ctx) {
                 ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
                 return Value();
             }
-            Value own_exec = this_obj->get_own_property("[[exec]]");
-            if (own_exec.is_function()) {
-                return own_exec.as_function()->call(ctx, args.empty() ? std::vector<Value>{Value()} : args, Value(this_obj));
+            // ToString(string): spec treats no-arg as exec("undefined"), not early null.
+            Value arg0 = args.empty() ? Value() : args[0];
+            std::string str;
+            if (arg0.is_symbol()) {
+                ctx.throw_type_error("Cannot convert Symbol to string");
+                return Value();
+            } else if (arg0.is_object() || arg0.is_function()) {
+                // ToPrimitive(arg, "string"): go through JS-level toString/valueOf.
+                str = arg0.to_property_key();
+                if (ctx.has_exception()) return Value();
+            } else {
+                str = arg0.to_string();
             }
-            ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
-            return Value();
+            return regexp_builtin_exec(ctx, this_obj, str);
         }, 1);
     regexp_prototype->set_property("exec", Value(regexp_exec_proto_fn.release()), PropertyAttributes::BuiltinFunction);
 

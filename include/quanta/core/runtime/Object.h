@@ -887,6 +887,10 @@ private:
     // mapped-arguments fast paths can never be fooled by a JS-settable
     // property of the same name into invoking an attacker-authored Function.
     bool is_mapped_arguments_accessor_ : 1 = false;
+    // Direct eval is the only caller that ever needs the receiver its caller
+    // had, so only eval's own invocation has to preserve it. Every other
+    // native call used to create and then delete a binding for it.
+    bool is_eval_native_ : 1 = false;
     // "name"/"length" are lazy: no real descriptor/shape-slot is installed at
     // construction (see get_property/get_property_descriptor/has_own_property
     // overrides below) -- these track whether each has been explicitly
@@ -1128,6 +1132,8 @@ public:
     bool is_param_default() const { return is_param_default_; }
     void set_is_param_default(bool v) { is_param_default_ = v; }
     bool is_mapped_arguments_accessor() const { return is_mapped_arguments_accessor_; }
+    bool is_eval_native() const { return is_eval_native_; }
+    void mark_eval_native() { is_eval_native_ = true; }
     // Decl-site-invariant class field count -- see FunctionExecutable::
     // construct_slot_hint's own doc comment. No-op for native functions
     // (never class constructors with instance fields).

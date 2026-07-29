@@ -477,7 +477,8 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         // Native function call sets "this" to the native's receiver, but eval must
         // inherit the calling function's "this" (the value that existed before this overwrite).
         bool saved_caller_this = false;
-        if (had_this_binding && !old_this_value.is_undefined() && !ctx.has_binding("__eval_caller_this__")) {
+        if (is_eval_native_ && had_this_binding && !old_this_value.is_undefined() &&
+            !ctx.has_binding("__eval_caller_this__")) {
             ctx.create_binding("__eval_caller_this__", old_this_value, true);
             saved_caller_this = true;
         }
