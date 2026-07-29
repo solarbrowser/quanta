@@ -688,6 +688,33 @@ bool BlockStatement::needs_own_scope() const {
     return needs;
 }
 
+
+// Pre-creates the dead-zone bindings for the let/const declared directly in a
+// scope, before any of its statements run (spec 14.2.2). Without this a
+// closure created earlier in the scope would read straight past the dead zone,
+// and an assignment would create some other binding entirely. Shared because a
+// switch's case block is one scope spread across its clauses and needs exactly
+// the same treatment as an ordinary block.
+void hoist_lexical_declarations(Environment* env,
+                                const std::vector<std::unique_ptr<ASTNode>>& statements) {
+    for (const auto& stmt : statements) {
+        if (!stmt || stmt->get_type() != ASTNode::Type::VARIABLE_DECLARATION) continue;
+        auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+        if (vd->get_kind() != VariableDeclarator::Kind::LET &&
+            vd->get_kind() != VariableDeclarator::Kind::CONST) continue;
+        bool is_const_decl = vd->get_kind() == VariableDeclarator::Kind::CONST;
+        for (const auto& decl : vd->get_declarations()) {
+            if (!decl->get_id() || decl->get_id()->get_name().empty()) continue;
+            const std::string& bname = decl->get_id()->get_name();
+            // Immutability must be set here: initialize_binding fills the value
+            // without touching the mutable flag.
+            env->create_uninitialized_binding(bname, !is_const_decl);
+            env->mark_lexical_declaration(bname);
+            if (is_const_decl) env->mark_const_binding(bname);
+        }
+    }
+}
+
 Value BlockStatement::evaluate(Context& ctx) {
     Value last_value;
 
@@ -709,29 +736,7 @@ Value BlockStatement::evaluate(Context& ctx) {
     // Pre-create TDZ bindings for let/const at the top level of this block (spec 14.2.2).
     // Without this, closures defined before a let/const declaration would bypass TDZ
     // because the binding wouldn't exist yet when they run.
-    if (own_scope) {
-    for (const auto& stmt : statements_) {
-        if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
-            auto* vd = static_cast<VariableDeclaration*>(stmt.get());
-            if (vd->get_kind() == VariableDeclarator::Kind::LET ||
-                    vd->get_kind() == VariableDeclarator::Kind::CONST) {
-                bool is_const_decl = vd->get_kind() == VariableDeclarator::Kind::CONST;
-                for (const auto& decl : vd->get_declarations()) {
-                    if (decl->get_id() && !decl->get_id()->get_name().empty()) {
-                        const std::string& bname = decl->get_id()->get_name();
-                        // Immutability must be set here: initialize_binding
-                        // fills the value without touching the mutable flag.
-                        block_env_ptr->create_uninitialized_binding(bname, !is_const_decl);
-                        block_env_ptr->mark_lexical_declaration(bname);
-                        if (is_const_decl) {
-                            block_env_ptr->mark_const_binding(bname);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    }
+    if (own_scope) hoist_lexical_declarations(block_env_ptr, statements_);
 
     if (has_using) ctx.push_dispose_scope();
 
@@ -3195,6 +3200,10 @@ Value SwitchStatement::evaluate(Context& ctx) {
     auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_env);
     Environment* block_env_ptr = block_env.release();
     ctx.set_lexical_environment(block_env_ptr);
+    for (const auto& c : cases_) {
+        hoist_lexical_declarations(block_env_ptr,
+                                    static_cast<CaseClause*>(c.get())->get_consequent());
+    }
 
     int matching_case_index = -1;
     int default_case_index = -1;
