@@ -401,6 +401,7 @@ void Object::ensure_elements_capacity(uint32_t needed) {
 }
 
 void Object::resize_elements(uint32_t new_length) {
+    invalidate_dense_length();
     uint32_t old_length = elements_length();
     if (new_length > old_length) {
         ensure_elements_capacity(new_length);
@@ -412,6 +413,7 @@ void Object::resize_elements(uint32_t new_length) {
 }
 
 void Object::bump_array_length(double candidate) {
+    invalidate_dense_length();
     if (Value* slot = find_shape_slot("length")) {
         if (candidate > slot->to_number()) {
             Value new_len(candidate);
@@ -1107,6 +1109,7 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
             }
         }
         Value length_value(static_cast<double>(new_length));
+        invalidate_dense_length();
 
         if (!set_shape_slot("length", length_value)) {
             migrate_to_dictionary_mode();
@@ -1422,7 +1425,10 @@ bool Object::has_only_dense_elements() const {
     if (has_index_descriptor()) return false;
     if (auto* holes = deleted_elements(); holes && !holes->empty()) return false;
     if (auto* sparse = sparse_overflow(); sparse && !sparse->empty()) return false;
-    return get_length() == elements_length();
+    if (dense_length_verified()) return true;
+    if (get_length() != elements_length()) return false;
+    mark_dense_length_verified();
+    return true;
 }
 
 Value Object::get_element(uint32_t index) const {

@@ -207,6 +207,19 @@ private:
     }
     uint32_t elements_capacity() const { return butterfly_ ? butterfly_header()->elements_capacity : 0; }
     uint32_t elements_length() const { return butterfly_ ? butterfly_header()->elements_length : 0; }
+    // Caches only the expensive half of has_only_dense_elements(): whether
+    // get_length() was last seen to equal elements_length(). get_length()
+    // looks "length" up by string on every indexed access, which was the
+    // single largest Quanta symbol left in array_ops.
+    // It lives in the butterfly header's spare word, not in Object, which
+    // sits on a Heap size class shared by every object type -- the header is
+    // already there for any object with elements, at a fixed negative offset.
+    // Staleness can only cost speed, never correctness: a cleared flag just
+    // re-runs the comparison, and the three places that can move either side
+    // (bump_array_length, ArraySetLength and resize_elements) clear it.
+    bool dense_length_verified() const { return butterfly_ && butterfly_header()->reserved != 0; }
+    void mark_dense_length_verified() const { if (butterfly_) butterfly_header()->reserved = 1; }
+    void invalidate_dense_length() { if (butterfly_) butterfly_header()->reserved = 0; }
     uint32_t shape_capacity() const { return butterfly_ ? butterfly_header()->shape_capacity : 0; }
     Value* shape_slot_ptr(uint32_t i) const { return butterfly_ + i; }
     Value* element_ptr(uint32_t i) const { return butterfly_ - (sizeof(ButterflyHeader) / sizeof(Value)) - 1 - i; }
