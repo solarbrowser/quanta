@@ -303,9 +303,13 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // and go straight to it, same as Object::get_property's own Array
     // branch -- but a defineProperty override (e.g. non-writable length)
     // still must win, so that rare case still falls through.
+    // A dense array's length is its element count, and `length` can never be
+    // an accessor -- defineProperty refuses to turn a non-configurable data
+    // property into one -- so the count answers the read exactly. A length
+    // moved away from the storage fails the check and takes the path below.
     if (obj->get_type() == Object::ObjectType::Array && name == "length" &&
-        !obj->has_descriptor_override(name)) {
-        return Value(static_cast<double>(obj->get_length()));
+        obj->has_only_dense_elements()) {
+        return Value(static_cast<double>(obj->element_count()));
     }
 
     Shape* obj_shape = obj->get_shape();
