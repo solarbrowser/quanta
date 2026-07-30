@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include <array>
 #include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/core/engine/CallStack.h"
@@ -901,117 +902,195 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
 
 }
 
-Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
-          const Value* this_val, Function* owner) {
-    // Only the registers the chunk actually uses: a fixed 256 put the whole
-    // bank on the C++ stack and zeroed it on every call, when the compiler
-    // already knows the real count and it is small for most functions.
-    // Zero-initialized either way, so leftover stack garbage in an unused slot
-    // can't look like a live heap pointer to the conservative GC scan.
-    constexpr uint16_t kInlineRegs = 32;
-    Value inline_regs[kInlineRegs] = {};
-    Value* regs = inline_regs;
-    std::vector<Value> spill_regs;
-    if (chunk.register_count > kInlineRegs) {
-        // Off the C++ stack, so the conservative scan cannot see it: rooted
-        // explicitly for as long as this frame runs.
-        spill_regs.resize(chunk.register_count);
-        regs = spill_regs.data();
-    }
-    struct SpillRoot {
-        const std::vector<Value>* v;
-        ~SpillRoot() { if (v) Collector::pop_value_vector(v); }
-    } spill_root{nullptr};
-    if (!spill_regs.empty()) {
-        Collector::push_value_vector(&spill_regs);
-        spill_root.v = &spill_regs;
-    }
-    const uint8_t param_count = chunk.parameter_count;
-    for (uint8_t i = 0; i < param_count && i < args.size(); i++) {
-        regs[i] = args[i];
-    }
-
-    // Side-stack for Op::SaveEnv/RestoreEnv/PopEnvSave. Not a GC root:
-    // Environment objects are already un-GC-managed, leaked with the Context.
-    Environment* env_saves[64];
-    uint8_t env_save_top = 0;
-
-    if (chunk.env_mode && chunk.env) {
-        Environment* env = ctx.get_lexical_environment();
-        if (chunk.env_params_tdz) {
-            // Spec FDI ordering: params start uninitialized (their raw values
-            // sit in registers), the entry bytecode initializes each one left
-            // to right, and Op::BindEnvLocals creates the body's bindings
-            // only after the whole parameter list resolved.
-            for (const auto& p : chunk.env->env_params) {
-                env->create_uninitialized_binding(p, true);
-            }
-        } else {
-            for (size_t i = 0; i < chunk.env->env_params.size(); i++) {
-                Value v = i < args.size() ? args[i] : Value();
-                env->create_binding(chunk.env->env_params[i], v, true);
-            }
-            for (const auto& loc : chunk.env->env_locals) {
-                if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
-                else env->create_binding(loc.name, Value(), true);
-            }
-        }
-    }
-
-    // The frame's own environment: per-call, so lookup_cache must never
-    // point into it (outer captured envs are the cacheable ones). A script
-    // frame's env is the persistent script env -- fully cacheable.
-    Environment* entry_env = chunk.script_mode ? nullptr : ctx.get_lexical_environment();
-
-    // A chunk may be shared across several Function instances created from the
-    // same declaration site (see FunctionExecutable), each with its own
-    // captured environment chain -- chunk.lookup_cache can't
-    // be trusted in that case (it would bake in whichever instance resolved a
-    // name first and serve that stale slot to every other instance forever).
-    // Route through the calling Function's own per-instance cache instead;
-    // owner is null only for the ownerless top-level script chunk, which is
-    // inherently single-instance, so chunk.lookup_cache stays fine there.
-    // Raw pointer, not vector<LookupCacheEntry>*: chunk.lookup_cache and
-    // owner->instance_lookup_cache() use different allocators (the latter is
-    // pooled -- see its declaration), so they're different vector types.
-    // .data() returns the same LookupCacheEntry* either way. Safe to capture
-    // once here and reuse for the whole call: chunk.lookup_cache is only
-    // ever assigned at compile time (never resized during execution), and
-    // instance_lookup_cache_ is resized at most once ever per instance
-    // (chunk.names.size() is fixed for a given owner), always in this setup
-    // code before that call's own bytecode -- including recursive self-calls
-    // -- ever dispatches, so no reentrant call can invalidate this pointer.
-    BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
-    if (owner) {
-        auto& instance_cache = owner->instance_lookup_cache();
-        if (instance_cache.size() < chunk.names.size()) instance_cache.resize(chunk.names.size());
-        lookup_cache_data = instance_cache.data();
-    }
-
-    // Same routing as lookup_cache_data above, for the same reason: a shared
-    // chunk's GetPrivate/SetPrivate sites cache a resolved qualified key that
-    // encodes the CALLING instance's own declaring brand (see PrivateFeedback's
-    // doc comment), so every instance sharing the chunk needs its own copy.
-    size_t chunk_private_feedback_size = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.size() : 0;
-    PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
-    if (owner) {
-        auto& instance_pf = owner->instance_private_feedback();
-        if (instance_pf.size() < chunk_private_feedback_size) instance_pf.resize(chunk_private_feedback_size);
-        private_feedback_data = instance_pf.data();
-    }
-
-    // Op::LdaThis cache: `this`'s VALUE is immutable for the whole frame
-    // (even in a derived constructor -- super() sets it once), so resolve
-    // the binding at most once. Whether a read is ALLOWED yet is a separate,
-    // per-read check (this-TDZ, see the opcode below).
-    bool this_resolved = this_val != nullptr;
-    Value this_value = this_val ? *this_val : Value();
-
-    const uint8_t* code = chunk.code.data();
-    const Value* constants = chunk.constants.data();
-    uint32_t pc = 0;
-    uint32_t instr_pc = 0;  // pc of the instruction currently executing, for handler lookup
+// Everything the dispatch loop reads or writes, so the loop can live in a
+// function of its own with no exception-handling region in it. run() keeps
+// the try/catch, the register bank and the env side-stack; this only hands
+// the loop pointers to them.
+struct Frame {
+    const BytecodeChunk& chunk;
+    Context& ctx;
+    const std::vector<Value>& args;
+    Function* owner;
+    Value* regs;
+    Environment** env_saves;
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data;
+    PrivateFeedback* private_feedback_data;
+    const uint8_t* code;
+    const Value* constants;
+    Environment* entry_env;
+    // Written by the loop and read by run() after an exception unwinds out of
+    // it, so these cannot be locals of the dispatch function.
+    Value this_value;
     Value acc;
+    uint32_t pc;
+    uint32_t instr_pc;
+    uint8_t env_save_top;
+    bool this_resolved;
+};
+
+// Tail-call threaded dispatch, hybrid with the switch below.
+//
+// The switch keeps the interpreter's state on the stack: run's frame had 133
+// distinct slots and even `code`, a pointer that never changes, was reloaded
+// per opcode -- 48 instructions and ~15 loads for an opcode like Ldar that
+// needs about four. A handler per opcode carries the hot state in argument
+// registers instead, and musttail makes each one reuse the same machine frame
+// rather than growing the stack.
+//
+// Converting all of them at once is not required: kHandlers defaults to
+// h_switch, so an unconverted opcode lands back in the switch, and the switch
+// hands control back the moment it reaches one that does have a handler.
+// `pc` therefore always names the opcode byte itself, never its operands, so
+// either half can pick up wherever the other left off.
+using Handler = Value (*)(Frame&, uint32_t, Value);
+
+Value h_switch(Frame& f, uint32_t pc, Value acc);
+extern const std::array<Handler, 256> kHandlers;
+
+#define DISPATCH() [[clang::musttail]] return kHandlers[f.code[pc]](f, pc, acc)
+
+// Opcodes that cannot raise: nothing but the dispatch separates one from the
+// next, no exception check in between.
+#define CONST_HANDLER(name, val)                                           \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        acc = (val);                                                       \
+        pc += 1;                                                           \
+        DISPATCH();                                                        \
+    }
+
+CONST_HANDLER(h_LdaZero, Value(0.0))
+CONST_HANDLER(h_LdaUndefined, Value())
+CONST_HANDLER(h_LdaNull, Value::null())
+CONST_HANDLER(h_LdaTrue, Value(true))
+CONST_HANDLER(h_LdaFalse, Value(false))
+
+Value h_Ldar(Frame& f, uint32_t pc, Value acc) {
+    acc = f.regs[f.code[pc + 1]];
+    pc += 2;
+    DISPATCH();
+}
+
+Value h_Star(Frame& f, uint32_t pc, Value acc) {
+    f.regs[f.code[pc + 1]] = acc;
+    pc += 2;
+    DISPATCH();
+}
+
+Value h_Mov(Frame& f, uint32_t pc, Value acc) {
+    f.regs[f.code[pc + 2]] = f.regs[f.code[pc + 1]];
+    pc += 3;
+    DISPATCH();
+}
+
+Value h_LdaSmi(Frame& f, uint32_t pc, Value acc) {
+    acc = Value(static_cast<double>(static_cast<int8_t>(f.code[pc + 1])));
+    pc += 2;
+    DISPATCH();
+}
+
+Value h_LdaConst(Frame& f, uint32_t pc, Value acc) {
+    acc = f.constants[read_u16(f.code, pc + 1)];
+    pc += 3;
+    DISPATCH();
+}
+
+Value h_Return(Frame& f, uint32_t pc, Value acc) {
+    (void)f; (void)pc;
+    return acc;
+}
+
+Value h_Jump(Frame& f, uint32_t pc, Value acc) {
+    int16_t off = read_i16(f.code, pc + 1);
+    pc += 3 + off;
+    if (off < 0) Collector::safepoint();
+    DISPATCH();
+}
+
+#define BRANCH_HANDLER(name, cond)                                         \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        int16_t off = read_i16(f.code, pc + 1);                            \
+        pc += 3;                                                           \
+        if (cond) {                                                        \
+            pc += off;                                                     \
+            if (off < 0) Collector::safepoint();                           \
+        }                                                                  \
+        DISPATCH();                                                        \
+    }
+
+BRANCH_HANDLER(h_JumpIfFalse, !acc.to_boolean())
+BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
+
+// Numeric fast paths only. Anything else re-enters the switch at this same
+// opcode and runs through the shared slow path exactly as before, so a
+// handler never duplicates the coercion, the BigInt case or the raise check.
+#define NUMERIC_BINARY_HANDLER(name, expr)                                 \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
+            double l = lhs.as_number();                                    \
+            double r = acc.as_number();                                    \
+            (void)l; (void)r;                                              \
+            acc = (expr);                                                  \
+            pc += 2;                                                       \
+            DISPATCH();                                                    \
+        }                                                                  \
+        [[clang::musttail]] return h_switch(f, pc, acc);                   \
+    }
+
+NUMERIC_BINARY_HANDLER(h_Add, Value(l + r))
+NUMERIC_BINARY_HANDLER(h_Sub, Value(l - r))
+NUMERIC_BINARY_HANDLER(h_Mul, Value(l * r))
+NUMERIC_BINARY_HANDLER(h_TestLt, Value(l < r))
+NUMERIC_BINARY_HANDLER(h_TestGt, Value(l > r))
+NUMERIC_BINARY_HANDLER(h_TestLe, Value(l <= r))
+NUMERIC_BINARY_HANDLER(h_TestGe, Value(l >= r))
+NUMERIC_BINARY_HANDLER(h_TestEq, Value(l == r))
+NUMERIC_BINARY_HANDLER(h_TestNe, Value(l != r))
+NUMERIC_BINARY_HANDLER(h_TestStrictEq, Value(l == r))
+NUMERIC_BINARY_HANDLER(h_TestStrictNe, Value(l != r))
+
+#define UNARY_STEP_HANDLER(name, delta)                                    \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        if (LIKELY(acc.is_number())) {                                     \
+            acc = Value(acc.as_number() + (delta));                        \
+            pc += 1;                                                       \
+            DISPATCH();                                                    \
+        }                                                                  \
+        [[clang::musttail]] return h_switch(f, pc, acc);                   \
+    }
+
+UNARY_STEP_HANDLER(h_Inc, 1.0)
+UNARY_STEP_HANDLER(h_Dec, -1.0)
+
+#undef CONST_HANDLER
+#undef BRANCH_HANDLER
+#undef NUMERIC_BINARY_HANDLER
+#undef UNARY_STEP_HANDLER
+
+// The dispatch loop. Split out of run() so no call in it is an invoke: with
+// the try one frame up there is no landing pad here for a value to stay
+// memory-resident for, which is what kept the loop's state off the registers.
+// A JS throw is still handled in here (CHECK_EXC finds the covering handler
+// and jumps); only a C++ throw leaves, and run() resumes by calling this
+// again with frame.pc moved.
+Value h_switch(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const std::vector<Value>& args = f.args;
+    Function* owner = f.owner;
+    Value* regs = f.regs;
+    Environment** env_saves = f.env_saves;
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
+    PrivateFeedback* private_feedback_data = f.private_feedback_data;
+    const uint8_t* code = f.code;
+    const Value* constants = f.constants;
+    Environment* entry_env = f.entry_env;
+    uint8_t& env_save_top = f.env_save_top;
+    bool& this_resolved = f.this_resolved;
+    Value& this_value = f.this_value;
+    uint32_t& instr_pc = f.instr_pc;
+    (void)args; (void)owner; (void)entry_env; (void)private_feedback_data;
+    (void)lookup_cache_data; (void)constants;
 
     // On exception, find the innermost handler covering instr_pc; `continue`
     // re-enters the for(;;) below with pc already moved to the handler.
@@ -1069,12 +1148,6 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
         }                                                                  \
     } while (0)
 
-    // The try sits OUTSIDE the dispatch loop, not around each instruction: a
-    // handler that has to be live at every throwing call in the loop body keeps
-    // the compiler from holding pc/acc in registers across them. Recovery
-    // re-enters the loop instead of continuing it.
-    for (;;) {
-      try {
         for (;;) {
         instr_pc = pc;
         Op op = static_cast<Op>(code[pc++]);
@@ -2389,7 +2462,183 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
         // Every opcode that can raise checks for itself; this catches the few
         // that set an exception on the context without saying so.
         CHECK_EXC();
+        // The one place the two halves meet, and it has to be here rather
+        // than at the top of the loop: a numeric handler that fell back
+        // re-enters with pc still on ITS opcode, and a check up there
+        // would hand that same opcode straight back to it forever.
+        // Checking after an instruction has run means h_switch always
+        // makes progress first.
+        if (Handler h = kHandlers[code[pc]]; h != &h_switch) {
+            [[clang::musttail]] return h(f, pc, acc);
         }
+        }
+
+#undef BINARY_OP
+#undef BITWISE_OP
+#undef CHECK_EXC
+#undef DISPATCH
+}
+
+constexpr std::array<Handler, 256> make_handler_table() {
+    std::array<Handler, 256> t{};
+    for (auto& e : t) e = &h_switch;
+    t[static_cast<uint8_t>(Op::Ldar)]          = &h_Ldar;
+    t[static_cast<uint8_t>(Op::Star)]          = &h_Star;
+    t[static_cast<uint8_t>(Op::Mov)]           = &h_Mov;
+    t[static_cast<uint8_t>(Op::LdaZero)]       = &h_LdaZero;
+    t[static_cast<uint8_t>(Op::LdaUndefined)]  = &h_LdaUndefined;
+    t[static_cast<uint8_t>(Op::LdaNull)]       = &h_LdaNull;
+    t[static_cast<uint8_t>(Op::LdaTrue)]       = &h_LdaTrue;
+    t[static_cast<uint8_t>(Op::LdaFalse)]      = &h_LdaFalse;
+    t[static_cast<uint8_t>(Op::LdaSmi)]        = &h_LdaSmi;
+    t[static_cast<uint8_t>(Op::LdaConst)]      = &h_LdaConst;
+    t[static_cast<uint8_t>(Op::Return)]        = &h_Return;
+    t[static_cast<uint8_t>(Op::Jump)]          = &h_Jump;
+    t[static_cast<uint8_t>(Op::JumpIfFalse)]   = &h_JumpIfFalse;
+    t[static_cast<uint8_t>(Op::JumpIfTrue)]    = &h_JumpIfTrue;
+    t[static_cast<uint8_t>(Op::Add)]           = &h_Add;
+    t[static_cast<uint8_t>(Op::Sub)]           = &h_Sub;
+    t[static_cast<uint8_t>(Op::Mul)]           = &h_Mul;
+    t[static_cast<uint8_t>(Op::TestLt)]        = &h_TestLt;
+    t[static_cast<uint8_t>(Op::TestGt)]        = &h_TestGt;
+    t[static_cast<uint8_t>(Op::TestLe)]        = &h_TestLe;
+    t[static_cast<uint8_t>(Op::TestGe)]        = &h_TestGe;
+    t[static_cast<uint8_t>(Op::TestEq)]        = &h_TestEq;
+    t[static_cast<uint8_t>(Op::TestNe)]        = &h_TestNe;
+    t[static_cast<uint8_t>(Op::TestStrictEq)]  = &h_TestStrictEq;
+    t[static_cast<uint8_t>(Op::TestStrictNe)]  = &h_TestStrictNe;
+    t[static_cast<uint8_t>(Op::Inc)]           = &h_Inc;
+    t[static_cast<uint8_t>(Op::Dec)]           = &h_Dec;
+    return t;
+}
+const std::array<Handler, 256> kHandlers = make_handler_table();
+
+// Entry point: run() hands the frame over, the table takes it from there.
+Value run_dispatch(Frame& f) {
+    return kHandlers[f.code[f.pc]](f, f.pc, f.acc);
+}
+
+Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
+          const Value* this_val, Function* owner) {
+    // Only the registers the chunk actually uses: a fixed 256 put the whole
+    // bank on the C++ stack and zeroed it on every call, when the compiler
+    // already knows the real count and it is small for most functions.
+    // Zero-initialized either way, so leftover stack garbage in an unused slot
+    // can't look like a live heap pointer to the conservative GC scan.
+    constexpr uint16_t kInlineRegs = 32;
+    Value inline_regs[kInlineRegs] = {};
+    Value* regs = inline_regs;
+    std::vector<Value> spill_regs;
+    if (chunk.register_count > kInlineRegs) {
+        // Off the C++ stack, so the conservative scan cannot see it: rooted
+        // explicitly for as long as this frame runs.
+        spill_regs.resize(chunk.register_count);
+        regs = spill_regs.data();
+    }
+    struct SpillRoot {
+        const std::vector<Value>* v;
+        ~SpillRoot() { if (v) Collector::pop_value_vector(v); }
+    } spill_root{nullptr};
+    if (!spill_regs.empty()) {
+        Collector::push_value_vector(&spill_regs);
+        spill_root.v = &spill_regs;
+    }
+    const uint8_t param_count = chunk.parameter_count;
+    for (uint8_t i = 0; i < param_count && i < args.size(); i++) {
+        regs[i] = args[i];
+    }
+
+    // Side-stack for Op::SaveEnv/RestoreEnv/PopEnvSave. Not a GC root:
+    // Environment objects are already un-GC-managed, leaked with the Context.
+    Environment* env_saves[64];
+    uint8_t env_save_top = 0;
+
+    if (chunk.env_mode && chunk.env) {
+        Environment* env = ctx.get_lexical_environment();
+        if (chunk.env_params_tdz) {
+            // Spec FDI ordering: params start uninitialized (their raw values
+            // sit in registers), the entry bytecode initializes each one left
+            // to right, and Op::BindEnvLocals creates the body's bindings
+            // only after the whole parameter list resolved.
+            for (const auto& p : chunk.env->env_params) {
+                env->create_uninitialized_binding(p, true);
+            }
+        } else {
+            for (size_t i = 0; i < chunk.env->env_params.size(); i++) {
+                Value v = i < args.size() ? args[i] : Value();
+                env->create_binding(chunk.env->env_params[i], v, true);
+            }
+            for (const auto& loc : chunk.env->env_locals) {
+                if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
+                else env->create_binding(loc.name, Value(), true);
+            }
+        }
+    }
+
+    // The frame's own environment: per-call, so lookup_cache must never
+    // point into it (outer captured envs are the cacheable ones). A script
+    // frame's env is the persistent script env -- fully cacheable.
+    Environment* entry_env = chunk.script_mode ? nullptr : ctx.get_lexical_environment();
+
+    // A chunk may be shared across several Function instances created from the
+    // same declaration site (see FunctionExecutable), each with its own
+    // captured environment chain -- chunk.lookup_cache can't
+    // be trusted in that case (it would bake in whichever instance resolved a
+    // name first and serve that stale slot to every other instance forever).
+    // Route through the calling Function's own per-instance cache instead;
+    // owner is null only for the ownerless top-level script chunk, which is
+    // inherently single-instance, so chunk.lookup_cache stays fine there.
+    // Raw pointer, not vector<LookupCacheEntry>*: chunk.lookup_cache and
+    // owner->instance_lookup_cache() use different allocators (the latter is
+    // pooled -- see its declaration), so they're different vector types.
+    // .data() returns the same LookupCacheEntry* either way. Safe to capture
+    // once here and reuse for the whole call: chunk.lookup_cache is only
+    // ever assigned at compile time (never resized during execution), and
+    // instance_lookup_cache_ is resized at most once ever per instance
+    // (chunk.names.size() is fixed for a given owner), always in this setup
+    // code before that call's own bytecode -- including recursive self-calls
+    // -- ever dispatches, so no reentrant call can invalidate this pointer.
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
+    if (owner) {
+        auto& instance_cache = owner->instance_lookup_cache();
+        if (instance_cache.size() < chunk.names.size()) instance_cache.resize(chunk.names.size());
+        lookup_cache_data = instance_cache.data();
+    }
+
+    // Same routing as lookup_cache_data above, for the same reason: a shared
+    // chunk's GetPrivate/SetPrivate sites cache a resolved qualified key that
+    // encodes the CALLING instance's own declaring brand (see PrivateFeedback's
+    // doc comment), so every instance sharing the chunk needs its own copy.
+    size_t chunk_private_feedback_size = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.size() : 0;
+    PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
+    if (owner) {
+        auto& instance_pf = owner->instance_private_feedback();
+        if (instance_pf.size() < chunk_private_feedback_size) instance_pf.resize(chunk_private_feedback_size);
+        private_feedback_data = instance_pf.data();
+    }
+
+    // Op::LdaThis cache: `this`'s VALUE is immutable for the whole frame
+    // (even in a derived constructor -- super() sets it once), so resolve
+    // the binding at most once. Whether a read is ALLOWED yet is a separate,
+    // per-read check (this-TDZ, see the opcode below).
+    bool this_resolved = this_val != nullptr;
+    Value this_value = this_val ? *this_val : Value();
+
+    const uint8_t* code = chunk.code.data();
+    const Value* constants = chunk.constants.data();
+
+    // The try sits outside the dispatch loop AND outside its function: a
+    // handler live at every throwing call keeps the compiler from holding the
+    // loop's state in registers, and a landing pad in the same function does
+    // that even with the try hoisted out of the loop itself. Recovery
+    // re-enters run_dispatch with frame.pc moved instead of continuing.
+    Frame frame{chunk, ctx, args, owner, regs, env_saves, lookup_cache_data,
+                private_feedback_data, code, constants, entry_env,
+                this_value, Value(), 0, 0, 0, this_resolved};
+
+    for (;;) {
+      try {
+        return run_dispatch(frame);
       } catch (const YieldException&) {
             throw;
       } catch (const GeneratorReturnException& gen_ret) {
@@ -2403,14 +2652,14 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             uint32_t best_width = UINT32_MAX;
             if (chunk.handlers) for (const auto& h : *chunk.handlers) {
                 if (h.genreturn_pc < 0) continue;
-                if (instr_pc >= h.start_pc && instr_pc < h.end_pc) {
+                if (frame.instr_pc >= h.start_pc && frame.instr_pc < h.end_pc) {
                     uint32_t width = h.end_pc - h.start_pc;
                     if (width < best_width) { best_width = width; genreturn_pc = h.genreturn_pc; }
                 }
             }
             if (genreturn_pc < 0) throw;
-            acc = gen_ret.return_value;
-            pc = static_cast<uint32_t>(genreturn_pc);
+            frame.acc = gen_ret.return_value;
+            frame.pc = static_cast<uint32_t>(genreturn_pc);
             continue;
       } catch (const std::exception& e) {
             // A native call (e.g. Proxy invariant violation) threw a raw C++
@@ -2419,12 +2668,28 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
       } catch (...) {
             if (!ctx.has_exception()) ctx.throw_exception(Value(std::string("Error: Unknown error")));
       }
-      CHECK_EXC();
-    }
 
-#undef BINARY_OP
-#undef BITWISE_OP
-#undef CHECK_EXC
+      // The same handler search CHECK_EXC does, for an exception that arrived
+      // as a C++ throw rather than through the context.
+      if (ctx.has_exception()) {
+          int32_t handler_pc = -1;
+          uint32_t best_width = UINT32_MAX;
+          if (chunk.handlers) for (const auto& h : *chunk.handlers) {
+              if (frame.instr_pc >= h.start_pc && frame.instr_pc < h.end_pc) {
+                  uint32_t width = h.end_pc - h.start_pc;
+                  if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
+              }
+          }
+          if (handler_pc < 0) return Value();
+          frame.acc = ctx.get_exception();
+          ctx.clear_exception();
+          frame.pc = static_cast<uint32_t>(handler_pc);
+          continue;
+      }
+      // Only reachable if a catch above left no exception pending, which none
+      // of them do; resume at the instruction that was executing.
+      frame.pc = frame.instr_pc;
+    }
 }
 
 Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,

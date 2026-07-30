@@ -49,11 +49,10 @@
 
 namespace Quanta {
 
-namespace {
+thread_local bool Collector::major_in_progress_ = false;
+int Collector::stress_mode_ = -1;  // -1: not resolved yet, reads as armed
 
-// True between an incremental major cycle's first slice and its last;
-// declared above MarkVisitor so its methods can read it directly.
-thread_local bool g_major_in_progress = false;
+namespace {
 
 // Marking visitor: worklist-based, no C++ recursion, so arbitrarily deep
 // object graphs cannot overflow the stack.
@@ -139,7 +138,7 @@ public:
                 environment_work_.pop_back();
                 // Re-arm Collector::write_barrier_env's mid-major re-trace
                 // path, same trace-time-clear discipline as trace_cell.
-                if (g_major_in_progress) e->gc_remembered_ = false;
+                if (Collector::major_in_progress_) e->gc_remembered_ = false;
                 e->gc_trace(*this);
             } else {
                 Context* c = context_work_.back();
@@ -294,7 +293,7 @@ private:
     void trace_cell(const Heap::ProbeResult& p) {
         // Re-arm Collector::write_barrier's mid-major re-trace path: cleared
         // at trace time, not cycle end, so the same cell can re-dirty.
-        if (g_major_in_progress) Heap::clear_remembered(p);
+        if (Collector::major_in_progress_) Heap::clear_remembered(p);
         if (p.kind == CellKind::Object) {
             static_cast<Object*>(p.cell)->trace(*this);
         } else {
@@ -850,7 +849,7 @@ void finish_major_cycle(MarkVisitor& v) {
                      g_last_cycle.verify_violations);
     }
 
-    g_major_in_progress = false;
+    Collector::major_in_progress_ = false;
 }
 
 // If allocation keeps outpacing an open cycle's marking progress this long,
@@ -876,12 +875,12 @@ Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
     static const bool prof = env_flag("QUANTA_GC_PROFILE");
 
     MarkVisitor& v = mark_visitor();
-    if (!g_major_in_progress) {
+    if (!Collector::major_in_progress_) {
         Heap::clear_gc_request();
         Heap::clear_major_gc_request();
         Heap::clear_all_marks();
         v.reset_for_new_cycle();
-        g_major_in_progress = true;
+        Collector::major_in_progress_ = true;
         g_major_cycle_start = std::chrono::steady_clock::now();
         g_major_slice_count = 0;
     }
@@ -961,9 +960,6 @@ void Collector::collect_minor() {
     }
 }
 
-bool Collector::major_in_progress() {
-    return g_major_in_progress;
-}
 
 Collector::SliceResult Collector::mark_step(std::chrono::microseconds budget) {
     MarkVisitor& v = mark_visitor();
@@ -998,7 +994,7 @@ void Collector::write_barrier(const void* cell) {
     // moment this container is actually re-traced (only while a major is
     // open), so a later mutation can re-arm this path again within the
     // same cycle.
-    if (g_major_in_progress) mark_visitor().push_remembered(p);
+    if (Collector::major_in_progress_) mark_visitor().push_remembered(p);
 }
 
 void Collector::write_barrier_env(Environment* env) {
@@ -1010,7 +1006,7 @@ void Collector::write_barrier_env(Environment* env) {
     // must be re-traced before the cycle closes. gc_remembered_ is cleared
     // at trace time while a major is open (see drain_contexts_and_environments),
     // re-arming this path for later mutations in the same cycle.
-    if (g_major_in_progress) mark_visitor().repush_environment(env);
+    if (Collector::major_in_progress_) mark_visitor().repush_environment(env);
 }
 
 void Collector::release_env(Environment* env) {
@@ -1024,14 +1020,16 @@ void Collector::release_env(Environment* env) {
     if (pending.size() >= 8192 && !major_in_progress()) flush_pending_env_frees();
 }
 
-void Collector::safepoint() {
+void Collector::safepoint_slow() {
     // QUANTA_GC_STRESS: "2" = minor at every safepoint (write-barrier soak,
     // full every 64th); any other truthy value = full at every safepoint.
-    static const int stress = [] {
+    // Resolved into the shared field so safepoint()'s inline test can read
+    // it; -1 until then, which that test treats as armed.
+    if (stress_mode_ < 0) {
         const char* v = std::getenv("QUANTA_GC_STRESS");
-        if (!v || !*v || *v == '0') return 0;
-        return *v == '2' ? 2 : 1;
-    }();
+        stress_mode_ = (!v || !*v || *v == '0') ? 0 : (*v == '2' ? 2 : 1);
+    }
+    const int stress = stress_mode_;
     static thread_local uint32_t cycle_count = 0;
 
     // Stress modes always run a collection to completion in one call, same
@@ -1045,7 +1043,7 @@ void Collector::safepoint() {
         return;
     }
     if (stress == 2) {
-        if (g_major_in_progress || ++cycle_count % 64 == 0) {
+        if (Collector::major_in_progress_ || ++cycle_count % 64 == 0) {
             run_major_slice(std::chrono::microseconds(-1));
         } else {
             run_minor_collection();
@@ -1056,7 +1054,7 @@ void Collector::safepoint() {
     // An open incremental major always continues before anything else is
     // considered: minor and major must never touch MarkVisitor's shared
     // worklists/mark-bit state in the same window.
-    if (g_major_in_progress) {
+    if (Collector::major_in_progress_) {
         run_major_slice(next_slice_budget());
         return;
     }

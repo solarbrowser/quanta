@@ -1537,8 +1537,11 @@ bool Object::set_element(uint32_t index, const Value& value) {
     }
     // Growing past a non-writable "length" must fail, not silently grow --
     // the same rule set_property_descriptor applies to a defineProperty of
-    // the same index (ArraySetLength, 10.4.2.1 step 3.f).
-    if (get_type() == ObjectType::Array &&
+    // the same index (ArraySetLength, 10.4.2.1 step 3.f). Gated on
+    // is_new_element, already in hand: an index the array still holds
+    // densely cannot move length, and get_length() looks "length" up by
+    // string, which is too much to spend on every in-bounds write.
+    if (is_new_element && get_type() == ObjectType::Array &&
         static_cast<double>(index) >= static_cast<double>(get_length())) {
         PropertyDescriptor length_desc = get_property_descriptor("length");
         if (length_desc.has_writable() && !length_desc.is_writable()) {

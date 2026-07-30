@@ -568,7 +568,11 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
 
         Value fast_this = this_value;
         if (is_arrow_) {
-            if (this->has_property("__arrow_this__")) fast_this = this->get_property("__arrow_this__");
+            // Own, not inherited: ArrowFunctionExpression::evaluate stamps
+            // these markers on the arrow itself, so asking has_property here
+            // only bought a walk up to Function.prototype and Object.prototype
+            // on every call.
+            if (this->has_own_property("__arrow_this__")) fast_this = this->get_property("__arrow_this__");
         } else if (!fast_ctx.is_strict_mode()) {
             if (this_value.is_undefined() || this_value.is_null()) {
                 Object* global = fast_ctx.get_global_object();
@@ -614,7 +618,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     }
 
     // Arrow functions capture new.target from enclosing scope
-    if (is_arrow_ && this->has_property("__arrow_new_target__")) {
+    if (is_arrow_ && this->has_own_property("__arrow_new_target__")) {
         function_context.set_new_target(this->get_property("__arrow_new_target__"));
     }
     function_context.set_arrow_function_context(is_arrow_);
@@ -629,7 +633,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // Field-initializer arrows re-arm the direct-eval `arguments` ban (see
     // ArrowFunctionExpression::evaluate); nested arrows re-mark themselves
     // from this flag at their own creation.
-    if (is_arrow_ && this->has_property("__in_cfi__")) {
+    if (is_arrow_ && this->has_own_property("__in_cfi__")) {
         function_context.set_in_class_field_init(true);
     }
 
@@ -652,7 +656,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     Value actual_this = this_value;
 
     // Arrow functions use their lexical this, ignoring the passed this_value
-    if (is_arrow_ && this->has_property("__arrow_this__")) {
+    if (is_arrow_ && this->has_own_property("__arrow_this__")) {
         actual_this = this->get_property("__arrow_this__");
     }
 

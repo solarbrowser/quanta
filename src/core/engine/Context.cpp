@@ -370,9 +370,8 @@ void Context::create_global_function_binding(const std::string& name, const Valu
 bool Context::is_in_tdz(const std::string& name) const {
     Environment* env = lexical_environment_;
     while (env) {
-        if (env->get_type() != Environment::Type::Object && env->has_own_binding(name)) {
-            return !env->is_initialized_binding(name);
-        }
+        bool in_tdz = false;
+        if (env->declarative_binding_tdz(name, in_tdz)) return in_tdz;
         env = env->get_outer();
     }
     return false;

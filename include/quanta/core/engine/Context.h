@@ -625,6 +625,20 @@ public:
     Environment* get_outer() const { return outer_environment_; }
     Object* get_binding_object() const { return binding_object_; }
     bool is_with_environment() const { return is_with_environment_; }
+    // has_own_binding followed by is_initialized_binding asks slots_ for the
+    // same name twice, and the TDZ check on every uncached name read did
+    // exactly that. Declarative environments only: for them has_own_binding
+    // IS this lookup, so folding the two changes nothing but the count.
+    // Returns false when the environment does not own `name`; the caller must
+    // then keep walking outward, since the answer belongs to the NEAREST
+    // owner and nothing further in.
+    bool declarative_binding_tdz(const std::string& name, bool& in_tdz) const {
+        if (type_ == Type::Object) return false;
+        const BindingSlot* slot = slots_.find(name);
+        if (!slot) return false;
+        in_tdz = !slot->initialized;
+        return true;
+    }
     void set_with_environment(bool value) { is_with_environment_ = value; }
     bool is_closure_boundary() const { return is_closure_boundary_; }
     void mark_closure_boundary() { is_closure_boundary_ = true; }

@@ -7,6 +7,7 @@
 #ifndef QUANTA_GC_COLLECTOR_H
 #define QUANTA_GC_COLLECTOR_H
 
+#include "quanta/core/gc/Heap.h"
 #include "quanta/core/vm/FixedArray.h"
 #include <chrono>
 #include <cstddef>
@@ -34,8 +35,34 @@ public:
     //   QUANTA_GC_MARK_ONLY=1  skip the sweep (marking soak-test mode)
     //   QUANTA_GC_PROFILE=1  per-phase timing breakdown to stderr
 
-    // The interpreter's per-statement hook: collects when requested/stressed.
-    static void safepoint();
+    // The interpreter's per-back-edge hook: collects when requested/stressed.
+    //
+    // The armed test is inline and the work is not. Out of line, the common
+    // "nothing to do" case was still a call, and a call tells the compiler
+    // every caller-saved register is clobbered -- which spilled the dispatch
+    // loop's hot state to the stack once per loop iteration.
+    //
+    // Deliberately reads the same variables safepoint_slow() branches on
+    // rather than a derived "armed" flag: a second copy of this state would
+    // have to be updated at every site that arms or disarms one of them, and
+    // an undercount there means a collection that silently never runs.
+    static void safepoint() {
+        if (Heap::gc_requested() || Heap::major_gc_requested() ||
+            major_in_progress_ || stress_mode_ != 0) {
+            safepoint_slow();
+        }
+    }
+    static void safepoint_slow();
+
+    // True between an incremental major cycle's first slice and its last;
+    // read directly by safepoint() above and by the barriers in Collector.cpp.
+    static thread_local bool major_in_progress_;
+
+    // QUANTA_GC_STRESS, resolved on the first safepoint_slow(). Starts at -1
+    // ("not resolved yet"), which reads as armed, so the inline test above
+    // can never skip a stress-mode collection before the value is known and
+    // needs no function-local static guard of its own.
+    static int stress_mode_;
 
     // Unconditional full collection (gc() builtin, tests).
     static void collect();
@@ -55,7 +82,7 @@ public:
 
     // True between a major cycle's first slice and its last (quiescence).
     // No minor collection runs while true.
-    static bool major_in_progress();
+    static bool major_in_progress() { return major_in_progress_; }
 
     // Records `cell` (base address of a live cell) as mutated. Needed on
     // every post-construction write of a traced field or property slot;
