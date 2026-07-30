@@ -641,32 +641,23 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 if (__builtin_expect(idx_double >= 0 && idx_double <= 4294967294.0 && idx_double == std::floor(idx_double), 1)) {
                     uint32_t index = static_cast<uint32_t>(idx_double);
                     // If index is unowned and a Proxy is the prototype, delegate so the "set" trap fires with the right receiver.
-                    if (!obj->has_own_property(std::to_string(index))) {
-                        Object* proto = obj->get_prototype();
-                        if (proto && proto->get_type() == Object::ObjectType::Proxy) {
-                            static_cast<Proxy*>(proto)->set_trap(Value(std::to_string(index)), right_value, Value(obj));
-                            if (ctx.has_exception()) return Value();
-                            return right_value;
-                        }
-                        // Integer-Indexed exotic [[Set]] (10.4.5.5): a canonical-but-invalid numeric key on a TypedArray prototype is a no-op success, it must not fall through to creating an own element on this array.
-                        if (proto && proto->is_typed_array()) {
-                            double num_idx;
-                            if (TypedArrayBase::canonical_numeric_index(std::to_string(index), num_idx) &&
-                                !static_cast<TypedArrayBase*>(proto)->is_valid_integer_index(num_idx)) {
-                                return right_value;
-                            }
-                        }
-                    } else {
-                        // Property is owned -- use set_property to respect any own accessor descriptor.
-                        bool ok = obj->set_property(std::to_string(index), right_value);
-                        if (!ok && ctx.is_strict_mode()) {
-                            ctx.throw_type_error("Cannot assign to read only property '" + std::to_string(index) + "'");
-                            return Value();
-                        }
-                        if (ctx.has_exception()) return Value();
-                        return right_value;
+                    std::string index_key = std::to_string(index);
+                    // An index the array does not own is not this array's to
+                    // create on its own: [[Set]] consults the whole prototype
+                    // chain first, where an accessor has to run and a
+                    // non-writable data property has to block. Listing the
+                    // exotic prototypes to step around (Proxy, typed array)
+                    // missed the ordinary ones. ordinary_set is what the
+                    // compiled path calls and it covers all of them.
+                    bool ok = obj->has_own_property(index_key)
+                        // Owned: set_property, so an own accessor descriptor still wins.
+                        ? obj->set_property(index_key, right_value)
+                        : obj->ordinary_set(index_key, right_value);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok && ctx.is_strict_mode()) {
+                        ctx.throw_type_error("Cannot assign to read only property '" + index_key + "'");
+                        return Value();
                     }
-                    obj->set_element(index, right_value);
                     return right_value;
                 }
             }

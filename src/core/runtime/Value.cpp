@@ -744,6 +744,20 @@ Value Value::modulo(const Value& other) const {
     return Value(result);
 }
 
+// ES 6.1.6.1.3 Number::exponentiate. C's pow disagrees in three places, and
+// the first two checks have to stay in this order: a zero exponent yields 1
+// even when the base is NaN.
+static Value number_power(double base, double exp) {
+    if (std::isnan(exp)) return Value::nan();
+    if (exp == 0.0) return Value(1.0);
+    if (std::isnan(base)) return Value::nan();
+    if ((base == 1.0 || base == -1.0) && std::isinf(exp)) return Value::nan();
+    double result = std::pow(base, exp);
+    if (std::isinf(result)) return std::signbit(result) ? Value::negative_infinity() : Value::positive_infinity();
+    if (std::isnan(result)) return Value::nan();
+    return Value(result);
+}
+
 Value Value::power(const Value& other) const {
     if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     if (is_bigint() && other.is_bigint()) {
@@ -754,25 +768,8 @@ Value Value::power(const Value& other) const {
         if (!base) return Value(new BigInt(0));
         return Value(new BigInt(BigInt::pow(*base, *exp)));
     }
-    if (is_number() && other.is_number()) {
-        double base = as_number();
-        double exp = other.as_number();
-        // Per spec: if exp is NaN, return NaN (overrides C's pow(1,NaN)=1).
-        if (std::isnan(exp)) return Value::nan();
-        if (std::isnan(base)) return Value::nan();
-        // Per spec: if |base| == 1 and exp is ±Infinity, result is NaN
-        if ((base == 1.0 || base == -1.0) && std::isinf(exp)) {
-            return Value::nan();
-        }
-        double result = std::pow(base, exp);
-        if (std::isinf(result)) return std::signbit(result) ? Value::negative_infinity() : Value::positive_infinity();
-        if (std::isnan(result)) return Value::nan();
-        return Value(result);
-    }
-    double result = std::pow(to_number(), other.to_number());
-    if (std::isinf(result)) return std::signbit(result) ? Value::negative_infinity() : Value::positive_infinity();
-    if (std::isnan(result)) return Value::nan();
-    return Value(result);
+    if (is_number() && other.is_number()) return number_power(as_number(), other.as_number());
+    return number_power(to_number(), other.to_number());
 }
 
 Value Value::unary_plus() const {

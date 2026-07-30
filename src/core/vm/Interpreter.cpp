@@ -652,6 +652,34 @@ void learn_keyed(KeyedFeedback* fb, Shape* shape, const std::string& key, uint32
     }
 }
 
+// A key that is already a number and is exactly a canonical array index.
+// Everything else, including fractions, negatives and the out-of-range
+// doubles, falls through to ToPropertyKey. -0 lands on 0, which is what
+// ToPropertyKey produces for it as well.
+inline bool array_index_key(const Value& v, uint32_t& out) {
+    if (!v.is_number()) return false;
+    double d = v.as_number();
+    // Bound first: casting a double outside the uint32 range is undefined.
+    if (!(d >= 0.0 && d < 4294967295.0)) return false;
+    uint32_t i = static_cast<uint32_t>(d);
+    if (static_cast<double>(i) != d) return false;
+    out = i;
+    return true;
+}
+
+// Whether an indexed read or write may go straight to the dense element
+// vector, skipping the key's string form entirely. has_only_dense_elements
+// already rules out holes, per-index attributes, sparse storage and every
+// receiver that is not a plain Array, so an in-bounds index here is an own
+// data property: the read cannot owe anything to the prototype chain, and
+// the write shadows it.
+inline bool dense_element_slot(const Value& receiver, uint32_t index, Object*& out) {
+    Object* obj = as_object_like(receiver);
+    if (!obj || !obj->has_only_dense_elements() || index >= obj->element_count()) return false;
+    out = obj;
+    return true;
+}
+
 // GetKeyed's own cache: get_named()'s FeedbackSlot-based cache can't be
 // reused directly here because GetNamed's `name` is a compile-time constant
 // per bytecode site, while GetKeyed's key comes from a register and can
@@ -1147,15 +1175,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
             case Op::Add:    BINARY_OP(BinOp::ADD, Value(l + r)); break;
             case Op::Sub:    BINARY_OP(BinOp::SUBTRACT, Value(l - r)); break;
             case Op::Mul:    BINARY_OP(BinOp::MULTIPLY, Value(l * r)); break;
-            case Op::Div: {
-                // The number fast path in apply_operator has dedicated
-                // divide-by-zero handling; keep divide on the shared path.
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::DIVIDE, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
+            // IEEE division already produces the signed infinities and the
+            // NaN that the shared path spells out by hand, and Value boxes
+            // both, so two numbers need no special casing here.
+            case Op::Div: BINARY_OP(BinOp::DIVIDE, Value(l / r)); break;
             case Op::Mod: {
                 const Value& lhs = regs[code[pc]];
                 pc += 1;
@@ -2043,6 +2066,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     CHECK_EXC();
                     break;
                 }
+                uint32_t index;
+                Object* dense;
+                if (array_index_key(acc, index) && dense_element_slot(recv, index, dense)) {
+                    acc = dense->get_element_unchecked(index);
+                    break;
+                }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
                 acc = get_keyed(ctx, recv, key, &chunk.ic_feedback->keyed_feedback[fb_idx]);
@@ -2059,6 +2088,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                     ctx.throw_type_error(std::string("Cannot set properties of ") +
                         (recv.is_null() ? "null" : "undefined"));
                     CHECK_EXC();
+                    break;
+                }
+                uint32_t index;
+                Object* dense;
+                if (array_index_key(regs[key_reg], index) && dense_element_slot(recv, index, dense)) {
+                    dense->set_element(index, acc);
                     break;
                 }
                 std::string key = regs[key_reg].to_property_key();

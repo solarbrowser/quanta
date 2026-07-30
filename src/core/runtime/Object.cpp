@@ -1535,6 +1535,16 @@ bool Object::set_element(uint32_t index, const Value& value) {
     if (is_new_element && !is_extensible()) {
         return false;
     }
+    // Growing past a non-writable "length" must fail, not silently grow --
+    // the same rule set_property_descriptor applies to a defineProperty of
+    // the same index (ArraySetLength, 10.4.2.1 step 3.f).
+    if (get_type() == ObjectType::Array &&
+        static_cast<double>(index) >= static_cast<double>(get_length())) {
+        PropertyDescriptor length_desc = get_property_descriptor("length");
+        if (length_desc.has_writable() && !length_desc.is_writable()) {
+            return false;
+        }
+    }
 
     if (__builtin_expect(index >= elements_length(), 0)) {
         if (__builtin_expect(sparse_growth_too_costly(index, elements_length()), 0)) {
