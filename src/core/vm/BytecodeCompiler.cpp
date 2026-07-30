@@ -654,6 +654,18 @@ bool has_spread(const std::vector<std::unique_ptr<ASTNode>>& nodes) {
     return false;
 }
 
+// Spread compiles everywhere except `super(...)`, which still needs the
+// derived-constructor ceremony and delegates (see compile_expression). The
+// three walkers below predate that: they treated ANY spread as a delegate,
+// which forced its operands to be environment-resident and demoted the whole
+// containing function out of register mode.
+bool spread_call_delegates(const CallExpression* n) {
+    if (!has_spread(n->get_arguments())) return false;
+    const ASTNode* callee = n->get_callee();
+    return callee && callee->get_type() == ASTNode::Type::IDENTIFIER &&
+           static_cast<const Identifier*>(callee)->get_name() == "super";
+}
+
 // Anything the native path can't emit: spread, non-computed __proto__ (the
 // [[Prototype]]-setting form -- computed/shorthand __proto__ is just a plain
 // data property, handled like any other computed key), computed-key
@@ -812,7 +824,7 @@ bool contains_delegated_expr(const ASTNode* node) {
         }
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* n = static_cast<const CallExpression*>(node);
-            if (has_spread(n->get_arguments())) return true;
+            if (spread_call_delegates(n)) return true;
             if (contains_delegated_expr(n->get_callee())) return true;
             for (const auto& arg : n->get_arguments()) {
                 if (contains_delegated_expr(arg.get())) return true;
@@ -821,7 +833,6 @@ bool contains_delegated_expr(const ASTNode* node) {
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            if (has_spread(n->get_arguments())) return true;
             if (contains_delegated_expr(n->get_constructor())) return true;
             for (const auto& arg : n->get_arguments()) {
                 if (contains_delegated_expr(arg.get())) return true;
@@ -863,7 +874,6 @@ bool contains_delegated_expr(const ASTNode* node) {
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
-            if (has_spread(n->get_elements())) return true;
             for (const auto& el : n->get_elements()) {
                 if (el && contains_delegated_expr(el.get())) return true;
             }
@@ -1293,7 +1303,7 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             // Spread args delegate whole (see compile_expression) -- force
             // residency same as a complex object literal above.
             const auto* n = static_cast<const CallExpression*>(node);
-            bool forced = inside_closure || has_spread(n->get_arguments());
+            bool forced = inside_closure || spread_call_delegates(n);
             collect_closure_names(n->get_callee(), forced, out, saw_eval, saw_class, unknown, suspendable);
             for (const auto& arg : n->get_arguments())
                 collect_closure_names(arg.get(), forced, out, saw_eval, saw_class, unknown, suspendable);
@@ -1301,7 +1311,7 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            bool forced = inside_closure || has_spread(n->get_arguments());
+            bool forced = inside_closure;
             collect_closure_names(n->get_constructor(), forced, out, saw_eval, saw_class, unknown, suspendable);
             for (const auto& arg : n->get_arguments())
                 collect_closure_names(arg.get(), forced, out, saw_eval, saw_class, unknown, suspendable);
@@ -1347,7 +1357,7 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
-            bool forced = inside_closure || has_spread(n->get_elements());
+            bool forced = inside_closure;
             for (const auto& el : n->get_elements())
                 collect_closure_names(el.get(), forced, out, saw_eval, saw_class, unknown, suspendable);
             return;
@@ -1670,7 +1680,7 @@ void collect_free_names(const ASTNode* node,
         }
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* n = static_cast<const CallExpression*>(node);
-            if (has_spread(n->get_arguments())) { unknown = true; return; }
+            if (spread_call_delegates(n)) { unknown = true; return; }
             collect_free_names(n->get_callee(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
             for (const auto& arg : n->get_arguments())
                 collect_free_names(arg.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
@@ -1678,7 +1688,6 @@ void collect_free_names(const ASTNode* node,
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            if (has_spread(n->get_arguments())) { unknown = true; return; }
             collect_free_names(n->get_constructor(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
             for (const auto& arg : n->get_arguments())
                 collect_free_names(arg.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
@@ -1721,7 +1730,6 @@ void collect_free_names(const ASTNode* node,
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
-            if (has_spread(n->get_elements())) { unknown = true; return; }
             for (const auto& el : n->get_elements())
                 collect_free_names(el.get(), scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
             return;
