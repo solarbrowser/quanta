@@ -24,6 +24,12 @@
 #endif
 
 namespace Quanta {
+
+// QUANTA_VM is read once at startup and never changes, but VM::enabled() lives
+// in another translation unit, so each of the three call sites below paid a
+// real call plus a static-init guard on every invocation -- one of them on the
+// register-mode gate, i.e. every JS call.
+static const bool g_vm_enabled = VM::enabled();
     class Engine;
     class JITCompiler;
 }
@@ -406,32 +412,11 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         return Value();
     }
     ASTNode* ast = ast_body();
-    // Shadows the old parameter_objects_/body_ member names so the rest of
-    // this function (both the compiled-chunk path and the tree-walker slow
-    // path below) reads unchanged -- both are decl-site data now living on
-    // the shared executable_ (null only for native functions, which return
-    // before any of this is reached).
-    const auto& parameter_objects_ = get_parameter_objects();
-    ASTNode* body_ = ast;
     Position call_position = ast ? ast->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, get_name(), &ctx.get_current_filename(), call_position, this);
 
     execution_count_++;
 
-    if (execution_count_ >= 3) {
-        #ifdef __GNUC__
-        __builtin_prefetch(this, 0, 3);
-        __builtin_prefetch(ast, 0, 3);
-        __builtin_prefetch(&args, 0, 2);
-        __builtin_prefetch(&ctx, 0, 2);
-        #elif defined(_MSC_VER)
-        _mm_prefetch((const char*)this, _MM_HINT_T0);
-        _mm_prefetch((const char*)ast, _MM_HINT_T0);
-        _mm_prefetch((const char*)&args, _MM_HINT_T0);
-        _mm_prefetch((const char*)&ctx, _MM_HINT_T0);
-        #endif
-    }
-    
     if (execution_count_ >= 2 && !is_hot_) {
         is_hot_ = true;
     }
@@ -543,7 +528,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // cannot be missed here, because `super`, a private name and a direct eval
     // each force env_mode, which this same condition already excludes.
     bool ctor_ok = !is_class_constructor_ || !is_derived_ctor();
-    if (VM::enabled() && executable_ && !executable_->vm_incompatible && executable_->bytecode_chunk && !executable_->bytecode_chunk->env_mode &&
+    if (g_vm_enabled && executable_ && !executable_->vm_incompatible && executable_->bytecode_chunk && !executable_->bytecode_chunk->env_mode &&
         ctor_ok && executable_->strict_directive_state >= 0 &&
         executable_->closure_props_state == 0 && (executable_->self_name_state == 0 || executable_->self_name_state == 2) &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
@@ -600,6 +585,14 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         }
         return vm_result;
     }
+
+    // Only the tree-walker below reads these. They used to be computed in the
+    // prologue, on the wrong side of the fast-path gate: get_parameter_objects
+    // carries a static-init guard and body_ is dead there.
+    // The names shadow the old members so the slow path reads unchanged --
+    // both are decl-site data living on the shared executable_.
+    const auto& parameter_objects_ = get_parameter_objects();
+    ASTNode* body_ = ast;
 
     Context* parent_context = &ctx;
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
@@ -694,7 +687,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // so the per-call binding insert -- and the hash-map growth it forces in
     // the fresh Environment -- is skipped. First call (chunk not compiled
     // yet) and every non-VM path still bind normally.
-    bool vm_register_fast = VM::enabled() && !executable_->vm_incompatible && executable_->bytecode_chunk &&
+    bool vm_register_fast = g_vm_enabled && !executable_->vm_incompatible && executable_->bytecode_chunk &&
                             !executable_->bytecode_chunk->env_mode && !function_context.this_needs_super();
     if (!vm_register_fast) {
         if (!function_context.create_binding("this", actual_this, true)) {
@@ -753,7 +746,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // `arguments`/`this`/`eval`, so the whole binding ceremony below is dead
     // weight for them (it dominated call-heavy benchmarks, e.g. fib). Derived
     // constructors ARE compiled -- Op::LdaThis carries its own this-TDZ check.
-    if (VM::enabled() && !executable_->vm_incompatible && ast &&
+    if (g_vm_enabled && !executable_->vm_incompatible && ast &&
         ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         if (!executable_->bytecode_chunk) {
             // A `with` environment in the captured scope chain makes write-
