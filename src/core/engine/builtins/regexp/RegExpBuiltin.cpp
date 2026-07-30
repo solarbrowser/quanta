@@ -178,6 +178,43 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str) {
     return result;
 }
 
+// RegExpBuiltinExec's sibling for callers that only need "did it match".
+// Same lastIndex ceremony as regexp_builtin_exec above -- read it, hand it to
+// the engine, write it back for a global or sticky regexp, and fail the same
+// way if the write is refused -- but RegExp::test does the match without
+// building the result array, whose index/input/groups properties and their
+// descriptors were the whole cost of RegExp.prototype.test. RegExp::test and
+// RegExp::exec move last_index_ identically (both gate on global || sticky),
+// so the two paths cannot disagree about where the next match starts.
+bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& ok) {
+    ok = false;
+    RegExpObject* reo = RegExpObject::from(r);
+    if (!reo || !reo->impl()) {
+        ctx.throw_type_error("RegExp.prototype.test called on incompatible receiver");
+        return false;
+    }
+    const std::shared_ptr<RegExp>& re = reo->impl();
+
+    Value lastIndex_val = r->get_property("lastIndex");
+    double li = lastIndex_val.to_number();
+    if (ctx.has_exception()) return false;
+    if (std::isnan(li) || li < 0) li = 0;
+    re->set_last_index(li > static_cast<double>(std::numeric_limits<int>::max())
+                           ? std::numeric_limits<int>::max() : static_cast<int>(li));
+
+    bool found = re->test(str);
+
+    if (re->get_global() || re->get_sticky()) {
+        bool li_ok = r->set_property("lastIndex", Value(static_cast<double>(re->get_last_index())));
+        if (!li_ok || ctx.has_exception()) {
+            if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
+            return false;
+        }
+    }
+    ok = true;
+    return found;
+}
+
 // RegExpExec abstract operation: use a callable "exec" property when present,
 // otherwise RegExpBuiltinExec -- replacing RegExp.prototype.exec with a
 // non-callable is legal and must not stop a real RegExp from matching.
@@ -527,11 +564,15 @@ void register_regexp_builtins(Context& ctx) {
             }
             return regexp_builtin_exec(ctx, this_obj, str);
         }, 1);
+    // Kept for identity only, never dereferenced: RegExp.prototype.exec is
+    // reachable from the prototype for as long as this realm lives, and test
+    // below needs to tell "still the built-in" from "user replaced it".
+    Function* builtin_regexp_exec = regexp_exec_proto_fn.get();
     regexp_prototype->set_property("exec", Value(regexp_exec_proto_fn.release()), PropertyAttributes::BuiltinFunction);
 
     // ES6: RegExp.prototype.test - generic function that calls this.exec
     auto regexp_test_fn = ObjectFactory::create_native_function("test",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [builtin_regexp_exec](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!RegExpObject::from(this_obj)) {
                 ctx.throw_type_error("RegExp.prototype.test called on incompatible receiver");
@@ -539,15 +580,28 @@ void register_regexp_builtins(Context& ctx) {
             }
             Value arg0_t = args.empty() ? Value() : args[0];
             std::string str;
+            if (arg0_t.is_symbol()) {
+                ctx.throw_type_error("Cannot convert Symbol to string");
+                return Value();
+            }
             if (arg0_t.is_object() || arg0_t.is_function()) { str = arg0_t.to_property_key(); if (ctx.has_exception()) return Value(); }
             else { str = arg0_t.to_string(); }
             Value exec_fn = this_obj->get_property("exec");
-            if (exec_fn.is_function()) {
-                Value result = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
-                if (ctx.has_exception()) return Value();
-                return Value(!result.is_null() && !result.is_undefined());
+            // Whitelist: a real RegExp still carrying the built-in exec. A
+            // replaced exec has to be CALLED, and its result is observable, so
+            // everything else keeps the path it always had.
+            if (exec_fn.is_function() && exec_fn.as_function() == builtin_regexp_exec) {
+                bool ok = false;
+                bool found = regexp_builtin_test(ctx, this_obj, str, ok);
+                if (!ok) return Value();
+                return Value(found);
             }
-            return Value(false);
+            // Everything else goes through RegExpExec, which calls a replaced
+            // exec and otherwise falls back to RegExpBuiltinExec -- returning
+            // false for a non-callable exec skipped the match entirely.
+            Value result;
+            if (!regexp_exec_abstract(ctx, this_obj, str, result)) return Value();
+            return Value(!result.is_null() && !result.is_undefined());
         }, 1);
     regexp_prototype->set_property("test", Value(regexp_test_fn.release()), PropertyAttributes::BuiltinFunction);
 
