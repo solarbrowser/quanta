@@ -1418,13 +1418,11 @@ bool Object::proto_chain_has_no_indices() const {
     return true;
 }
 
-bool Object::has_only_dense_elements() const {
-    if (get_type() != ObjectType::Array) return false;
+bool Object::dense_check_slow() const {
     // Every Array keeps `length` in descriptors_, so their mere presence says
     // nothing. Only an INDEX-keyed entry matters -- that index's value lives in
     // the descriptor, not where the dense vector puts it -- and the object
     // remembers whether it has ever had one.
-    if (dense_verified()) return true;
     if (has_index_descriptor()) return false;
     if (auto* holes = deleted_elements(); holes && !holes->empty()) return false;
     if (auto* sparse = sparse_overflow(); sparse && !sparse->empty()) return false;

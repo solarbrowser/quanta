@@ -372,13 +372,25 @@ public:
     // then may get_element_unchecked stand in for a keyed read -- a hole has to
     // resolve against the prototype, and an index with a descriptor is not
     // where the raw slot says it is.
-    bool has_only_dense_elements() const;
+    // Inline on purpose: this gates every indexed access and every .length
+    // read, and out of line in Object.cpp it was a real call from
+    // Interpreter.cpp on each one (no LTO). The verified case is two loads and
+    // a branch; everything that has to look at holes, sparse storage or the
+    // length stays behind the out-of-line half below.
+    bool has_only_dense_elements() const {
+        if (get_type() != ObjectType::Array) return false;
+        if (dense_verified()) return true;
+        return dense_check_slow();
+    }
 
     // True when nothing on this object's prototype chain carries an index
     // property. [[Set]] on an index the receiver does not own consults that
     // chain -- an inherited setter has to run, an inherited non-writable data
     // property has to block -- so a direct element write may only stand in for
     // it while the chain is clear.
+    // has_only_dense_elements()'s uncached half; sets the flag when it passes.
+    bool dense_check_slow() const;
+
     bool proto_chain_has_no_indices() const;
 
     bool set_element(uint32_t index, const Value& value);
