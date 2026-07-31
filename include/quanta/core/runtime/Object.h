@@ -1156,6 +1156,14 @@ public:
             }
             return;
         }
+        // An anonymous re-instantiation of a shared declaration site asks to
+        // record an empty override, and the branch above exists to clear that
+        // again the moment the real name arrives. Allocating a 192-byte
+        // instance block to hold "" in the meantime is the single largest
+        // source of those blocks -- one per closure, for a literal method in
+        // a hot factory -- and get_name() falls back to the shared decl-site
+        // name anyway, which is what the override would have been replaced by.
+        if (name.empty()) return;
         auto& overrides = ensure_instance_data().overrides;
         overrides.name = name;
         overrides.has_name = true;
