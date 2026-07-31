@@ -136,6 +136,7 @@ std::unordered_map<std::string, Value>* Object::sparse_overflow() const {
     return e ? e->sparse_overflow.get() : nullptr;
 }
 std::unordered_map<std::string, Value>& Object::ensure_sparse_overflow() {
+    invalidate_dense();
     RareExtras& e = ensure_extras();
     if (!e.sparse_overflow) e.sparse_overflow = std::make_unique<std::unordered_map<std::string, Value>>();
     return *e.sparse_overflow;
@@ -145,6 +146,7 @@ std::unordered_set<uint32_t>* Object::deleted_elements() const {
     return e ? e->deleted_elements.get() : nullptr;
 }
 std::unordered_set<uint32_t>& Object::ensure_deleted_elements() {
+    invalidate_dense();
     RareExtras& e = ensure_extras();
     if (!e.deleted_elements) e.deleted_elements = std::make_unique<std::unordered_set<uint32_t>>();
     return *e.deleted_elements;
@@ -401,7 +403,7 @@ void Object::ensure_elements_capacity(uint32_t needed) {
 }
 
 void Object::resize_elements(uint32_t new_length) {
-    invalidate_dense_length();
+    invalidate_dense();
     uint32_t old_length = elements_length();
     if (new_length > old_length) {
         ensure_elements_capacity(new_length);
@@ -413,7 +415,7 @@ void Object::resize_elements(uint32_t new_length) {
 }
 
 void Object::bump_array_length(double candidate) {
-    invalidate_dense_length();
+    invalidate_dense();
     if (Value* slot = find_shape_slot("length")) {
         if (candidate > slot->to_number()) {
             Value new_len(candidate);
@@ -1109,7 +1111,7 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
             }
         }
         Value length_value(static_cast<double>(new_length));
-        invalidate_dense_length();
+        invalidate_dense();
 
         if (!set_shape_slot("length", length_value)) {
             migrate_to_dictionary_mode();
@@ -1422,12 +1424,12 @@ bool Object::has_only_dense_elements() const {
     // nothing. Only an INDEX-keyed entry matters -- that index's value lives in
     // the descriptor, not where the dense vector puts it -- and the object
     // remembers whether it has ever had one.
+    if (dense_verified()) return true;
     if (has_index_descriptor()) return false;
     if (auto* holes = deleted_elements(); holes && !holes->empty()) return false;
     if (auto* sparse = sparse_overflow(); sparse && !sparse->empty()) return false;
-    if (dense_length_verified()) return true;
     if (get_length() != elements_length()) return false;
-    mark_dense_length_verified();
+    mark_dense_verified();
     return true;
 }
 
