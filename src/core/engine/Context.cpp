@@ -47,7 +47,7 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Context) == 256);
+static_assert(sizeof(Context) == 232);
 static_assert(sizeof(Environment) == 176);
 #else
 static_assert(sizeof(Context) <= 896);

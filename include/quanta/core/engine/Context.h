@@ -107,7 +107,6 @@ private:
     std::unique_ptr<BuiltinMaps> builtins_;
 
     Value current_exception_;
-    std::vector<std::pair<size_t, size_t>> try_catch_blocks_;
 
     Value return_value_;
 

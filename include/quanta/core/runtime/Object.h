@@ -961,7 +961,6 @@ private:
     // stays stale-true, which only costs one redundant scan in
     // Function::call's own install-check below, not a correctness issue.
     bool has_closure_props_hint_ : 1 = false;
-    mutable bool is_hot_ : 1 = false;
     // Per-instance IC state, used in place of BytecodeChunk::lookup_cache/
     // private_feedback when the executable's bytecode_chunk is shared --
     // instances differ in captured environment/declaring brand, so a
@@ -1063,7 +1062,6 @@ private:
         return (!is_native_ && instance_data_) ? static_cast<NonNativeInstanceData*>(instance_data_) : nullptr;
     }
 
-    mutable uint32_t execution_count_;
 
     // Detection-only half of the __closure_* scan in Function::call (no
     // Context needed) -- used to resolve executable_'s closure_props_state
@@ -1274,11 +1272,6 @@ public:
     const ExecutableRef<const FunctionExecutable>& get_executable() const { return executable_; }
     class ASTNode* ast_body() const { return executable_ ? executable_->body.get() : nullptr; }
 
-    uint32_t get_execution_count() const { return execution_count_; }
-    bool is_hot_function() const { return is_hot_; }
-    void mark_as_hot() const { is_hot_ = true; }
-    void reset_performance_stats() const { execution_count_ = 0; is_hot_ = false; }
-    
     // Non-virtual: switches on get_function_kind(), same reasoning as
     // trace() above. call_default() is the plain-Function body.
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());

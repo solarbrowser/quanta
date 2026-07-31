@@ -70,7 +70,7 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function),
       closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
-      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     auto exe = make_executable_ref();
     exe->name = name;  // fresh executable, guaranteed empty -- no compare needed
     exe->parameters = params;
@@ -113,7 +113,7 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function),
       closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
-      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     auto exe = make_executable_ref();
     exe->name = name;  // fresh executable, guaranteed empty -- no compare needed
     for (const auto& param : params) {
@@ -160,7 +160,7 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), executable_(std::move(executable)),
       closure_context_(closure_context),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
-      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     // executable_ may already be shared with sibling instances from the same
     // decl site -- populate its name once, or fall back to a per-instance
     // override if a sibling already claimed a different one (see
@@ -196,8 +196,8 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
-      instance_data_(new NativeFunctionData{std::move(native_fn), 0, name}),
-      execution_count_(0), is_hot_(false) {
+      instance_data_(new NativeFunctionData{std::move(native_fn), 0, name})
+ {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -216,8 +216,8 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
-      instance_data_(new NativeFunctionData{std::move(native_fn), arity, name}),
-      execution_count_(0), is_hot_(false) {
+      instance_data_(new NativeFunctionData{std::move(native_fn), arity, name})
+ {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -414,12 +414,6 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     ASTNode* ast = ast_body();
     Position call_position = ast ? ast->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, get_name(), &ctx.get_current_filename(), call_position, this);
-
-    execution_count_++;
-
-    if (execution_count_ >= 2 && !is_hot_) {
-        is_hot_ = true;
-    }
 
     // Class constructors must be called with new
     if (is_class_constructor_ && !ctx.is_in_constructor_call()) {

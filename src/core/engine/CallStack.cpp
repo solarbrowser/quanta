@@ -97,13 +97,12 @@ void CallStack::set_instance(CallStack* stack) {
 void CallStack::push_frame(const std::string& function_name,
                           const std::string* filename,
                           const Position& position,
-                          Function* function_ptr,
-                          ASTNode* call_site) {
+                          Function* function_ptr) {
     if (is_full()) {
         return;
     }
     
-    frames_.emplace_back(function_name, filename, position, function_ptr, call_site);
+    frames_.emplace_back(function_name, filename, position, function_ptr);
 }
 
 void CallStack::pop_frame() {
