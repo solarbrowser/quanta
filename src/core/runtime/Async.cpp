@@ -199,7 +199,7 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     CallStack& stack = CallStack::instance();
     ASTNode* body_ = ast_body();
     Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
-    CallStackFrameGuard frame_guard(stack, get_name(), &ctx.get_current_filename(), call_position, this);
+    CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
     // &ctx (the caller's own context, not a fresh one) is captured into the
     // Promise's context_ field and can be read again arbitrarily later by

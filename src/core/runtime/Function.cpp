@@ -413,7 +413,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     }
     ASTNode* ast = ast_body();
     Position call_position = ast ? ast->get_start() : Position(1, 1, 0);
-    CallStackFrameGuard frame_guard(stack, get_name(), &ctx.get_current_filename(), call_position, this);
+    CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
     // Class constructors must be called with new
     if (is_class_constructor_ && !ctx.is_in_constructor_call()) {

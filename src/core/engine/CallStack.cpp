@@ -58,22 +58,33 @@ Object* resolve_private_accessor_owner(const std::string& bare_name) {
     return nullptr;
 }
 
+const std::string& CallStackFrame::name() const {
+    static const std::string kEmpty;
+    return function_ptr ? function_ptr->get_name() : kEmpty;
+}
+
+Position CallStackFrame::position() const {
+    const ASTNode* body = function_ptr ? function_ptr->ast_body() : nullptr;
+    return body ? body->get_start() : Position(1, 1, 0);
+}
+
 std::string CallStackFrame::to_string() const {
     std::ostringstream oss;
+    const Position pos = position();
     oss << "at ";
     
-    if (!function_name.empty()) {
-        oss << function_name;
+    if (!name().empty()) {
+        oss << name();
     } else {
         oss << "<anonymous>";
     }
     
     if (filename && !filename->empty()) {
         oss << " (" << *filename;
-        if (position.line > 0) {
-            oss << ":" << position.line;
-            if (position.column > 0) {
-                oss << ":" << position.column;
+        if (pos.line > 0) {
+            oss << ":" << pos.line;
+            if (pos.column > 0) {
+                oss << ":" << pos.column;
             }
         }
         oss << ")";
@@ -94,15 +105,12 @@ void CallStack::set_instance(CallStack* stack) {
     instance_ = stack;
 }
 
-void CallStack::push_frame(const std::string& function_name,
-                          const std::string* filename,
-                          const Position& position,
-                          Function* function_ptr) {
+void CallStack::push_frame(const std::string* filename, Function* function_ptr) {
     if (is_full()) {
         return;
     }
     
-    frames_.emplace_back(function_name, filename, position, function_ptr);
+    frames_.emplace_back(filename, function_ptr);
 }
 
 void CallStack::pop_frame() {
@@ -117,7 +125,7 @@ void CallStack::clear() {
 
 const CallStackFrame& CallStack::top() const {
     if (frames_.empty()) {
-        static CallStackFrame empty_frame("", nullptr, Position());
+        static CallStackFrame empty_frame(nullptr, nullptr);
         return empty_frame;
     }
     return frames_.back();
@@ -125,7 +133,7 @@ const CallStackFrame& CallStack::top() const {
 
 const CallStackFrame& CallStack::at(size_t index) const {
     if (index >= frames_.size()) {
-        static CallStackFrame empty_frame("", nullptr, Position());
+        static CallStackFrame empty_frame(nullptr, nullptr);
         return empty_frame;
     }
     return frames_[index];
@@ -162,7 +170,8 @@ std::string CallStack::current_function() const {
     if (frames_.empty()) {
         return "<global>";
     }
-    return frames_.back().function_name.empty() ? "<anonymous>" : frames_.back().function_name;
+    const std::string& n = frames_.back().name();
+    return n.empty() ? "<anonymous>" : n;
 }
 
 std::string CallStack::current_filename() const {
@@ -177,7 +186,7 @@ Position CallStack::current_position() const {
     if (frames_.empty()) {
         return Position();
     }
-    return frames_.back().position;
+    return frames_.back().position();
 }
 
 bool CallStack::check_stack_overflow() {
@@ -191,18 +200,19 @@ std::string CallStack::format_frame(const CallStackFrame& frame, size_t index) c
     std::ostringstream oss;
     oss << "at ";
     
-    if (!frame.function_name.empty()) {
-        oss << frame.function_name;
+    const Position frame_pos = frame.position();
+    if (!frame.name().empty()) {
+        oss << frame.name();
     } else {
         oss << "<anonymous>";
     }
     
     if (frame.filename && !frame.filename->empty()) {
         oss << " (" << *frame.filename;
-        if (frame.position.line > 0) {
-            oss << ":" << frame.position.line;
-            if (frame.position.column > 0) {
-                oss << ":" << frame.position.column;
+        if (frame_pos.line > 0) {
+            oss << ":" << frame_pos.line;
+            if (frame_pos.column > 0) {
+                oss << ":" << frame_pos.column;
             }
         }
         oss << ")";

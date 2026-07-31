@@ -1600,7 +1600,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     ctx.create_binding_force("this", Value(constructor_fn.get()));
                     // Push constructor onto call stack so inner class declarations inherit outer brands.
                     {
-                        CallStackFrameGuard frame_guard(CallStack::instance(), class_name, nullptr, Position(), constructor_fn.get());
+                        CallStackFrameGuard frame_guard(CallStack::instance(), nullptr, constructor_fn.get());
                         val = cf->get_value()->evaluate(ctx);
                     }
                     ctx.set_this_binding(saved_this_binding);

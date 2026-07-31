@@ -19,14 +19,22 @@ class Object;
 class ASTNode;
 
 struct CallStackFrame {
-    std::string function_name;
+    // A frame is built on every call and read only when a stack trace is
+    // formatted, so it stores nothing it can derive. It used to copy the
+    // callee's name eagerly, and reaching for that name touched a cache line
+    // of the Function's instance data that the hot path never touches
+    // otherwise -- one dependent load, cold on every call once a program has
+    // more functions than fit in cache.
     const std::string* filename;
-    Position position;
     Function* function_ptr;
 
-    CallStackFrame(const std::string& name, const std::string* file, const Position& pos,
-               Function* func = nullptr)
-        : function_name(name), filename(file), position(pos), function_ptr(func) {}
+    CallStackFrame(const std::string* file, Function* func = nullptr)
+        : filename(file), function_ptr(func) {}
+
+    // Both derived from function_ptr, which outlives the frame: frames are
+    // strictly LIFO within a live call.
+    const std::string& name() const;
+    Position position() const;
 
     std::string to_string() const;
 };
@@ -50,10 +58,7 @@ public:
     static CallStack& instance();
     static void set_instance(CallStack* stack);
     
-    void push_frame(const std::string& function_name,
-                   const std::string* filename,
-                   const Position& position,
-                   Function* function_ptr = nullptr);
+    void push_frame(const std::string* filename, Function* function_ptr = nullptr);
     
     void pop_frame();
     void clear();
@@ -87,11 +92,10 @@ private:
     CallStack& stack_;
     
 public:
-    CallStackFrameGuard(CallStack& stack, const std::string& function_name,
-                   const std::string* filename, const Position& position,
+    CallStackFrameGuard(CallStack& stack, const std::string* filename,
                    Function* function_ptr = nullptr)
         : stack_(stack) {
-        stack_.push_frame(function_name, filename, position, function_ptr);
+        stack_.push_frame(filename, function_ptr);
     }
     
     ~CallStackFrameGuard() {
