@@ -400,6 +400,13 @@ struct BytecodeChunk {
     // Function::call materializes the real arguments object before VM::run
     // (skipped otherwise -- it dominated call-heavy benchmarks).
     bool needs_arguments = false;
+    // Set by emit() when an Op::LdaLookup or Op::StaLookup goes into the code,
+    // which are the only two readers of lookup_cache. A chunk that resolves
+    // every name to a register or an env slot never touches the cache, so
+    // neither the chunk-level array nor the per-instance copy is allocated --
+    // and .data() is then null, so a missed emission site faults on the spot
+    // instead of silently sharing one instance's resolved slots with another.
+    bool uses_lookup_cache = false;
 
     // Closures/tree-walk escapes/destructuring/try-catch are each
     // independently rare (a chunk can have any one without the others), so

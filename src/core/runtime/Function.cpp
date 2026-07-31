@@ -30,6 +30,17 @@ namespace Quanta {
 // real call plus a static-init guard on every invocation -- one of them on the
 // register-mode gate, i.e. every JS call.
 static const bool g_vm_enabled = VM::enabled();
+
+// IsAnonymousFunctionDefinition, for the NamedEvaluation a default parameter
+// performs on its initializer.
+static bool is_anon_func_def(const ASTNode* node) {
+    if (!node) return false;
+    auto t = node->get_type();
+    return t == ASTNode::Type::FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::CLASS_DECLARATION;
+}
     class Engine;
     class JITCompiler;
 }
@@ -930,11 +941,27 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_value = args[i];
                 } else if (param->has_default()) {
-                    arg_value = param->get_default_value()->evaluate(function_context);
+                    // NamedEvaluation: an anonymous default takes the parameter's
+                    // name. A class has to learn it before evaluating, since its
+                    // static initializers can read this.name; everything else is
+                    // named once it exists.
+                    ASTNode* def = param->get_default_value();
+                    const bool infer = !pname.empty() && !param->has_destructuring();
+                    if (infer && def->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                        auto* cd = static_cast<ClassDeclaration*>(def);
+                        if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
+                            cd->set_inferred_name(pname);
+                        }
+                    }
+                    arg_value = def->evaluate(function_context);
                     if (function_context.has_exception()) {
                         function_context.set_in_param_eval(false);
                         ctx.throw_exception(function_context.get_exception(), true);
                         return Value();
+                    }
+                    if (infer && arg_value.is_function() && is_anon_func_def(def)) {
+                        Function* fn = arg_value.as_function();
+                        if (fn->get_name().empty() || fn->get_name() == "<arrow>") fn->set_name(pname);
                     }
                 } else {
                     arg_value = Value();

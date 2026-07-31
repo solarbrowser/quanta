@@ -3296,8 +3296,16 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 compiler.emit_read_local(pname);
             }
             if (p->has_default()) {
+                // A class default has to be named before its static
+                // initializers run, which Op::SetFunctionNameIfUnnamed is too
+                // late for -- same reason the assignment forms delegate.
+                if (named_evaluation_needs_delegate(p->get_default_value())) return nullptr;
                 size_t skip = compiler.emit_jump(Op::JumpIfNotUndefined);
                 if (!compiler.compile_expression(p->get_default_value())) return nullptr;
+                if (!p->has_destructuring() && is_named_evaluation_rhs(p->get_default_value())) {
+                    compiler.emit(Op::SetFunctionNameIfUnnamed);
+                    compiler.emit_u16(compiler.add_name(pname));
+                }
                 if (!compiler.patch_jump(skip)) return nullptr;
             }
             if (p->has_destructuring()) {
@@ -3362,8 +3370,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->env_params_tdz = params_tdz;
     compiler.chunk_->needs_arguments = needs_arguments;
     if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
-    compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
-        static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
+    if (compiler.chunk_->uses_lookup_cache) {
+        compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
+            static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
+    }
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = FixedArray<std::string>::from(std::move(compiler.names_));
@@ -3514,8 +3524,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     compiler.chunk_->parameter_count = 0;
     compiler.chunk_->env_mode = true;
     compiler.chunk_->script_mode = true;
-    compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
-        static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
+    if (compiler.chunk_->uses_lookup_cache) {
+        compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
+            static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
+    }
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = FixedArray<std::string>::from(std::move(compiler.names_));
@@ -3823,7 +3835,10 @@ void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declara
     }
 }
 
-void BytecodeCompiler::emit(Op op) { code_.push_back(static_cast<uint8_t>(op)); }
+void BytecodeCompiler::emit(Op op) {
+    if (op == Op::LdaLookup || op == Op::StaLookup) chunk_->uses_lookup_cache = true;
+    code_.push_back(static_cast<uint8_t>(op));
+}
 void BytecodeCompiler::emit_u8(uint8_t v) { code_.push_back(v); }
 void BytecodeCompiler::emit_u16(uint16_t v) {
     code_.push_back(static_cast<uint8_t>(v & 0xFF));

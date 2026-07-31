@@ -5162,8 +5162,13 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     // (chunk.names.size() is fixed for a given owner), always in this setup
     // code before that call's own bytecode -- including recursive self-calls
     // -- ever dispatches, so no reentrant call can invalidate this pointer.
+    // Reaching for the instance cache is what MATERIALIZES a Function's
+    // instance data, so a chunk with no LdaLookup/StaLookup must not ask: that
+    // block is far larger than the cache it would hold, it is one per closure
+    // rather than one per declaration site, and nothing in this frame will
+    // read a single entry of it.
     BytecodeChunk::LookupCacheEntry* lookup_cache_data = chunk.lookup_cache.data();
-    if (owner) {
+    if (owner && chunk.uses_lookup_cache) {
         auto& instance_cache = owner->instance_lookup_cache();
         if (instance_cache.size() < chunk.names.size()) instance_cache.resize(chunk.names.size());
         lookup_cache_data = instance_cache.data();
@@ -5175,7 +5180,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
     // doc comment), so every instance sharing the chunk needs its own copy.
     size_t chunk_private_feedback_size = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.size() : 0;
     PrivateFeedback* private_feedback_data = chunk.ic_feedback ? chunk.ic_feedback->private_feedback.data() : nullptr;
-    if (owner) {
+    if (owner && chunk_private_feedback_size > 0) {
         auto& instance_pf = owner->instance_private_feedback();
         if (instance_pf.size() < chunk_private_feedback_size) instance_pf.resize(chunk_private_feedback_size);
         private_feedback_data = instance_pf.data();
