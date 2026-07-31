@@ -22,7 +22,6 @@ namespace Quanta {
 
 class Engine;
 class Function;
-class StackFrame;
 class Visitor;
 class Environment;
 class Error;
@@ -87,8 +86,6 @@ private:
     Environment* lexical_environment_;
     Environment* variable_environment_;
     Value this_value_;
-
-    std::vector<std::unique_ptr<StackFrame>> call_stack_;
 
     mutable int execution_depth_;
     static const int max_execution_depth_ = 500;
@@ -284,11 +281,6 @@ public:
     bool delete_binding(const std::string& name);
     bool is_in_tdz(const std::string& name) const;
 
-    void push_frame(std::unique_ptr<StackFrame> frame);
-    std::unique_ptr<StackFrame> pop_frame();
-    StackFrame* current_frame() const;
-    size_t stack_depth() const { return call_stack_.size(); }
-    bool is_stack_overflow() const { return stack_depth() > 10000; }
     
     bool check_execution_depth() const;
     void increment_execution_depth() const { execution_depth_++; }
@@ -374,7 +366,6 @@ public:
     void resume() { state_ = State::Running; }
     void complete() { state_ = State::Completed; }
 
-    std::string get_stack_trace() const;
     std::vector<std::string> get_variable_names() const;
     std::string debug_string() const;
 
@@ -402,60 +393,6 @@ private:
 /**
  * Stack frame for function calls
  */
-class StackFrame {
-public:
-    enum class Type {
-        Script,
-        Function,
-        Constructor,
-        Method,
-        Eval,
-        Native
-    };
-
-private:
-    Type type_;
-    Function* function_;
-    Object* this_binding_;
-    std::vector<Value> arguments_;
-    std::unordered_map<std::string, Value> local_variables_;
-    Environment* environment_;
-    
-    size_t program_counter_;
-    std::string source_location_;
-    uint32_t line_number_;
-    uint32_t column_number_;
-
-public:
-    void gc_trace(Visitor& v) const;
-
-    StackFrame(Type type, Function* function, Object* this_binding);
-    ~StackFrame() = default;
-
-    Type get_type() const { return type_; }
-    Function* get_function() const { return function_; }
-    Object* get_this_binding() const { return this_binding_; }
-    Environment* get_environment() const { return environment_; }
-
-    void set_arguments(const std::vector<Value>& args) { arguments_ = args; }
-    const std::vector<Value>& get_arguments() const { return arguments_; }
-    size_t argument_count() const { return arguments_.size(); }
-    Value get_argument(size_t index) const;
-
-    bool has_local(const std::string& name) const;
-    Value get_local(const std::string& name) const;
-    void set_local(const std::string& name, const Value& value);
-
-    size_t get_program_counter() const { return program_counter_; }
-    void set_program_counter(size_t pc) { program_counter_ = pc; }
-    
-    void set_source_location(const std::string& location, uint32_t line, uint32_t column);
-    std::string get_source_location() const { return source_location_; }
-    uint32_t get_line_number() const { return line_number_; }
-    uint32_t get_column_number() const { return column_number_; }
-
-    std::string to_string() const;
-};
 
 /**
  * Environment for variable bindings

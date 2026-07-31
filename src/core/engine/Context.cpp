@@ -47,7 +47,7 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Context) == 232);
+static_assert(sizeof(Context) == 208);
 static_assert(sizeof(Environment) == 176);
 #else
 static_assert(sizeof(Context) <= 896);
@@ -74,14 +74,6 @@ void Environment::gc_trace(Visitor& v) const {
     v.visit_environment(outer_environment_);
 }
 
-void StackFrame::gc_trace(Visitor& v) const {
-    v.visit_object(function_);
-    v.visit_object(this_binding_);
-    for (const auto& a : arguments_) v.visit(a);
-    for (const auto& lv : local_variables_) v.visit(lv.second);
-    v.visit_environment(environment_);
-}
-
 void Context::gc_trace(Visitor& v) const {
     v.visit_environment(lexical_environment_);
     v.visit_environment(variable_environment_);
@@ -95,9 +87,6 @@ void Context::gc_trace(Visitor& v) const {
     v.visit(return_value_);
     v.visit(new_target_);
     v.visit(import_meta_);
-    for (const auto& frame : call_stack_) {
-        if (frame) frame->gc_trace(v);
-    }
     for (const auto& entry : microtask_queue_) {
         for (const auto& kept : entry.keep_alive) v.visit(kept);
     }
@@ -196,7 +185,6 @@ Context::Context(Engine* engine, Context* parent, Type type)
 }
 
 Context::~Context() {
-    call_stack_.clear();
     if (owned_env_) {
         if (!owned_env_->is_escaped()) {
             Collector::release_env(owned_env_);
@@ -389,31 +377,6 @@ bool Context::delete_binding(const std::string& name) {
     }
     // Unresolvable reference: spec 13.5.1.2 step 4c -- return true
     return true;
-}
-
-void Context::push_frame(std::unique_ptr<StackFrame> frame) {
-    if (is_stack_overflow()) {
-        throw_exception(Value(std::string("RangeError: call stack size exceeded")));
-        return;
-    }
-    call_stack_.push_back(std::move(frame));
-}
-
-std::unique_ptr<StackFrame> Context::pop_frame() {
-    if (call_stack_.empty()) {
-        return nullptr;
-    }
-    
-    auto frame = std::move(call_stack_.back());
-    call_stack_.pop_back();
-    return frame;
-}
-
-StackFrame* Context::current_frame() const {
-    if (call_stack_.empty()) {
-        return nullptr;
-    }
-    return call_stack_.back().get();
 }
 
 void Context::throw_exception(const Value& exception, bool raw) {
@@ -682,17 +645,6 @@ Function* Context::get_built_in_function(const std::string& name) const {
     return nullptr;
 }
 
-std::string Context::get_stack_trace() const {
-    std::ostringstream oss;
-    oss << "Stack trace:\n";
-    
-    for (int i = static_cast<int>(call_stack_.size()) - 1; i >= 0; --i) {
-        oss << "  at " << call_stack_[i]->to_string() << "\n";
-    }
-    
-    return oss.str();
-}
-
 std::vector<std::string> Context::get_variable_names() const {
     std::vector<std::string> names;
     
@@ -709,7 +661,6 @@ std::string Context::debug_string() const {
     oss << "Context(id=" << context_id_ 
         << ", type=" << static_cast<int>(type_)
         << ", state=" << static_cast<int>(state_)
-        << ", stack_depth=" << stack_depth()
         << ", has_exception=" << has_exception_ << ")";
     return oss.str();
 }
@@ -875,64 +826,6 @@ void Context::clear_break_continue() {
         loop_labels_->break_label.clear();
         loop_labels_->continue_label.clear();
     }
-}
-
-
-StackFrame::StackFrame(Type type, Function* function, Object* this_binding)
-    : type_(type), function_(function), this_binding_(this_binding),
-      environment_(nullptr), program_counter_(0), line_number_(0), column_number_(0) {
-}
-
-Value StackFrame::get_argument(size_t index) const {
-    if (index < arguments_.size()) {
-        return arguments_[index];
-    }
-    return Value();
-}
-
-bool StackFrame::has_local(const std::string& name) const {
-    return local_variables_.find(name) != local_variables_.end();
-}
-
-Value StackFrame::get_local(const std::string& name) const {
-    auto it = local_variables_.find(name);
-    if (it != local_variables_.end()) {
-        return it->second;
-    }
-    return Value();
-}
-
-void StackFrame::set_local(const std::string& name, const Value& value) {
-    local_variables_[name] = value;
-}
-
-void StackFrame::set_source_location(const std::string& location, uint32_t line, uint32_t column) {
-    source_location_ = location;
-    line_number_ = line;
-    column_number_ = column;
-}
-
-std::string StackFrame::to_string() const {
-    std::ostringstream oss;
-    
-    if (function_) {
-        oss << "function";
-    } else {
-        oss << "anonymous";
-    }
-    
-    if (!source_location_.empty()) {
-        oss << " (" << source_location_;
-        if (line_number_ > 0) {
-            oss << ":" << line_number_;
-            if (column_number_ > 0) {
-                oss << ":" << column_number_;
-            }
-        }
-        oss << ")";
-    }
-    
-    return oss.str();
 }
 
 
