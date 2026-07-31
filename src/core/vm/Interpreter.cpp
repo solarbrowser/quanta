@@ -1613,7 +1613,11 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 }
                 Environment* env = ctx.find_binding_env(name);
                 if (env) {
-                    env->set_binding_direct(name, acc, &ctx);
+                    if (!env->set_binding_direct(name, acc, &ctx) &&
+                        (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        CHECK_EXC();
+                    }
                 } else {
                     ctx.throw_reference_error("'" + name + "' is not defined");
                 }
@@ -1666,7 +1670,17 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
                 if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
-                    if (e->slot.mutable_flag) e->slot.value = acc;
+                    // The refusal used to be spelled as a silent skip, so a
+                    // const write here vanished instead of raising.
+                    if (!e->slot.mutable_flag) {
+                        if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
+                            ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                            CHECK_EXC();
+                        }
+                        break;
+                    }
+                    Collector::write_barrier_env(ctx.get_lexical_environment());
+                    e->slot.value = acc;
                     break;
                 }
                 if (ctx.is_in_tdz(name)) {
@@ -1676,7 +1690,11 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 }
                 Environment* env = ctx.find_binding_env(name);
                 if (env) {
-                    env->set_binding_direct(name, acc, &ctx);
+                    if (!env->set_binding_direct(name, acc, &ctx) &&
+                        (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        CHECK_EXC();
+                    }
                 } else {
                     ctx.throw_reference_error("'" + name + "' is not defined");
                 }
@@ -1700,7 +1718,14 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             case Op::BindEnvLocals: {
                 Environment* env = ctx.get_lexical_environment();
                 if (chunk.env) for (const auto& loc : chunk.env->env_locals) {
-                    if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
+                    if (loc.is_lexical) {
+                        env->create_uninitialized_binding(loc.name, !loc.is_const);
+                        // is_strict_const() wants the const SET, not just the cleared mutable
+                        // flag, and every "Assignment to constant variable" check gates on
+                        // it -- without this they are all inert in sloppy mode for a binding
+                        // the VM created.
+                        if (loc.is_const) env->mark_const_binding(loc.name);
+                    }
                     else env->create_binding(loc.name, Value(), true);
                 }
                 break;
@@ -1712,7 +1737,10 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 ctx.push_block_scope();
                 Environment* env = ctx.get_lexical_environment();
                 for (const auto& v : chunk.env->loop_envs[idx]) {
-                    if (v.is_lexical) env->create_uninitialized_binding(v.name, !v.is_const);
+                    if (v.is_lexical) {
+                        env->create_uninitialized_binding(v.name, !v.is_const);
+                        if (v.is_const) env->mark_const_binding(v.name);
+                    }
                     else env->create_binding(v.name, Value(), true);
                 }
                 break;
@@ -1731,7 +1759,10 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 Environment* new_env = ctx.get_lexical_environment();
                 for (size_t i = 0; i < vars.size(); i++) {
                     const auto& v = vars[i];
-                    if (v.is_lexical) new_env->create_uninitialized_binding(v.name, !v.is_const);
+                    if (v.is_lexical) {
+                        new_env->create_uninitialized_binding(v.name, !v.is_const);
+                        if (v.is_const) new_env->mark_const_binding(v.name);
+                    }
                     else new_env->create_binding(v.name, Value(), true);
                     if (v.copy_forward) new_env->initialize_binding(v.name, carried[i]);
                 }
@@ -3282,7 +3313,11 @@ Value h_gen_StaEnv(Frame& f, uint32_t pc, Value acc) {
                 }
                 Environment* env = ctx.find_binding_env(name);
                 if (env) {
-                    env->set_binding_direct(name, acc, &ctx);
+                    if (!env->set_binding_direct(name, acc, &ctx) &&
+                        (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        CHECK_EXC();
+                    }
                 } else {
                     ctx.throw_reference_error("'" + name + "' is not defined");
                 }
@@ -3374,7 +3409,17 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
                 if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
-                    if (e->slot.mutable_flag) e->slot.value = acc;
+                    // The refusal used to be spelled as a silent skip, so a
+                    // const write here vanished instead of raising.
+                    if (!e->slot.mutable_flag) {
+                        if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
+                            ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                            CHECK_EXC();
+                        }
+                        break;
+                    }
+                    Collector::write_barrier_env(ctx.get_lexical_environment());
+                    e->slot.value = acc;
                     break;
                 }
                 if (ctx.is_in_tdz(name)) {
@@ -3384,7 +3429,11 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                 }
                 Environment* env = ctx.find_binding_env(name);
                 if (env) {
-                    env->set_binding_direct(name, acc, &ctx);
+                    if (!env->set_binding_direct(name, acc, &ctx) &&
+                        (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        CHECK_EXC();
+                    }
                 } else {
                     ctx.throw_reference_error("'" + name + "' is not defined");
                 }
@@ -3432,7 +3481,14 @@ Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
                 {
                 Environment* env = ctx.get_lexical_environment();
                 if (chunk.env) for (const auto& loc : chunk.env->env_locals) {
-                    if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
+                    if (loc.is_lexical) {
+                        env->create_uninitialized_binding(loc.name, !loc.is_const);
+                        // is_strict_const() wants the const SET, not just the cleared mutable
+                        // flag, and every "Assignment to constant variable" check gates on
+                        // it -- without this they are all inert in sloppy mode for a binding
+                        // the VM created.
+                        if (loc.is_const) env->mark_const_binding(loc.name);
+                    }
                     else env->create_binding(loc.name, Value(), true);
                 }
                 break;
@@ -3456,7 +3512,10 @@ Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 ctx.push_block_scope();
                 Environment* env = ctx.get_lexical_environment();
                 for (const auto& v : chunk.env->loop_envs[idx]) {
-                    if (v.is_lexical) env->create_uninitialized_binding(v.name, !v.is_const);
+                    if (v.is_lexical) {
+                        env->create_uninitialized_binding(v.name, !v.is_const);
+                        if (v.is_const) env->mark_const_binding(v.name);
+                    }
                     else env->create_binding(v.name, Value(), true);
                 }
                 break;
@@ -3488,7 +3547,10 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 Environment* new_env = ctx.get_lexical_environment();
                 for (size_t i = 0; i < vars.size(); i++) {
                     const auto& v = vars[i];
-                    if (v.is_lexical) new_env->create_uninitialized_binding(v.name, !v.is_const);
+                    if (v.is_lexical) {
+                        new_env->create_uninitialized_binding(v.name, !v.is_const);
+                        if (v.is_const) new_env->mark_const_binding(v.name);
+                    }
                     else new_env->create_binding(v.name, Value(), true);
                     if (v.copy_forward) new_env->initialize_binding(v.name, carried[i]);
                 }
@@ -5064,7 +5126,14 @@ Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& ar
                 env->create_binding(chunk.env->env_params[i], v, true);
             }
             for (const auto& loc : chunk.env->env_locals) {
-                if (loc.is_lexical) env->create_uninitialized_binding(loc.name, !loc.is_const);
+                if (loc.is_lexical) {
+                        env->create_uninitialized_binding(loc.name, !loc.is_const);
+                        // is_strict_const() wants the const SET, not just the cleared mutable
+                        // flag, and every "Assignment to constant variable" check gates on
+                        // it -- without this they are all inert in sloppy mode for a binding
+                        // the VM created.
+                        if (loc.is_const) env->mark_const_binding(loc.name);
+                    }
                 else env->create_binding(loc.name, Value(), true);
             }
         }

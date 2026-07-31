@@ -3168,6 +3168,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             // A repeat declare_local (shadowed name) is fine -- the Environment
             // chain resolves each occurrence to its own scope at runtime.
             compiler.declare_local(info.name);
+            if (info.is_const) compiler.const_locals_.insert(info.name);
             if (!info.is_catch_param &&
                 (!info.is_lexical || direct_lexical_names.count(info.name))) {
                 compiler.chunk_->ensure_env().env_locals.push_back({info.name, info.is_lexical, info.is_const});
@@ -3181,6 +3182,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             }
         } else {
             if (!compiler.declare_local(info.name)) return nullptr;
+            if (info.is_const) compiler.const_locals_.insert(info.name);
             if (info.is_lexical) {
                 compiler.lexical_registers_.insert(compiler.lookup_local(info.name));
             }
@@ -3471,10 +3473,21 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     }
     for (const auto& info : declared) {
         if (!info.is_lexical && !info.is_catch_param) continue;
+        // The same refusal compile() makes: a register carries no mutability,
+        // so a const that is ever assigned would compile to a plain Star and
+        // be overwritten in silence. compile_script was missing this, which
+        // left `{ const c = 1; c = 2; }` at script level writing through.
+        if (info.is_const) {
+            for (const auto& st : statements) {
+                if (assigns_to_identifier(st.get(), info.name)) return nullptr;
+            }
+        }
         if (env_resident.count(info.name)) {
             compiler.declare_local(info.name);
+            if (info.is_const) compiler.const_locals_.insert(info.name);
         } else {
             if (!compiler.declare_local(info.name)) return nullptr;
+            if (info.is_const) compiler.const_locals_.insert(info.name);
             if (info.is_lexical) {
                 compiler.lexical_registers_.insert(compiler.lookup_local(info.name));
             }
@@ -3613,6 +3626,10 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         return false;  // bare destructuring (no declaration keyword) / member-expression LHS
     }
     if (!destr && !is_local(var_name)) return false;
+    // A keywordless target is an assignment, and assigning to a const has to
+    // throw. emit_write_local would emit a plain Star and silently overwrite
+    // it, so hand the whole loop to the tree-walker, which raises.
+    if (!destr && const_locals_.count(var_name)) return false;
 
     // Entered before compiling `right`: a lexical ForDeclaration's bound name
     // is in TDZ even during the head's own iterable/object expression (spec).

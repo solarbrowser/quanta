@@ -110,7 +110,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     right_value.as_function()->set_name(name);
                 }
             }
-            ctx.set_binding(name, right_value);
+            // A logical assignment that reaches here is a real write, so a
+            // refused one raises like `x = v` does. Every other assignment
+            // form in this file already checks; this one did not.
+            if (!ctx.set_binding(name, right_value) &&
+                (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                return Value();
+            }
             return right_value;
         }
 

@@ -195,6 +195,12 @@ private:
     std::vector<std::string> names_;
     std::vector<FeedbackSlot> feedback_;
     std::unordered_map<std::string, int> locals_;
+    // Names declared `const` in this chunk. declare_local() only takes a name,
+    // so constness was dropped and a keywordless for-of/for-in target compiled
+    // to a bare Star that overwrote the binding without a word. Recorded here
+    // so compile_for_each_loop can decline those and let the tree-walker,
+    // which raises properly, take them.
+    std::unordered_set<std::string> const_locals_;
     std::unordered_set<int> lexical_registers_;
     // Lexical registers whose declaration has provably run by every point that
     // reads them, so the dead-zone check is dead code. A register joins when

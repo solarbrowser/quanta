@@ -2056,7 +2056,11 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 ctx.push_block_scope();
                 ctx.create_lexical_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
             } else if (ctx.has_binding(var_name)) {
-                ctx.set_binding(var_name, value);
+                if (!ctx.set_binding(var_name, value) &&
+                    (ctx.is_strict_mode() || ctx.is_strict_const(var_name))) {
+                    ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
+                    return Value();
+                }
             } else {
                 ctx.create_binding(var_name, value, true);
             }
@@ -2313,7 +2317,17 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         loop_ctx->push_block_scope();
                                         loop_ctx->create_lexical_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
                                     } else if (loop_ctx->has_binding(var_name)) {
-                                        loop_ctx->set_binding(var_name, value);
+                                        // A keywordless target is an ordinary assignment, so a
+                                        // refused write has to raise the way `x = v` does --
+                                        // ForInStatement already does this. Unlike for-in, the
+                                        // iterator is live here, so IteratorClose runs first.
+                                        if (!loop_ctx->set_binding(var_name, value) &&
+                                            (loop_ctx->is_strict_mode() || loop_ctx->is_strict_const(var_name))) {
+                                            loop_ctx->throw_type_error(
+                                                "Assignment to constant variable '" + var_name + "'");
+                                            close_iterator();
+                                            return Value();
+                                        }
                                     } else {
                                         bool is_mutable = (var_kind != VariableDeclarator::Kind::CONST);
                                         loop_ctx->create_binding(var_name, value, is_mutable);
@@ -2549,7 +2563,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         loop_ctx->push_block_scope();
                         loop_ctx->create_lexical_binding(var_name, element, var_kind != VariableDeclarator::Kind::CONST);
                     } else if (loop_ctx->has_binding(var_name)) {
-                        loop_ctx->set_binding(var_name, element);
+                        if (!loop_ctx->set_binding(var_name, element) &&
+                            (loop_ctx->is_strict_mode() || loop_ctx->is_strict_const(var_name))) {
+                            loop_ctx->throw_type_error(
+                                "Assignment to constant variable '" + var_name + "'");
+                            return Value();
+                        }
                     } else {
                         loop_ctx->create_binding(var_name, element, true);
                     }
