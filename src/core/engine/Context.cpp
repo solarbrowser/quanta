@@ -941,13 +941,16 @@ bool Environment::cacheable_object_binding(const std::string& name, uint32_t& sl
     return binding_object_->cacheable_data_slot(name, slot_index);
 }
 
-Value* Environment::stable_binding_slot(const std::string& name) {
+Value* Environment::stable_binding_slot(const std::string& name, bool* writable) {
     if (type_ == Type::Object || is_with_environment_) return nullptr;
     BindingSlot* slot = slots_.find(name);
     if (!slot) return nullptr;
+    // Deletable and uninitialized still disqualify: an erasable slot's address
+    // can be reused, and an uninitialized one is in its TDZ. Immutability does
+    // not -- the caller is told instead.
     if (slot->deletable) return nullptr;
-    if (!slot->mutable_flag) return nullptr;
     if (!slot->initialized) return nullptr;
+    if (writable) *writable = slot->mutable_flag;
     return &slot->value;
 }
 

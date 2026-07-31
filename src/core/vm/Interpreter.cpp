@@ -1417,8 +1417,9 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 if (found) {
                     if (env != entry_env) {
                         uint32_t obj_slot = 0;
-                        if (Value* slot = env->stable_binding_slot(name)) {
-                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0};
+                        bool slot_writable = false;
+                        if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
+                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable};
                         } else if (env->cacheable_object_binding(name, obj_slot)) {
                             lookup_cache_data[name_idx] = {env, nullptr,
                                 env->get_binding_object()->get_shape(),
@@ -1464,8 +1465,10 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 {
                     const auto& entry = lookup_cache_data[sta_name_idx];
                     // The obj_shape form is LdaLookup's alone -- writing a
-                    // global needs [[Set]]'s readonly/setter handling.
-                    if (entry.slot && !entry.obj_shape) {
+                    // global needs [[Set]]'s readonly/setter handling. And a
+                    // const binding is cached for reading only: storing here
+                    // would skip the TypeError the slow path raises.
+                    if (entry.slot && !entry.obj_shape && entry.writable) {
                         // The barrier records "env gained a reference" for the
                         // remembered set -- storing a non-heap value can't.
                         if (acc.is_object() || acc.is_function() || acc.is_string() ||
@@ -1514,8 +1517,10 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                     } else if (ok && env != entry_env) {
-                        if (Value* slot = env->stable_binding_slot(name)) {
-                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0};
+                        bool slot_writable = false;
+                        Value* slot = env->stable_binding_slot(name, &slot_writable);
+                        if (slot && slot_writable) {
+                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true};
                         }
                     }
                 }
@@ -3005,8 +3010,9 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 if (found) {
                     if (env != entry_env) {
                         uint32_t obj_slot = 0;
-                        if (Value* slot = env->stable_binding_slot(name)) {
-                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0};
+                        bool slot_writable = false;
+                        if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
+                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable};
                         } else if (env->cacheable_object_binding(name, obj_slot)) {
                             lookup_cache_data[name_idx] = {env, nullptr,
                                 env->get_binding_object()->get_shape(),
@@ -3078,8 +3084,10 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                 {
                     const auto& entry = lookup_cache_data[sta_name_idx];
                     // The obj_shape form is LdaLookup's alone -- writing a
-                    // global needs [[Set]]'s readonly/setter handling.
-                    if (entry.slot && !entry.obj_shape) {
+                    // global needs [[Set]]'s readonly/setter handling. And a
+                    // const binding is cached for reading only: storing here
+                    // would skip the TypeError the slow path raises.
+                    if (entry.slot && !entry.obj_shape && entry.writable) {
                         // The barrier records "env gained a reference" for the
                         // remembered set -- storing a non-heap value can't.
                         if (acc.is_object() || acc.is_function() || acc.is_string() ||
@@ -3128,8 +3136,10 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                     } else if (ok && env != entry_env) {
-                        if (Value* slot = env->stable_binding_slot(name)) {
-                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0};
+                        bool slot_writable = false;
+                        Value* slot = env->stable_binding_slot(name, &slot_writable);
+                        if (slot && slot_writable) {
+                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true};
                         }
                     }
                 }

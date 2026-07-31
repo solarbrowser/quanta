@@ -367,6 +367,14 @@ struct BytecodeChunk {
         Shape* obj_shape = nullptr;
         uint64_t descriptor_epoch = 0;
         uint32_t obj_slot_index = 0;
+        // A const binding's value never changes, which makes it MORE cacheable
+        // to read, not less -- but LdaLookup and StaLookup share this entry,
+        // and StaLookup's fast path stores through `slot` without asking
+        // anyone. So the entry records whether writing through it is allowed;
+        // a store to a non-writable one falls back to the slow path, which is
+        // where "Assignment to constant variable" is raised. Sits in the
+        // padding after obj_slot_index.
+        bool writable = false;
     };
     // Same frozen-length/mutable-contents profile as feedback above -- only
     // ever `= FixedArray<...>::filled(names.size(), ...)` once at compile

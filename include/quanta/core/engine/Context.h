@@ -598,7 +598,10 @@ public:
     // Address-stable storage pointer for an initialized, mutable,
     // non-deletable declarative binding (unordered_map nodes never move).
     // Backbone of the VM's outer-variable cache; null when any guard fails.
-    Value* stable_binding_slot(const std::string& name);
+    // Address-stable slot for the lookup cache. Immutable bindings qualify --
+    // their address is as stable as any other and their value never moves --
+    // so `writable` reports back whether a store may go through the pointer.
+    Value* stable_binding_slot(const std::string& name, bool* writable = nullptr);
     // The object-environment counterpart: the shape slot index a plain own data
     // property of this environment's binding object lives at, for LdaLookup's
     // cache. False for anything the general path has to serve.
