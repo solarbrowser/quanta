@@ -962,6 +962,13 @@ private:
     // not).
     bool name_deleted_ : 1 = false;
     bool length_deleted_ : 1 = false;
+    // This instance's name is the empty string, whatever the declaration site
+    // it shares says. A method keyed by a description-less symbol is named ""
+    // by SetFunctionName, and so is a literal instantiated in NamedEvaluation
+    // position before the name arrives; both used to record it as a
+    // per-instance override, which meant allocating an instance data block per
+    // closure to hold nothing. A bit here says the same thing for free.
+    bool name_is_empty_ : 1 = false;
     // Set eagerly the moment a genuine (non-const-marker) __closure_ property
     // is installed (see Function::set_property) -- has_closure_props()
     // becomes an O(1) check instead of scanning every own property key on
@@ -1129,9 +1136,10 @@ public:
     void trace(Visitor& v);
 
     const std::string& get_name() const {
+        static const std::string empty;
+        if (name_is_empty_) return empty;
         if (auto* d = instance_data()) { if (d->overrides.has_name) return d->overrides.name; }
         if (executable_) return executable_->name;
-        static const std::string empty;
         auto* nd = native_data();
         return nd ? nd->name : empty;
     }
@@ -1144,26 +1152,31 @@ public:
     // constructor built it, never shared).
     void assign_decl_site_name(const std::string& name) {
         if (!executable_) return;
-        if (executable_->name.empty()) { executable_->name = name; return; }
-        if (executable_->name == name) {
-            // Agrees with the shared decl-site value, so drop any override --
-            // a later instantiation of a literal in NamedEvaluation position
-            // is constructed anonymously and records an empty-string override
-            // here, which would otherwise keep shadowing the shared name.
+        // An empty name needs no storage of its own: the bit answers for it,
+        // and it has to win over the declaration site, which a sibling
+        // instance may already have filled in with a real name.
+        if (name.empty()) {
+            name_is_empty_ = true;
+            if (executable_->name.empty()) return;
             if (auto* d = instance_data()) {
                 d->overrides.name.clear();
                 d->overrides.has_name = false;
             }
             return;
         }
-        // An anonymous re-instantiation of a shared declaration site asks to
-        // record an empty override, and the branch above exists to clear that
-        // again the moment the real name arrives. Allocating a 192-byte
-        // instance block to hold "" in the meantime is the single largest
-        // source of those blocks -- one per closure, for a literal method in
-        // a hot factory -- and get_name() falls back to the shared decl-site
-        // name anyway, which is what the override would have been replaced by.
-        if (name.empty()) return;
+        name_is_empty_ = false;
+        if (executable_->name.empty()) { executable_->name = name; return; }
+        if (executable_->name == name) {
+            // Agrees with the shared decl-site value, so drop any override --
+            // a later instantiation of a literal in NamedEvaluation position
+            // is constructed anonymously and records an empty name here, which
+            // would otherwise keep shadowing the shared one.
+            if (auto* d = instance_data()) {
+                d->overrides.name.clear();
+                d->overrides.has_name = false;
+            }
+            return;
+        }
         auto& overrides = ensure_instance_data().overrides;
         overrides.name = name;
         overrides.has_name = true;
