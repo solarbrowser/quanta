@@ -282,6 +282,18 @@ void learn_proto(FeedbackSlot* fb, Shape* receiver_shape, Object* prototype,
     }
 }
 
+// The remembered set records an old-to-young EDGE, and Collector::write_barrier
+// opens with a heap probe to find out whether the container is an old cell at
+// all. A number, a boolean or a nullish value creates no edge whatever the
+// container turns out to be, so that probe can only ever conclude "nothing to
+// record" for them. Only those four are waived -- a tag not named here,
+// including any added later, still takes the barrier. Removing an edge never
+// needs one: the collector's insertion barrier is Dijkstra-style.
+inline void write_barrier_for(Object* obj, const Value& value) {
+    if (value.is_number() || value.is_boolean() || value.is_undefined() || value.is_null()) return;
+    Collector::write_barrier(obj);
+}
+
 // A shape match alone doesn't prove "plain data slot, no override" -- both
 // the hit check and the miss-path refill re-verify has_descriptor_override.
 // has_descriptor_override is a fact about (obj, name), independent of which
@@ -448,7 +460,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     Object* obj = as_object_like(receiver);
     if (!obj) { set_primitive_named(ctx, receiver, name, value); return; }
 
-    Collector::write_barrier(obj);
+    write_barrier_for(obj, value);
     bool ordinary_recv = obj->get_type() == Object::ObjectType::Ordinary;
     // Same epoch-trusting fast path as get_named's own -- skips
     // has_descriptor_override entirely on a hit. See Object::
@@ -543,7 +555,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
 // hazard KeyedFeedback solves for GetKeyed/SetKeyed).
 void define_own_cached(Object* obj, const std::string& key, const Value& value, FeedbackSlot* fb) {
     if (!obj) return;
-    Collector::write_barrier(obj);
+    write_barrier_for(obj, value);
     bool plain = obj->get_type() == Object::ObjectType::Ordinary && obj->is_extensible();
     // from_shape alone is the whole shape-side guard, unlike SetNamed's
     // version: CreateDataProperty never consults the prototype chain, and a
@@ -727,7 +739,7 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == shape && fb->entries[i].key == key) {
                 Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
-                if (slot) { Collector::write_barrier(obj); *slot = value; return; }
+                if (slot) { write_barrier_for(obj, value); *slot = value; return; }
                 break;
             }
         }
@@ -824,7 +836,7 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
         ctx.throw_type_error("Cannot write private member " + name + " to an object whose class did not declare it");
         return;
     }
-    Collector::write_barrier(obj);
+    write_barrier_for(obj, value);
     if (pf && !pf->qualified.empty()) {
         if (Value* slot = obj->private_field_slot(pf->qualified)) { *slot = value; return; }
     }
