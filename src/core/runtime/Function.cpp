@@ -315,10 +315,10 @@ void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> a
         arguments_obj->set_element(i, args[i]);
     }
     {
-        // create_array's set_length() already established "length" as non-configurable
-        // (real Array semantics); Arguments needs it configurable, so clear that internal
-        // bookkeeping entry first instead of letting the non-configurable guard see a
-        // (spurious, construction-time-only) attempt to relax it.
+        // Stop being an Array first: an array's length is virtual and reads as
+        // non-configurable, so installing the configurable one Arguments needs
+        // would be rejected as an attempt to relax it.
+        arguments_obj->set_type(Object::ObjectType::Arguments);
         arguments_obj->remove_own_property("length");
         PropertyDescriptor len_desc(Value(static_cast<double>(args.size())),
             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -922,6 +922,9 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         }
         if (has_complex && !function_context.has_binding("arguments")) {
             auto early_args = ObjectFactory::create_array(args.size());
+            // Retype before touching length: an array's is non-configurable,
+            // and Arguments needs a configurable one.
+            early_args->set_type(Object::ObjectType::Arguments);
             for (size_t i = 0; i < args.size(); ++i) early_args->set_element(i, args[i]);
             {
                 PropertyDescriptor ld(Value(static_cast<double>(args.size())),

@@ -339,12 +339,14 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
     constexpr size_t kHeaderWidths = sizeof(ButterflyHeader) / sizeof(Value);
 
     uint32_t old_elements_length = 0;
+    uint32_t old_array_length = 0;
     RareExtras* old_extras = nullptr;
     if (butterfly_) {
         ButterflyHeader* old_header = butterfly_header();
         old_elements_length = old_header->elements_length;
+        old_array_length = old_header->array_length;
         uint32_t old_elements_cap = old_header->elements_capacity;
-        uint32_t old_shape_cap = old_header->shape_capacity;
+        uint32_t old_shape_cap = old_header->shape_capacity & ~kDenseVerifiedBit;
         old_extras = old_header->extras;
         // Both regions' OLD capacities are <= their new ones (callers only
         // ever grow) -- copy each region's full old extent across at its
@@ -364,8 +366,9 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
 
     new_header->elements_length = old_elements_length;
     new_header->elements_capacity = new_elements_capacity;
+    // Relocating invalidates the dense answer, so the bit stays clear here.
     new_header->shape_capacity = new_shape_capacity;
-    new_header->reserved = 0;
+    new_header->array_length = old_array_length;
     new_header->extras = old_extras;
     butterfly_ = new_butterfly;
 }
@@ -416,6 +419,15 @@ void Object::resize_elements(uint32_t new_length) {
 
 void Object::bump_array_length(double candidate) {
     invalidate_dense();
+    if (get_type() == ObjectType::Array) {
+        if (candidate <= static_cast<double>(array_length())) return;
+        if (!butterfly_) realloc_butterfly(0, shape_capacity());
+        butterfly_header()->array_length = static_cast<uint32_t>(candidate);
+        if (auto* d = descriptors()) {
+            if (auto* dit = d->find("length")) dit->set_value(Value(candidate));
+        }
+        return;
+    }
     if (Value* slot = find_shape_slot("length")) {
         if (candidate > slot->to_number()) {
             Value new_len(candidate);
@@ -696,6 +708,9 @@ bool Object::has_own_property_default(const std::string& key) const {
 }
 
 bool Object::has_own_property(const std::string& key) const {
+    // Virtual, like a Function's name/length: real but never stored as a
+    // property, so every reflective path has to answer for it explicitly.
+    if (get_type() == ObjectType::Array && key == "length") return true;
     switch (get_type()) {
         case ObjectType::Function: return static_cast<const Function*>(this)->has_own_property(key);
         case ObjectType::TypedArray: return static_cast<const TypedArrayBase*>(this)->has_own_property(key);
@@ -903,6 +918,11 @@ Value Object::get_property_default(const std::string& key) const {
 }
 
 Value Object::get_own_property(const std::string& key) const {
+    // Virtual, so nothing below finds it -- and a prototype-chain read walks
+    // through here, not through get_property_default's Array branch.
+    if (get_type() == ObjectType::Array && key == "length") {
+        return Value(static_cast<double>(get_length()));
+    }
     uint32_t index;
     if (is_array_index(key, &index)) {
         // Check descriptors first (handles accessor properties like get "0"(){...})
@@ -1078,6 +1098,79 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         default: return set_property_default(key, value, attrs);
     }
 }
+// Everything ArraySetLength does once the new length is a number. The
+// caller owns the coercion, which is observable through valueOf and must
+// run exactly once however the write was spelled.
+bool Object::set_array_length_coerced(uint32_t new_length) {
+
+    uint32_t old_length = static_cast<uint32_t>(elements_length());
+
+    if (new_length < old_length) {
+        // ArraySetLength 10.4.2.4 step 16: elements go from the end down,
+        // and the walk stops at the first one that refuses to be deleted --
+        // length settles just above it rather than truncating past it.
+        // Only an array that has per-index descriptors can refuse, so the
+        // ordinary case skips the walk entirely.
+        bool reached_target = true;
+        if (has_index_descriptor()) {
+            // Step 16 deletes the elements one at a time from the end, so an
+            // index carrying a descriptor is really removed rather than just
+            // truncated away, and the walk stops at the first refusal.
+            for (uint32_t i = old_length; i-- > new_length; ) {
+                if (!delete_property(std::to_string(i))) {
+                    new_length = i + 1;
+                    reached_target = false;
+                    break;
+                }
+            }
+            if (!reached_target) {
+                // Partial progress still stands -- length settles just above
+                // the element that refused -- but the operation reports
+                // failure, which is what makes defineProperty throw.
+                if (new_length < old_length) resize_elements(new_length);
+                if (!butterfly_) realloc_butterfly(0, shape_capacity());
+                butterfly_header()->array_length = new_length;
+                if (auto* d = descriptors()) {
+                    if (auto* it = d->find("length")) it->set_value(Value(static_cast<double>(new_length)));
+                }
+                return false;
+            }
+        }
+        resize_elements(new_length);
+        if (auto* so = sparse_overflow()) {
+            auto it = so->begin();
+            while (it != so->end()) {
+                uint32_t idx;
+                if (is_array_index(it->first, &idx) && idx >= new_length) {
+                    it = so->erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+    Value length_value(static_cast<double>(new_length));
+    invalidate_dense();
+
+    // The header is the store; a descriptor only exists when defineProperty
+    // recorded an attribute the header cannot carry, and then it has to be
+    // kept in step.
+    if (!butterfly_) realloc_butterfly(0, shape_capacity());
+    butterfly_header()->array_length = new_length;
+    if (auto* d = descriptors()) {
+        if (auto* it = d->find("length")) it->set_value(length_value);
+    }
+    // get_property_descriptor() checks descriptors_ first -- keep it in sync or it
+    // keeps reporting the pre-update length.
+    if (auto* d = descriptors()) {
+        auto* it = d->find("length");
+        if (it) {
+            it->set_value(length_value);
+        }
+    }
+    return true;
+    return true;
+}
 
 bool Object::set_property_default(const std::string& key, const Value& value, PropertyAttributes attrs) {
     Collector::write_barrier(this);
@@ -1093,47 +1186,7 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
             }
         }
 
-        uint32_t new_length = static_cast<uint32_t>(length_double);
-
-        uint32_t old_length = static_cast<uint32_t>(elements_length());
-
-        if (new_length < old_length) {
-            resize_elements(new_length);
-            if (auto* so = sparse_overflow()) {
-                auto it = so->begin();
-                while (it != so->end()) {
-                    uint32_t idx;
-                    if (is_array_index(it->first, &idx) && idx >= new_length) {
-                        it = so->erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-            }
-        }
-        Value length_value(static_cast<double>(new_length));
-        invalidate_dense();
-
-        if (!set_shape_slot("length", length_value)) {
-            migrate_to_dictionary_mode();
-            HybridDescriptorMap& descs = ensure_descriptors();
-            auto* it = descs.find("length");
-            if (it) {
-                it->set_value(length_value);
-            } else {
-                bump_descriptor_epoch();
-                descs["length"] = PropertyDescriptor(length_value, PropertyAttributes::Writable);
-            }
-        }
-        // get_property_descriptor() checks descriptors_ first -- keep it in sync or it
-        // keeps reporting the pre-update length.
-        if (auto* d = descriptors()) {
-            auto* it = d->find("length");
-            if (it) {
-                it->set_value(length_value);
-            }
-        }
-        return true;
+        return set_array_length_coerced(static_cast<uint32_t>(length_double));
     }
 
     uint32_t index;
@@ -1349,6 +1402,7 @@ void Object::remove_own_property(const std::string& key) {
 }
 
 bool Object::delete_property(const std::string& key) {
+    if (get_type() == ObjectType::Array && key == "length") return false;
     switch (get_type()) {
         case ObjectType::Function: return static_cast<Function*>(this)->delete_property(key);
         case ObjectType::TypedArray: return static_cast<TypedArrayBase*>(this)->delete_property(key);
@@ -1653,6 +1707,14 @@ std::vector<std::string> Object::get_own_property_keys_default() const {
     // Step 1: Collect ALL keys in their original storage order (preserves insertion order)
     std::vector<std::string> raw_keys;
     collect_named_keys_in_order(raw_keys);
+    // An array's length exists from the moment the array does, so insertion
+    // order puts it ahead of every other string key. It is normally unstored
+    // and so collected by nothing above; a defineProperty that materializes a
+    // descriptor for it would otherwise place it wherever that happened.
+    if (get_type() == ObjectType::Array) {
+        raw_keys.erase(std::remove(raw_keys.begin(), raw_keys.end(), "length"), raw_keys.end());
+        raw_keys.insert(raw_keys.begin(), "length");
+    }
 
     // Elements (numeric array slots)
     for (uint32_t i = 0; i < elements_length(); ++i) {
@@ -1757,6 +1819,18 @@ std::vector<uint32_t> Object::get_element_indices() const {
 }
 
 PropertyDescriptor Object::get_property_descriptor(const std::string& key) const {
+    if (get_type() == ObjectType::Array && key == "length") {
+        // Spec 10.4.2: writable, not enumerable, not configurable. A stored
+        // descriptor only exists once defineProperty made length non-writable.
+        if (auto* d = descriptors()) {
+            if (auto* it = d->find("length")) return *it;
+        }
+        PropertyDescriptor desc(Value(static_cast<double>(get_length())),
+                                PropertyAttributes::Writable);
+        desc.set_enumerable(false);
+        desc.set_configurable(false);
+        return desc;
+    }
     switch (get_type()) {
         case ObjectType::Function: return static_cast<const Function*>(this)->get_property_descriptor(key);
         case ObjectType::TypedArray: return static_cast<const TypedArrayBase*>(this)->get_property_descriptor(key);
@@ -1856,11 +1930,59 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
 
     // Runs before the configurability checks below: an out-of-range length throws
     // RangeError even when the descriptor also conflicts with length's non-configurability.
-    if (get_type() == ObjectType::Array && key == "length" && desc.is_data_descriptor() && desc.has_value()) {
-        double unused;
-        if (!array_set_length_coerce(current_context_, desc.get_value(), unused)) return false;
+    if (get_type() == ObjectType::Array && key == "length") {
+        // ValidateAndApplyPropertyDescriptor against the virtual length: it is
+        // writable (until told otherwise), never enumerable and never
+        // configurable, so any request to change those two is rejected and
+        // whatever is left merges onto what the array already reports.
+        if (desc.is_accessor_descriptor()) return false;
+        // ArraySetLength 10.4.2.4 step 3: the new length is coerced before any
+        // attribute is consulted, so an invalid one is a RangeError even when
+        // the descriptor also asks for something the attributes would refuse.
+        // The result is carried down rather than re-derived -- the coercion is
+        // observable and the spec counts the calls.
+        double coerced = 0;
+        if (desc.has_value()) {
+            if (!array_set_length_coerce(current_context_, desc.get_value(), coerced)) return false;
+        }
+        if (desc.has_enumerable() && desc.is_enumerable()) return false;
+        if (desc.has_configurable() && desc.is_configurable()) return false;
+        // Read after the coercion, not before: step 7 fetches the current
+        // length descriptor at that point, and a valueOf is free to have made
+        // it non-writable in the meantime.
+        PropertyDescriptor cur = get_property_descriptor("length");
+        bool cur_writable = !cur.has_writable() || cur.is_writable();
+        if (!cur_writable) {
+            // Frozen length: only a no-op redefinition is allowed.
+            if (desc.has_writable() && desc.is_writable()) return false;
+            // Compared against the already-coerced number: re-running
+            // ToNumber here would be a third observable conversion of a value
+            // the spec converts exactly twice.
+            if (desc.has_value() &&
+                coerced != static_cast<double>(get_length())) return false;
+            return true;
+        }
+        // ArraySetLength 10.4.2.4 step 17: a length that could not shrink all
+        // the way still reports failure, but the writable change it carried is
+        // applied either way.
+        bool applied = true;
+        if (desc.has_value()) {
+            if (!set_array_length_coerced(static_cast<uint32_t>(coerced))) applied = false;
+        }
+        if (desc.has_writable() && !desc.is_writable()) {
+            // The one thing the header cannot record, so it takes a descriptor
+            // -- filled in completely, since it replaces what every reader
+            // would otherwise synthesize.
+            PropertyDescriptor stored(Value(static_cast<double>(get_length())),
+                                      PropertyAttributes::None);
+            stored.set_writable(false);
+            stored.set_enumerable(false);
+            stored.set_configurable(false);
+            bump_descriptor_epoch();
+            ensure_descriptors()["length"] = stored;
+        }
+        return applied;
     }
-
     // Captured before any placeholder (store_in_overflow) write below can make
     // has_own_property look true for a property that's brand new in this very call.
     bool existed_before_this_call = has_own_property(key);
@@ -2340,10 +2462,18 @@ uint32_t Object::get_length() const {
         return static_cast<uint32_t>(static_cast<const TypedArrayBase*>(this)->length());
     }
     if (get_type() == ObjectType::Array || get_type() == ObjectType::Arguments) {
-        Value length_val = get_own_property("length");
-        if (length_val.is_number()) {
-            return static_cast<uint32_t>(length_val.as_number());
+        // A descriptor only exists when defineProperty recorded something the
+        // header cannot express (a non-writable length); it wins when it does.
+        // Arguments objects are built on the array representation and are
+        // retyped only after their length is set, so they read the same way.
+        if (auto* d = descriptors()) {
+            if (auto* it = d->find("length")) {
+                if (it->is_data_descriptor() && it->has_value() && it->get_value().is_number()) {
+                    return static_cast<uint32_t>(it->get_value().as_number());
+                }
+            }
         }
+        return array_length();
     }
     // plain array-likes (e.g. Array.prototype.every.call(plainObj)) store length as a property
     // ToLength per spec: coerce length via ToNumber. Apply to all non-Array/Arguments types
@@ -2371,15 +2501,19 @@ uint32_t Object::get_length() const {
 }
 
 void Object::set_length(uint32_t length) {
-    // Set length property for generic objects (not just arrays)
+    if (get_type() == ObjectType::Array) {
+        // The header holds it. Going through a descriptor gave every array a
+        // descriptor map -- hundreds of bytes for one number -- and dropped it
+        // into dictionary mode, which costs the array its shape as well.
+        if (length < elements_length()) resize_elements(length);
+        if (!butterfly_) realloc_butterfly(0, shape_capacity());
+        butterfly_header()->array_length = length;
+        invalidate_dense();
+        return;
+    }
     PropertyDescriptor length_desc(Value(static_cast<double>(length)),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable));
     set_property_descriptor("length", length_desc);
-
-    // Resize elements array if this is actually an Array
-    if (get_type() == ObjectType::Array && length < elements_length()) {
-        resize_elements(length);
-    }
 }
 
 void Object::push(const Value& value) {

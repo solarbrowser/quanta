@@ -300,6 +300,10 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     if (!is_arrow() && !param_named_arguments &&
         (!susp_chunk || susp_chunk->needs_arguments || params_need_arguments)) {
         auto arguments_obj = ObjectFactory::create_array(args.size());
+        // Retype before touching length: an array's length is non-configurable
+        // and lives in the butterfly header, while Arguments needs a real,
+        // configurable own property.
+        arguments_obj->set_type(Object::ObjectType::Arguments);
         for (size_t i = 0; i < args.size(); ++i) {
             arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
         }
@@ -1659,6 +1663,10 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     // arguments object -- skipped when nothing needs it, mirroring Function::call.
     if (!susp_chunk || susp_chunk->needs_arguments || params_need_arguments) {
         auto arguments_obj = ObjectFactory::create_array(args.size());
+        // Retype before touching length: an array's length is non-configurable
+        // and lives in the butterfly header, while Arguments needs a real,
+        // configurable own property.
+        arguments_obj->set_type(Object::ObjectType::Arguments);
         for (size_t i = 0; i < args.size(); ++i) {
             arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
         }

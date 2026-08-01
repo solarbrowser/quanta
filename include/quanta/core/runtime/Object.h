@@ -38,8 +38,15 @@ struct RareExtras;
 struct ButterflyHeader {
     uint32_t elements_length = 0;
     uint32_t elements_capacity = 0;
+    // Bit 31 carries dense_verified; the shape system caps a slot count at
+    // kMaxSlots (128), so the rest of the word is permanently free.
     uint32_t shape_capacity = 0;
-    uint32_t reserved = 0;
+    // The array's JS length, which is NOT the element count: trailing holes
+    // are exactly the indices between elements_length and this. It lives here
+    // rather than in a descriptor because a descriptor map costs hundreds of
+    // bytes and drops the object into dictionary mode, and every array used to
+    // get one at birth just to hold this number.
+    uint32_t array_length = 0;
     RareExtras* extras = nullptr;
 };
 static_assert(sizeof(ButterflyHeader) == 3 * sizeof(Value), "must be exactly 3 Value-widths");
@@ -224,10 +231,22 @@ private:
     // note_descriptor_key when an index first gets attributes. Clearing on the
     // ensure_ accessors is deliberately early: a clear with no insert behind it
     // costs one re-check, a missed clear answers wrongly.
-    bool dense_verified() const { return butterfly_ && butterfly_header()->reserved != 0; }
-    void mark_dense_verified() const { if (butterfly_) butterfly_header()->reserved = 1; }
-    void invalidate_dense() { if (butterfly_) butterfly_header()->reserved = 0; }
-    uint32_t shape_capacity() const { return butterfly_ ? butterfly_header()->shape_capacity : 0; }
+    static constexpr uint32_t kDenseVerifiedBit = 1u << 31;
+    bool dense_verified() const {
+        return butterfly_ && (butterfly_header()->shape_capacity & kDenseVerifiedBit);
+    }
+    void mark_dense_verified() const {
+        if (butterfly_) butterfly_header()->shape_capacity |= kDenseVerifiedBit;
+    }
+    void invalidate_dense() {
+        if (butterfly_) butterfly_header()->shape_capacity &= ~kDenseVerifiedBit;
+    }
+    uint32_t shape_capacity() const {
+        return butterfly_ ? (butterfly_header()->shape_capacity & ~kDenseVerifiedBit) : 0;
+    }
+    // An array's JS length. Zero without a butterfly, which is right: an array
+    // with no elements and no explicit length is empty.
+    uint32_t array_length() const { return butterfly_ ? butterfly_header()->array_length : 0; }
     Value* shape_slot_ptr(uint32_t i) const { return butterfly_ + i; }
     Value* element_ptr(uint32_t i) const { return butterfly_ - (sizeof(ButterflyHeader) / sizeof(Value)) - 1 - i; }
     // Amortized-doubling growth (like std::vector) so at least `needed`
@@ -440,6 +459,7 @@ public:
     // Only Proxy overrides this -- out-of-line in Object.cpp.
     uint32_t get_length() const;
     void set_length(uint32_t length);
+    bool set_array_length_coerced(uint32_t new_length);
     void push(const Value& value);
     Value pop();
     void unshift(const Value& value);
