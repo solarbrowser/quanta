@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include <cstdio>
 #include "quanta/core/vm/BytecodeCompiler.h"
 #include <algorithm>
 #include "quanta/parser/AST.h"
@@ -1016,9 +1017,42 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown, suspendable);
             return;
         }
-        case ASTNode::Type::CLASS_DECLARATION:
-            saw_class = true;
+        case ASTNode::Type::CLASS_DECLARATION: {
+            // Everything a class body holds -- the extends clause, computed
+            // keys, method bodies, field initializers -- closes over the
+            // enclosing scope, so it is walked as one closure. Giving up here
+            // instead forced full env_mode on the whole enclosing function,
+            // which cost it every register it had. A node this walk does not
+            // understand still reaches the default case and sets `unknown`,
+            // which is the answer a class used to give unconditionally.
+            const auto* n = static_cast<const ClassDeclaration*>(node);
+            // The expression form is handed to the tree-walker whole (see
+            // named_evaluation_needs_delegate), and delegating needs env_mode,
+            // so it keeps answering the way every class used to.
+            if (n->is_expression()) { saw_class = true; return; }
+            collect_closure_names(n->get_superclass(), true, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown, suspendable);
             return;
+        }
+        // The three shapes a class body is made of. Same traversal
+        // assigns_to_identifier already uses for them.
+        case ASTNode::Type::METHOD_DEFINITION: {
+            const auto* n = static_cast<const MethodDefinition*>(node);
+            if (n->is_computed()) collect_closure_names(n->get_key(), true, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_value(), true, out, saw_eval, saw_class, unknown, suspendable);
+            return;
+        }
+        case ASTNode::Type::CLASS_FIELD: {
+            const auto* n = static_cast<const ClassField*>(node);
+            if (n->is_computed()) collect_closure_names(n->get_key(), true, out, saw_eval, saw_class, unknown, suspendable);
+            collect_closure_names(n->get_value(), true, out, saw_eval, saw_class, unknown, suspendable);
+            return;
+        }
+        case ASTNode::Type::CLASS_STATIC_BLOCK: {
+            const auto* n = static_cast<const ClassStaticBlock*>(node);
+            collect_closure_names(n->get_body(), true, out, saw_eval, saw_class, unknown, suspendable);
+            return;
+        }
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
             for (const auto& stmt : n->get_statements())
