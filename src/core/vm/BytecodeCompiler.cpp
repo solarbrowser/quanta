@@ -2796,7 +2796,12 @@ bool chain_contains_optional(const ASTNode* node) {
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
     bool suspendable) {
-    if (!body || body->get_type() != ASTNode::Type::BLOCK_STATEMENT) return nullptr;
+    if (!body) return nullptr;
+    // A concise arrow body is an expression, not a block: `() => e` is
+    // `() => { return e; }` with the statement left implicit. Without this it
+    // never compiled at all, so every call to one ran in the tree-walker.
+    const bool concise = body->get_type() != ASTNode::Type::BLOCK_STATEMENT;
+    if (concise && suspendable) return nullptr;
     if (params.size() > 64) return nullptr;
 
     // Default/destructured/rest parameters force env_mode: rest needs a
@@ -2858,7 +2863,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // Suspendable bodies always use env_mode: locals must survive across the
     // fiber suspension that delegated yield/await expressions perform.
     bool has_closures = contains_closure(body);
-    bool has_nested_lex = contains_nested_lexical_decl(static_cast<const BlockStatement*>(body));
+    bool has_nested_lex = !concise && contains_nested_lexical_decl(static_cast<const BlockStatement*>(body));
     // Bare destructuring assignments and complex object literals delegate to
     // the tree-walker, so they need env_mode like a suspendable's yield/await.
     bool has_delegated_expr = contains_delegated_expr(body);
@@ -2891,10 +2896,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (saw_eval || saw_class || unknown) {
             full_env = true;
         } else {
-            for (const auto& stmt : static_cast<const BlockStatement*>(body)->get_statements()) {
-                if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
-                const auto* fd = static_cast<const FunctionDeclaration*>(stmt.get());
-                if (fd->get_id()) env_resident.insert(fd->get_id()->get_name());
+            if (!concise) {
+                for (const auto& stmt : static_cast<const BlockStatement*>(body)->get_statements()) {
+                    if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+                    const auto* fd = static_cast<const FunctionDeclaration*>(stmt.get());
+                    if (fd->get_id()) env_resident.insert(fd->get_id()->get_name());
+                }
             }
             selective = true;
         }
@@ -3183,6 +3190,26 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         } else {
             compiler.emit_write_local(rest_name, false);
         }
+    }
+
+    if (concise) {
+        if (!compiler.compile_expression(body)) return nullptr;
+        compiler.emit(Op::Return);
+        compiler.chunk_->register_count = static_cast<uint16_t>(compiler.temp_watermark_);
+        compiler.chunk_->parameter_count = static_cast<uint8_t>(param_names.size());
+        compiler.chunk_->env_mode = env_mode;
+        compiler.chunk_->env_params_tdz = params_tdz;
+        compiler.chunk_->needs_arguments = needs_arguments;
+        if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
+        if (compiler.chunk_->uses_lookup_cache) {
+            compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
+                static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
+        }
+        compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
+        compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
+        compiler.chunk_->names = FixedArray<std::string>::from(std::move(compiler.names_));
+        compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
+        return compiler.failed_ ? nullptr : std::move(compiler.chunk_);
     }
 
     const auto* block = static_cast<const BlockStatement*>(body);

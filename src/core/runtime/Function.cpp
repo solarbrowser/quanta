@@ -464,10 +464,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // the block outright instead of re-asking three questions it settled on
     // its first trip through.
     if (executable_ && !executable_->fast_gate && executable_->bytecode_chunk) {
-        if (executable_->strict_directive_state < 0 && executable_->body &&
-            executable_->body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        if (executable_->strict_directive_state < 0 && executable_->body) {
+            // A concise arrow body is an expression, which cannot carry a
+            // directive prologue -- resolved, not skipped, or the gate below
+            // never opens for one.
             executable_->strict_directive_state =
-                (!is_strict_ && static_cast<BlockStatement*>(executable_->body.get())->has_use_strict_directive()) ? 1 : 0;
+                (!is_strict_ && executable_->body->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
+                 static_cast<BlockStatement*>(executable_->body.get())->has_use_strict_directive()) ? 1 : 0;
             executable_->recompute_fast_gate();
         }
         if (executable_->closure_props_state < 0) {
@@ -800,8 +803,10 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // `arguments`/`this`/`eval`, so the whole binding ceremony below is dead
     // weight for them (it dominated call-heavy benchmarks, e.g. fib). Derived
     // constructors ARE compiled -- Op::LdaThis carries its own this-TDZ check.
-    if (g_vm_enabled && !executable_->vm_incompatible && ast &&
-        ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+    // A concise arrow body is an expression, and the compiler now takes one
+    // (as an implicit return), so the shape of the body no longer decides
+    // whether a function is compiled at all.
+    if (g_vm_enabled && !executable_->vm_incompatible && ast) {
         if (!executable_->bytecode_chunk) {
             // A `with` environment in the captured scope chain makes write-
             // reference resolution order observable: the tree-walker resolves
