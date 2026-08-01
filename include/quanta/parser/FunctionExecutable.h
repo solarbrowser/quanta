@@ -173,6 +173,21 @@ public:
     mutable int8_t self_name_state = -1;
     mutable int8_t super_marker_state = -1;
 
+    // Every term of Function::call_default's register-mode gate that lives on
+    // this executable, ANDed once. The gate used to read six fields across two
+    // objects on every call, following a pointer into the chunk to ask one
+    // question of it; this answers all of them from the line the executable is
+    // already on. Recomputed by every write to an input rather than cached on
+    // the calling Function: the inputs are shared by every instance of this
+    // declaration site, so an instance-side cache would go stale when a
+    // sibling changed one.
+    mutable bool fast_gate = false;
+    void recompute_fast_gate() const {
+        fast_gate = !vm_incompatible && bytecode_chunk && !bytecode_chunk->env_mode &&
+                    strict_directive_state >= 0 && closure_props_state == 0 &&
+                    (self_name_state == 0 || self_name_state == 2);
+    }
+
     // GC-roots every live executable's compiled chunk, every cycle (minor
     // and major) -- called from Collector.cpp alongside Symbol::gc_trace_roots
     // and trace_atomics_gc_roots, the same "always-live global root" pattern.

@@ -524,14 +524,20 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // already attached (true for shared/pre-attached chunks); the slow-path
     // resolutions further down remain as the fallback for a chunk that
     // compiles for the first time later in this same call.
-    if (executable_ && executable_->bytecode_chunk) {
+    //
+    // A set fast_gate already means all three resolved, so a warm call skips
+    // the block outright instead of re-asking three questions it settled on
+    // its first trip through.
+    if (executable_ && !executable_->fast_gate && executable_->bytecode_chunk) {
         if (executable_->strict_directive_state < 0 && executable_->body &&
             executable_->body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             executable_->strict_directive_state =
                 (!is_strict_ && static_cast<BlockStatement*>(executable_->body.get())->has_use_strict_directive()) ? 1 : 0;
+            executable_->recompute_fast_gate();
         }
         if (executable_->closure_props_state < 0) {
             executable_->closure_props_state = has_closure_props() ? 1 : 0;
+            executable_->recompute_fast_gate();
         }
         if (executable_->self_name_state < 0) {
             executable_->self_name_state = 0;
@@ -541,6 +547,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                     if (n == self_name) { executable_->self_name_state = 1; break; }
                 }
             }
+            executable_->recompute_fast_gate();
         }
     }
 
@@ -554,9 +561,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // cannot be missed here, because `super`, a private name and a direct eval
     // each force env_mode, which this same condition already excludes.
     bool ctor_ok = !is_class_constructor_ || !is_derived_ctor();
-    if (g_vm_enabled && executable_ && !executable_->vm_incompatible && executable_->bytecode_chunk && !executable_->bytecode_chunk->env_mode &&
-        ctor_ok && executable_->strict_directive_state >= 0 &&
-        executable_->closure_props_state == 0 && (executable_->self_name_state == 0 || executable_->self_name_state == 2) &&
+    if (g_vm_enabled && executable_ && executable_->fast_gate && ctor_ok &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
         // The context is heap-allocated and survivor-managed like the full
         // path: native code (promise reactions, job queues) can capture the
@@ -672,6 +677,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             block->check_use_strict_directive(function_context);
             executable_->strict_directive_state =
                 (!was_strict && function_context.is_strict_mode()) ? 1 : 0;
+            executable_->recompute_fast_gate();
         } else if (executable_->strict_directive_state == 1) {
             function_context.set_strict_mode(true);
         }
@@ -747,7 +753,10 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 }
             }
         }
-        if (executable_->closure_props_state < 0) executable_->closure_props_state = found_any ? 1 : 0;
+        if (executable_->closure_props_state < 0) {
+            executable_->closure_props_state = found_any ? 1 : 0;
+            executable_->recompute_fast_gate();
+        }
     }
 
     // Super/private-brand bindings must exist before the VM branch too --
@@ -786,11 +795,12 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             // RHS runs, while Op::StaLookup resolves at write time. The chain
             // is fixed at closure creation, so one check decides for good.
             for (Environment* e = function_context.get_lexical_environment(); e; e = e->get_outer()) {
-                if (e->is_with_environment()) { executable_->vm_incompatible = true; break; }
+                if (e->is_with_environment()) { executable_->vm_incompatible = true; executable_->recompute_fast_gate(); break; }
             }
         }
         if (!executable_->bytecode_chunk && !executable_->vm_incompatible) {
             executable_->bytecode_chunk = BytecodeCompiler::compile(ast, parameter_objects_);
+            executable_->recompute_fast_gate();
             if (executable_->bytecode_chunk) {
                 // The chunk's constants (new, unmarked cells) are only reachable
                 // through this Function's trace(). If this Function already
@@ -808,6 +818,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 }
             } else {
                 executable_->vm_incompatible = true;
+                executable_->recompute_fast_gate();
             }
         }
         if (executable_->bytecode_chunk) {
@@ -822,6 +833,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                         if (n == self_name) { executable_->self_name_state = 1; break; }
                     }
                 }
+                executable_->recompute_fast_gate();
             }
             if (executable_->self_name_state == 1) {
                 if (!function_context.has_binding(get_name())) {
@@ -830,6 +842,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                     // The captured chain already provides the name (function
                     // declarations): fast calls don't need the self-binding.
                     executable_->self_name_state = 2;
+                    executable_->recompute_fast_gate();
                 }
             }
             // Arrows resolve `arguments` lexically -- only a real function
