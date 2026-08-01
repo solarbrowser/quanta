@@ -167,8 +167,15 @@ void account_bytes(size_t size, bool needs_major) {
 }
 }
 
-void Heap::retune_budget(size_t live_bytes) {
+void Heap::retune_budget(size_t live_bytes, size_t root_scan_bytes) {
+    // The live share bounds how much floating garbage may pile up, so it is a
+    // fraction of the live set. The root scan is different: it costs the same
+    // whether the next collection comes early or late, so collecting more
+    // often only multiplies it. The budget must therefore cover it -- letting
+    // the budget fall below the scan means spending more on collecting than
+    // the program spends allocating.
     size_t want = live_bytes / kLiveShareDivisor;
+    if (want < root_scan_bytes) want = root_scan_bytes;
     if (want < kGcBudgetFloor) want = kGcBudgetFloor;
     if (want > kGcBudgetCap) want = kGcBudgetCap;
     g_gc_budget = want;

@@ -143,7 +143,7 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
     EventLoop::instance().release_context(ctx);
 
     // Return control to whoever called run()/resume()
-    mco_yield(self->fiber_->co);
+    quanta_fiber_yield(self->fiber_.get());
 }
 
 void AsyncExecutor::run() {
@@ -151,7 +151,7 @@ void AsyncExecutor::run() {
     current_ = this;
     {
         FiberEnterScope enter_scope;
-        mco_resume(fiber_->co);  // enter or re-enter fiber
+        quanta_fiber_resume(fiber_.get());  // enter or re-enter fiber
     }
     current_ = prev;
 }
@@ -525,7 +525,7 @@ void AsyncGenerator::fiber_entry(mco_coro* co) {
 
     // Direct-assigned traced fields: re-gray for an open incremental cycle.
     Collector::write_barrier(self);
-    mco_yield(self->fiber_->co);
+    quanta_fiber_yield(self->fiber_.get());
 }
 
 void AsyncGenerator::enter_fiber() {
@@ -533,7 +533,7 @@ void AsyncGenerator::enter_fiber() {
     current_ = this;
     {
         FiberEnterScope enter_scope;
-        mco_resume(fiber_->co);
+        quanta_fiber_resume(fiber_.get());
     }
     current_ = prev;
     handle_suspension();

@@ -74,7 +74,7 @@ void Generator::run_body() {
         // Other exceptions -- propagated via generator_context_
     } catch (...) {}
     state_ = State::Completed;
-    mco_yield(fiber_->co);
+    quanta_fiber_yield(fiber_.get());
 }
 
 Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx)
@@ -119,7 +119,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     current_generator_ = this;
     {
         FiberEnterScope enter_scope;
-        mco_resume(fiber_->co);
+        quanta_fiber_resume(fiber_.get());
     }
     current_generator_ = prev;
 
@@ -163,7 +163,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     current_generator_ = this;
     {
         FiberEnterScope enter_scope;
-        mco_resume(fiber_->co);
+        quanta_fiber_resume(fiber_.get());
     }
     current_generator_ = prev;
 
@@ -202,7 +202,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     current_generator_ = this;
     {
         FiberEnterScope enter_scope;
-        mco_resume(fiber_->co);
+        quanta_fiber_resume(fiber_.get());
     }
     current_generator_ = prev;
 

@@ -437,7 +437,28 @@ void scan_stacks(MarkVisitor& v) {
     // outside stack_lo/stack_hi (a separate part of the same allocation) --
     // co->coro_size covers it.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
-        scan_range(v, rec.stack_lo, rec.stack_hi);
+        // A fiber's live region is [sp, stack_hi] -- stacks grow down, so
+        // anything below the deepest point it currently reaches is dead. Take
+        // the deepest of the three things that can be holding frames: where it
+        // suspended, any fiber it resumed from its own stack, and the scanner
+        // itself if this is the fiber we are running on. Under-estimating is
+        // safe (a lower start only scans more), so an unknown suspend point
+        // falls back to the whole stack.
+        const char* from = rec.stack_lo;
+        const char* suspended_at = rec.state ? rec.state->suspend_sp : nullptr;
+        if (suspended_at) {
+            const char* deepest = suspended_at;
+            if (sp >= rec.stack_lo && sp < rec.stack_hi && sp < deepest) deepest = sp;
+            FiberRegistry::for_each_enter_sp([&](const void* esp) {
+                const char* c = static_cast<const char*>(esp);
+                if (c >= rec.stack_lo && c < rec.stack_hi && c < deepest) deepest = c;
+            });
+            // The switch itself writes a little below the recorded point.
+            constexpr size_t kSwitchMargin = 1024;
+            from = (deepest - rec.stack_lo > static_cast<ptrdiff_t>(kSwitchMargin))
+                       ? deepest - kSwitchMargin : rec.stack_lo;
+        }
+        scan_range(v, from, rec.stack_hi);
         if (rec.state && rec.state->co) {
             mco_coro* co = rec.state->co;
             scan_range(v, co, reinterpret_cast<const char*>(co) + co->coro_size);
@@ -729,12 +750,13 @@ void run_minor_collection() {
     if (!mark_only) {
         g_last_cycle.swept_cells = run_sweep();
         {
-            // Budget the next collection against what this one actually cost:
-            // the live bytes it marked, plus the stack words it had to scan
-            // conservatively. Live bytes alone misses a program whose cost is
-            // its suspended fibers rather than its heap.
+            // Budget the next collection against what this one cost, but the
+            // two halves of that cost do not behave alike: marking the live
+            // set is amortizable (collecting sooner leaves less floating
+            // garbage), while scanning roots is paid in full every time
+            // regardless. They are handed over separately.
             Heap::Stats st = Heap::active().stats();
-            Heap::retune_budget(st.live_bytes + st.large_bytes +
+            Heap::retune_budget(st.live_bytes + st.large_bytes,
                                 g_scanned_words * sizeof(uint64_t));
         }
         Heap::rebuild_allocation_candidates();
@@ -873,12 +895,13 @@ void finish_major_cycle(MarkVisitor& v) {
     if (!mark_only) {
         g_last_cycle.swept_cells = run_sweep();
         {
-            // Budget the next collection against what this one actually cost:
-            // the live bytes it marked, plus the stack words it had to scan
-            // conservatively. Live bytes alone misses a program whose cost is
-            // its suspended fibers rather than its heap.
+            // Budget the next collection against what this one cost, but the
+            // two halves of that cost do not behave alike: marking the live
+            // set is amortizable (collecting sooner leaves less floating
+            // garbage), while scanning roots is paid in full every time
+            // regardless. They are handed over separately.
             Heap::Stats st = Heap::active().stats();
-            Heap::retune_budget(st.live_bytes + st.large_bytes +
+            Heap::retune_budget(st.live_bytes + st.large_bytes,
                                 g_scanned_words * sizeof(uint64_t));
         }
         note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);

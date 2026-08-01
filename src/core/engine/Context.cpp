@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Visitor.h"
@@ -1407,7 +1408,7 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
         }
         async_gen->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-        mco_yield(async_gen->fiber_->co);
+        quanta_fiber_yield(async_gen->fiber_.get());
         if (async_gen->await_is_throw_) {
             out_result = async_gen->await_result_;
             async_gen->await_is_throw_ = false;
@@ -1441,7 +1442,7 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
             if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); }, {val});
         }
         exec->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
-        mco_yield(exec->fiber_->co);
+        quanta_fiber_yield(exec->fiber_.get());
         if (exec->await_is_throw_) {
             out_result = exec->await_result_;
             exec->await_is_throw_ = false;

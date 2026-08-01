@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/parser/AST.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/vm/Interpreter.h"
@@ -1705,7 +1706,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                 async_gen->await_result_ = next_result;  // pin promise as GC root during suspension
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                mco_yield(async_gen->fiber_->co);
+                quanta_fiber_yield(async_gen->fiber_.get());
                 Object::current_context_ = &ctx;
 
                 if (async_gen->await_is_throw_) {
@@ -1903,7 +1904,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 }
 
                 exec->await_result_ = next_result;  // pin promise as GC root during suspension
-                mco_yield(exec->fiber_->co);
+                quanta_fiber_yield(exec->fiber_.get());
                 Object::current_context_ = &ctx;
 
                 if (exec->await_is_throw_) {
@@ -1994,7 +1995,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     async_gen->await_result_ = value;  // pin as GC root during suspension
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                    mco_yield(async_gen->fiber_->co);
+                    quanta_fiber_yield(async_gen->fiber_.get());
                     Object::current_context_ = &ctx;
                     if (async_gen->await_is_throw_) {
                         ctx.throw_exception(async_gen->await_result_, true);
