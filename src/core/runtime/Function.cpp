@@ -448,72 +448,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         return Value();
     }
 
-    if (is_native_) {
-        if (!ctx.check_execution_depth()) {
-            ctx.throw_exception(Value(std::string("call stack size exceeded")));
-            return Value();
-        }
-        
-        Value old_this_value = ctx.get_this_value();
-
-        // Annex B's sloppy-mode null/undefined-this-becomes-global substitution only
-        // applies to ECMAScript function code, never to native functions -- they must see
-        // the real this_value (e.g. Object.prototype.toString branches on it).
-        Value actual_this = this_value;
-
-        // Preserve caller's "this" for direct eval inside native functions.
-        // Native function call sets "this" to the native's receiver, but eval must
-        // inherit the calling function's "this" (the value that existed before this overwrite).
-        bool saved_caller_this = false;
-        if (is_eval_native_ && !old_this_value.is_undefined() &&
-            !ctx.has_binding("__eval_caller_this__")) {
-            ctx.create_binding("__eval_caller_this__", old_this_value, true);
-            saved_caller_this = true;
-        }
-
-        // One write covers the receiver in every form -- object, primitive or
-        // nullish -- where an Object* field and a parallel binding were both
-        // being maintained before.
-        ctx.set_this_value(actual_this);
-
-        bool was_nullish = this_value.is_null() || this_value.is_undefined();
-        bool was_primitive = !was_nullish && !this_value.is_object() && !this_value.is_function();
-        bool prev_nullish = ctx.original_this_was_nullish();
-        bool prev_primitive = ctx.original_this_was_primitive();
-        ctx.set_original_this_nullish(was_nullish);
-        ctx.set_original_this_primitive(was_primitive);
-
-        // A plain call (not this construct invocation) must see new.target == undefined --
-        // ctx is shared with the caller here since native calls don't get their own Context.
-        Value saved_new_target = ctx.get_new_target();
-        if (!is_construct_invocation) ctx.set_new_target(Value());
-
-        // ctx is reused as-is (no fresh Context for natives) -- if native_data()->fn
-        // stashes current_context_ somewhere long-lived (Promise's own ctor,
-        // setTimeout), it's THIS context that would leak. ContextSurvivorGuard
-        // consults this instead of registering unconditionally.
-        ctx.mark_exposed_to_escape();
-        Context* prev_context = Object::current_context_;
-        Object::current_context_ = &ctx;
-        // The native signature demands a vector; rebuild one only when the
-        // caller did not already have one.
-        std::vector<Value> native_args_owned;
-        if (!args_vec) { native_args_owned.assign(args.begin(), args.end()); args_vec = &native_args_owned; }
-        Value result = native_data()->fn(ctx, *args_vec);
-        Object::current_context_ = prev_context;
-        ctx.set_original_this_nullish(prev_nullish);
-        ctx.set_original_this_primitive(prev_primitive);
-
-        if (!is_construct_invocation) ctx.set_new_target(saved_new_target);
-
-        ctx.set_this_value(old_this_value);
-
-        if (saved_caller_this) {
-            try { ctx.delete_binding("__eval_caller_this__"); } catch (...) {}
-        }
-
-        return result;
-    }
+    if (is_native_) return call_native(ctx, args, this_value, args_vec, is_construct_invocation);
     
     // Resolve the fast-path gating states as early as possible (before any
     // Context exists) so a Function called for the first time -- e.g. a
@@ -621,6 +556,85 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         return vm_result;
     }
 
+    return call_tree_walker(ctx, args, this_value);
+}
+
+// Out of line for the same reason as call_tree_walker below.
+[[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
+                                              Value this_value, const std::vector<Value>* args_vec,
+                                              bool is_construct_invocation) {
+    if (!ctx.check_execution_depth()) {
+        ctx.throw_exception(Value(std::string("call stack size exceeded")));
+        return Value();
+    }
+    
+    Value old_this_value = ctx.get_this_value();
+
+    // Annex B's sloppy-mode null/undefined-this-becomes-global substitution only
+    // applies to ECMAScript function code, never to native functions -- they must see
+    // the real this_value (e.g. Object.prototype.toString branches on it).
+    Value actual_this = this_value;
+
+    // Preserve caller's "this" for direct eval inside native functions.
+    // Native function call sets "this" to the native's receiver, but eval must
+    // inherit the calling function's "this" (the value that existed before this overwrite).
+    bool saved_caller_this = false;
+    if (is_eval_native_ && !old_this_value.is_undefined() &&
+        !ctx.has_binding("__eval_caller_this__")) {
+        ctx.create_binding("__eval_caller_this__", old_this_value, true);
+        saved_caller_this = true;
+    }
+
+    // One write covers the receiver in every form -- object, primitive or
+    // nullish -- where an Object* field and a parallel binding were both
+    // being maintained before.
+    ctx.set_this_value(actual_this);
+
+    bool was_nullish = this_value.is_null() || this_value.is_undefined();
+    bool was_primitive = !was_nullish && !this_value.is_object() && !this_value.is_function();
+    bool prev_nullish = ctx.original_this_was_nullish();
+    bool prev_primitive = ctx.original_this_was_primitive();
+    ctx.set_original_this_nullish(was_nullish);
+    ctx.set_original_this_primitive(was_primitive);
+
+    // A plain call (not this construct invocation) must see new.target == undefined --
+    // ctx is shared with the caller here since native calls don't get their own Context.
+    Value saved_new_target = ctx.get_new_target();
+    if (!is_construct_invocation) ctx.set_new_target(Value());
+
+    // ctx is reused as-is (no fresh Context for natives) -- if native_data()->fn
+    // stashes current_context_ somewhere long-lived (Promise's own ctor,
+    // setTimeout), it's THIS context that would leak. ContextSurvivorGuard
+    // consults this instead of registering unconditionally.
+    ctx.mark_exposed_to_escape();
+    Context* prev_context = Object::current_context_;
+    Object::current_context_ = &ctx;
+    // The native signature demands a vector; rebuild one only when the
+    // caller did not already have one.
+    std::vector<Value> native_args_owned;
+    if (!args_vec) { native_args_owned.assign(args.begin(), args.end()); args_vec = &native_args_owned; }
+    Value result = native_data()->fn(ctx, *args_vec);
+    Object::current_context_ = prev_context;
+    ctx.set_original_this_nullish(prev_nullish);
+    ctx.set_original_this_primitive(prev_primitive);
+
+    if (!is_construct_invocation) ctx.set_new_target(saved_new_target);
+
+    ctx.set_this_value(old_this_value);
+
+    if (saved_caller_this) {
+        try { ctx.delete_binding("__eval_caller_this__"); } catch (...) {}
+    }
+
+    return result;
+    return result;
+}
+
+// A register-mode call never reaches this, so it is not part of that call's
+// function. Safe to split because it reads nothing the caller's prologue
+// produced: the frame guard and the argument root stay live there across it.
+[[gnu::noinline]] Value Function::call_tree_walker(Context& ctx, std::span<const Value> args,
+                                                  Value this_value) {
     // Only the tree-walker below reads these. They used to be computed in the
     // prologue, on the wrong side of the fast-path gate: get_parameter_objects
     // carries a static-init guard and body_ is dead there.

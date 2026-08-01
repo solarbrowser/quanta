@@ -1379,6 +1379,9 @@ protected:
     // malloc'd and invisible to the stack scan, registers are not.
     Value call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
                             const std::vector<Value>* args_vec);
+    Value call_tree_walker(Context& ctx, std::span<const Value> args, Value this_value);
+    Value call_native(Context& ctx, std::span<const Value> args, Value this_value,
+                      const std::vector<Value>* args_vec, bool is_construct_invocation);
 };
 
 // get_type()-based replacement for dynamic_cast<Function*>: Object is no
