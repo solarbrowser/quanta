@@ -422,8 +422,6 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         ctx.throw_range_error("Maximum call stack size exceeded");
         return Value();
     }
-    ASTNode* ast = ast_body();
-    Position call_position = ast ? ast->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
     // Class constructors must be called with new
@@ -505,9 +503,10 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // resolutions further down remain as the fallback for a chunk that
     // compiles for the first time later in this same call.
     if (executable_ && executable_->bytecode_chunk) {
-        if (executable_->strict_directive_state < 0 && ast && ast->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        if (executable_->strict_directive_state < 0 && executable_->body &&
+            executable_->body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             executable_->strict_directive_state =
-                (!is_strict_ && static_cast<BlockStatement*>(ast)->has_use_strict_directive()) ? 1 : 0;
+                (!is_strict_ && static_cast<BlockStatement*>(executable_->body.get())->has_use_strict_directive()) ? 1 : 0;
         }
         if (executable_->closure_props_state < 0) {
             executable_->closure_props_state = has_closure_props() ? 1 : 0;
@@ -597,6 +596,7 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     // The names shadow the old members so the slow path reads unchanged --
     // both are decl-site data living on the shared executable_.
     const auto& parameter_objects_ = get_parameter_objects();
+    ASTNode* ast = ast_body();
     ASTNode* body_ = ast;
 
     Context* parent_context = &ctx;
