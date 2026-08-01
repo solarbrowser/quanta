@@ -530,7 +530,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             // these markers on the arrow itself, so asking has_property here
             // only bought a walk up to Function.prototype and Object.prototype
             // on every call.
-            if (this->has_own_property("__arrow_this__")) fast_this = this->get_property("__arrow_this__");
+            if (has_arrow_this_) fast_this = arrow_this_;
         } else if (!fast_ctx.is_strict_mode()) {
             if (this_value.is_undefined() || this_value.is_null()) {
                 Object* global = fast_ctx.get_global_object();
@@ -703,8 +703,8 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     Value actual_this = this_value;
 
     // Arrow functions use their lexical this, ignoring the passed this_value
-    if (is_arrow_ && this->has_own_property("__arrow_this__")) {
-        actual_this = this->get_property("__arrow_this__");
+    if (is_arrow_ && has_arrow_this_) {
+        actual_this = arrow_this_;
     }
 
     bool is_strict_now = function_context.is_strict_mode();

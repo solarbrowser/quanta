@@ -928,6 +928,7 @@ private:
     class Context* closure_context_;
     class Environment* closure_environment_;  // lexical environment captured at creation time
     mutable Object* prototype_;  // Mutable to allow lazy initialization in get_property
+    Value arrow_this_;   // see arrow_this(); fits the padding this class already had
 
     // Every single-bit/tag field on Function, packed into one 16-bit word
     // (13 bits used) instead of 12 separate byte-sized members scattered
@@ -970,6 +971,12 @@ private:
     // per-instance override, which meant allocating an instance data block per
     // closure to hold nothing. A bit here says the same thing for free.
     bool name_is_empty_ : 1 = false;
+    // An arrow's captured `this` used to be stored as a property named
+    // __arrow_this__, which every call had to look up by that string twice
+    // and which `in` and hasOwnProperty could both see -- Node reports
+    // neither. It lives in arrow_this_ below instead; this says it was
+    // captured at all.
+    bool has_arrow_this_ : 1 = false;
     // Set eagerly the moment a genuine (non-const-marker) __closure_ property
     // is installed (see Function::set_property) -- has_closure_props()
     // becomes an O(1) check instead of scanning every own property key on
@@ -1196,6 +1203,11 @@ public:
     bool is_constructor() const { return is_constructor_; }
     void set_is_constructor(bool value) { is_constructor_ = value; }
     bool is_arrow() const { return is_arrow_; }
+    // Captured at arrow creation, immutable for the arrow's life. Traced:
+    // it can be the only reference left to the object `this` named.
+    const Value& arrow_this() const { return arrow_this_; }
+    bool has_arrow_this() const { return has_arrow_this_; }
+    void set_arrow_this(const Value& v) { arrow_this_ = v; has_arrow_this_ = true; }
     class Context* get_closure_context() const { return closure_context_; }
     class Environment* get_closure_environment() const { return closure_environment_; }
     void set_closure_environment(class Environment* env);

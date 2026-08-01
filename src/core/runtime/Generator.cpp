@@ -578,8 +578,8 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
 
     // Bind 'this' with sloppy-mode global coercion
     Value bound_this_g = this_value;
-    if (is_arrow() && has_property("__arrow_this__")) {
-        bound_this_g = get_property("__arrow_this__");
+    if (is_arrow() && has_arrow_this()) {
+        bound_this_g = arrow_this();
     } else if (!gen_context.is_strict_mode()) {
         if (bound_this_g.is_undefined() || bound_this_g.is_null()) {
             Object* global = ctx.get_global_object();

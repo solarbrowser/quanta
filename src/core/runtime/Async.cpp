@@ -223,8 +223,8 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     // Bind 'this' (arrow uses captured __arrow_this__; sloppy-mode undefined/null -> global)
     // Use presence (has_property), not is_undefined(), since a captured this can legitimately BE undefined.
     Value bound_this = this_value;
-    bool has_arrow_this = is_arrow() && has_property("__arrow_this__");
-    Value arrow_this_val = has_arrow_this ? get_property("__arrow_this__") : Value();
+    bool has_arrow_this = is_arrow() && this->has_arrow_this();
+    Value arrow_this_val = has_arrow_this ? this->arrow_this() : Value();
     if (has_arrow_this) {
         bound_this = arrow_this_val;
     } else if (!exec_ctx->is_strict_mode()) {
@@ -1506,8 +1506,8 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     if (is_strict()) gen_ctx->set_strict_mode(true);
 
     Value bound_this = this_value;
-    if (is_arrow() && has_property("__arrow_this__")) {
-        bound_this = get_property("__arrow_this__");
+    if (is_arrow() && has_arrow_this()) {
+        bound_this = arrow_this();
     } else if (!gen_ctx->is_strict_mode()) {
         if (bound_this.is_undefined() || bound_this.is_null()) {
             Object* global = ctx.get_global_object();

@@ -434,7 +434,7 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
     if (tpl.is_arrow) {
         function->set_is_arrow(true);
         if (ctx.has_binding("this")) {
-            function->set_property("__arrow_this__", ctx.get_binding("this"));
+            function->set_arrow_this(ctx.get_binding("this"));
         }
     }
     if (tpl.form == Form::Arrow) {

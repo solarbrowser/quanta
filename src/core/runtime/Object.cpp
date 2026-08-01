@@ -31,10 +31,10 @@ namespace Quanta {
 
 static_assert(sizeof(Object) == 24);
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Function) == 72);
-static_assert(sizeof(GeneratorFunction) == 72);
-static_assert(sizeof(AsyncFunction) == 72);
-static_assert(sizeof(AsyncGeneratorFunction) == 72);
+static_assert(sizeof(Function) == 80);
+static_assert(sizeof(GeneratorFunction) == 80);
+static_assert(sizeof(AsyncFunction) == 80);
+static_assert(sizeof(AsyncGeneratorFunction) == 80);
 #else
 static_assert(sizeof(Function) <= 144);
 static_assert(sizeof(GeneratorFunction) <= 144);
@@ -463,6 +463,7 @@ void Function::trace_default(Visitor& v) {
     Object::trace_default(v);
     v.visit_context(closure_context_);
     v.visit_environment(closure_environment_);
+    v.visit(arrow_this_);
     v.visit_object(prototype_);
     // executable_ is a plain (non-GC) shared_ptr -- ordinary refcounting keeps
     // its owned AST clone alive, no GC pinning needed. Only its compiled
