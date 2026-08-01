@@ -348,9 +348,16 @@ public:
 // variables' declared bounds -- that's the whole point. ASAN's stack
 // redzones flag this as a false-positive overflow; suppress on this pair.
 __attribute__((no_sanitize("address")))
+// Words the conservative scan walked in the last collection. A generator-heavy
+// program keeps many suspended fibers, each with its own stack, and scanning
+// them is most of what its collections cost -- none of which shows in how much
+// memory is live. See Heap::retune_budget's caller.
+thread_local size_t g_scanned_words = 0;
+
 void scan_range(MarkVisitor& v, const void* lo, const void* hi) {
     auto a = (reinterpret_cast<uintptr_t>(lo) + sizeof(uint64_t) - 1) & ~(sizeof(uint64_t) - 1);
     auto b = reinterpret_cast<uintptr_t>(hi) & ~(sizeof(uint64_t) - 1);
+    g_scanned_words += (b > a) ? (b - a) / sizeof(uint64_t) : 0;
     for (const uint64_t* p = reinterpret_cast<const uint64_t*>(a);
          p < reinterpret_cast<const uint64_t*>(b); p++) {
         if (*p) v.mark_word(*p);
@@ -390,6 +397,7 @@ void main_thread_stack_bounds(const char** lo, const char** hi) {
 
 __attribute__((no_sanitize("address")))
 void scan_stacks(MarkVisitor& v) {
+    g_scanned_words = 0;
     // Spill registers into a struct scanned explicitly below -- relying on
     // it falling inside [sp, main_hi] by luck of stack layout missed a
     // register-resident pointer under some compilers/flags (observed with
@@ -440,6 +448,28 @@ void scan_stacks(MarkVisitor& v) {
 
 
 thread_local Collector::CycleStats g_last_cycle;
+
+// How many requested collections per major. Halved back to the floor by a
+// major that reclaimed a worthwhile share of what it marked, doubled by one
+// that did not.
+uint32_t& major_interval_ref() {
+    static thread_local uint32_t interval = 8;
+    return interval;
+}
+uint32_t major_interval() { return major_interval_ref(); }
+
+// A major that frees less than this share of the cells it marked did not pay
+// for the marking, and the next one is unlikely to either.
+constexpr size_t kMajorYieldDivisor = 16;
+constexpr uint32_t kMajorIntervalFloor = 8;
+constexpr uint32_t kMajorIntervalCap = 64;
+
+void note_major_yield(size_t marked, size_t swept) {
+    uint32_t& interval = major_interval_ref();
+    if (swept * kMajorYieldDivisor >= marked) interval = kMajorIntervalFloor;
+    else if (interval < kMajorIntervalCap) interval *= 2;
+}
+
 
 // The one MarkVisitor instance per thread: cycle-lived rather than a
 // caller-local stack variable, so its worklists can survive across multiple
@@ -698,6 +728,15 @@ void run_minor_collection() {
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {
         g_last_cycle.swept_cells = run_sweep();
+        {
+            // Budget the next collection against what this one actually cost:
+            // the live bytes it marked, plus the stack words it had to scan
+            // conservatively. Live bytes alone misses a program whose cost is
+            // its suspended fibers rather than its heap.
+            Heap::Stats st = Heap::active().stats();
+            Heap::retune_budget(st.live_bytes + st.large_bytes +
+                                g_scanned_words * sizeof(uint64_t));
+        }
         Heap::rebuild_allocation_candidates();
     }
     auto t6 = std::chrono::steady_clock::now();
@@ -833,6 +872,16 @@ void finish_major_cycle(MarkVisitor& v) {
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {
         g_last_cycle.swept_cells = run_sweep();
+        {
+            // Budget the next collection against what this one actually cost:
+            // the live bytes it marked, plus the stack words it had to scan
+            // conservatively. Live bytes alone misses a program whose cost is
+            // its suspended fibers rather than its heap.
+            Heap::Stats st = Heap::active().stats();
+            Heap::retune_budget(st.live_bytes + st.large_bytes +
+                                g_scanned_words * sizeof(uint64_t));
+        }
+        note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);
         Heap::rebuild_allocation_candidates();
         Heap::decommit_idle_memory();
     }
@@ -1071,9 +1120,15 @@ void Collector::safepoint_slow() {
     }
 
     if (Heap::gc_requested()) {
-        // Every 8th requested collection is a full one: minors never reclaim
-        // old-generation garbage, so majors must keep coming.
-        if (!barriers_disabled() && ++cycle_count % 8 != 0) {
+        // Majors must keep coming -- minors never reclaim old-generation
+        // garbage -- but a fixed one-in-eight charges the same price whether
+        // the last one paid for itself or not. A program whose old generation
+        // is nearly all live pays a full mark of it to free what a minor
+        // frees anyway, so the interval backs off when that is what happened
+        // and snaps back the moment a major earns its keep. Survivor growth
+        // asks for majors through its own budget (Heap::note_extra_bytes), so
+        // backing off here cannot starve the survivor pool.
+        if (!barriers_disabled() && ++cycle_count % major_interval() != 0) {
             run_minor_collection();
         } else {
             run_major_slice(next_slice_budget());

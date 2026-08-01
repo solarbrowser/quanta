@@ -8,7 +8,6 @@
 #include "quanta/core/runtime/Value.h"
 #include <cassert>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #ifdef __GLIBC__
@@ -130,15 +129,49 @@ namespace {
 // doc comment) so both contribute to the same, already-tuned cadence
 // instead of survivor growth needing its own separate threshold.
 thread_local size_t g_bytes_since_gc = 0;
+// Survivor memory is only reclaimable by a major, so it carries its own
+// running total and asks for one on its own terms. Reading `needs_major` at
+// the moment the shared line is crossed made the answer depend on which
+// allocation happened to cross it: survivor memory could pile up while every
+// crossing landed on an ordinary cell, and a few bytes of layout change on a
+// hot object flipped it the other way.
+thread_local size_t g_survivor_bytes = 0;
+// How many bytes may be allocated before the next collection. A fixed number
+// asks the wrong question: it makes collection frequency a function of how
+// big the program's objects happen to be, so shrinking a hot type silently
+// collects less often and RSS climbs, and a few bytes added to one reshuffles
+// which collections land on the periodic major. What the cost of a collection
+// actually tracks is the live set -- marking it is the work -- so the budget
+// is a share of that, and the overhead it allows is proportional rather than
+// absolute. Clamped at both ends: a small heap still collects on a floor
+// rather than continuously, and a large one does not let garbage grow
+// without bound between collections.
+constexpr size_t kGcBudgetFloor = 1 * 1024 * 1024;
+constexpr size_t kGcBudgetCap = 8 * 1024 * 1024;
+constexpr size_t kLiveShareDivisor = 8;
+thread_local size_t g_gc_budget = kGcBudgetFloor;
+
+size_t gc_budget() { return g_gc_budget; }
 
 void account_bytes(size_t size, bool needs_major) {
     g_bytes_since_gc += size;
-    if (g_bytes_since_gc >= 4 * 1024 * 1024) {
+    if (needs_major) g_survivor_bytes += size;
+    if (g_bytes_since_gc >= gc_budget()) {
         g_bytes_since_gc = 0;
         Heap::request_gc();
-        if (needs_major) Heap::request_major_gc();
+        if (g_survivor_bytes >= gc_budget()) {
+            g_survivor_bytes = 0;
+            Heap::request_major_gc();
+        }
     }
 }
+}
+
+void Heap::retune_budget(size_t live_bytes) {
+    size_t want = live_bytes / kLiveShareDivisor;
+    if (want < kGcBudgetFloor) want = kGcBudgetFloor;
+    if (want > kGcBudgetCap) want = kGcBudgetCap;
+    g_gc_budget = want;
 }
 
 void Heap::note_extra_bytes(size_t bytes) {

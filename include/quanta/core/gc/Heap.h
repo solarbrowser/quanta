@@ -101,6 +101,8 @@ public:
     // heap doesn't see directly (pinned survivor Contexts). Requests a
     // major specifically since only one can reclaim a survivor Context.
     static void note_extra_bytes(size_t bytes);
+    // Sets the allocation budget from the live set a collection just measured.
+    static void retune_budget(size_t live_bytes);
     // Explicit-free path for `delete` (unique_ptr interop). Static: the
     // owning heap is recovered from the memory itself, so a cell created in
     // one realm and deleted while another realm's heap is active stays safe.
