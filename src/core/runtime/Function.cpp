@@ -558,15 +558,19 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         ctor_ok && executable_->strict_directive_state >= 0 &&
         executable_->closure_props_state == 0 && (executable_->self_name_state == 0 || executable_->self_name_state == 2) &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
-        // The Context must be heap-allocated and survivor-managed like the
-        // full path: native code (promise reactions, job queues) can capture
-        // the active context and run after this call returns -- a stack
-        // context would dangle. The saving here is everything else: no
-        // per-call Environment, no binding inserts, `this` as a run() param.
-        auto fast_ctx_ptr = std::make_unique<Context>(ctx.get_engine(), &ctx, Context::Type::Function);
-        Context& fast_ctx = *fast_ctx_ptr;
+        // The context is heap-allocated and survivor-managed like the full
+        // path: native code (promise reactions, job queues) can capture the
+        // active context and run after this call returns, so a stack context
+        // would dangle. It is taken from the call pool rather than built,
+        // since consecutive calls differ in only the fields reset_for_call
+        // writes. The saving beyond that is everything else: no per-call
+        // Environment, no binding inserts, `this` as a run() param.
         Engine* fast_engine = ctx.get_engine();
-        ContextSurvivorGuard fast_survivor(fast_ctx_ptr, fast_engine);
+        Context& fast_ctx = *CallContextPool::acquire(fast_engine, &ctx);
+        struct PoolRelease {
+            Context* c; Engine* e;
+            ~PoolRelease() { CallContextPool::release(c, e); }
+        } fast_release{&fast_ctx, fast_engine};
         Environment* outer_env = get_closure_environment();
         if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
         if (!outer_env) outer_env = ctx.get_lexical_environment();

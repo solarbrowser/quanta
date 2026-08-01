@@ -184,6 +184,72 @@ Context::Context(Engine* engine, Context* parent, Type type)
     builtins_root_ = parent ? (parent->builtins_root_ ? parent->builtins_root_ : parent) : nullptr;
 }
 
+void Context::reset_for_call(Engine* engine, Context* parent) {
+    // Same field-for-field as the (Engine*, Context*, Type) constructor, for
+    // Type::Function. The seventeen flags are one bit-field word, so clearing
+    // them is a single store.
+    type_ = Type::Function;
+    state_ = State::Running;
+    context_id_ = next_context_id_++;
+    has_exception_ = false; has_return_value_ = false; has_break_ = false;
+    has_continue_ = false; is_in_constructor_call_ = false; super_called_ = false;
+    this_needs_super_ = false; exposed_to_escape_ = false;
+    original_this_was_nullish_ = false; original_this_was_primitive_ = false;
+    pending_construct_call_ = false; strict_mode_ = false; in_param_eval_ = false;
+    is_direct_eval_call_ = false; eval_arguments_conflict_ = false;
+    is_arrow_function_context_ = false; in_class_field_init_ = false;
+    lexical_environment_ = nullptr;
+    variable_environment_ = nullptr;
+    this_value_ = parent ? parent->this_value_ : Value();
+    execution_depth_ = 0;
+    global_object_ = parent ? parent->global_object_ : nullptr;
+    current_exception_ = Value();
+    return_value_ = Value();
+    new_target_ = Value();
+    import_meta_ = Value();
+    engine_ = engine;
+    current_filename_ = parent ? parent->current_filename_ : Shape::intern("<unknown>");
+    builtins_root_ = parent ? (parent->builtins_root_ ? parent->builtins_root_ : parent) : nullptr;
+    owned_env_ = nullptr;
+}
+
+namespace {
+thread_local std::vector<Context*> g_call_context_pool;
+constexpr size_t kCallContextPoolCap = 64;
+}
+
+Context* CallContextPool::acquire(Engine* engine, Context* parent) {
+    if (!g_call_context_pool.empty()) {
+        Context* c = g_call_context_pool.back();
+        g_call_context_pool.pop_back();
+        c->reset_for_call(engine, parent);
+        return c;
+    }
+    return new Context(engine, parent, Context::Type::Function);
+}
+
+void CallContextPool::release(Context* ctx, Engine* engine) {
+    if (!ctx) return;
+    // Exactly ContextSurvivorGuard's condition: anything that could still be
+    // reached from elsewhere is handed over instead of reused.
+    if (ctx->exposed_to_escape() ||
+        (ctx->get_owned_env() && ctx->get_owned_env()->is_escaped())) {
+        if (engine) engine->add_survivor_context(ctx);
+        else delete ctx;
+        return;
+    }
+    if (ctx->is_pristine() && g_call_context_pool.size() < kCallContextPoolCap) {
+        g_call_context_pool.push_back(ctx);
+        return;
+    }
+    delete ctx;
+}
+
+void CallContextPool::drain() {
+    for (Context* c : g_call_context_pool) delete c;
+    g_call_context_pool.clear();
+}
+
 Context::~Context() {
     if (owned_env_) {
         if (!owned_env_->is_escaped()) {

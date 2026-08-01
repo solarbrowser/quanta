@@ -187,6 +187,19 @@ public:
     Type get_type() const { return type_; }
     State get_state() const { return state_; }
     uint32_t get_id() const { return context_id_; }
+
+    // Everything reset_for_call() does not write is still in the state a
+    // fresh context would have, so reusing this one cannot leak anything from
+    // the call that just finished. Checked before pooling, never assumed:
+    // any context that fails simply is not pooled.
+    bool is_pristine() const {
+        return !builtins_ && !loop_labels_ && !eval_param_names_ && !dispose_scope_stack_ &&
+               !owned_env_ && microtask_queue_.empty() && draining_queue_.empty();
+    }
+    // The fields a call can observe, back to what the constructor would have
+    // produced. Mirrors Context(Engine*, Context*, Type::Function) exactly;
+    // the two must be changed together.
+    void reset_for_call(Engine* engine, Context* parent);
     Engine* get_engine() const { return engine_; }
 
     // Microtask queue (Promise async support)
@@ -698,6 +711,22 @@ namespace ContextFactory {
 // AsyncFunction's Promise::context_). If a future change ever stores a
 // Context* into a longer-lived structure through some OTHER path than these,
 // it must also call mark_exposed_to_escape() or this skip becomes unsafe.
+// A function call's context is identical from one call to the next except for
+// a handful of fields, so a returning call hands its context back to be used
+// again rather than destroying it and building a new one over the same bytes.
+// Only a context that is provably done can be reused -- see is_pristine() --
+// and only one that provably cannot be reached from anywhere else, which is
+// the exact condition ContextSurvivorGuard already decides.
+class CallContextPool {
+public:
+    // Constructed and reset, ready for a call whose parent is `parent`.
+    static Context* acquire(Engine* engine, Context* parent);
+    // Takes the context back if it can, destroys or hands it to the engine's
+    // survivor pool if it cannot.
+    static void release(Context* ctx, Engine* engine);
+    static void drain();   // engine teardown
+};
+
 struct ContextSurvivorGuard {
     std::unique_ptr<Context>& ptr;
     Engine* eng;
