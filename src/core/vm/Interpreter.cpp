@@ -159,7 +159,7 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     if (desc.is_accessor_descriptor()) {
         if (!desc.has_getter()) return Value();
         Function* getter = as_function(desc.get_getter());
-        return getter ? getter->call(ctx, {}, prim) : Value();
+        return getter ? getter->call_register_args(ctx, {}, prim) : Value();
     }
     if (cacheable && desc.has_value()) {
         Shape* s = proto_obj->get_shape();
@@ -371,7 +371,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         if (desc.is_accessor_descriptor()) {
             if (!desc.has_getter()) return Value();
             Function* getter_fn = as_function(desc.get_getter());
-            return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+            return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
         }
         // `desc` already fully answers "is this an own property, and if so
         // what's its value" (get_property_descriptor's own miss-path already
@@ -420,7 +420,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 if (proto_desc.is_accessor_descriptor()) {
                     if (!proto_desc.has_getter()) return Value();
                     Function* getter_fn = as_function(proto_desc.get_getter());
-                    return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+                    return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
                 }
                 if (proto_desc.has_value()) {
                     // Learn: proto is the holder. Only cacheable as a plain
@@ -782,7 +782,7 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
                 return Value();
             }
             Function* getter_fn = as_function(own_d.get_getter());
-            return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+            return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
         }
         if (pf) {
             if (const Value* slot = obj->private_field_slot(qualified)) {
@@ -805,7 +805,7 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
                 return Value();
             }
             Function* getter_fn = as_function(d.get_getter());
-            return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+            return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
         }
         if (d.has_value()) return owner->get_property(used);
         return Value();
@@ -822,7 +822,7 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
                 return Value();
             }
             Function* getter_fn = as_function(d.get_getter());
-            return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+            return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
         }
         if (d.has_value()) return lookup->get_property(used);
     }
@@ -925,7 +925,7 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
 struct Frame {
     const BytecodeChunk& chunk;
     Context& ctx;
-    const std::vector<Value>& args;
+    std::span<const Value> args;
     Function* owner;
     Value* regs;
     Environment** env_saves;
@@ -1092,7 +1092,7 @@ UNARY_STEP_HANDLER(h_Dec, -1.0)
 Value h_switch(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
-    const std::vector<Value>& args = f.args;
+    std::span<const Value> args = f.args;
     Function* owner = f.owner;
     Value* regs = f.regs;
     Environment** env_saves = f.env_saves;
@@ -1921,12 +1921,13 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 3);
                 pc += 5;
                 const Value& callee = regs[callee_reg];
-                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
+                std::span<const Value> call_args(regs + args_start, argc);
                 if (callee.is_function()) {
-                    acc = callee.as_function()->call(ctx, call_args, Value());
+                    acc = callee.as_function()->call_register_args(ctx, call_args, Value());
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(call_args, Value());
+                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, Value());
                 } else {
                     ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
                 }
@@ -1946,12 +1947,13 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 pc += 6;
                 const Value& callee = regs[func_reg];
                 const Value& receiver = regs[this_reg];
-                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
+                std::span<const Value> call_args(regs + args_start, argc);
                 if (callee.is_function()) {
-                    acc = callee.as_function()->call(ctx, call_args, receiver);
+                    acc = callee.as_function()->call_register_args(ctx, call_args, receiver);
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(call_args, receiver);
+                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, receiver);
                 } else {
                     ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
                 }
@@ -2007,7 +2009,8 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     acc = callee.as_function()->call(ctx, call_args, regs[this_reg]);
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(call_args, regs[this_reg]);
+                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, regs[this_reg]);
                 } else {
                     ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
                 }
@@ -3909,12 +3912,13 @@ Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 3);
                 pc += 5;
                 const Value& callee = regs[callee_reg];
-                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
+                std::span<const Value> call_args(regs + args_start, argc);
                 if (callee.is_function()) {
-                    acc = callee.as_function()->call(ctx, call_args, Value());
+                    acc = callee.as_function()->call_register_args(ctx, call_args, Value());
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(call_args, Value());
+                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, Value());
                 } else {
                     ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
                 }
@@ -3930,7 +3934,7 @@ Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
 Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
-    const std::vector<Value>& args = f.args;
+    std::span<const Value> args = f.args;
     Value* regs = f.regs;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
@@ -3948,12 +3952,13 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
                 pc += 6;
                 const Value& callee = regs[func_reg];
                 const Value& receiver = regs[this_reg];
-                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
+                std::span<const Value> call_args(regs + args_start, argc);
                 if (callee.is_function()) {
-                    acc = callee.as_function()->call(ctx, call_args, receiver);
+                    acc = callee.as_function()->call_register_args(ctx, call_args, receiver);
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(call_args, receiver);
+                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, receiver);
                 } else {
                     ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
                 }
@@ -4035,7 +4040,8 @@ Value h_gen_CallSpread(Frame& f, uint32_t pc, Value acc) {
                     acc = callee.as_function()->call(ctx, call_args, regs[this_reg]);
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(call_args, regs[this_reg]);
+                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, regs[this_reg]);
                 } else {
                     ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
                 }
@@ -4903,7 +4909,7 @@ Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
 Value h_gen_CreateRestArray(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
-    const std::vector<Value>& args = f.args;
+    std::span<const Value> args = f.args;
     const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
@@ -5087,7 +5093,7 @@ Value run_dispatch(Frame& f) {
     return kHandlers[f.code[f.pc]](f, f.pc, f.acc);
 }
 
-Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
+Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
           const Value* this_val, Function* owner) {
     // Only the registers the chunk actually uses: a fixed 256 put the whole
     // bank on the C++ stack and zeroed it on every call, when the compiler

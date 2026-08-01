@@ -14,6 +14,7 @@
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/parser/AST.h"
+#include <optional>
 #include <sstream>
 #include <iostream>
 #include <chrono>
@@ -245,7 +246,7 @@ Function::~Function() {
     else delete static_cast<NonNativeInstanceData*>(instance_data_);
 }
 
-void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>& args, Object* arguments_obj) {
+void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> args, Object* arguments_obj) {
     const auto& parameter_objects_ = get_parameter_objects();
     // ES5 10.6 / ES6 9.4.4: mapped arguments only for simple, non-strict parameter lists.
     bool is_simple_params = true;
@@ -297,7 +298,7 @@ void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>&
     }
 }
 
-void Function::create_arguments_object(Context& fn_ctx, const std::vector<Value>& args) {
+void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> args) {
     const auto& parameter_objects_ = get_parameter_objects();
     auto arguments_obj = ObjectFactory::create_array(args.size());
     // Elements for non-mapped indices; mapped ones get accessor descriptors below.
@@ -403,14 +404,31 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         case FunctionKind::Async: return static_cast<AsyncFunction*>(this)->call(ctx, args, this_value);
         case FunctionKind::Generator: return static_cast<GeneratorFunction*>(this)->call(ctx, args, this_value);
         case FunctionKind::AsyncGenerator: return static_cast<AsyncGeneratorFunction*>(this)->call(ctx, args, this_value);
-        default: return call_default(ctx, args, this_value);
+        default: return call_default_impl(ctx, args, this_value, &args);
     }
 }
 
+Value Function::call_register_args(Context& ctx, std::span<const Value> args, Value this_value) {
+    // The three suspendable kinds keep the arguments past the call that made
+    // them, so a view of the caller's registers cannot serve them.
+    if (get_function_kind() != FunctionKind::Plain) {
+        std::vector<Value> copy(args.begin(), args.end());
+        return call(ctx, copy, this_value);
+    }
+    return call_default_impl(ctx, args, this_value, nullptr);
+}
+
 Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value this_value) {
-    // Roots args across the whole call (native path included): these Values
-    // live in the caller's malloc'd vector storage, invisible to the stack scan.
-    ValueVectorRoot args_root(&args);
+    return call_default_impl(ctx, args, this_value, &args);
+}
+
+Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
+                                  const std::vector<Value>* args_vec) {
+    // A vector's storage is malloc'd and invisible to the stack scan, so it
+    // has to be rooted for the whole call. Register-resident arguments are
+    // already covered by the caller's own frame and need nothing.
+    std::optional<ValueVectorRoot> args_root;
+    if (args_vec) args_root.emplace(args_vec);
     // Consumed immediately so a nested call triggered from inside this invocation
     // (e.g. a native function calling another function) doesn't inherit it.
     bool is_construct_invocation = ctx.consume_pending_construct_call();
@@ -477,7 +495,11 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
         ctx.mark_exposed_to_escape();
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &ctx;
-        Value result = native_data()->fn(ctx, args);
+        // The native signature demands a vector; rebuild one only when the
+        // caller did not already have one.
+        std::vector<Value> native_args_owned;
+        if (!args_vec) { native_args_owned.assign(args.begin(), args.end()); args_vec = &native_args_owned; }
+        Value result = native_data()->fn(ctx, *args_vec);
         Object::current_context_ = prev_context;
         ctx.set_original_this_nullish(prev_nullish);
         ctx.set_original_this_primitive(prev_primitive);

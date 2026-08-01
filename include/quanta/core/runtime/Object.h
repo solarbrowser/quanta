@@ -14,6 +14,7 @@
 #include "quanta/parser/FunctionExecutable.h"
 #include <unordered_map>
 #include <unordered_set>
+#include <span>
 #include <vector>
 #include <array>
 #include <string>
@@ -1308,6 +1309,13 @@ public:
     // Non-virtual: switches on get_function_kind(), same reasoning as
     // trace() above. call_default() is the plain-Function body.
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    // Arguments that live in the CALLER'S VM REGISTERS, passed as a view
+    // instead of a fresh vector. Two things follow from that restriction and
+    // neither holds for an arbitrary span, so nothing else may use this:
+    // the values are already GC roots (a register bank is either on the C++
+    // stack, which probe_word scans through NaN-boxing, or in VM::run's
+    // rooted spill vector), and the view stays valid for the whole call.
+    Value call_register_args(Context& ctx, std::span<const Value> args, Value this_value);
     Value construct(Context& ctx, const std::vector<Value>& args);
     
     // None of these seven are virtual on Object anymore -- Object's own
@@ -1357,13 +1365,20 @@ public:
 protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx);
     // ES2015 9.4.4.7: wires live getter/setter accessors so arguments[i] aliases parameter i.
-    void setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>& args, class Object* arguments_obj);
+    void setup_mapped_arguments(Context& fn_ctx, std::span<const Value> args, class Object* arguments_obj);
     // Builds the full arguments object (mapped/unmapped, callee, iterator)
     // and binds it as "arguments" in fn_ctx.
-    void create_arguments_object(Context& fn_ctx, const std::vector<Value>& args);
+    void create_arguments_object(Context& fn_ctx, std::span<const Value> args);
     // Base bodies -- see trace()/call()'s own doc comments above.
     void trace_default(Visitor& v);
     Value call_default(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    // args_vec is the caller's own vector when it had one, so a native callee
+    // (whose signature demands a vector) reuses it instead of rebuilding it;
+    // null means the args came from registers and only a native forces a
+    // materialization. It also decides the GC root: a vector's storage is
+    // malloc'd and invisible to the stack scan, registers are not.
+    Value call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
+                            const std::vector<Value>* args_vec);
 };
 
 // get_type()-based replacement for dynamic_cast<Function*>: Object is no

@@ -7,6 +7,7 @@
 #ifndef QUANTA_VM_INTERPRETER_H
 #define QUANTA_VM_INTERPRETER_H
 
+#include <span>
 #include "quanta/core/vm/Bytecode.h"
 
 namespace Quanta {
@@ -26,7 +27,7 @@ namespace VM {
 // when GetNamed's prototype-chain cache learns a new holder/prototype
 // reference (see FeedbackSlot::ProtoEntry). Null for run_script's ownerless
 // top-level chunk -- that cache is simply inert there (see run_script).
-Value run(const BytecodeChunk& chunk, Context& ctx, const std::vector<Value>& args,
+Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
           const Value* this_val = nullptr, Function* owner = nullptr);
 
 // Compiles a generator/async BODY for the suspendable calling convention
