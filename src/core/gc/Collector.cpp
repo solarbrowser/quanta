@@ -6,6 +6,7 @@
 
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/FiberRegistry.h"
+#include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Engine.h"
@@ -628,7 +629,14 @@ size_t run_sweep() {
                         static_cast<FinalizationRegistry*>(obj)->~FinalizationRegistry(); break;
                     case OT::ArrayBuffer: static_cast<ArrayBuffer*>(obj)->~ArrayBuffer(); break;
                     case OT::DataView: static_cast<DataView*>(obj)->~DataView(); break;
-                    default: obj->~Object(); break;  // Ordinary/Array/Arguments/String/Number/Boolean/Date/RegExp/Symbol/BigInt
+                    // Holds a shared_ptr<RegExp>, and that RegExp owns the
+                    // compiled pattern. Running only ~Object() here left every
+                    // regex literal's compiled code behind for good.
+                    case OT::RegExp: static_cast<RegExpObject*>(obj)->~RegExpObject(); break;
+                    // The rest have no subclass of their own, so ~Object() is
+                    // the whole destructor: Ordinary, Array, Arguments, and the
+                    // String/Number/Boolean/Date/Symbol/BigInt wrappers.
+                    default: obj->~Object(); break;
                 }
                 break;
             }
