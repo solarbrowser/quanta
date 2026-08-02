@@ -3216,6 +3216,37 @@ Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// A name the chunk has already resolved reads and writes through a cached
+// binding address: one load, or one store plus a barrier. The generated
+// handlers reach that in a few instructions but pay a fixed prologue first
+// (five frame fields plus the instr_pc store an exception would need), which
+// is most of the cost once the cache is warm. A script's top-level let/const
+// is reached this way on every access, so the warm path gets a handler of its
+// own and everything else tail-calls the generated one unchanged.
+Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
+    const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
+    if (LIKELY(entry.slot && !entry.obj_shape)) {
+        acc = *entry.slot;
+        pc += 3;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_LdaLookup(f, pc, acc);
+}
+
+Value h_StaLookupFast(Frame& f, uint32_t pc, Value acc) {
+    const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
+    if (LIKELY(entry.slot && !entry.obj_shape && entry.writable)) {
+        if (acc.is_object() || acc.is_function() || acc.is_string() ||
+            acc.is_symbol() || acc.is_bigint()) {
+            Collector::write_barrier_env(entry.env);
+        }
+        *entry.slot = acc;
+        pc += 3;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_StaLookup(f, pc, acc);
+}
+
 Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4333,6 +4364,33 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// A monomorphic own-property read is a shape compare and a slot load, and it
+// cannot throw. get_named reaches that in a handful of instructions but the
+// generated handler pays its prologue first, including the instr_pc store only
+// a throw would ever need. The first feedback entry is the whole fast path
+// here: a miss, a polymorphic site or anything that is not a plain object
+// tail-calls the generated handler, which rescans from scratch.
+Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& receiver = f.regs[code[pc + 1]];
+    if (LIKELY(receiver.is_object())) {
+        Object* obj = receiver.as_object();
+        if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
+            const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+            const FeedbackSlot::Entry& e = fb.entries[0];
+            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && e.shape == obj->get_shape() &&
+                       e.no_override_epoch == Object::descriptor_epoch())) {
+                if (const Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
+                    acc = *slot;
+                    pc += 6;
+                    DISPATCH();
+                }
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_GetNamed(f, pc, acc);
+}
+
 Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4355,6 +4413,49 @@ Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
+}
+
+// The write counterpart of h_GetNamedFast, with the same reasoning: a
+// monomorphic own-property store is a shape compare and a slot write, and it
+// cannot throw. The barrier still runs, since the store is what the remembered
+// set needs to hear about.
+Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& receiver = f.regs[code[pc + 1]];
+    if (LIKELY(receiver.is_object())) {
+        Object* obj = receiver.as_object();
+        if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
+            const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+            const FeedbackSlot::Entry& e = fb.entries[0];
+            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && e.shape == obj->get_shape() &&
+                       e.no_override_epoch == Object::descriptor_epoch())) {
+                if (Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
+                    write_barrier_for(obj, acc);
+                    *slot = acc;
+                    pc += 6;
+                    DISPATCH();
+                }
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_SetNamed(f, pc, acc);
+}
+
+Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc);
+
+// Indexing a dense array is a bounds check and a load. Everything else, the
+// null receiver included, goes to the generated handler, which does the whole
+// spec-ordered sequence from the start.
+Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
+    uint32_t index;
+    Object* dense;
+    if (LIKELY(array_index_key(acc, index) &&
+               dense_element_slot(f.regs[f.code[pc + 1]], index, dense))) {
+        acc = dense->get_element_unchecked(index);
+        pc += 4;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_GetKeyed(f, pc, acc);
 }
 
 Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
@@ -5021,9 +5122,9 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::ToTemplateString)] = &h_gen_ToTemplateString;
     t[static_cast<uint8_t>(Op::ToPropertyKey)] = &h_gen_ToPropertyKey;
     t[static_cast<uint8_t>(Op::CheckObjectCoercible)] = &h_gen_CheckObjectCoercible;
-    t[static_cast<uint8_t>(Op::LdaLookup)] = &h_gen_LdaLookup;
+    t[static_cast<uint8_t>(Op::LdaLookup)] = &h_LdaLookupFast;
     t[static_cast<uint8_t>(Op::LdaLookupTypeof)] = &h_gen_LdaLookupTypeof;
-    t[static_cast<uint8_t>(Op::StaLookup)] = &h_gen_StaLookup;
+    t[static_cast<uint8_t>(Op::StaLookup)] = &h_StaLookupFast;
     t[static_cast<uint8_t>(Op::CheckLookupResolvable)] = &h_gen_CheckLookupResolvable;
     t[static_cast<uint8_t>(Op::StaLookupChecked)] = &h_gen_StaLookupChecked;
     t[static_cast<uint8_t>(Op::LdaEnv)] = &h_gen_LdaEnv;
@@ -5064,11 +5165,11 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::SetSuperKeyed)] = &h_gen_SetSuperKeyed;
     t[static_cast<uint8_t>(Op::SuperCall)] = &h_gen_SuperCall;
     t[static_cast<uint8_t>(Op::SpreadInto)] = &h_gen_SpreadInto;
-    t[static_cast<uint8_t>(Op::GetNamed)] = &h_gen_GetNamed;
-    t[static_cast<uint8_t>(Op::SetNamed)] = &h_gen_SetNamed;
+    t[static_cast<uint8_t>(Op::GetNamed)] = &h_GetNamedFast;
+    t[static_cast<uint8_t>(Op::SetNamed)] = &h_SetNamedFast;
     t[static_cast<uint8_t>(Op::GetPrivate)] = &h_gen_GetPrivate;
     t[static_cast<uint8_t>(Op::SetPrivate)] = &h_gen_SetPrivate;
-    t[static_cast<uint8_t>(Op::GetKeyed)] = &h_gen_GetKeyed;
+    t[static_cast<uint8_t>(Op::GetKeyed)] = &h_GetKeyedFast;
     t[static_cast<uint8_t>(Op::SetKeyed)] = &h_gen_SetKeyed;
     t[static_cast<uint8_t>(Op::DeleteNamed)] = &h_gen_DeleteNamed;
     t[static_cast<uint8_t>(Op::DeleteKeyed)] = &h_gen_DeleteKeyed;
