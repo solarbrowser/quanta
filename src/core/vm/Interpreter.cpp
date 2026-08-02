@@ -3252,7 +3252,20 @@ Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
 // own and everything else tail-calls the generated one unchanged.
 Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
     const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
-    if (LIKELY(entry.slot && !entry.obj_shape)) {
+    if (LIKELY(entry.obj_shape)) {
+        // A name bound on the global object, which is where a script's `var`
+        // and its function declarations live -- so calling a top-level
+        // function reaches its callee through here on every call.
+        Object* bo = entry.env->get_binding_object();
+        if (LIKELY(bo && bo->get_shape() == entry.obj_shape &&
+                   entry.descriptor_epoch == Object::descriptor_epoch())) {
+            if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
+                acc = *s;
+                pc += 3;
+                DISPATCH();
+            }
+        }
+    } else if (LIKELY(entry.slot)) {
         acc = *entry.slot;
         pc += 3;
         DISPATCH();
