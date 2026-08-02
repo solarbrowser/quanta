@@ -393,26 +393,31 @@ struct BytecodeChunk {
 
     // env_mode: every local lives in ctx.get_lexical_environment() instead of
     // a register. env_params/env_locals seed function entry, via VM::run.
-    bool env_mode = false;
+    bool env_mode : 1 = false;
     // Parameter lists with initializers get spec FunctionDeclarationInstantiation
     // ordering: params seeded uninitialized (TDZ), initialized left-to-right by
     // bytecode, and env_locals bound only afterwards (Op::BindEnvLocals), so a
     // default expression can't see a later parameter or a body-level binding.
-    bool env_params_tdz = false;
+    bool env_params_tdz : 1 = false;
     // Top-level script chunk: the frame's lexical env is the PERSISTENT
     // script env (not per-call), so the lookup cache may point into it.
-    bool script_mode = false;
+    bool script_mode : 1 = false;
 
     // Function::call materializes the real arguments object before VM::run
     // (skipped otherwise -- it dominated call-heavy benchmarks).
-    bool needs_arguments = false;
+    bool needs_arguments : 1 = false;
     // Set by emit() when an Op::LdaLookup or Op::StaLookup goes into the code,
     // which are the only two readers of lookup_cache. A chunk that resolves
     // every name to a register or an env slot never touches the cache, so
     // neither the chunk-level array nor the per-instance copy is allocated --
     // and .data() is then null, so a missed emission site faults on the spot
     // instead of silently sharing one instance's resolved slots with another.
-    bool uses_lookup_cache = false;
+    bool uses_lookup_cache : 1 = false;
+    // Set when the body can observe `this`, which is exactly when it emits
+    // Op::LdaThis -- the only opcode that reads the frame's this. A call into
+    // a chunk without it can skip setting one up, including the sloppy-mode
+    // substitution that boxes a primitive or reaches for the global object.
+    bool uses_this : 1 = false;
 
     // Closures/tree-walk escapes/destructuring/try-catch are each
     // independently rare (a chunk can have any one without the others), so

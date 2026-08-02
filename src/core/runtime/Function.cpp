@@ -525,26 +525,31 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         if (is_strict_ || executable_->strict_directive_state == 1) fast_ctx.set_strict_mode(true);
 
         Value fast_this = this_value;
-        if (is_arrow_) {
-            // Own, not inherited: ArrowFunctionExpression::evaluate stamps
-            // these markers on the arrow itself, so asking has_property here
-            // only bought a walk up to Function.prototype and Object.prototype
-            // on every call.
-            if (has_arrow_this_) fast_this = arrow_this_;
-        } else if (!fast_ctx.is_strict_mode()) {
-            if (this_value.is_undefined() || this_value.is_null()) {
-                Object* global = fast_ctx.get_global_object();
-                if (global) fast_this = Value(global);
-            } else if (!this_value.is_object() && !this_value.is_function()) {
-                // box_primitive_this_sloppy's own first check is exactly this --
-                // skip the cross-TU call for the common already-object `this`
-                // (every ordinary method call), not just primitives.
-                fast_this = ObjectFactory::box_primitive_this_sloppy(fast_ctx, this_value);
+        // Skipped entirely when the body cannot observe `this`: Op::LdaThis is
+        // the only reader, and a native called from here is handed its own
+        // receiver rather than reading one off this context.
+        if (executable_->bytecode_chunk->uses_this) {
+            if (is_arrow_) {
+                // Own, not inherited: ArrowFunctionExpression::evaluate stamps
+                // these markers on the arrow itself, so asking has_property here
+                // only bought a walk up to Function.prototype and Object.prototype
+                // on every call.
+                if (has_arrow_this_) fast_this = arrow_this_;
+            } else if (!fast_ctx.is_strict_mode()) {
+                if (this_value.is_undefined() || this_value.is_null()) {
+                    Object* global = fast_ctx.get_global_object();
+                    if (global) fast_this = Value(global);
+                } else if (!this_value.is_object() && !this_value.is_function()) {
+                    // box_primitive_this_sloppy's own first check is exactly this --
+                    // skip the cross-TU call for the common already-object `this`
+                    // (every ordinary method call), not just primitives.
+                    fast_this = ObjectFactory::box_primitive_this_sloppy(fast_ctx, this_value);
+                }
             }
-        }
-        if (fast_this.is_object() || fast_this.is_function()) {
-            fast_ctx.set_this_binding(fast_this.is_object() ? fast_this.as_object()
-                                                            : fast_this.as_function());
+            if (fast_this.is_object() || fast_this.is_function()) {
+                fast_ctx.set_this_binding(fast_this.is_object() ? fast_this.as_object()
+                                                                : fast_this.as_function());
+            }
         }
 
         ExecContextScope gc_frame(&fast_ctx);

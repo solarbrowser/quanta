@@ -3771,6 +3771,7 @@ void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declara
 
 void BytecodeCompiler::emit(Op op) {
     if (op == Op::LdaLookup || op == Op::StaLookup) chunk_->uses_lookup_cache = true;
+    if (op == Op::LdaThis) chunk_->uses_this = true;
     code_.push_back(static_cast<uint8_t>(op));
 }
 void BytecodeCompiler::emit_u8(uint8_t v) { code_.push_back(v); }
