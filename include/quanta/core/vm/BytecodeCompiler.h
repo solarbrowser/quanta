@@ -78,6 +78,15 @@ private:
 
     bool is_local(const std::string& name) const;
     int lookup_local(const std::string& name) const;
+    // The register a name lives in when reading it is a bare Ldar: not
+    // env-resident, actually register-allocated here, and past its TDZ. -1
+    // when any of those fails, because then the read is an opcode of its own
+    // and its register number cannot stand in for it.
+    int plain_local_register(const std::string& name) const;
+    // Whether evaluating this expression is guaranteed to leave every local
+    // register alone and to not throw. Deliberately a whitelist: it decides
+    // whether a compound assignment may evaluate its right side first.
+    bool leaves_locals_untouched(const ASTNode* expr) const;
     bool declare_local(const std::string& name);
     int alloc_temp();
     void free_temp(int reg);

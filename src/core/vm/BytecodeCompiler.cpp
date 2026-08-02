@@ -3687,6 +3687,33 @@ void BytecodeCompiler::free_temp(int reg) {
     next_register_ = reg;
 }
 
+int BytecodeCompiler::plain_local_register(const std::string& name) const {
+    if (env_names_.count(name)) return -1;
+    int reg = lookup_local(name);
+    if (reg < 0) return -1;
+    if (lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) return -1;
+    return reg;
+}
+
+bool BytecodeCompiler::leaves_locals_untouched(const ASTNode* expr) const {
+    if (!expr) return false;
+    switch (expr->get_type()) {
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+            return true;
+        case ASTNode::Type::IDENTIFIER:
+            // Only a register-resident, initialized local: any other name is a
+            // chain lookup, which can run a getter or throw.
+            return plain_local_register(
+                static_cast<const Identifier*>(expr)->get_name()) >= 0;
+        default:
+            return false;
+    }
+}
+
 void BytecodeCompiler::emit_read_local(const std::string& name) {
     if (env_names_.count(name)) {
         auto it = env_slot_info_.find(name);
@@ -5856,8 +5883,22 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     emit_write_local(name, /*is_declaration=*/false);
                     return !failed_;
                 }
+                // The target's own register can stand in for the copy when the
+                // right side cannot disturb it. The copy exists only because
+                // evaluating the right side lands in the accumulator, which is
+                // where the old left value would otherwise be sitting.
+                int target_reg = plain_local_register(name);
+                if (target_reg >= 0 && leaves_locals_untouched(expr->get_right())) {
+                    if (!compile_expression(expr->get_right())) return false;
+                    emit(vm_op);
+                    emit_u8(static_cast<uint8_t>(target_reg));
+                    emit_write_local(name, /*is_declaration=*/false);
+                    return !failed_;
+                }
                 // Spec order: the old lhs value is read BEFORE the rhs runs, so
-                // `x += (x = 5)` sees the original x on the left.
+                // `x += (x = 5)` sees the original x on the left. Evaluating the
+                // right side first is only sound above, where it can neither
+                // observe the left nor throw ahead of the left's own read.
                 int temp = alloc_temp();
                 if (failed_) return false;
                 emit_read_local(name);
