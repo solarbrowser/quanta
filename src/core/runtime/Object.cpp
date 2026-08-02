@@ -3444,8 +3444,12 @@ Value box_primitive_this_sloppy(Context& ctx, const Value& this_value) {
                                 : this_value.is_boolean() ? Object::ObjectType::Boolean
                                 : this_value.is_symbol() ? Object::ObjectType::Symbol
                                 : Object::ObjectType::BigInt;
-    auto wrapper = std::make_unique<Object>(obj_type);
-    wrapper->set_property("[[PrimitiveValue]]", this_value);
+    // A String wrapper is exotic: it carries `length` and an index property per
+    // character. Building a bare Object here gave sloppy-mode `this` a String
+    // that reported length 0 and had no indices, unlike the one Object() makes.
+    auto wrapper = this_value.is_string() ? create_string(this_value.to_string())
+                                          : std::make_unique<Object>(obj_type);
+    if (!this_value.is_string()) wrapper->set_property("[[PrimitiveValue]]", this_value);
     Object* global = ctx.get_global_object();
     if (global) {
         Value ctor_val = global->get_property(ctor_name);
