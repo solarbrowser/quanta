@@ -140,6 +140,12 @@ public:
     
 private:
     void complete_generator(const Value& value);
+    // A completed generator can never be resumed, so its fiber is dead weight.
+    // Worse, FiberRegistry roots a cell owner for the collector, so a
+    // registered fiber keeps the generator reachable, which keeps the fiber
+    // registered: nothing short of process exit breaks that. Tearing the fiber
+    // down at completion breaks it, and returns the stack to the pool early.
+    void release_fiber();
 };
 
 /**

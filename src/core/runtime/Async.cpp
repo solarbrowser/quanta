@@ -479,9 +479,15 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body,
     }
 }
 
-AsyncGenerator::~AsyncGenerator() {
+void AsyncGenerator::release_fiber() {
+    if (!fiber_->co) return;
     FiberRegistry::unregister_fiber(this);
-    if (fiber_->co) mco_destroy(fiber_->co);
+    mco_destroy(fiber_->co);
+    fiber_->co = nullptr;
+}
+
+AsyncGenerator::~AsyncGenerator() {
+    release_fiber();
     // Closures born inside the generator body share this context via their
     // closure_context_; a swept generator must not tear it down under them.
     // Contexts stay engine-lifetime until they become traced cells themselves.
@@ -549,6 +555,9 @@ void AsyncGenerator::enter_fiber() {
     }
     current_ = prev;
     handle_suspension();
+    // After handle_suspension, which settles the Done case's promise while the
+    // fiber is still registered.
+    if (state_ == State::Completed) release_fiber();
 }
 
 void AsyncGenerator::handle_suspension() {
@@ -611,6 +620,7 @@ void AsyncGenerator::process_next_request() {
 
     if (finishes_without_running) {
         state_ = State::Completed;
+        release_fiber();
         Promise* p = front.promise;
         switch (front.type) {
             case Request::Type::Throw:

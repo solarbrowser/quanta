@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Generator.h"
+#include "quanta/core/gc/Heap.h"
 #include "quanta/core/runtime/FiberStackPool.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/FiberRegistry.h"
@@ -100,8 +101,14 @@ Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* o
 }
 
 Generator::~Generator() {
+    release_fiber();
+}
+
+void Generator::release_fiber() {
+    if (!fiber_->co) return;
     FiberRegistry::unregister_fiber(this);
-    if (fiber_->co) mco_destroy(fiber_->co);
+    mco_destroy(fiber_->co);
+    fiber_->co = nullptr;
 }
 
 Generator::GeneratorResult Generator::next(const Value& value) {
@@ -122,6 +129,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
         quanta_fiber_resume(fiber_.get());
     }
     current_generator_ = prev;
+    if (state_ == State::Completed) release_fiber();
 
     if (state_ == State::Completed) {
         if (generator_context_->has_exception()) {
@@ -151,6 +159,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
 Generator::GeneratorResult Generator::return_value(const Value& value) {
     if (state_ == State::Completed || state_ == State::SuspendedStart) {
         state_ = State::Completed;
+        release_fiber();
         return GeneratorResult(value, true);
     }
     returning_ = true;
@@ -166,6 +175,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
         quanta_fiber_resume(fiber_.get());
     }
     current_generator_ = prev;
+    if (state_ == State::Completed) release_fiber();
 
     // Check if the fiber propagated an exception (e.g. IteratorClose threw TypeError).
     if (generator_context_->has_exception()) {
@@ -189,6 +199,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     if (state_ == State::Completed || state_ == State::SuspendedStart) {
         // Per spec 27.5.3.4: throw() on a never-started/completed generator completes it directly.
         state_ = State::Completed;
+        release_fiber();
         generator_context_->throw_exception(exception, true);
         return GeneratorResult(Value(), true);
     }
@@ -205,6 +216,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
         quanta_fiber_resume(fiber_.get());
     }
     current_generator_ = prev;
+    if (state_ == State::Completed) release_fiber();
 
     if (state_ == State::Completed) {
         if (generator_context_->has_exception()) {
@@ -230,6 +242,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
 void Generator::complete_generator(const Value& value) {
     (void)value;
     state_ = State::Completed;
+    release_fiber();
 }
 
 Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {

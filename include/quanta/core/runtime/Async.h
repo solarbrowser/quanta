@@ -206,6 +206,10 @@ private:
     void enter_fiber();
     // Called after fiber suspends; fulfills/rejects pending_promise_ when appropriate.
     void handle_suspension();
+    // See Generator::release_fiber: a registered fiber makes FiberRegistry root
+    // its cell owner, so a finished generator that keeps its fiber can never be
+    // collected, and never unregisters.
+    void release_fiber();
 
     // Enqueue a next()/return()/throw() request and start processing it if idle.
     AsyncGeneratorResult enqueue_request(Request::Type type, const Value& value, std::unique_ptr<Promise> promise);
