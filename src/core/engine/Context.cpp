@@ -186,12 +186,8 @@ Context::Context(Engine* engine, Context* parent, Type type)
 }
 
 void Context::reset_for_call(Engine* engine, Context* parent) {
-    // Same field-for-field as the (Engine*, Context*, Type) constructor, for
-    // Type::Function. The seventeen flags are one bit-field word, so clearing
-    // them is a single store.
     type_ = Type::Function;
     state_ = State::Running;
-    context_id_ = next_context_id_++;
     has_exception_ = false; has_return_value_ = false; has_break_ = false;
     has_continue_ = false; is_in_constructor_call_ = false; super_called_ = false;
     this_needs_super_ = false; exposed_to_escape_ = false;
@@ -199,19 +195,15 @@ void Context::reset_for_call(Engine* engine, Context* parent) {
     pending_construct_call_ = false; strict_mode_ = false; in_param_eval_ = false;
     is_direct_eval_call_ = false; eval_arguments_conflict_ = false;
     is_arrow_function_context_ = false; in_class_field_init_ = false;
-    lexical_environment_ = nullptr;
-    variable_environment_ = nullptr;
-    this_value_ = parent ? parent->this_value_ : Value();
-    execution_depth_ = 0;
-    global_object_ = parent ? parent->global_object_ : nullptr;
+    this_value_ = parent->this_value_;
+    global_object_ = parent->global_object_;
     current_exception_ = Value();
     return_value_ = Value();
     new_target_ = Value();
     import_meta_ = Value();
     engine_ = engine;
-    current_filename_ = parent ? parent->current_filename_ : Shape::intern("<unknown>");
-    builtins_root_ = parent ? (parent->builtins_root_ ? parent->builtins_root_ : parent) : nullptr;
-    owned_env_ = nullptr;
+    current_filename_ = parent->current_filename_;
+    builtins_root_ = parent->builtins_root_ ? parent->builtins_root_ : parent;
 }
 
 namespace {
