@@ -88,6 +88,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 ctx.throw_reference_error("'" + name + "' is not defined");
                 return Value();
             }
+            // GetValue on the left runs before the right side is evaluated, so
+            // a binding still in its temporal dead zone throws here. put_value
+            // repeats the check for the write, but by then the right side has
+            // already run and its side effects have happened.
+            if (ctx.is_in_tdz(name)) {
+                ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                return Value();
+            }
             left_value = ref_env->get_binding_direct(name, &ctx);
             if (ctx.has_exception()) return Value();
         }
@@ -255,70 +263,37 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 }
                 return right_value;
             }
-            case Operator::PLUS_ASSIGN: {
-                Value lp = to_primitive_add(left_value);
-                if (ctx.has_exception()) return Value();
-                Value rp = to_primitive_add(right_value);
-                if (ctx.has_exception()) return Value();
-                Value result = lp.add(rp);
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::MINUS_ASSIGN: {
-                Value result = Value(left_value.to_number() - right_value.to_number());
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::MUL_ASSIGN: {
-                Value result = Value(left_value.to_number() * right_value.to_number());
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::DIV_ASSIGN: {
-                Value result = Value(left_value.to_number() / right_value.to_number());
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::MOD_ASSIGN: {
-                double left_num = left_value.to_number();
-                double right_num = right_value.to_number();
-                Value result = Value(std::fmod(left_num, right_num));
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::BITWISE_AND_ASSIGN: {
-                Value result = left_value.bitwise_and(right_value);
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::BITWISE_OR_ASSIGN: {
-                Value result = left_value.bitwise_or(right_value);
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::BITWISE_XOR_ASSIGN: {
-                Value result = left_value.bitwise_xor(right_value);
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::LEFT_SHIFT_ASSIGN: {
-                Value result = left_value.left_shift(right_value);
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::RIGHT_SHIFT_ASSIGN: {
-                Value result = left_value.right_shift(right_value);
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
-            case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: {
-                Value result = left_value.unsigned_right_shift(right_value);
-                put_value(result); if (ctx.has_exception()) return Value();
-                return result;
-            }
+            default: break;
+        }
+
+        // Every compound operator applies the same ApplyStringOrNumericBinary
+        // Operator the plain binary form does, so it delegates rather than
+        // reimplementing: the hand-written versions here reached for
+        // to_number() and disagreed with `a - b` on BigInt, both in what they
+        // threw and in what they said.
+        BinaryExpression::Operator bin_op;
+        switch (operator_) {
+            case Operator::PLUS_ASSIGN:   bin_op = BinaryExpression::Operator::ADD; break;
+            case Operator::MINUS_ASSIGN:  bin_op = BinaryExpression::Operator::SUBTRACT; break;
+            case Operator::MUL_ASSIGN:    bin_op = BinaryExpression::Operator::MULTIPLY; break;
+            case Operator::DIV_ASSIGN:    bin_op = BinaryExpression::Operator::DIVIDE; break;
+            case Operator::MOD_ASSIGN:    bin_op = BinaryExpression::Operator::MODULO; break;
+            case Operator::BITWISE_AND_ASSIGN: bin_op = BinaryExpression::Operator::BITWISE_AND; break;
+            case Operator::BITWISE_OR_ASSIGN:  bin_op = BinaryExpression::Operator::BITWISE_OR; break;
+            case Operator::BITWISE_XOR_ASSIGN: bin_op = BinaryExpression::Operator::BITWISE_XOR; break;
+            case Operator::LEFT_SHIFT_ASSIGN:  bin_op = BinaryExpression::Operator::LEFT_SHIFT; break;
+            case Operator::RIGHT_SHIFT_ASSIGN: bin_op = BinaryExpression::Operator::RIGHT_SHIFT; break;
+            case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN:
+                bin_op = BinaryExpression::Operator::UNSIGNED_RIGHT_SHIFT; break;
             default:
                 ctx.throw_exception(Value(std::string("Unsupported assignment operator")));
                 return Value();
+        }
+        {
+            Value result = BinaryExpression::apply_operator(ctx, bin_op, left_value, right_value);
+            if (ctx.has_exception()) return Value();
+            put_value(result); if (ctx.has_exception()) return Value();
+            return result;
         }
         
         return right_value;
