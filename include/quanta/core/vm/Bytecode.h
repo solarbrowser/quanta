@@ -219,7 +219,13 @@ struct FeedbackSlot {
     // object, not per-shape, so this is what keeps a different instance's
     // later defineProperty from being silently missed by this shape's
     // cached entry.
-    struct Entry { Shape* shape = nullptr; uint32_t slot_index = 0; uint64_t no_override_epoch = 0; };
+    // is_accessor: slot_index names an accessor-kind shape slot, so the slot
+    // holds the getter rather than the property's value and a hit has to call
+    // it. Lives in the padding slot_index's alignment already leaves. Every
+    // reader that stores through slot_index, or hands its contents back as a
+    // value, has to exclude these.
+    struct Entry { Shape* shape = nullptr; uint32_t slot_index = 0; bool is_accessor = false;
+                   uint64_t no_override_epoch = 0; };
     static constexpr uint8_t kMaxEntries = 8;
     std::array<Entry, kMaxEntries> entries{};
     uint8_t count = 0;

@@ -108,7 +108,8 @@ bool key_is_canonical_index(const std::string& s, size_t& out_index) {
 // prototype-property cache reuses the same (shape, slot_index) learn helper
 // GetNamed's own receiver-shape cache uses.
 void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index,
-                     uint64_t no_override_epoch = Object::descriptor_epoch());
+                     uint64_t no_override_epoch = Object::descriptor_epoch(),
+                     bool is_accessor = false);
 
 // Mirrors MemberExpression::evaluate's primitive-receiver branch.
 Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name,
@@ -149,8 +150,10 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
         Shape* shape = proto_obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == shape) {
-                const Value* slot = proto_obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
-                if (slot) return *slot;
+                if (!fb->entries[i].is_accessor) {
+                    const Value* slot = proto_obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                    if (slot) return *slot;
+                }
                 break;
             }
         }
@@ -212,7 +215,8 @@ void set_primitive_named(Context& ctx, const Value& prim, const std::string& nam
 // converging on one shape after their last field is added), and inserting a
 // duplicate would burn through the fixed budget without ever caching an
 // actually-distinct shape, tripping mega early for no benefit.
-void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, uint64_t no_override_epoch) {
+void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, uint64_t no_override_epoch,
+                     bool is_accessor) {
     for (uint8_t i = 0; i < fb->count; i++) {
         if (fb->entries[i].shape == shape) {
             // Refresh, not no-op: a caller re-deriving this same shape has
@@ -221,11 +225,12 @@ void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, uint64_
             // move forward or it stays permanently stale after the first
             // unrelated descriptor_epoch bump anywhere in the program.
             fb->entries[i].no_override_epoch = no_override_epoch;
+            fb->entries[i].is_accessor = is_accessor;
             return;
         }
     }
     if (fb->count < FeedbackSlot::kMaxEntries) {
-        fb->entries[fb->count++] = {shape, slot_index, no_override_epoch};
+        fb->entries[fb->count++] = {shape, slot_index, is_accessor, no_override_epoch};
     } else {
         fb->mega = true;
     }
@@ -341,7 +346,14 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             if (fb->entries[i].shape == obj_shape) {
                 if (fb->entries[i].no_override_epoch == cur_epoch) {
                     const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
-                    if (slot) return *slot;
+                    if (slot) {
+                        if (!fb->entries[i].is_accessor) return *slot;
+                        // An accessor slot holds the getter; a setter-only one
+                        // holds nothing callable and the property reads as
+                        // undefined, which is what the uncached path returns too.
+                        Function* getter_fn = as_function(as_object_like(*slot));
+                        return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
+                    }
                 }
                 break;
             }
@@ -358,8 +370,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         Shape* shape = obj_shape;
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == shape) {
-                const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
-                if (slot) return *slot;
+                if (!fb->entries[i].is_accessor) {
+                    const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
+                    if (slot) return *slot;
+                }
                 break;
             }
         }
@@ -369,6 +383,17 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     if (obj->get_type() != Object::ObjectType::Proxy) {
         PropertyDescriptor desc = override_desc ? *override_desc : obj->get_property_descriptor(name);
         if (desc.is_accessor_descriptor()) {
+            // Cacheable on exactly the same terms as a data property: an own
+            // accessor-kind shape slot with nothing in descriptors_ shadowing
+            // it. Without this every read rebuilt a whole descriptor first,
+            // which cost more than the getter call it was preparing.
+            if (cacheable && obj_shape && obj_shape->is_accessor_slot(name)) {
+                int32_t idx = obj_shape->find_slot(name);
+                if (idx >= 0) {
+                    learn_feedback(fb, obj_shape, static_cast<uint32_t>(idx), cur_epoch,
+                                   /*is_accessor=*/true);
+                }
+            }
             if (!desc.has_getter()) return Value();
             Function* getter_fn = as_function(desc.get_getter());
             return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
@@ -470,7 +495,8 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == shape) {
-                if (fb->entries[i].no_override_epoch == Object::descriptor_epoch()) {
+                if (!fb->entries[i].is_accessor &&
+                    fb->entries[i].no_override_epoch == Object::descriptor_epoch()) {
                     Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
                     if (slot) { *slot = value; return; }
                 }
@@ -483,6 +509,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == shape) {
+                if (fb->entries[i].is_accessor) break;
                 Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
                 if (slot) { *slot = value; return; }
                 break;
@@ -4378,7 +4405,8 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
         if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
             const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
             const FeedbackSlot::Entry& e = fb.entries[0];
-            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && e.shape == obj->get_shape() &&
+            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&
+                       e.shape == obj->get_shape() &&
                        e.no_override_epoch == Object::descriptor_epoch())) {
                 if (const Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
                     acc = *slot;
@@ -4427,7 +4455,8 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
         if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
             const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
             const FeedbackSlot::Entry& e = fb.entries[0];
-            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && e.shape == obj->get_shape() &&
+            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&
+                       e.shape == obj->get_shape() &&
                        e.no_override_epoch == Object::descriptor_epoch())) {
                 if (Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
                     write_barrier_for(obj, acc);
