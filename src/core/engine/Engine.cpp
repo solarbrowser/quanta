@@ -358,6 +358,11 @@ void Engine::run_event_loop_to_completion(Context& ctx) {
             ctx.drain_microtasks();
         }
     }
+
+    // Reported once everything has had its chance to run, rather than at each
+    // microtask checkpoint: a rejection a later turn goes on to handle stays
+    // quiet, which is the forgiving direction to differ in.
+    Promise::report_unhandled_rejections();
 }
 
 size_t Engine::get_heap_usage() const {

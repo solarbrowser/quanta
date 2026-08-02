@@ -1374,9 +1374,9 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
 
     if (awaited_promise) {
         if (awaited_promise->get_state() == PromiseState::FULFILLED) {
-            settled_val = awaited_promise->get_value();
+            settled_val = awaited_promise->take_settled_value();
         } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
-            settled_val = awaited_promise->get_value();
+            settled_val = awaited_promise->take_settled_value();
             settled_throw = true;
         } else {
             is_pending = true;
@@ -1464,9 +1464,9 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
             spins++;
         }
         if (awaited_promise->get_state() == PromiseState::FULFILLED) {
-            settled_val = awaited_promise->get_value();
+            settled_val = awaited_promise->take_settled_value();
         } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
-            settled_val = awaited_promise->get_value();
+            settled_val = awaited_promise->take_settled_value();
             settled_throw = true;
         }
     }

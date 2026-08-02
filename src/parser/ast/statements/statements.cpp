@@ -1668,9 +1668,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     if (ctx.has_exception()) return Value();
                     if (prom->get_state() == PromiseState::FULFILLED) {
-                        settled_val = prom->get_value();
+                        settled_val = prom->take_settled_value();
                     } else if (prom->get_state() == PromiseState::REJECTED) {
-                        settled_val = prom->get_value();
+                        settled_val = prom->take_settled_value();
                         settled_throw = true;
                     } else {
                         is_pending = true;
@@ -1865,9 +1865,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     if (ctx.has_exception()) return Value();
                     if (prom->get_state() == PromiseState::FULFILLED) {
-                        settled_val = prom->get_value();
+                        settled_val = prom->take_settled_value();
                     } else if (prom->get_state() == PromiseState::REJECTED) {
-                        settled_val = prom->get_value();
+                        settled_val = prom->take_settled_value();
                         settled_throw = true;
                     } else {
                         is_pending = true;
@@ -1926,9 +1926,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 if (AsyncUtils::is_promise(next_result2)) {
                     Promise* p = static_cast<Promise*>(next_result2.as_object());
                     if (p->get_state() == PromiseState::FULFILLED) {
-                        awaited = p->get_value();
+                        awaited = p->take_settled_value();
                     } else if (p->get_state() == PromiseState::REJECTED) {
-                        ctx.throw_exception(p->get_value());
+                        ctx.throw_exception(p->take_settled_value());
                         return Value();
                     } else {
                         ctx.throw_exception(Value(std::string("for-await-of: pending promise outside async context")));
@@ -1959,9 +1959,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     if (AsyncUtils::is_promise(value)) {
                         Promise* vp = static_cast<Promise*>(value.as_object());
                         if (vp->get_state() == PromiseState::FULFILLED) {
-                            v_settled_val = vp->get_value();
+                            v_settled_val = vp->take_settled_value();
                         } else if (vp->get_state() == PromiseState::REJECTED) {
-                            v_settled_val = vp->get_value();
+                            v_settled_val = vp->take_settled_value();
                             v_settled_throw = true;
                         } else {
                             v_is_pending = true;
@@ -2013,9 +2013,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     if (AsyncUtils::is_promise(value)) {
                         Promise* vp = static_cast<Promise*>(value.as_object());
                         if (vp->get_state() == PromiseState::FULFILLED) {
-                            value = vp->get_value();
+                            value = vp->take_settled_value();
                         } else if (vp->get_state() == PromiseState::REJECTED) {
-                            ctx.throw_exception(vp->get_value());
+                            ctx.throw_exception(vp->take_settled_value());
                             return Value();
                         } else {
                             ctx.throw_exception(Value(std::string("for-await-of: pending promise outside async context")));

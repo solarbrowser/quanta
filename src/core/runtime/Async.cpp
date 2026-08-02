@@ -125,9 +125,9 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
         if (AsyncUtils::is_promise(ret)) {
             Promise* p = static_cast<Promise*>(ret.as_object());
             if (p->get_state() == PromiseState::FULFILLED) {
-                self->outer_promise_->fulfill(p->get_value());
+                self->outer_promise_->fulfill(p->take_settled_value());
             } else if (p->get_state() == PromiseState::REJECTED) {
-                self->outer_promise_->reject(p->get_value());
+                self->outer_promise_->reject(p->take_settled_value());
             } else {
                 self->outer_promise_->fulfill(ret);
             }
@@ -1139,9 +1139,9 @@ std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
         auto new_promise = std::make_unique<Promise>(&ctx);
         
         if (existing_promise->get_state() == PromiseState::FULFILLED) {
-            new_promise->fulfill(existing_promise->get_value());
+            new_promise->fulfill(existing_promise->take_settled_value());
         } else if (existing_promise->get_state() == PromiseState::REJECTED) {
-            new_promise->reject(existing_promise->get_value());
+            new_promise->reject(existing_promise->take_settled_value());
         }
         
         return new_promise;

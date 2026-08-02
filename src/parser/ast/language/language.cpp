@@ -1902,9 +1902,9 @@ Value AwaitExpression::evaluate(Context& ctx) {
 
         if (awaited_promise) {
             if (awaited_promise->get_state() == PromiseState::FULFILLED) {
-                settled_val = awaited_promise->get_value();
+                settled_val = awaited_promise->take_settled_value();
             } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
-                settled_val = awaited_promise->get_value();
+                settled_val = awaited_promise->take_settled_value();
                 settled_throw = true;
             } else {
                 is_pending = true;
@@ -1988,9 +1988,9 @@ Value AwaitExpression::evaluate(Context& ctx) {
         if (AsyncUtils::is_promise(expr_val)) {
             awaited_promise = static_cast<Promise*>(expr_val.as_object());
             if (awaited_promise->get_state() == PromiseState::FULFILLED) {
-                settled_val = awaited_promise->get_value();
+                settled_val = awaited_promise->take_settled_value();
             } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
-                settled_val = awaited_promise->get_value();
+                settled_val = awaited_promise->take_settled_value();
                 settled_throw = true;
             } else {
                 is_pending = true;
@@ -2020,10 +2020,10 @@ Value AwaitExpression::evaluate(Context& ctx) {
             exec->await_result_ = Value(wrapped_obj.release());
 
             if (awaited_promise->get_state() == PromiseState::FULFILLED) {
-                settled_val = awaited_promise->get_value();
+                settled_val = awaited_promise->take_settled_value();
                 exec->await_result_ = Value();
             } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
-                settled_val = awaited_promise->get_value();
+                settled_val = awaited_promise->take_settled_value();
                 settled_throw = true;
                 exec->await_result_ = Value();
             } else {
@@ -2098,10 +2098,10 @@ Value AwaitExpression::evaluate(Context& ctx) {
             }
         }
         if (promise && promise->get_state() == PromiseState::FULFILLED) {
-            return promise->get_value();
+            return promise->take_settled_value();
         }
         if (promise && promise->get_state() == PromiseState::REJECTED) {
-            ctx.throw_exception(promise->get_value(), true);
+            ctx.throw_exception(promise->take_settled_value(), true);
             return Value();
         }
     }
@@ -2251,7 +2251,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                 if (p->get_state() == PromiseState::FULFILLED || p->get_state() == PromiseState::REJECTED) {
                     // Await always costs a tick, even for an already-settled promise.
                     bool was_rejected = (p->get_state() == PromiseState::REJECTED);
-                    Value settled = p->get_value();
+                    Value settled = p->take_settled_value();
                     if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
                         async_gen->resume_from_await(settled, was_rejected);
                     }, {Value(async_gen), settled});
@@ -2427,7 +2427,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                         if (rp->get_state() == PromiseState::FULFILLED || rp->get_state() == PromiseState::REJECTED) {
                             // Await always costs a tick, even for an already-settled promise.
                             bool was_rejected = (rp->get_state() == PromiseState::REJECTED);
-                            Value settled = rp->get_value();
+                            Value settled = rp->take_settled_value();
                             if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
                                 async_gen->resume_from_await(settled, was_rejected);
                             }, {Value(async_gen), settled});
@@ -2996,7 +2996,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     // PerformPromiseThen never resolves its reaction synchronously, so a
                     // shortcut straight through here would skip the mandatory suspension.
                     bool was_rejected = (p->get_state() == PromiseState::REJECTED);
-                    Value settled = p->get_value();
+                    Value settled = p->take_settled_value();
                     if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
                         async_gen->resume_from_await(settled, was_rejected);
                     }, {Value(async_gen), settled});

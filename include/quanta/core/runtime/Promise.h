@@ -36,6 +36,9 @@ public:
 
 private:
     PromiseState state_;
+    // [[PromiseIsHandled]]. Sits here to land in the padding the following
+    // Value's alignment already leaves behind.
+    bool is_handled_ = false;
     Value value_;
     std::vector<ThenRecord> then_records_;
     Context* context_;
@@ -70,8 +73,21 @@ public:
     
     static void setup_promise_methods(Promise* promise);
 
+    // HostPromiseRejectionTracker. A promise rejected while nothing is watching
+    // is recorded, and taken back off the list if a handler shows up later.
+    // report_unhandled_rejections() drains what is left.
+    static void report_unhandled_rejections();
+
+    // How every await and every promise adoption consumes a settled promise.
+    // Taking a rejection's reason IS handling it -- the reason is on its way to
+    // being rethrown into the awaiting frame or passed to another promise -- so
+    // this marks [[PromiseIsHandled]], which then() only does while the promise
+    // is still pending.
+    Value take_settled_value();
+
 private:
     void execute_handlers();
+    void mark_handled();
 };
 
 // get_type()-based replacement for dynamic_cast<Promise*> -- see as_function() in Object.h.

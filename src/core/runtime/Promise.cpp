@@ -215,17 +215,67 @@ void Promise::fulfill(const Value& value) {
     execute_handlers();
 }
 
+namespace {
+
+// Promises rejected with nothing watching them. Held as Values so the
+// collector traces them through the ordinary vector-root path: the promise has
+// to stay alive until the report runs, and its reason lives inside it.
+std::vector<Value>& pending_rejections() {
+    static thread_local std::vector<Value> vec;
+    static thread_local ValueVectorRoot root(&vec);
+    return vec;
+}
+
+void forget_rejection(Promise* p) {
+    auto& v = pending_rejections();
+    for (size_t i = 0; i < v.size(); i++) {
+        if (v[i].is_object() && v[i].as_object() == static_cast<Object*>(p)) {
+            v.erase(v.begin() + i);
+            return;
+        }
+    }
+}
+
+}
+
 void Promise::reject(const Value& reason) {
     Collector::write_barrier(this);
     if (state_ != PromiseState::PENDING) return;
 
     state_ = PromiseState::REJECTED;
     value_ = reason;
+    if (!is_handled_) pending_rejections().push_back(Value(this));
     execute_handlers();
+}
+
+Value Promise::take_settled_value() {
+    mark_handled();
+    return value_;
+}
+
+void Promise::mark_handled() {
+    if (state_ == PromiseState::REJECTED && !is_handled_) forget_rejection(this);
+    is_handled_ = true;
+}
+
+void Promise::report_unhandled_rejections() {
+    auto& v = pending_rejections();
+    if (v.empty()) return;
+    std::vector<Value> batch;
+    batch.swap(v);
+    for (const Value& entry : batch) {
+        Promise* p = entry.is_object() ? as_promise(entry.as_object()) : nullptr;
+        // A handler attached after the rejection clears the entry through
+        // forget_rejection, but re-check: a promise can be rejected, handled
+        // and re-listed within one turn.
+        if (!p || p->is_handled_) continue;
+        std::cerr << "Uncaught (in promise) " << p->value_.to_string() << std::endl;
+    }
 }
 
 Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
     Collector::write_barrier(this);
+    mark_handled();
     Context* exec_ctx = get_exec_ctx(engine_, context_);
     // Invoke handlers on the promise's creation context (closures need the right
     // defining scope) but always schedule on the global queue -- the only one
