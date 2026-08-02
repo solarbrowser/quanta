@@ -413,14 +413,22 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     // Shared with every call, like an ordinary function's body -- no clone.
     auto executor = std::make_shared<AsyncExecutor>(
         body_, this, std::move(exec_ctx), promise_raw, ctx.get_engine());
+
+    // Taken before run(), not after: a body with no await runs to completion
+    // inside run(), and fiber_entry's matching release fires there. Retaining
+    // afterwards would leave a +1 nobody is ever coming back to drop, which
+    // pins the Context in the survivor pool for the rest of the process.
+    Context* exec_ctx_raw = executor->exec_context_owned_.get();
+    if (exec_ctx_raw) EventLoop::instance().retain_context(exec_ctx_raw);
+
     executor->run();
 
-    // Transfer the exec context to the engine's survivor pool so closures created inside the body can still look up bindings later. Mirrors ContextSurvivorGuard in sync Function::call().
-    // Retain first: the fiber is suspended at its first await and will resume later still using this exact Context.
-    // Without the retain, the collector's reachability-based survivor prune (Collector.cpp) could delete it before the fiber ever resumes.
-    // Released in fiber_entry once the function fully completes.
+    // Hand the exec context to the engine's survivor pool so closures created
+    // inside the body can still look up bindings later, the same way
+    // ContextSurvivorGuard does for a synchronous call. The retain above is
+    // what keeps the collector's reachability-based prune off it while the
+    // fiber is suspended mid-body and nothing else reaches the Context.
     if (ctx.get_engine() && executor->exec_context_owned_) {
-        EventLoop::instance().retain_context(executor->exec_context_owned_.get());
         ctx.get_engine()->add_survivor_context(executor->exec_context_owned_.release());
     }
 

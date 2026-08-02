@@ -31,7 +31,7 @@ void Promise::trace(Visitor& v) {
 Promise::Promise(Context* ctx)
     : Object(ObjectType::Promise), state_(PromiseState::PENDING), context_(ctx), engine_(nullptr) {
     if (ctx) {
-        engine_ = ctx->get_engine();
+          engine_ = ctx->get_engine();
         // Retain context_: a pending Promise may invoke it to run .then() reactions an arbitrary time later (e.g. resolved by a real setTimeout elsewhere).
         EventLoop::instance().retain_context(ctx);
     }
