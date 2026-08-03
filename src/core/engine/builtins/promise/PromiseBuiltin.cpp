@@ -54,8 +54,8 @@ static bool new_promise_capability(Context& ctx, Value C_val, PromiseCapabilityR
             // the executor itself, which stays reachable throughout via C's
             // own parameter binding.
             if (state->self_fn) {
-                state->self_fn->set_property("__cap_res__", res_arg, PropertyAttributes::None);
-                state->self_fn->set_property("__cap_rej__", rej_arg, PropertyAttributes::None);
+                state->self_fn->set_internal_slot("__cap_res__", res_arg);
+                state->self_fn->set_internal_slot("__cap_rej__", rej_arg);
             }
             return Value();
         }, 2);
@@ -84,8 +84,8 @@ static bool new_promise_capability(Context& ctx, Value C_val, PromiseCapabilityR
     Object* pin_target = promise_val.is_function() ? static_cast<Object*>(promise_val.as_function())
                         : (promise_val.is_object() ? promise_val.as_object() : nullptr);
     if (pin_target) {
-        pin_target->set_property("__cap_res__", Value(state->resolve_fn), PropertyAttributes::None);
-        pin_target->set_property("__cap_rej__", Value(state->reject_fn), PropertyAttributes::None);
+        pin_target->set_internal_slot("__cap_res__", Value(state->resolve_fn));
+        pin_target->set_internal_slot("__cap_rej__", Value(state->reject_fn));
     }
 
     out.promise = promise_val;
@@ -707,7 +707,7 @@ void register_promise_builtins(Context& ctx) {
 
                 Function* ful_fn = on_ful.release();
                 // Keep handler alive (next_promise may be a non-Promise thenable with no GC pin of its own).
-                pin_target->set_internal_property("__all_ful_" + std::to_string(idx) + "__", Value(ful_fn));
+                pin_target->set_internal_slot("__all_ful_" + std::to_string(idx) + "__", Value(ful_fn));
 
                 Value then_method = next_promise_obj->get_property("then");
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
@@ -754,8 +754,8 @@ void register_promise_builtins(Context& ctx) {
             // thenable with no GC pin of its own (see all's __all_ful__ pin).
             Object* pin_target = as_object_or_function(cap.promise);
             if (!pin_target) pin_target = ctx.get_global_object();
-            pin_target->set_property("__race_res__", Value(cap.resolve), PropertyAttributes::None);
-            pin_target->set_property("__race_rej__", Value(cap.reject), PropertyAttributes::None);
+            pin_target->set_internal_slot("__race_res__", Value(cap.resolve));
+            pin_target->set_internal_slot("__race_rej__", Value(cap.reject));
 
             // First settled promise wins (cap.resolve/cap.reject already enforce "AlreadyResolved"
             // semantics, so the same pair is safely reused for every element).
@@ -910,8 +910,8 @@ void register_promise_builtins(Context& ctx) {
 
                 Function* ful_fn = on_ful.release();
                 Function* rej_fn = on_rej.release();
-                pin_target->set_internal_property("__settled_ful_" + std::to_string(idx) + "__", Value(ful_fn));
-                pin_target->set_internal_property("__settled_rej_" + std::to_string(idx) + "__", Value(rej_fn));
+                pin_target->set_internal_slot("__settled_ful_" + std::to_string(idx) + "__", Value(ful_fn));
+                pin_target->set_internal_slot("__settled_rej_" + std::to_string(idx) + "__", Value(rej_fn));
 
                 Value then_method = next_promise_obj->get_property("then");
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
@@ -974,7 +974,7 @@ void register_promise_builtins(Context& ctx) {
 
             Object* pin_target = as_object_or_function(cap.promise);
             if (!pin_target) pin_target = ctx.get_global_object();
-            pin_target->set_internal_property("__allkeyed_results__", Value(results_raw));
+            pin_target->set_internal_slot("__allkeyed_results__", Value(results_raw));
 
             if (keys.empty()) {
                 std::vector<Value> ra = { Value(results_raw) };
@@ -1026,7 +1026,7 @@ void register_promise_builtins(Context& ctx) {
                 on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 Function* ful_fn = on_ful.release();
-                pin_target->set_internal_property("__allkeyed_ful_" + std::to_string(i) + "__", Value(ful_fn));
+                pin_target->set_internal_slot("__allkeyed_ful_" + std::to_string(i) + "__", Value(ful_fn));
 
                 Value then_method = next_promise_obj->get_property("then");
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
@@ -1085,7 +1085,7 @@ void register_promise_builtins(Context& ctx) {
 
             Object* pin_target = as_object_or_function(cap.promise);
             if (!pin_target) pin_target = ctx.get_global_object();
-            pin_target->set_internal_property("__settledkeyed_results__", Value(results_raw));
+            pin_target->set_internal_slot("__settledkeyed_results__", Value(results_raw));
 
             if (keys.empty()) {
                 std::vector<Value> ra = { Value(results_raw) };
@@ -1165,8 +1165,8 @@ void register_promise_builtins(Context& ctx) {
 
                 Function* ful_fn = on_ful.release();
                 Function* rej_fn = on_rej.release();
-                pin_target->set_internal_property("__settledkeyed_ful_" + std::to_string(i) + "__", Value(ful_fn));
-                pin_target->set_internal_property("__settledkeyed_rej_" + std::to_string(i) + "__", Value(rej_fn));
+                pin_target->set_internal_slot("__settledkeyed_ful_" + std::to_string(i) + "__", Value(ful_fn));
+                pin_target->set_internal_slot("__settledkeyed_rej_" + std::to_string(i) + "__", Value(rej_fn));
 
                 Value then_method = next_promise_obj->get_property("then");
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
@@ -1278,7 +1278,7 @@ void register_promise_builtins(Context& ctx) {
                 on_reject->set_property("[[CapResolve]]", Value(cap_resolve), PropertyAttributes::None);
                 on_reject->set_property("[[CapReject]]", Value(state->cap_reject), PropertyAttributes::None);
                 Function* reject_raw = on_reject.release();
-                pin_target->set_internal_property("__any_r__" + std::to_string(idx), Value(reject_raw));
+                pin_target->set_internal_slot("__any_r__" + std::to_string(idx), Value(reject_raw));
 
                 Value then_method = next_promise_obj->get_property("then");
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }

@@ -1351,13 +1351,13 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
             [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
             }, 1);
-        wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
-        wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
+        wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
+        wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
         Object* thenable_obj = value.as_object();
         Value then_val = thenable_obj->get_property("then");
         if (then_val.is_function()) {
-            Value r = wrapped_raw->get_property("__tr_");
-            Value j = wrapped_raw->get_property("__tj_");
+            Value r = wrapped_raw->get_internal_slot("__tr_");
+            Value j = wrapped_raw->get_internal_slot("__tj_");
             AsyncUtils::call_thenable_job(gctx ? gctx : &ctx, then_val.as_function(), value, r, j, wrapped_raw);
         }
         awaited_promise = wrapped_raw;

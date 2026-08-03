@@ -1887,13 +1887,13 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                     wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                 }, 1);
-            wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
-            wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
+            wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
+            wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
             Object* thenable_obj = expr_val.as_object();
             Value then_val = thenable_obj->get_property("then");
             if (then_val.is_function()) {
-                Value r = wrapped_raw->get_property("__tr_");
-                Value j = wrapped_raw->get_property("__tj_");
+                Value r = wrapped_raw->get_internal_slot("__tr_");
+                Value j = wrapped_raw->get_internal_slot("__tj_");
                 AsyncUtils::call_thenable_job(gctx, then_val.as_function(), expr_val, r, j, wrapped_raw);
             }
             awaited_promise = wrapped_raw;
@@ -1929,8 +1929,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 });
             std::string key = std::to_string(reinterpret_cast<uintptr_t>(async_gen));
             Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-            awaited_promise->set_internal_property("__af_" + key, Value(on_f.release()));
-            awaited_promise->set_internal_property("__ar_" + key, Value(on_r.release()));
+            awaited_promise->set_internal_slot("__af_" + key, Value(on_f.release()));
+            awaited_promise->set_internal_slot("__ar_" + key, Value(on_r.release()));
             awaited_promise->then(ff_tmp_, fr_tmp_);
         } else {
             auto self = async_gen;
@@ -1978,7 +1978,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
         // Pin immediately -- before any allocations that could trigger GC.
         static thread_local size_t aw_pin_ctr = 0;
         std::string aw_pin_key = "__ap_" + std::to_string(aw_pin_ctr++);
-        exec->outer_promise_->set_property(aw_pin_key, expr_val);
+        exec->outer_promise_->set_internal_slot(aw_pin_key, expr_val);
 
         Promise* awaited_promise = nullptr;
         Value settled_val;
@@ -2006,13 +2006,13 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                     wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                 });
-            wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
-            wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
+            wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
+            wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
             Object* thenable_obj = expr_val.as_object();
             Value then_val = thenable_obj->get_property("then");
             if (then_val.is_function()) {
-                Value r = wrapped_raw->get_property("__tr_");
-                Value j = wrapped_raw->get_property("__tj_");
+                Value r = wrapped_raw->get_internal_slot("__tr_");
+                Value j = wrapped_raw->get_internal_slot("__tj_");
                 AsyncUtils::call_thenable_job(gctx, then_val.as_function(), expr_val, r, j, wrapped_raw);
             }
             awaited_promise = wrapped_raw;
@@ -2049,12 +2049,12 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 });
             std::string key = std::to_string(reinterpret_cast<uintptr_t>(exec));
             Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-            awaited_promise->set_internal_property("__af_" + key, Value(on_f.release()));
-            awaited_promise->set_internal_property("__ar_" + key, Value(on_r.release()));
+            awaited_promise->set_internal_slot("__af_" + key, Value(on_f.release()));
+            awaited_promise->set_internal_slot("__ar_" + key, Value(on_r.release()));
             awaited_promise->then(ff_tmp_, fr_tmp_);
         } else {
             // Pin settled_val too (e.g. module namespace object in microtask capture).
-            exec->outer_promise_->set_property(aw_pin_key + "_v", settled_val);
+            exec->outer_promise_->set_internal_slot(aw_pin_key + "_v", settled_val);
             auto self = exec->shared_from_this();
             Value val = settled_val;
             bool thr = settled_throw;
@@ -2062,8 +2062,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
         }
 
         quanta_fiber_yield(exec->fiber_.get());
-        exec->outer_promise_->delete_property(aw_pin_key);
-        exec->outer_promise_->delete_property(aw_pin_key + "_v");
+        exec->outer_promise_->delete_internal_slot(aw_pin_key);
+        exec->outer_promise_->delete_internal_slot(aw_pin_key + "_v");
 
         if (exec->await_is_throw_) {
             ctx.throw_exception(exec->await_result_, true);
@@ -2233,10 +2233,10 @@ Value YieldExpression::evaluate(Context& ctx) {
                             [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                             }, 1);
-                        wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
-                        wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
-                        Value r = wrapped_raw->get_property("__tr_");
-                        Value j = wrapped_raw->get_property("__tj_");
+                        wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
+                        wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
+                        Value r = wrapped_raw->get_internal_slot("__tr_");
+                        Value j = wrapped_raw->get_internal_slot("__tj_");
                         AsyncUtils::call_thenable_job(gctx, then_val.as_function(), v, r, j, wrapped_raw);
                         p = wrapped_raw;
                         wrapped_keepalive = Value(wrapped_obj.release());
@@ -2283,8 +2283,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                     });
                 std::string aw_key = "ydv_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
                 Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
-                p->set_internal_property("__af_" + aw_key, Value(on_f.release()));
-                p->set_internal_property("__ar_" + aw_key, Value(on_r.release()));
+                p->set_internal_slot("__af_" + aw_key, Value(on_f.release()));
+                p->set_internal_slot("__ar_" + aw_key, Value(on_r.release()));
                 p->then(ff_tmp, fr_tmp);
                 async_gen->await_result_ = wrapped_keepalive.is_undefined() ? v : wrapped_keepalive;
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
@@ -2458,8 +2458,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                                 });
                             std::string rkey = "yr_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
                             Function* frf = on_f2.get(); Function* frr = on_r2.get();
-                            rp->set_internal_property("__af_" + rkey, Value(on_f2.release()));
-                            rp->set_internal_property("__ar_" + rkey, Value(on_r2.release()));
+                            rp->set_internal_slot("__af_" + rkey, Value(on_f2.release()));
+                            rp->set_internal_slot("__ar_" + rkey, Value(on_r2.release()));
                             rp->then(frf, frr);
                             async_gen->await_result_ = ret_result;
                             async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
@@ -2495,8 +2495,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                                     return Value();
                                 });
                             Function* rf3 = on_f3.get(); Function* rjf3 = on_r3.get();
-                            ret_result.as_object()->set_internal_property("__th_rf3_", Value(on_f3.release()));
-                            ret_result.as_object()->set_internal_property("__th_rjf3_", Value(on_r3.release()));
+                            ret_result.as_object()->set_internal_slot("__th_rf3_", Value(on_f3.release()));
+                            ret_result.as_object()->set_internal_slot("__th_rjf3_", Value(on_r3.release()));
                             // NewPromiseResolveThenableJob: `then` is called in its own queued
                             // microtask (on the global context, for chronological ordering
                             // against unrelated Promise chains), not synchronously.
@@ -2976,10 +2976,10 @@ Value YieldExpression::evaluate(Context& ctx) {
                             [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                             }, 1);
-                        wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
-                        wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
-                        Value r = wrapped_raw->get_property("__tr_");
-                        Value j = wrapped_raw->get_property("__tj_");
+                        wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
+                        wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
+                        Value r = wrapped_raw->get_internal_slot("__tr_");
+                        Value j = wrapped_raw->get_internal_slot("__tj_");
                         AsyncUtils::call_thenable_job(gctx, then_val.as_function(), yield_value, r, j, wrapped_raw);
                         p = wrapped_raw;
                         wrapped_keepalive = Value(wrapped_obj.release());
@@ -3027,8 +3027,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                         });
                     std::string aw_key = "yw_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
                     Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
-                    p->set_internal_property("__af_" + aw_key, Value(on_f.release()));
-                    p->set_internal_property("__ar_" + aw_key, Value(on_r.release()));
+                    p->set_internal_slot("__af_" + aw_key, Value(on_f.release()));
+                    p->set_internal_slot("__ar_" + aw_key, Value(on_r.release()));
                     p->then(ff_tmp, fr_tmp);
                     async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;

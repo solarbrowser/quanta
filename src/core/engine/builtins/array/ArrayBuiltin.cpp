@@ -186,7 +186,7 @@ static void fa_reject(Context& ctx, Promise* result_promise, const Value& reason
     // Close the iterator (if any) before rejecting -- spec requires IteratorClose on
     // abrupt completion so generator finally blocks run (e.g. rejecting thenables).
     if (!result_promise->is_pending()) return;
-    Value iter_v = result_promise->get_property("__fa_iter__");
+    Value iter_v = result_promise->get_internal_slot("__fa_iter__");
     if (iter_v.is_object()) {
         Value ret_fn = iter_v.as_object()->get_property("return");
         if (ret_fn.is_function()) {
@@ -200,8 +200,8 @@ static void fa_reject(Context& ctx, Promise* result_promise, const Value& reason
 // Spec step 10: CreateDataPropertyOrThrow(A, ToString(k), mappedValue).
 // "length" isn't touched per-element -- it's set once the loop ends (on_next_settled's done case).
 static void fa_set_and_advance(Context& ctx, Promise* result_promise, const Value& value) {
-    Value arr_v = result_promise->get_property("__fa_arr__");
-    Value idx_v = result_promise->get_property("__fa_idx__");
+    Value arr_v = result_promise->get_internal_slot("__fa_arr__");
+    Value idx_v = result_promise->get_internal_slot("__fa_idx__");
     uint32_t idx = static_cast<uint32_t>(idx_v.to_number());
     if (arr_v.is_object()) {
         if (!create_data_property_or_throw(ctx, arr_v.as_object(), std::to_string(idx), value)) {
@@ -210,15 +210,15 @@ static void fa_set_and_advance(Context& ctx, Promise* result_promise, const Valu
             return;
         }
     }
-    result_promise->set_internal_property("__fa_idx__", Value(static_cast<double>(idx + 1)));
+    result_promise->set_internal_slot("__fa_idx__", Value(static_cast<double>(idx + 1)));
     fa_request_next(ctx, result_promise);
 }
 
 // Registers a generic resolve/reject pair on `p` that route into `on_fulfilled_key`
 // (looked up on result_promise, called with the resolved value) or generic rejection.
 static void fa_chain(Context& ctx, Promise* result_promise, Promise* p, const char* on_fulfilled_key) {
-    Value ff = result_promise->get_property(on_fulfilled_key);
-    Value fr = result_promise->get_property("__fa_on_reject__");
+    Value ff = result_promise->get_internal_slot(on_fulfilled_key);
+    Value fr = result_promise->get_internal_slot("__fa_on_reject__");
     if (ctx.has_exception()) return;
     p->then(ff.is_function() ? ff.as_function() : nullptr,
             fr.is_function() ? fr.as_function() : nullptr);
@@ -234,7 +234,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             fa_reject(c, rp, args.empty() ? Value() : args[0]);
             return Value();
         });
-    result_promise->set_internal_property("__fa_on_reject__", Value(reject_fn.release()));
+    result_promise->set_internal_slot("__fa_on_reject__", Value(reject_fn.release()));
 
     // Step 1: handle the (possibly-awaited) iterator-result object {value, done}.
     auto on_next_settled = ObjectFactory::create_native_function("",
@@ -249,8 +249,8 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             Value done = nr.as_object()->get_property("done");
             if (c.has_exception()) { Value e = c.get_exception(); c.clear_exception(); fa_reject(c, rp, e); return Value(); }
             if (done.to_boolean()) {
-                Value arr_v = rp->get_property("__fa_arr__");
-                Value idx_v = rp->get_property("__fa_idx__");
+                Value arr_v = rp->get_internal_slot("__fa_arr__");
+                Value idx_v = rp->get_internal_slot("__fa_idx__");
                 // Spec: Set(A, "length", k, true) once the loop ends, not per element.
                 if (arr_v.is_object() && !arr_v.as_object()->set_property("length", idx_v)) {
                     if (!c.has_exception()) c.throw_type_error("Cannot set property 'length'");
@@ -264,27 +264,27 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             Value value = nr.as_object()->get_property("value");
             if (c.has_exception()) { Value e = c.get_exception(); c.clear_exception(); fa_reject(c, rp, e); return Value(); }
 
-            Value used_async_v = rp->get_property("__fa_async__");
+            Value used_async_v = rp->get_internal_slot("__fa_async__");
             if (!used_async_v.to_boolean()) {
                 // Sync iterator (CreateAsyncFromSyncIterator): Await the value too.
                 Promise* vp = Promise::resolve(value);
                 fa_chain(c, rp, vp, "__fa_on_value__");
             } else {
-                Value cb = rp->get_property("__fa_on_value__");
+                Value cb = rp->get_internal_slot("__fa_on_value__");
                 if (cb.is_function()) cb.as_function()->call(c, {value}, Value());
             }
             return Value();
         });
-    result_promise->set_internal_property("__fa_on_next_settled__", Value(on_next_settled.release()));
+    result_promise->set_internal_slot("__fa_on_next_settled__", Value(on_next_settled.release()));
 
     // Step 2: value (now resolved) -- apply mapfn if present (and Await its result).
     auto on_value = ObjectFactory::create_native_function("",
         [rp](Context& c, const std::vector<Value>& args) -> Value {
             Value value = args.empty() ? Value() : args[0];
-            Value mapfn_v = rp->get_property("__fa_mapfn__");
+            Value mapfn_v = rp->get_internal_slot("__fa_mapfn__");
             if (mapfn_v.is_function()) {
-                Value idx_v = rp->get_property("__fa_idx__");
-                Value this_arg = rp->get_property("__fa_thisarg__");
+                Value idx_v = rp->get_internal_slot("__fa_idx__");
+                Value this_arg = rp->get_internal_slot("__fa_thisarg__");
                 std::vector<Value> margs = { value, idx_v };
                 Value mapped = mapfn_v.as_function()->call(c, margs, this_arg);
                 if (c.has_exception()) { Value e = c.get_exception(); c.clear_exception(); fa_reject(c, rp, e); return Value(); }
@@ -295,7 +295,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             }
             return Value();
         });
-    result_promise->set_internal_property("__fa_on_value__", Value(on_value.release()));
+    result_promise->set_internal_slot("__fa_on_value__", Value(on_value.release()));
 
     // Step 3: mapped value (now resolved) -- store and advance to the next index.
     auto on_mapped = ObjectFactory::create_native_function("",
@@ -303,18 +303,18 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             fa_set_and_advance(c, rp, args.empty() ? Value() : args[0]);
             return Value();
         });
-    result_promise->set_internal_property("__fa_on_mapped__", Value(on_mapped.release()));
+    result_promise->set_internal_slot("__fa_on_mapped__", Value(on_mapped.release()));
 }
 
 // Array-like path (no @@asyncIterator/@@iterator): index through .length,
 // Awaiting each element (spec: Set nextValue to ? Await(Get(arrayLike, Pk))).
 static void fa_request_arraylike_next(Context& ctx, Promise* result_promise) {
-    Value idx_v = result_promise->get_property("__fa_idx__");
-    Value len_v = result_promise->get_property("__fa_len__");
+    Value idx_v = result_promise->get_internal_slot("__fa_idx__");
+    Value len_v = result_promise->get_internal_slot("__fa_len__");
     uint32_t idx = static_cast<uint32_t>(idx_v.to_number());
     uint32_t len = static_cast<uint32_t>(len_v.to_number());
     if (idx >= len) {
-        Value arr_v = result_promise->get_property("__fa_arr__");
+        Value arr_v = result_promise->get_internal_slot("__fa_arr__");
         // Spec: Set(A, "length", len, true) once the loop ends, not per element.
         if (arr_v.is_object() && !arr_v.as_object()->set_property("length", idx_v)) {
             if (!ctx.has_exception()) ctx.throw_type_error("Cannot set property 'length'");
@@ -325,7 +325,7 @@ static void fa_request_arraylike_next(Context& ctx, Promise* result_promise) {
         if (result_promise->is_pending()) result_promise->fulfill(arr_v);
         return;
     }
-    Value arraylike = result_promise->get_property("__fa_arraylike__");
+    Value arraylike = result_promise->get_internal_slot("__fa_arraylike__");
     Object* al_obj = arraylike.is_function()
         ? static_cast<Object*>(arraylike.as_function()) : (arraylike.is_object() ? arraylike.as_object() : nullptr);
     if (!al_obj) {
@@ -347,12 +347,12 @@ static void fa_request_arraylike_next(Context& ctx, Promise* result_promise) {
 // Drives the next iteration step: requests the array-like element when no
 // iterator is in use, otherwise calls the iterator's next() method.
 static void fa_request_next(Context& ctx, Promise* result_promise) {
-    Value next_fn_v = result_promise->get_property("__fa_next__");
+    Value next_fn_v = result_promise->get_internal_slot("__fa_next__");
     if (next_fn_v.is_undefined()) {
         fa_request_arraylike_next(ctx, result_promise);
         return;
     }
-    Value iterator_v = result_promise->get_property("__fa_iter__");
+    Value iterator_v = result_promise->get_internal_slot("__fa_iter__");
     if (!next_fn_v.is_function()) {
         ctx.throw_type_error("iterator has no next method");
         Value e = ctx.get_exception(); ctx.clear_exception();
@@ -871,13 +871,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 // Iterator path: length isn't known upfront, so Construct(C) takes no args.
                 Object* result_arr = construct_result({});
                 if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
-                result_promise->set_internal_property("__fa_arr__", Value(result_arr));
-                result_promise->set_internal_property("__fa_iter__", iterator_val);
-                result_promise->set_internal_property("__fa_next__", next_fn_val);
-                result_promise->set_internal_property("__fa_mapfn__", mapfn ? Value(mapfn) : Value());
-                result_promise->set_internal_property("__fa_thisarg__", this_arg);
-                result_promise->set_internal_property("__fa_async__", Value(used_async_iterator));
-                result_promise->set_internal_property("__fa_idx__", Value(0.0));
+                result_promise->set_internal_slot("__fa_arr__", Value(result_arr));
+                result_promise->set_internal_slot("__fa_iter__", iterator_val);
+                result_promise->set_internal_slot("__fa_next__", next_fn_val);
+                result_promise->set_internal_slot("__fa_mapfn__", mapfn ? Value(mapfn) : Value());
+                result_promise->set_internal_slot("__fa_thisarg__", this_arg);
+                result_promise->set_internal_slot("__fa_async__", Value(used_async_iterator));
+                result_promise->set_internal_slot("__fa_idx__", Value(0.0));
                 fa_setup_handlers(ctx, result_promise);
                 fa_request_next(ctx, result_promise);
                 return Value(result_promise_obj.release());
@@ -900,13 +900,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             // Array-like path: Construct(C, [len]) per spec, unlike the iterator path above.
             Object* result_arr = construct_result({ Value(length_d) });
             if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
-            result_promise->set_internal_property("__fa_arr__", Value(result_arr));
-            result_promise->set_internal_property("__fa_arraylike__", items_boxed);
-            result_promise->set_internal_property("__fa_len__", Value(static_cast<double>(length)));
-            result_promise->set_internal_property("__fa_mapfn__", mapfn ? Value(mapfn) : Value());
-            result_promise->set_internal_property("__fa_thisarg__", this_arg);
-            result_promise->set_internal_property("__fa_async__", Value(true));
-            result_promise->set_internal_property("__fa_idx__", Value(0.0));
+            result_promise->set_internal_slot("__fa_arr__", Value(result_arr));
+            result_promise->set_internal_slot("__fa_arraylike__", items_boxed);
+            result_promise->set_internal_slot("__fa_len__", Value(static_cast<double>(length)));
+            result_promise->set_internal_slot("__fa_mapfn__", mapfn ? Value(mapfn) : Value());
+            result_promise->set_internal_slot("__fa_thisarg__", this_arg);
+            result_promise->set_internal_slot("__fa_async__", Value(true));
+            result_promise->set_internal_slot("__fa_idx__", Value(0.0));
             fa_setup_handlers(ctx, result_promise);
             fa_request_arraylike_next(ctx, result_promise);
             return Value(result_promise_obj.release());

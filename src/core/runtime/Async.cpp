@@ -1041,8 +1041,8 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
                 // then_records_ already traces on_ok_fn/on_err_fn. Also pin them onto cap
                 // (the value this function returns, so definitely reachable) so they don't
                 // depend solely on rp's own reachability.
-                cap->set_property("__ad_ok__", Value(on_ok_fn), PropertyAttributes::None);
-                cap->set_property("__ad_err__", Value(on_err_fn), PropertyAttributes::None);
+                cap->set_internal_slot("__ad_ok__", Value(on_ok_fn));
+                cap->set_internal_slot("__ad_err__", Value(on_err_fn));
                 rp->then(on_ok_fn, on_err_fn);
                 return Value(cap);
             }, 0);
@@ -1193,8 +1193,8 @@ std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
             // Mirrors Promise::fulfill's __trp_res__/__trp_rej__ pin (Promise.cpp:176-177):
             // the thenable may call resolve/reject asynchronously, well after this
             // function returns, so pin both onto promise itself to keep them alive.
-            promise->set_property("__trp_res__", Value(resolve_fn.get()), PropertyAttributes::None);
-            promise->set_property("__trp_rej__", Value(reject_fn.get()), PropertyAttributes::None);
+            promise->set_internal_slot("__trp_res__", Value(resolve_fn.get()));
+            promise->set_internal_slot("__trp_rej__", Value(reject_fn.get()));
 
             std::vector<Value> then_args = {
                 Value(resolve_fn.release()),
@@ -1373,9 +1373,9 @@ int64_t EventLoop::schedule_timer(Context& ctx, Function* callback,
     // GC-root the callback/args on the global object until the timer fires or is cleared.
     Object* global = ctx.get_global_object();
     if (global) {
-        global->set_internal_property("__timer_" + std::to_string(id) + "_cb", Value(callback));
+        global->set_internal_slot("__timer_" + std::to_string(id) + "_cb", Value(callback));
         for (size_t i = 0; i < args.size(); i++) {
-            global->set_internal_property("__timer_" + std::to_string(id) + "_arg" + std::to_string(i), args[i]);
+            global->set_internal_slot("__timer_" + std::to_string(id) + "_arg" + std::to_string(i), args[i]);
         }
     }
 
@@ -1437,9 +1437,9 @@ bool EventLoop::run_pending_timers(Context& ctx) {
             cancelled_ids_.erase(entry.id);
             release_context(entry.call_ctx);
             if (global) {
-                global->delete_property("__timer_" + std::to_string(entry.id) + "_cb");
+                global->delete_internal_slot("__timer_" + std::to_string(entry.id) + "_cb");
                 for (size_t i = 0; i < entry.bound_args.size(); i++) {
-                    global->delete_property("__timer_" + std::to_string(entry.id) + "_arg" + std::to_string(i));
+                    global->delete_internal_slot("__timer_" + std::to_string(entry.id) + "_arg" + std::to_string(i));
                 }
             }
         }
