@@ -326,6 +326,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // moved away from the storage fails the check and takes the path below.
     if (obj->get_type() == Object::ObjectType::Array && name == "length" &&
         obj->has_only_dense_elements()) {
+        if (fb) fb->array_length = true;
         return Value(static_cast<double>(obj->element_count()));
     }
 
@@ -4415,7 +4416,18 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
-        if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
+        if (obj->get_type() == Object::ObjectType::Array) {
+            // A dense Array's length is its element count, and `length` can
+            // never become an accessor on one, so the count answers the read
+            // exactly. A length moved into a descriptor fails the dense check
+            // and takes the general path.
+            const FeedbackSlot& afb = f.chunk.feedback[read_u16(code, pc + 4)];
+            if (LIKELY(afb.array_length && obj->has_only_dense_elements())) {
+                acc = Value(static_cast<double>(obj->element_count()));
+                pc += 6;
+                DISPATCH();
+            }
+        } else if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
             const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
             const FeedbackSlot::Entry& e = fb.entries[0];
             if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&

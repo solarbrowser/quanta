@@ -230,6 +230,14 @@ struct FeedbackSlot {
     std::array<Entry, kMaxEntries> entries{};
     uint8_t count = 0;
     bool mega = false;
+    // Set the first time this site turns out to be reading an Array's length.
+    // A GetNamed site's name is a compile-time constant, so once it is "length"
+    // it stays "length"; what still has to hold per execution is that the
+    // receiver really is a dense Array. Without this the read cannot use the
+    // shape cache at all -- an Array's length is computed from the element
+    // count, never mirrored in a slot -- so every one of them fell through to
+    // the uncached path and paid a string compare there.
+    bool array_length = false;
 
     // SetNamed-only: caches adding a brand-new own property (a shape
     // transition), keyed by the shape BEFORE the add. `proto_epoch` is
