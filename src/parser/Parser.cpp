@@ -312,11 +312,18 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
                 TokenType next = (peek_idx < tokens_.size())
                                  ? tokens_[peek_idx].get_type()
                                  : TokenType::EOF_TOKEN;
+                // Must accept exactly what parse_variable_declaration accepts as a
+                // declarator name, or a legal declaration is dispatched to the
+                // expression parser and dies there. `undefined`, `of` and `from`
+                // are contextual: they tokenize as their own kinds but are
+                // ordinary binding identifiers everywhere the grammar allows one.
                 bool can_start_binding =
                     next == TokenType::IDENTIFIER || next == TokenType::LEFT_BRACKET ||
                     next == TokenType::LEFT_BRACE  || next == TokenType::LET        ||
                     next == TokenType::YIELD       || next == TokenType::AWAIT      ||
-                    next == TokenType::STATIC      || next == TokenType::ASYNC;
+                    next == TokenType::STATIC      || next == TokenType::ASYNC      ||
+                    next == TokenType::UNDEFINED   || next == TokenType::OF         ||
+                    next == TokenType::FROM;
                 // `let [` or `let {` with line terminator: ASI applies (let as identifier)
                 if (!can_start_binding ||
                     (has_lt && (next == TokenType::LEFT_BRACKET || next == TokenType::LEFT_BRACE))) {
