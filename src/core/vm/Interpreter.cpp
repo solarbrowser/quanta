@@ -115,12 +115,15 @@ void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index,
 Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name,
                            FeedbackSlot* fb) {
     if (prim.is_string()) {
+        // Straight off the String, not through to_string(): that returns by
+        // value, so every `.length` read used to copy the whole buffer before
+        // scanning it, and both halves are O(length).
         if (name == "length") {
-            return Value(static_cast<double>(utf16_length(prim.to_string())));
+            return Value(static_cast<double>(prim.as_string()->utf16_length()));
         }
         size_t idx;
         if (key_is_canonical_index(name, idx)) {
-            int32_t unit = utf16_code_unit_at(prim.to_string(), idx);
+            int32_t unit = prim.as_string()->code_unit_at(idx);
             if (unit < 0) return Value();  // out of range: no such own property
             return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
         }

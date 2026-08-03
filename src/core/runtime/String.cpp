@@ -7,6 +7,7 @@
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/gc/Heap.h"
+#include <vector>
 
 namespace Quanta {
 
@@ -69,11 +70,23 @@ void String::calculate_hash() noexcept {
 }
 
 void String::collect_bytes(const String* node, std::string& out) {
-    if (!node->is_cons_ || node->flat_) {
-        out.append(node->data_);
-    } else {
-        collect_bytes(node->left_, out);
-        collect_bytes(node->right_, out);
+    // Explicit stack, not recursion. `s += x` in a loop builds a cons chain
+    // one node deep per append, with nothing balancing it, so recursing once
+    // per link put the rope's depth directly on the C stack and a few hundred
+    // thousand appends -- ordinary code, and exactly what a code generator
+    // that accumulates its output does -- overflowed it.
+    std::vector<const String*> pending;
+    pending.push_back(node);
+    while (!pending.empty()) {
+        const String* n = pending.back();
+        pending.pop_back();
+        if (!n->is_cons_ || n->flat_) {
+            out.append(n->data_);
+        } else {
+            // Right first: the stack pops left first, preserving order.
+            pending.push_back(n->right_);
+            pending.push_back(n->left_);
+        }
     }
 }
 
@@ -122,6 +135,41 @@ uint32_t decode_utf8_at(const std::string& s, size_t byte_pos, size_t* out_len) 
     *out_len = 1;
     return c;
 }
+}
+
+bool String::is_ascii() const {
+    if (ascii_) return ascii_ == 1;
+    const std::string& s = str();
+    bool plain = true;
+    for (unsigned char c : s) {
+        if (c >= 0x80) { plain = false; break; }
+    }
+    ascii_ = plain ? 1 : 2;
+    if (plain && s.size() < UINT32_MAX) utf16_len_ = static_cast<uint32_t>(s.size());
+    return plain;
+}
+
+size_t String::utf16_length() const {
+    if (utf16_len_ != UINT32_MAX) return utf16_len_;
+    if (is_ascii()) return utf16_len_;  // is_ascii() fills it in for this case
+    size_t n = Quanta::utf16_length(str());
+    if (n < UINT32_MAX) utf16_len_ = static_cast<uint32_t>(n);
+    return n;
+}
+
+int32_t String::code_unit_at(size_t index) const {
+    const std::string& s = str();
+    if (is_ascii()) {
+        if (index >= s.size()) return -1;
+        return static_cast<int32_t>(static_cast<unsigned char>(s[index]));
+    }
+    return utf16_code_unit_at(s, index);
+}
+
+size_t String::byte_pos(size_t index) const {
+    const std::string& s = str();
+    if (is_ascii()) return index < s.size() ? index : s.size();
+    return utf16_index_to_byte_pos(s, index);
 }
 
 size_t utf16_length(const std::string& s) {

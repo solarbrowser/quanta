@@ -979,7 +979,14 @@ void register_string_builtins(Context& ctx) {
     auto charAt_fn = ObjectFactory::create_native_function("charAt",
         [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
-            std::string str = toString_helper(ctx, this_value);
+            // Read in place when the receiver is already a String -- see
+            // charCodeAt for why the copy mattered.
+            String* self = this_value.is_string() ? this_value.as_string() : nullptr;
+            std::string owned;
+            if (!self) {
+                owned = toString_helper(ctx, this_value);
+                if (ctx.has_exception()) return Value();
+            }
 
             uint32_t index = 0;
             if (args.size() > 0) {
@@ -988,7 +995,7 @@ void register_string_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
             }
 
-            int32_t unit = utf16_code_unit_at(str, index);
+            int32_t unit = self ? self->code_unit_at(index) : utf16_code_unit_at(owned, index);
             if (unit < 0) {
                 return Value(std::string(""));
             }
@@ -1034,7 +1041,18 @@ void register_string_builtins(Context& ctx) {
     auto charCodeAt_fn = ObjectFactory::create_native_function("charCodeAt",
         [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
-            std::string str = toString_helper(ctx, this_value);
+            // A String receiver is read in place. toString_helper returns by
+            // value, so this used to copy the whole receiver on every call --
+            // and a parser calls charCodeAt once per character of its source,
+            // making both the copy and the decode-from-the-start quadratic.
+            // ToString on a String is a no-op, so skipping it keeps the spec's
+            // ToString-before-ToInteger order intact.
+            String* self = this_value.is_string() ? this_value.as_string() : nullptr;
+            std::string owned;
+            if (!self) {
+                owned = toString_helper(ctx, this_value);
+                if (ctx.has_exception()) return Value();
+            }
 
             uint32_t index = 0;
             if (args.size() > 0) {
@@ -1043,7 +1061,7 @@ void register_string_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
             }
 
-            int32_t unit = utf16_code_unit_at(str, index);
+            int32_t unit = self ? self->code_unit_at(index) : utf16_code_unit_at(owned, index);
             if (unit < 0) {
                 return Value(std::numeric_limits<double>::quiet_NaN());
             }
@@ -1374,12 +1392,23 @@ void register_string_builtins(Context& ctx) {
     auto str_slice_fn = ObjectFactory::create_native_function("slice",
         [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
-            std::string str = toString_helper(ctx, this_value);
+            // Borrowed when the receiver is already a String, so slicing does
+            // not copy the whole source per call, and the UTF-16 length and
+            // index-to-byte mapping come from String's cache instead of a scan
+            // from the start -- which is what made slicing a large source
+            // quadratic in the number of slices.
+            String* self = this_value.is_string() ? this_value.as_string() : nullptr;
+            std::string owned;
+            if (!self) {
+                owned = toString_helper(ctx, this_value);
+                if (ctx.has_exception()) return Value();
+            }
+            const std::string& str = self ? self->str() : owned;
 
             if (args.empty()) return Value(str);
 
             // Spec uses UTF-16 code unit positions, not byte positions.
-            int utf16len = static_cast<int>(utf16_length(str));
+            int utf16len = static_cast<int>(self ? self->utf16_length() : utf16_length(str));
             auto to_int_or_inf = [](double d, int len) -> int {
                 if (std::isnan(d)) return 0;
                 if (d == std::numeric_limits<double>::infinity()) return len;
@@ -1397,8 +1426,10 @@ void register_string_builtins(Context& ctx) {
             else end = std::min(end, utf16len);
 
             if (start >= end) return Value(std::string(""));
-            size_t byte_start = utf16_index_to_byte_pos(str, static_cast<size_t>(start));
-            size_t byte_end = utf16_index_to_byte_pos(str, static_cast<size_t>(end));
+            size_t byte_start = self ? self->byte_pos(static_cast<size_t>(start))
+                                     : utf16_index_to_byte_pos(str, static_cast<size_t>(start));
+            size_t byte_end = self ? self->byte_pos(static_cast<size_t>(end))
+                                   : utf16_index_to_byte_pos(str, static_cast<size_t>(end));
             return Value(str.substr(byte_start, byte_end - byte_start));
         }, 2);
     PropertyDescriptor str_slice_desc(Value(str_slice_fn.release()),
@@ -1966,9 +1997,34 @@ void register_string_builtins(Context& ctx) {
     auto fromCharCode_fn = ObjectFactory::create_native_function("fromCharCode",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            std::string result;
+            // Every argument is coerced first, in order: the surrogate pairing
+            // below needs to look at the next unit, and coercing it twice would
+            // run a valueOf twice, which is observable.
+            std::vector<uint32_t> units;
+            units.reserve(args.size());
             for (const auto& arg : args) {
-                uint32_t code = static_cast<uint32_t>(arg.to_number()) & 0xFFFF;
+                units.push_back(static_cast<uint32_t>(arg.to_number()) & 0xFFFF);
+            }
+
+            std::string result;
+            for (size_t i = 0; i < units.size(); i++) {
+                uint32_t code = units[i];
+                // A high surrogate followed by a low one is ONE code point.
+                // Encoding the halves separately stores bytes that no longer
+                // compare equal to the same text produced any other way, even
+                // though both report the same code units and the same length --
+                // String.fromCharCode(0xD840, 0xDC00) !== decodeURI of the very
+                // sequence it stands for.
+                if (code >= 0xD800 && code <= 0xDBFF && i + 1 < units.size() &&
+                    units[i + 1] >= 0xDC00 && units[i + 1] <= 0xDFFF) {
+                    uint32_t cp = 0x10000 + ((code - 0xD800) << 10) + (units[i + 1] - 0xDC00);
+                    result += static_cast<char>(0xF0 | (cp >> 18));
+                    result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                    result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    result += static_cast<char>(0x80 | (cp & 0x3F));
+                    i++;
+                    continue;
+                }
                 if (code <= 0x7F) {
                     result += static_cast<char>(code);
                 } else if (code <= 0x7FF) {

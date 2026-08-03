@@ -1790,8 +1790,11 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     g_optional_chain_shortcircuit = false;
 
     if (object_value.is_string()) {
-        std::string str_value = object_value.to_string();
-        
+        // Borrowed, not copied: every string method call came through here, and
+        // to_string() returns by value, so calling one in a loop copied the
+        // whole receiver per call. The sentinel check below only reads a prefix.
+        const std::string& str_value = object_value.as_string()->str();
+
         std::string method_name;
         if (member->is_computed()) {
             Value key_value = member->get_property()->evaluate(ctx);
@@ -1807,7 +1810,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             }
         }
         
-        if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:") {
+        if (str_value.compare(0, 6, "ARRAY:") == 0) {
             auto temp_array = ObjectFactory::create_array(0);
             
             size_t start = str_value.find('[');

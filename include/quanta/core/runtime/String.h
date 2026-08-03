@@ -21,6 +21,18 @@ class String {
     bool interned_       = false;
     bool is_cons_        = false;
     mutable bool flat_   = false; // true when data_ holds the materialized bytes
+    // UTF-16 length, computed once. `.length` is a scan of the whole UTF-8
+    // buffer, so reading it in a loop over a growing string is quadratic;
+    // strings are immutable, so the answer never changes once known. Fits the
+    // padding these three bools already left behind, so String stays 64 bytes.
+    // UINT32_MAX means "not computed"; a string long enough to collide with
+    // the sentinel simply recomputes.
+    mutable uint32_t utf16_len_ = UINT32_MAX;
+    // Whether every byte is < 0x80, computed once. When it is, a UTF-16 index
+    // IS a byte index and the length IS the byte count, so every indexed read
+    // becomes O(1) instead of a decode from the start of the string. 0 unknown,
+    // 1 single-byte, 2 has multi-byte sequences.
+    mutable uint8_t ascii_ = 0;
 
     void ensure_flat() const;
     void calculate_hash() noexcept;
@@ -56,6 +68,20 @@ public:
     [[nodiscard]] bool               empty() const noexcept { return !is_cons_ && data_.empty(); }
     [[nodiscard]] size_t             hash()  const noexcept { if (!hash_) ensure_flat(); return hash_; }
     [[nodiscard]] bool               interned() const noexcept { return interned_; }
+    // What JS calls .length: UTF-16 code units, not bytes. Cached -- see
+    // utf16_len_. Prefer this over the free utf16_length(std::string) below
+    // whenever a String* is at hand; the free function has nowhere to cache
+    // and its callers usually had to copy the buffer to call it.
+    [[nodiscard]] size_t utf16_length() const;
+    // True when a UTF-16 index and a byte index are the same thing here.
+    [[nodiscard]] bool is_ascii() const;
+    // The UTF-16 code unit at `index`, or -1 past the end. O(1) for a
+    // single-byte string, where the free utf16_code_unit_at below has to
+    // decode from the start every time -- which turns the ordinary
+    // `for (i...) s.charCodeAt(i)` scan of a source file into quadratic work.
+    [[nodiscard]] int32_t code_unit_at(size_t index) const;
+    // Byte offset of UTF-16 index `index`, clamped to the end.
+    [[nodiscard]] size_t byte_pos(size_t index) const;
 
     bool operator==(const String& other) const noexcept;
     bool operator!=(const String& other) const noexcept { return !(*this == other); }

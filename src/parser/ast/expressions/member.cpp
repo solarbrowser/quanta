@@ -374,8 +374,9 @@ Value MemberExpression::evaluate(Context& ctx) {
             std::string prop_name = prop->get_name();
 
             if (object_value.is_string() && prop_name == "length") {
-                std::string str_value = object_value.to_string();
-                return Value(static_cast<double>(utf16_length(str_value)));
+                // Cached on the String, and without to_string()'s copy of the
+                // whole buffer -- see String::utf16_length.
+                return Value(static_cast<double>(object_value.as_string()->utf16_length()));
             }
 
             std::string ctor_name = object_value.is_string() ? "String" :
@@ -817,7 +818,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
         
         if (prop_name == "length") {
-            return Value(static_cast<double>(utf16_length(str_value)));
+            return Value(static_cast<double>(object_value.as_string()->utf16_length()));
         }
 
         if (prop_name == "charAt") {
@@ -1252,7 +1253,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             } else if (prop_value.is_number()) {
                 int index = static_cast<int>(prop_value.to_number());
                 if (index >= 0) {
-                    int32_t unit = utf16_code_unit_at(str_value, static_cast<size_t>(index));
+                    int32_t unit = object_value.as_string()->code_unit_at(static_cast<size_t>(index));
                     if (unit >= 0) {
                         return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
                     }
@@ -1371,7 +1372,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             std::string prop_name = prop->get_name();
             
             if (prop_name == "length") {
-                return Value(static_cast<double>(utf16_length(str_value)));
+                return Value(static_cast<double>(object_value.as_string()->utf16_length()));
             }
 
             if (prop_name == "charAt") {
