@@ -610,7 +610,7 @@ static std::unique_ptr<ASTNode> wrap_field_value_with_name(
     std::unique_ptr<ASTNode> value_clone, const ASTNode* original_value, const std::string& name,
     const Position& pos) {
     if (!is_anonymous_function_like(original_value)) return value_clone;
-    auto setfnname_id = std::make_unique<Identifier>("__setfnname__", pos, pos);
+    auto setfnname_id = std::make_unique<EngineHelper>(EngineHelper::Kind::SetFunctionName, pos, pos);
     std::vector<std::unique_ptr<ASTNode>> args;
     args.push_back(std::move(value_clone));
     args.push_back(std::make_unique<StringLiteral>(name, pos, pos));
@@ -857,7 +857,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     instance_method->set_declared_length(method_declared_length);
                     if (!method->get_source_text().empty()) instance_method->set_source_text(method->get_source_text());
                     instance_method->set_is_strict(true);
-                    instance_method->set_internal_property("__private_class_brand__", Value(prototype.get()));
+                    instance_method->set_internal_slot("__private_class_brand__", Value(prototype.get()));
 
                     // Private methods/accessors are stored on the prototype under the
                     // qualified key ("#m@<protoPtr>", the same key resolve_private_storage_key
@@ -940,7 +940,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         if (needs_pm_brand_in_ctor) {
             std::string pm_slot = "#[[pm:" + std::to_string(reinterpret_cast<uintptr_t>(prototype.get())) + "]]";
             Position z{0,0};
-            auto pfadd_id = std::make_unique<Identifier>("__pfadd__", z, z);
+            auto pfadd_id = std::make_unique<EngineHelper>(EngineHelper::Kind::PrivateFieldAdd, z, z);
             auto this_id  = std::make_unique<Identifier>("this", z, z);
             auto slot_lit = std::make_unique<StringLiteral>(pm_slot, z, z);
             std::vector<std::unique_ptr<ASTNode>> pfadd_args;
@@ -965,7 +965,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
         if (needs_cfi_flag) {
             Position z{0,0};
-            auto enter_id = std::make_unique<Identifier>("__cfi_enter__", z, z);
+            auto enter_id = std::make_unique<EngineHelper>(EngineHelper::Kind::ClassFieldInitEnter, z, z);
             std::vector<std::unique_ptr<ASTNode>> no_args;
             auto enter_call = std::make_unique<CallExpression>(std::move(enter_id), std::move(no_args), z, z, false);
             new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(enter_call), z, z));
@@ -990,7 +990,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     // Object.preventExtensions(this) inside it must make the add throw,
                     // and self-reads of the field during it must not see a slot yet).
                     const std::string& pname = static_cast<Identifier*>(cf->get_key())->get_name();
-                    auto pfadd_id = std::make_unique<Identifier>("__pfadd__", fstart, fstart);
+                    auto pfadd_id = std::make_unique<EngineHelper>(EngineHelper::Kind::PrivateFieldAdd, fstart, fstart);
                     auto this_id0 = std::make_unique<Identifier>("this", fstart, fstart);
                     auto pname_lit = std::make_unique<StringLiteral>(pname, fstart, fstart);
                     std::vector<std::unique_ptr<ASTNode>> pfadd_args;
@@ -1021,7 +1021,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     // DefineField step 9: CreateDataPropertyOrThrow defines an own data
                     // property directly -- it must NOT walk the prototype chain for an
                     // inherited setter the way a normal `this.x = value` assignment would.
-                    auto deffield_id = std::make_unique<Identifier>("__deffield__", fstart, fstart);
+                    auto deffield_id = std::make_unique<EngineHelper>(EngineHelper::Kind::DefineField, fstart, fstart);
                     auto this_id = std::make_unique<Identifier>("this", fstart, fstart);
                     auto key_lit = std::make_unique<StringLiteral>(field_name, fstart, fstart);
                     std::vector<std::unique_ptr<ASTNode>> deffield_args;
@@ -1039,7 +1039,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
         if (needs_cfi_flag) {
             Position z{0,0};
-            auto exit_id = std::make_unique<Identifier>("__cfi_exit__", z, z);
+            auto exit_id = std::make_unique<EngineHelper>(EngineHelper::Kind::ClassFieldInitExit, z, z);
             std::vector<std::unique_ptr<ASTNode>> no_args;
             auto exit_call = std::make_unique<CallExpression>(std::move(exit_id), std::move(no_args), z, z, false);
             new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(exit_call), z, z));
@@ -1161,7 +1161,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         constructor_fn->set_is_class_constructor(true);
         constructor_fn->set_is_strict(true);
         constructor_fn->set_construct_slot_hint(static_cast<uint32_t>(field_initializers.size()));
-        constructor_fn->set_internal_property("__private_class_brand__", Value(proto_ptr));
+        constructor_fn->set_internal_slot("__private_class_brand__", Value(proto_ptr));
 
         {
             auto instance_brands = ObjectFactory::create_object();
@@ -1186,7 +1186,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 auto method_names_obj = ObjectFactory::create_object();
                 for (const auto& mn : private_instance_method_names)
                     method_names_obj->set_property(mn, Value(true));
-                constructor_fn->set_internal_property("__private_method_names__", Value(method_names_obj.release()));
+                constructor_fn->set_internal_slot("__private_method_names__", Value(method_names_obj.release()));
             }
         }
 
@@ -1282,7 +1282,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     static_method->set_declared_length(method_declared_length);
                     if (!method->get_source_text().empty()) static_method->set_source_text(method->get_source_text());
                     static_method->set_is_strict(true);
-                    static_method->set_internal_property("__private_class_brand__", Value(constructor_fn.get()));
+                    static_method->set_internal_slot("__private_class_brand__", Value(constructor_fn.get()));
                     if (instance_brands_raw)
                         static_method->set_private_brands(instance_brands_raw);
                     // member.cpp's super lookup needs to know this resolves on the constructor itself, not its .prototype.
@@ -1520,13 +1520,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         // Derived classes install it AFTER super() returns, so we need the check to block access from public methods called during super() execution.
         bool is_derived = has_superclass();
         const std::string& pm_slot_for_methods = constructor_fn->pm_brand_slot();
-        Value pm_names_for_methods = is_derived ? constructor_fn->get_property("__private_method_names__") : Value();
+        Value pm_names_for_methods = is_derived ? constructor_fn->get_internal_slot("__private_method_names__") : Value();
         auto propagate_private_meta = [&](Function* fn) {
             fn->set_private_brands(instance_brands_raw);
             if (is_derived && !pm_slot_for_methods.empty())
                 fn->set_pm_brand_slot(pm_slot_for_methods);
             if (pm_names_for_methods.is_object())
-                fn->set_internal_property("__private_method_names__", pm_names_for_methods);
+                fn->set_internal_slot("__private_method_names__", pm_names_for_methods);
         };
         for (const auto& key : proto_ptr->get_own_property_keys_unfiltered()) {
             if (key == "constructor") continue;

@@ -1354,7 +1354,7 @@ void register_global_builtins(Context& ctx) {
             promise->reject(Value(err.release()));
             return Value(promise_obj.release());
         }, 1);
-    ctx.get_global_object()->set_internal_property("__import_source__", Value(import_source_fn.release()));
+    ctx.get_global_object()->set_internal_slot("__import_source__", Value(import_source_fn.release()));
 
     // Class field init context flags -- set/clear in_class_field_init_ around each field initializer
     // so that direct eval inside a class field initializer enforces the ContainsArguments early error.
@@ -1363,14 +1363,14 @@ void register_global_builtins(Context& ctx) {
             ctx.set_in_class_field_init(true);
             return Value();
         }, 0);
-    ctx.get_global_object()->set_internal_property("__cfi_enter__", Value(cfi_enter_fn.release()));
+    ctx.get_global_object()->set_internal_slot("__cfi_enter__", Value(cfi_enter_fn.release()));
 
     auto cfi_exit_fn = ObjectFactory::create_native_function("__cfi_exit__",
         [](Context& ctx, const std::vector<Value>&) -> Value {
             ctx.set_in_class_field_init(false);
             return Value();
         }, 0);
-    ctx.get_global_object()->set_internal_property("__cfi_exit__", Value(cfi_exit_fn.release()));
+    ctx.get_global_object()->set_internal_slot("__cfi_exit__", Value(cfi_exit_fn.release()));
 
     // __pfadd__(obj, name [, value]): PrivateFieldAdd - adds a private field slot to obj.
     // Used by class field declarations so the slot exists before user assignments check it.
@@ -1384,7 +1384,7 @@ void register_global_builtins(Context& ctx) {
             obj->add_private_field(resolve_private_storage_key(name, obj), val);
             return Value();
         }, 2);
-    ctx.get_global_object()->set_internal_property("__pfadd__", Value(pfadd_fn.release()));
+    ctx.get_global_object()->set_internal_slot("__pfadd__", Value(pfadd_fn.release()));
 
     // __setfnname__(value, name): SetFunctionName -- used by class field initializers
     // (DefineField step 7) to name an otherwise-anonymous function/class expression
@@ -1403,7 +1403,7 @@ void register_global_builtins(Context& ctx) {
             }
             return args[0];
         }, 2);
-    ctx.get_global_object()->set_internal_property("__setfnname__", Value(setfnname_fn.release()));
+    ctx.get_global_object()->set_internal_slot("__setfnname__", Value(setfnname_fn.release()));
 
     // __deffield__(obj, name, value): DefineField step 9 for a PUBLIC (non-private) field --
     // CreateDataPropertyOrThrow defines an OWN data property directly and must NOT walk the
@@ -1425,7 +1425,7 @@ void register_global_builtins(Context& ctx) {
             }
             return Value();
         }, 3);
-    ctx.get_global_object()->set_internal_property("__deffield__", Value(deffield_fn.release()));
+    ctx.get_global_object()->set_internal_slot("__deffield__", Value(deffield_fn.release()));
 
     // print()
     auto print_fn = ObjectFactory::create_native_function("print",
@@ -1627,24 +1627,22 @@ void register_global_builtins(Context& ctx) {
     IterableUtils::setup_map_iterator_methods(ctx);
     IterableUtils::setup_set_iterator_methods(ctx);
 
-    // Expose Object.prototype.__defineGetter__/__defineSetter__ as global bindings
-    // (browsers expose them via window.__proto__ = Object.prototype, we do it explicitly)
+    // Make Object.prototype.__defineGetter__/__defineSetter__ resolvable as bare
+    // names, the way a browser's window does by inheriting from Object.prototype.
+    // The global object already inherits them, so only the lexical binding is
+    // added -- copying them onto the global object as OWN properties, which is
+    // what this used to do, made getOwnPropertyNames(globalThis) report two keys
+    // no other host reports.
     {
         Value obj_ctor = ctx.get_binding("Object");
         if (obj_ctor.is_function()) {
             Value obj_proto = obj_ctor.as_function()->get_property("prototype");
-            if (obj_proto.is_object()) {
+            if (obj_proto.is_object() && ctx.get_lexical_environment()) {
                 Object* op = obj_proto.as_object();
                 Value dg = op->get_own_property("__defineGetter__");
-                if (!dg.is_undefined() && ctx.get_lexical_environment()) {
-                    ctx.get_lexical_environment()->create_binding("__defineGetter__", dg, false);
-                    ctx.get_global_object()->set_property("__defineGetter__", dg, PropertyAttributes::BuiltinFunction);
-                }
+                if (!dg.is_undefined()) ctx.get_lexical_environment()->create_binding("__defineGetter__", dg, false);
                 Value ds = op->get_own_property("__defineSetter__");
-                if (!ds.is_undefined() && ctx.get_lexical_environment()) {
-                    ctx.get_lexical_environment()->create_binding("__defineSetter__", ds, false);
-                    ctx.get_global_object()->set_property("__defineSetter__", ds, PropertyAttributes::BuiltinFunction);
-                }
+                if (!ds.is_undefined()) ctx.get_lexical_environment()->create_binding("__defineSetter__", ds, false);
             }
         }
     }

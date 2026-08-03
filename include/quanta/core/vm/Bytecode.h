@@ -132,6 +132,11 @@ enum class Op : uint8_t {
     // protocol entirely.
     SpreadInto,      // r_arr r_idx
     HasPrivate,      // n -- acc = (#name in acc), the ergonomic brand check
+    // k -- acc = the engine helper for EngineHelper::Kind k, read from the
+    // global object's internal slots. Not a name lookup: these back the
+    // class-field and import.source machinery and must not be reachable,
+    // shadowable or replaceable from script.
+    LdaEngineHelper,
     // n_pattern n_flags -- a fresh RegExp per evaluation, as the spec requires.
     // Only the compiled pattern is shared, cached inside RegExp itself.
     CreateRegExp,

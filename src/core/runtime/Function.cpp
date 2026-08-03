@@ -1404,13 +1404,6 @@ std::vector<std::string> Function::get_own_property_keys() const {
     }
     for (; i < all.size(); i++) {
         const auto& k = all[i];
-        // getOwnPropertyNames reports non-enumerable keys too, so marking the
-        // engine's own bookkeeping non-enumerable is not enough to keep it out
-        // of here; until those markers live somewhere other than the property
-        // table, they are still filtered. Narrowed to the `__name__` shape they
-        // actually use, so an ordinary `f.__x` is no longer swallowed with them.
-        if (k.size() >= 4 && k[0] == '_' && k[1] == '_' &&
-            k[k.size() - 1] == '_' && k[k.size() - 2] == '_') continue;
         if (k == "length" || k == "name" || k == "prototype") continue;
         result.push_back(k);
     }

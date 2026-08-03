@@ -727,7 +727,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                                        own_pd.is_accessor_descriptor();
                 if (!is_own_accessor && own_pd.has_value() && own_pd.get_value().is_function()) {
                     Function* mfn = own_pd.get_value().as_function();
-                    if (mfn && mfn->has_property("__private_class_brand__")) {
+                    if (mfn && mfn->has_internal_slot("__private_class_brand__")) {
                         ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
                         return Value();
                     }

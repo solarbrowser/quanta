@@ -316,6 +316,31 @@ std::unique_ptr<ASTNode> Identifier::clone() const {
     return std::make_unique<Identifier>(name_, start_, end_);
 }
 
+const char* EngineHelper::slot_name(Kind kind) {
+    switch (kind) {
+        case Kind::DefineField:         return "__deffield__";
+        case Kind::PrivateFieldAdd:     return "__pfadd__";
+        case Kind::SetFunctionName:     return "__setfnname__";
+        case Kind::ClassFieldInitEnter: return "__cfi_enter__";
+        case Kind::ClassFieldInitExit:  return "__cfi_exit__";
+        case Kind::ImportSource:        return "__import_source__";
+    }
+    return "";
+}
+
+Value EngineHelper::evaluate(Context& ctx) {
+    Object* global = ctx.get_global_object();
+    return global ? global->get_internal_slot(slot_name(kind_)) : Value();
+}
+
+std::string EngineHelper::to_string() const {
+    return slot_name(kind_);
+}
+
+std::unique_ptr<ASTNode> EngineHelper::clone() const {
+    return std::make_unique<EngineHelper>(kind_, start_, end_);
+}
+
 
 
 } // namespace Quanta

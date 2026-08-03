@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/vm/Bytecode.h"
+#include "quanta/parser/AST.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/parser/FunctionExecutable.h"
 #include <sstream>
@@ -87,6 +88,7 @@ const OpInfo& op_info(Op op) {
         {"CreateRestArray", 1, 'r'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
         {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"HasPrivate", 2, 'n'},
+        {"LdaEngineHelper", 1, 'E'},
         {"CreateRegExp", 4, 'X'},
         {"GetSuper", 2, 'n'}, {"ResolveSuperBase", 1, 'r'}, {"SetSuper", 3, 'l'},
         {"GetSuperKeyed", 1, 'r'}, {"SetSuperKeyed", 2, 'r'}, {"SuperCall", 2, 'S'},
@@ -158,6 +160,10 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 out << " '" << chunk.names[idx] << "'";
                 break;
             }
+            case 'E':
+                out << " " << EngineHelper::slot_name(
+                    static_cast<EngineHelper::Kind>(chunk.code[operand_pc]));
+                break;
             case 'c': {
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
                                (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);

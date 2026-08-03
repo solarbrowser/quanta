@@ -126,7 +126,7 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
                 // constructor return-override, where `this` has no prototype link
                 // to the declaring class); base classes fall back to the
                 // prototype-chain check.
-                Value pm_names_val = fn->get_property("__private_method_names__");
+                Value pm_names_val = fn->get_internal_slot("__private_method_names__");
                 if (pm_names_val.is_object() &&
                     pm_names_val.as_object()->get_property(prop_name).to_boolean()) {
                     const std::string& pm_slot = fn->pm_brand_slot();
@@ -154,7 +154,7 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
             }
         }
 
-        Value brand_val = fn->get_property("__private_class_brand__");
+        Value brand_val = fn->get_internal_slot("__private_class_brand__");
         if (brand_val.is_object() || brand_val.is_function()) {
             Object* expected = brand_val.is_function()
                 ? static_cast<Object*>(brand_val.as_function())

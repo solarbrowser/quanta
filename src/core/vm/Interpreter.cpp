@@ -888,7 +888,7 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
         }
         if (own_pd.has_value() && own_pd.get_value().is_function()) {
             Function* mfn = own_pd.get_value().as_function();
-            if (mfn && mfn->has_property("__private_class_brand__")) {
+            if (mfn && mfn->has_internal_slot("__private_class_brand__")) {
                 ctx.throw_type_error("'" + qualified + "' is a private method and cannot be assigned to");
                 return;
             }
@@ -2087,6 +2087,16 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 pc += 2;
                 acc = private_name_in(ctx, chunk.names[name_idx], acc);
                 CHECK_EXC();
+                break;
+            }
+
+            case Op::LdaEngineHelper: {
+                uint8_t kind = code[pc];
+                pc += 1;
+                Object* global = ctx.get_global_object();
+                acc = global ? global->get_internal_slot(
+                          EngineHelper::slot_name(static_cast<EngineHelper::Kind>(kind)))
+                             : Value();
                 break;
             }
 
@@ -4186,6 +4196,26 @@ Value h_gen_CreateRegExp(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_LdaEngineHelper(Frame& f, uint32_t pc, Value acc) {
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t kind = code[pc];
+                pc += 1;
+                Object* global = ctx.get_global_object();
+                acc = global ? global->get_internal_slot(
+                          EngineHelper::slot_name(static_cast<EngineHelper::Kind>(kind)))
+                             : Value();
+                break;
+            }
+    } while (0);
+    DISPATCH();
+}
+
 Value h_gen_HasPrivate(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5212,6 +5242,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::ConstructSpread)] = &h_gen_ConstructSpread;
     t[static_cast<uint8_t>(Op::CreateRegExp)] = &h_gen_CreateRegExp;
     t[static_cast<uint8_t>(Op::HasPrivate)] = &h_gen_HasPrivate;
+    t[static_cast<uint8_t>(Op::LdaEngineHelper)] = &h_gen_LdaEngineHelper;
     t[static_cast<uint8_t>(Op::GetSuper)] = &h_gen_GetSuper;
     t[static_cast<uint8_t>(Op::SetSuper)] = &h_gen_SetSuper;
     t[static_cast<uint8_t>(Op::ResolveSuperBase)] = &h_gen_ResolveSuperBase;

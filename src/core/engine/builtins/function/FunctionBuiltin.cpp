@@ -367,7 +367,7 @@ void register_function_builtins(Context& ctx) {
             *self_ptr = bound_function.get();
 
             bound_function->set_prototype(target_func->get_prototype());
-            bound_function->set_internal_property("__bound_target__", Value(static_cast<Object*>(target_func)));
+            bound_function->set_internal_slot("__bound_target__", Value(static_cast<Object*>(target_func)));
             // The closure also captures bound_this/bound_args invisibly;
             // mirror them as traced hidden properties.
             bound_function->set_property("[[BoundThis]]", bound_this);
@@ -447,7 +447,7 @@ void register_function_builtins(Context& ctx) {
                     Value v = args[0];
                     if (!v.is_object() && !v.is_function()) return Value(false);
                     Object* f_obj = raw_this.is_function() ? static_cast<Object*>(raw_this.as_function()) : raw_this.as_object();
-                    Value bound_target = f_obj->get_property("__bound_target__");
+                    Value bound_target = f_obj->get_internal_slot("__bound_target__");
                     if (!bound_target.is_undefined()) {
                         return Value(v.instanceof_check(bound_target));
                     }
@@ -485,7 +485,7 @@ void register_function_builtins(Context& ctx) {
                 Function* fn = get_this_fn(ctx);
                 // Function.prototype always throws (no legacy non-strict caller/arguments shadowing for it).
                 if (fn && fn != function_proto_ptr) {
-                    bool is_bound = !fn->get_property("__bound_target__").is_undefined();
+                    bool is_bound = !fn->get_internal_slot("__bound_target__").is_undefined();
                     bool is_generator_fn = fn->get_prototype() == Generator::s_generator_function_prototype_;
                     if (is_bound || is_generator_fn || fn->is_strict() || fn->is_class_constructor() || fn->is_arrow()) {
                         ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");

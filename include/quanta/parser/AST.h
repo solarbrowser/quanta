@@ -33,8 +33,9 @@ public:
         UNDEFINED_LITERAL,
         
         IDENTIFIER,
+        ENGINE_HELPER,
         PARAMETER,
-        
+
         BINARY_EXPRESSION,
         UNARY_EXPRESSION,
         ASSIGNMENT_EXPRESSION,
@@ -271,6 +272,39 @@ public:
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
+};
+
+// The callee of a call the engine synthesised for itself: a class field
+// definition, a private-field add, the class-field-initialiser flag, naming an
+// anonymous field value, import.source. These were Identifiers naming global
+// functions -- __deffield__ and friends -- which put six engine functions on
+// globalThis where script could list them, call them, and (because an
+// Identifier resolves through the scope chain) SHADOW them: `var __deffield__
+// = f` took over class field definition, and `var __pfadd__ = f` stopped
+// private fields from existing at all. Naming the helper instead of looking it
+// up removes every one of those; the functions themselves now live in the
+// global object's internal slots, which no name can reach.
+class EngineHelper : public ASTNode {
+public:
+    enum class Kind : uint8_t {
+        DefineField, PrivateFieldAdd, SetFunctionName,
+        ClassFieldInitEnter, ClassFieldInitExit, ImportSource
+    };
+
+    EngineHelper(Kind kind, const Position& start, const Position& end)
+        : ASTNode(Type::ENGINE_HELPER, start, end), kind_(kind) {}
+
+    Kind get_kind() const { return kind_; }
+    // The slot the helper is stored under, and the name it reports in a stack
+    // trace. Defined in AST.cpp next to the resolution itself.
+    static const char* slot_name(Kind kind);
+
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+
+private:
+    Kind kind_;
 };
 
 class BinaryExpression : public ASTNode {

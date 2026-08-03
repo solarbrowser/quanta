@@ -52,7 +52,7 @@ static Value get_v(Context& ctx, Object* lookup_obj, const Value& receiver, cons
 // OrdinarySetPrototypeOf: same-value short-circuit, then extensibility check, then cycle check.
 static bool ordinary_set_prototype_of(Object* obj, Object* new_proto) {
     if (new_proto == obj->get_prototype()) return true;
-    if (obj->has_own_property("__immutableProto__")) return false;
+    if (obj->has_internal_slot("__immutableProto__")) return false;
     if (!obj->is_extensible()) return false;
     Object* p = new_proto;
     while (p) {
@@ -1972,23 +1972,8 @@ void register_object_builtins(Context& ctx) {
         PropertyDescriptor(Value(lookup_setter_fn.release()), define_getter_setter_attrs));
 
     // Mark Object.prototype as an immutable-prototype exotic object (ES 10.4.7).
-    object_proto_ptr->set_property("__immutableProto__", Value(true), PropertyAttributes::None);
+    object_proto_ptr->set_internal_slot("__immutableProto__", Value(true));
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
-
-    ctx.get_global_object()->set_internal_property("__addHasOwnProperty", Value(ObjectFactory::create_native_function("__addHasOwnProperty",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_object()) return Value();
-
-            Object* obj = args[0].as_object();
-            auto hasOwn = ObjectFactory::create_native_function("hasOwnProperty",
-                [obj](Context& ctx, const std::vector<Value>& args) -> Value {
-                    if (args.empty()) return Value(false);
-                    std::string prop = args[0].to_string();
-                    return Value(obj->has_own_property(prop));
-                });
-            obj->set_property("hasOwnProperty", Value(hasOwn.release()));
-            return args[0];
-        }).release()));
 
     ctx.register_built_in_object("Object", object_constructor.release());
 }

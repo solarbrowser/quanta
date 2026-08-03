@@ -7961,7 +7961,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
                 Position end = get_current_position();
                 // Use a distinct sentinel name so the runtime handler can reject with SyntaxError
                 // per spec GetModuleSource (SourceTextModuleRecord always throws SyntaxError).
-                auto import_id = std::make_unique<Identifier>("__import_source__", start, start);
+                auto import_id = std::make_unique<EngineHelper>(EngineHelper::Kind::ImportSource, start, start);
                 std::vector<std::unique_ptr<ASTNode>> args;
                 args.push_back(std::move(specifier));
                 return std::make_unique<CallExpression>(std::move(import_id), std::move(args), start, end);

@@ -78,7 +78,7 @@ static bool target_callable(Object* target) {
 // OrdinarySetPrototypeOf: same-value short-circuit, extensibility check, then cycle detection.
 static bool ordinary_set_prototype_of(Object* obj, Object* new_proto) {
     if (new_proto == obj->get_prototype()) return true;
-    if (obj->has_own_property("__immutableProto__")) return false;
+    if (obj->has_internal_slot("__immutableProto__")) return false;
     if (!obj->is_extensible()) return false;
     Object* p = new_proto;
     while (p) {

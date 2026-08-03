@@ -143,7 +143,7 @@ Value private_name_in(Context& ctx, const std::string& iname, const Value& targe
         if (!brand_ok) return Value(false);
         // For private methods: also check the per-instance brand slot.
         if (brand_fn) {
-            Value pm_names_val = brand_fn->get_property("__private_method_names__");
+            Value pm_names_val = brand_fn->get_internal_slot("__private_method_names__");
             if (pm_names_val.is_object()) {
                 Value is_method = pm_names_val.as_object()->get_property(iname);
                 if (is_method.to_boolean()) {

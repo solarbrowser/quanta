@@ -982,6 +982,9 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         case ASTNode::Type::UNDEFINED_LITERAL:
         case ASTNode::Type::BIGINT_LITERAL:
         case ASTNode::Type::REGEX_LITERAL:
+        // Names an engine operation, not a binding: nothing to collect, and
+        // no scope it could reach out of.
+        case ASTNode::Type::ENGINE_HELPER:
         case ASTNode::Type::EMPTY_STATEMENT:
         case ASTNode::Type::BREAK_STATEMENT:
         case ASTNode::Type::CONTINUE_STATEMENT:
@@ -1348,6 +1351,9 @@ void collect_free_names(const ASTNode* node,
         case ASTNode::Type::UNDEFINED_LITERAL:
         case ASTNode::Type::BIGINT_LITERAL:
         case ASTNode::Type::REGEX_LITERAL:
+        // Names an engine operation, not a binding: nothing to collect, and
+        // no scope it could reach out of.
+        case ASTNode::Type::ENGINE_HELPER:
         case ASTNode::Type::EMPTY_STATEMENT:
         case ASTNode::Type::BREAK_STATEMENT:
         case ASTNode::Type::CONTINUE_STATEMENT:
@@ -1691,6 +1697,9 @@ bool references_outside(const ASTNode* node, const std::unordered_set<const ASTN
         case ASTNode::Type::UNDEFINED_LITERAL:
         case ASTNode::Type::BIGINT_LITERAL:
         case ASTNode::Type::REGEX_LITERAL:
+        // Names an engine operation, not a binding: nothing to collect, and
+        // no scope it could reach out of.
+        case ASTNode::Type::ENGINE_HELPER:
         case ASTNode::Type::EMPTY_STATEMENT:
         case ASTNode::Type::BREAK_STATEMENT:
         case ASTNode::Type::CONTINUE_STATEMENT:
@@ -5404,6 +5413,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             emit(Op::LdaUndefined);
             return true;
 
+        case ASTNode::Type::ENGINE_HELPER:
+            emit(Op::LdaEngineHelper);
+            emit_u8(static_cast<uint8_t>(static_cast<const EngineHelper*>(node)->get_kind()));
+            return true;
+
         case ASTNode::Type::IDENTIFIER: {
             const std::string& name = static_cast<const Identifier*>(node)->get_name();
             if (name == "this") {
@@ -6362,10 +6376,16 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 return !failed_;
             }
 
-            // Plain-identifier callees only: direct eval never compiles.
-            if (callee->get_type() != ASTNode::Type::IDENTIFIER) return false;
-            const std::string& callee_name = static_cast<const Identifier*>(callee)->get_name();
-            if (callee_name == "super") {
+            // An engine-synthesised callee names an operation, not a binding,
+            // so none of the identifier cases below can apply to it; the
+            // generic tail loads it from its slot and calls it normally.
+            const bool engine_callee = callee->get_type() == ASTNode::Type::ENGINE_HELPER;
+            // Plain-identifier callees otherwise: direct eval never compiles.
+            if (!engine_callee && callee->get_type() != ASTNode::Type::IDENTIFIER) return false;
+            static const std::string kEngineCalleeName = "";
+            const std::string& callee_name = engine_callee
+                ? kEngineCalleeName : static_cast<const Identifier*>(callee)->get_name();
+            if (!engine_callee && callee_name == "super") {
                 // The whole derived-constructor ceremony lives in
                 // perform_super_call; this only marshals the arguments. It needs
                 // the super bindings on the context chain, like the property forms.
@@ -6386,18 +6406,18 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u8(static_cast<uint8_t>(call_args.size()));
                 return !failed_;
             }
-            if (callee_name == "eval" || callee_name == "import") {
+            if (!engine_callee && (callee_name == "eval" || callee_name == "import")) {
                 return false;
             }
 
-            // Class field initialisers are synthesised as
-            // `__deffield__(this, "key", value)` -- a global lookup and a native
-            // call per field, on every construction. The accumulator opcode for
-            // exactly that semantic (CreateDataProperty, never a prototype
-            // setter) already exists, so emit it directly. Guarded on the exact
-            // synthesised shape; user code writing the same call gets the same
-            // semantics from the opcode anyway.
-            if (callee_name == "__deffield__" && call_args.size() == 3 &&
+            // Class field initialisers are synthesised as a DefineField helper
+            // call -- a slot read and a native call per field, on every
+            // construction. The accumulator opcode for exactly that semantic
+            // (CreateDataProperty, never a prototype setter) already exists, so
+            // emit it directly.
+            if (engine_callee &&
+                static_cast<const EngineHelper*>(callee)->get_kind() == EngineHelper::Kind::DefineField &&
+                call_args.size() == 3 &&
                 call_args[0]->get_type() == ASTNode::Type::IDENTIFIER &&
                 static_cast<const Identifier*>(call_args[0].get())->get_name() == "this" &&
                 call_args[1]->get_type() == ASTNode::Type::STRING_LITERAL) {
