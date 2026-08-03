@@ -82,30 +82,31 @@ static Object* make_iter_result(const Value& value, bool done) {
     return result.release();
 }
 
-// Scaffolding shared by all Iterator Helpers: stores iter/next as own properties (so the GC
-// reaches them through the object graph instead of a captured raw pointer), inherits
-// Symbol.iterator from iterator_proto, and wires up `return`. Callers add their own `next`
-// via set_guarded_next (which also rejects reentrant calls while one is already running).
+// Scaffolding shared by all Iterator Helpers: stores iter/next in internal slots (so the GC
+// reaches them through the object graph instead of a captured raw pointer, while script can
+// neither see nor forge them), inherits Symbol.iterator from iterator_proto, and wires up
+// `return`. Callers add their own `next` via set_guarded_next (which also rejects reentrant
+// calls while one is already running).
 static Object* create_iterator_helper_base(Object* iterator_proto, const Value& iter_val, const Value& next_method) {
     auto helper = ObjectFactory::create_object();
     helper->set_prototype(iterator_proto);
-    helper->set_internal_property("__ih_iter__", iter_val);
-    helper->set_internal_property("__ih_next__", next_method);
-    helper->set_internal_property("__ih_running__", Value(false));
+    helper->set_internal_slot("__ih_iter__", iter_val);
+    helper->set_internal_slot("__ih_next__", next_method);
+    helper->set_internal_slot("__ih_running__", Value(false));
 
     auto return_fn = ObjectFactory::create_native_function("return",
         [](Context& ctx, const std::vector<Value>&) -> Value {
             Object* self = ctx.get_this_binding();
             if (self) {
-                Value inner_val = self->get_property("__ih_inner__");
+                Value inner_val = self->get_internal_slot("__ih_inner__");
                 if (inner_val.is_object() || inner_val.is_function()) {
                     iterator_helper_close(ctx, inner_val);
-                    self->set_internal_property("__ih_inner__", Value());
+                    self->set_internal_slot("__ih_inner__", Value());
                 }
-                Value iter_val = self->get_property("__ih_iter__");
+                Value iter_val = self->get_internal_slot("__ih_iter__");
                 if (iter_val.is_object() || iter_val.is_function()) {
                     iterator_helper_close(ctx, iter_val);
-                    self->set_internal_property("__ih_iter__", Value());
+                    self->set_internal_slot("__ih_iter__", Value());
                 }
             }
             return Value(make_iter_result(Value(), true));
@@ -119,23 +120,23 @@ static Object* create_iterator_helper_base(Object* iterator_proto, const Value& 
 // the helper is already mid-call (e.g. the underlying iterator's own `next` recursively calls
 // back into this helper) throws instead of recursing, matching GeneratorResume's running check.
 static void set_guarded_next(Object* helper, std::unique_ptr<Object> actual_next_fn) {
-    helper->set_internal_property("__ih_actual_next__", Value(actual_next_fn.release()));
+    helper->set_internal_slot("__ih_actual_next__", Value(actual_next_fn.release()));
     auto guarded = ObjectFactory::create_native_function("next",
         [](Context& ctx, const std::vector<Value>&) -> Value {
             Object* self = ctx.get_this_binding();
             if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
             // If __ih_iter__ was cleared (exhausted or closed), report done immediately.
-            Value ih_iter = self->get_property("__ih_iter__");
+            Value ih_iter = self->get_internal_slot("__ih_iter__");
             if (!ih_iter.is_object() && !ih_iter.is_function())
                 return Value(make_iter_result(Value(), true));
-            if (self->get_property("__ih_running__").to_boolean()) {
+            if (self->get_internal_slot("__ih_running__").to_boolean()) {
                 ctx.throw_type_error("Iterator helper is already running");
                 return Value();
             }
-            self->set_internal_property("__ih_running__", Value(true));
-            Value actual = self->get_property("__ih_actual_next__");
+            self->set_internal_slot("__ih_running__", Value(true));
+            Value actual = self->get_internal_slot("__ih_actual_next__");
             Value result = actual.as_function()->call(ctx, {}, Value(self));
-            self->set_internal_property("__ih_running__", Value(false));
+            self->set_internal_slot("__ih_running__", Value(false));
             return result;
         }, 0);
     helper->set_property("next", Value(guarded.release()));
@@ -157,34 +158,34 @@ static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
     if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
     // GeneratorValidate runs before the completed-state check: a reentrant call
     // while executing is a TypeError even if the generator was just completed.
-    if (self->get_property("__iz_running__").to_boolean()) {
+    if (self->get_internal_slot("__iz_running__").to_boolean()) {
         ctx.throw_type_error("Iterator.zip helper is already running");
         return Value();
     }
-    if (self->get_property("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true));
-    self->set_internal_property("__iz_running__", Value(true));
-    self->set_internal_property("__iz_started__", Value(true));
+    if (self->get_internal_slot("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true));
+    self->set_internal_slot("__iz_running__", Value(true));
+    self->set_internal_slot("__iz_started__", Value(true));
 
-    uint32_t count = (uint32_t)self->get_property("__iz_count__").to_number();
-    std::string mode = self->get_property("__iz_mode__").to_string();
-    bool keyed = self->get_property("__iz_keyed__").to_boolean();
-    Object* iters_arr = self->get_property("__iz_iters__").as_object();
-    Object* nexts_arr = self->get_property("__iz_nexts__").as_object();
-    Object* padding_arr = self->get_property("__iz_padding__").as_object();
-    Object* alive_arr = self->get_property("__iz_alive__").as_object();
-    Object* keys_arr = keyed ? self->get_property("__iz_keys__").as_object() : nullptr;
+    uint32_t count = (uint32_t)self->get_internal_slot("__iz_count__").to_number();
+    std::string mode = self->get_internal_slot("__iz_mode__").to_string();
+    bool keyed = self->get_internal_slot("__iz_keyed__").to_boolean();
+    Object* iters_arr = self->get_internal_slot("__iz_iters__").as_object();
+    Object* nexts_arr = self->get_internal_slot("__iz_nexts__").as_object();
+    Object* padding_arr = self->get_internal_slot("__iz_padding__").as_object();
+    Object* alive_arr = self->get_internal_slot("__iz_alive__").as_object();
+    Object* keys_arr = keyed ? self->get_internal_slot("__iz_keys__").as_object() : nullptr;
 
     auto mark_dead = [&](uint32_t idx) { alive_arr->set_property(std::to_string(idx), Value(false)); };
     // The pending exception set before closing survives; return() errors are swallowed.
     auto finish_throwing = [&]() -> Value {
-        self->set_internal_property("__iz_done__", Value(true));
+        self->set_internal_slot("__iz_done__", Value(true));
         iterator_zip_close_all(ctx, iters_arr, alive_arr, count);
-        self->set_internal_property("__iz_running__", Value(false));
+        self->set_internal_slot("__iz_running__", Value(false));
         return Value();
     };
     auto finish_done = [&]() -> Value {
-        self->set_internal_property("__iz_done__", Value(true));
-        self->set_internal_property("__iz_running__", Value(false));
+        self->set_internal_slot("__iz_done__", Value(true));
+        self->set_internal_slot("__iz_running__", Value(false));
         return Value(make_iter_result(Value(), true));
     };
 
@@ -210,9 +211,9 @@ static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
         if (done) {
             mark_dead(i);
             if (mode == "shortest") {
-                self->set_internal_property("__iz_done__", Value(true));
+                self->set_internal_slot("__iz_done__", Value(true));
                 iterator_zip_close_all(ctx, iters_arr, alive_arr, count);
-                self->set_internal_property("__iz_running__", Value(false));
+                self->set_internal_slot("__iz_running__", Value(false));
                 return Value(make_iter_result(Value(), true));
             } else if (mode == "strict") {
                 if (i != 0) {
@@ -252,7 +253,7 @@ static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
     }
 
     if (!keyed) results->set_length(count);
-    self->set_internal_property("__iz_running__", Value(false));
+    self->set_internal_slot("__iz_running__", Value(false));
     return Value(make_iter_result(Value(results.release()), false));
 }
 
@@ -261,22 +262,22 @@ static Value iterator_zip_return(Context& ctx, const std::vector<Value>&) {
     if (!self) return Value(make_iter_result(Value(), true));
     // A reentrant return() while the helper is mid-call (e.g. from an inner
     // iterator's own return) sees the generator in the executing state.
-    if (self->get_property("__iz_running__").to_boolean()) {
+    if (self->get_internal_slot("__iz_running__").to_boolean()) {
         ctx.throw_type_error("Iterator.zip helper is already running");
         return Value();
     }
-    if (!self->get_property("__iz_done__").to_boolean()) {
-        self->set_internal_property("__iz_done__", Value(true));
+    if (!self->get_internal_slot("__iz_done__").to_boolean()) {
+        self->set_internal_slot("__iz_done__", Value(true));
         // At suspendedStart the generator is completed without resuming, so the
         // closes run outside the body and reentrant calls see state "completed".
         // Once started, return() resumes the body and closes run while "executing".
-        bool started = self->get_property("__iz_started__").to_boolean();
-        if (started) self->set_internal_property("__iz_running__", Value(true));
-        uint32_t count = (uint32_t)self->get_property("__iz_count__").to_number();
-        Object* iters_arr = self->get_property("__iz_iters__").as_object();
-        Object* alive_arr = self->get_property("__iz_alive__").as_object();
+        bool started = self->get_internal_slot("__iz_started__").to_boolean();
+        if (started) self->set_internal_slot("__iz_running__", Value(true));
+        uint32_t count = (uint32_t)self->get_internal_slot("__iz_count__").to_number();
+        Object* iters_arr = self->get_internal_slot("__iz_iters__").as_object();
+        Object* alive_arr = self->get_internal_slot("__iz_alive__").as_object();
         iterator_zip_close_all(ctx, iters_arr, alive_arr, count);
-        if (started) self->set_internal_property("__iz_running__", Value(false));
+        if (started) self->set_internal_slot("__iz_running__", Value(false));
         if (ctx.has_exception()) return Value();
     }
     return Value(make_iter_result(Value(), true));
@@ -427,23 +428,23 @@ void register_iterator_helpers(Context& ctx) {
                 if (ctx.has_exception()) return Value();
 
                 Object* helper = create_iterator_helper_base(iter_proto_obj, Value(iter), next_method);
-                helper->set_internal_property("__ih_fn__", args[0]);
-                helper->set_internal_property("__ih_counter__", Value(0.0));
+                helper->set_internal_slot("__ih_fn__", args[0]);
+                helper->set_internal_slot("__ih_counter__", Value(0.0));
 
                 auto next_fn = ObjectFactory::create_native_function("next",
                     [](Context& ctx, const std::vector<Value>&) -> Value {
                         Object* self = ctx.get_this_binding();
-                        Value mapper_val = self->get_property("__ih_fn__");
-                        Value iter_val = self->get_property("__ih_iter__");
-                        Value next_method = self->get_property("__ih_next__");
-                        double counter = self->get_property("__ih_counter__").to_number();
+                        Value mapper_val = self->get_internal_slot("__ih_fn__");
+                        Value iter_val = self->get_internal_slot("__ih_iter__");
+                        Value next_method = self->get_internal_slot("__ih_next__");
+                        double counter = self->get_internal_slot("__ih_counter__").to_number();
 
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
 
                         Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
-                        self->set_internal_property("__ih_counter__", Value(counter + 1));
+                        self->set_internal_slot("__ih_counter__", Value(counter + 1));
                         if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
                         return Value(make_iter_result(mapped, false));
                     }, 0);
@@ -465,16 +466,16 @@ void register_iterator_helpers(Context& ctx) {
                 if (ctx.has_exception()) return Value();
 
                 Object* helper = create_iterator_helper_base(iter_proto_obj, Value(iter), next_method);
-                helper->set_internal_property("__ih_fn__", args[0]);
-                helper->set_internal_property("__ih_counter__", Value(0.0));
+                helper->set_internal_slot("__ih_fn__", args[0]);
+                helper->set_internal_slot("__ih_counter__", Value(0.0));
 
                 auto next_fn = ObjectFactory::create_native_function("next",
                     [](Context& ctx, const std::vector<Value>&) -> Value {
                         Object* self = ctx.get_this_binding();
-                        Value pred_val = self->get_property("__ih_fn__");
-                        Value iter_val = self->get_property("__ih_iter__");
-                        Value next_method = self->get_property("__ih_next__");
-                        double counter = self->get_property("__ih_counter__").to_number();
+                        Value pred_val = self->get_internal_slot("__ih_fn__");
+                        Value iter_val = self->get_internal_slot("__ih_iter__");
+                        Value next_method = self->get_internal_slot("__ih_next__");
+                        double counter = self->get_internal_slot("__ih_counter__").to_number();
 
                         while (true) {
                             auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
@@ -482,7 +483,7 @@ void register_iterator_helpers(Context& ctx) {
                             if (done) return Value(make_iter_result(Value(), true));
                             Value keep = pred_val.as_function()->call(ctx, {val, Value(counter)}, Value());
                             counter += 1;
-                            self->set_internal_property("__ih_counter__", Value(counter));
+                            self->set_internal_slot("__ih_counter__", Value(counter));
                             if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
                             if (keep.to_boolean()) return Value(make_iter_result(val, false));
                         }
@@ -505,19 +506,19 @@ void register_iterator_helpers(Context& ctx) {
                 if (ctx.has_exception()) return Value();
 
                 Object* helper = create_iterator_helper_base(iter_proto_obj, Value(iter), next_method);
-                helper->set_internal_property("__ih_remaining__", Value(limit));
+                helper->set_internal_slot("__ih_remaining__", Value(limit));
 
                 auto next_fn = ObjectFactory::create_native_function("next",
                     [](Context& ctx, const std::vector<Value>&) -> Value {
                         Object* self = ctx.get_this_binding();
-                        Value iter_val = self->get_property("__ih_iter__");
-                        double remaining = self->get_property("__ih_remaining__").to_number();
-                        if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
-                        self->set_internal_property("__ih_remaining__", Value(remaining - 1));
-                        Value next_method = self->get_property("__ih_next__");
+                        Value iter_val = self->get_internal_slot("__ih_iter__");
+                        double remaining = self->get_internal_slot("__ih_remaining__").to_number();
+                        if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        self->set_internal_slot("__ih_remaining__", Value(remaining - 1));
+                        Value next_method = self->get_internal_slot("__ih_next__");
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
                         return Value(make_iter_result(val, false));
                     }, 0);
                 set_guarded_next(helper, std::move(next_fn));
@@ -538,25 +539,25 @@ void register_iterator_helpers(Context& ctx) {
                 if (ctx.has_exception()) return Value();
 
                 Object* helper = create_iterator_helper_base(iter_proto_obj, Value(iter), next_method);
-                helper->set_internal_property("__ih_remaining__", Value(limit));
+                helper->set_internal_slot("__ih_remaining__", Value(limit));
 
                 auto next_fn = ObjectFactory::create_native_function("next",
                     [](Context& ctx, const std::vector<Value>&) -> Value {
                         Object* self = ctx.get_this_binding();
-                        Value iter_val = self->get_property("__ih_iter__");
-                        Value next_method = self->get_property("__ih_next__");
-                        double remaining = self->get_property("__ih_remaining__").to_number();
+                        Value iter_val = self->get_internal_slot("__ih_iter__");
+                        Value next_method = self->get_internal_slot("__ih_next__");
+                        double remaining = self->get_internal_slot("__ih_remaining__").to_number();
                         while (remaining > 0) {
                             auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                             (void)val;
                             remaining -= 1;
-                            self->set_internal_property("__ih_remaining__", Value(remaining));
+                            self->set_internal_slot("__ih_remaining__", Value(remaining));
                             if (ctx.has_exception()) return Value();
                             if (done) return Value(make_iter_result(Value(), true));
                         }
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
                         return Value(make_iter_result(val, false));
                     }, 0);
                 set_guarded_next(helper, std::move(next_fn));
@@ -781,23 +782,23 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
-            helper->set_internal_property("__ih_fn__", args[0]);
-            helper->set_internal_property("__ih_counter__", Value(0.0));
+            helper->set_internal_slot("__ih_fn__", args[0]);
+            helper->set_internal_slot("__ih_counter__", Value(0.0));
 
             auto next_fn = ObjectFactory::create_native_function("next",
                 [](Context& ctx, const std::vector<Value>&) -> Value {
                     Object* self = ctx.get_this_binding();
-                    Value mapper_val = self->get_property("__ih_fn__");
-                    Value iter_val = self->get_property("__ih_iter__");
-                    Value next_method = self->get_property("__ih_next__");
-                    double counter = self->get_property("__ih_counter__").to_number();
+                    Value mapper_val = self->get_internal_slot("__ih_fn__");
+                    Value iter_val = self->get_internal_slot("__ih_iter__");
+                    Value next_method = self->get_internal_slot("__ih_next__");
+                    double counter = self->get_internal_slot("__ih_counter__").to_number();
 
                     auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                     if (ctx.has_exception()) return Value();
-                    if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
 
                     Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
-                    self->set_internal_property("__ih_counter__", Value(counter + 1));
+                    self->set_internal_slot("__ih_counter__", Value(counter + 1));
                     if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
                     return Value(make_iter_result(mapped, false));
                 }, 0);
@@ -824,24 +825,24 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
-            helper->set_internal_property("__ih_fn__", args[0]);
-            helper->set_internal_property("__ih_counter__", Value(0.0));
+            helper->set_internal_slot("__ih_fn__", args[0]);
+            helper->set_internal_slot("__ih_counter__", Value(0.0));
 
             auto next_fn = ObjectFactory::create_native_function("next",
                 [](Context& ctx, const std::vector<Value>&) -> Value {
                     Object* self = ctx.get_this_binding();
-                    Value pred_val = self->get_property("__ih_fn__");
-                    Value iter_val = self->get_property("__ih_iter__");
-                    Value next_method = self->get_property("__ih_next__");
-                    double counter = self->get_property("__ih_counter__").to_number();
+                    Value pred_val = self->get_internal_slot("__ih_fn__");
+                    Value iter_val = self->get_internal_slot("__ih_iter__");
+                    Value next_method = self->get_internal_slot("__ih_next__");
+                    double counter = self->get_internal_slot("__ih_counter__").to_number();
 
                     while (true) {
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
                         Value keep = pred_val.as_function()->call(ctx, {val, Value(counter)}, Value());
                         counter += 1;
-                        self->set_internal_property("__ih_counter__", Value(counter));
+                        self->set_internal_slot("__ih_counter__", Value(counter));
                         if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
                         if (keep.to_boolean()) return Value(make_iter_result(val, false));
                     }
@@ -877,19 +878,19 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
-            helper->set_internal_property("__ih_remaining__", Value(limit));
+            helper->set_internal_slot("__ih_remaining__", Value(limit));
 
             auto next_fn = ObjectFactory::create_native_function("next",
                 [](Context& ctx, const std::vector<Value>&) -> Value {
                     Object* self = ctx.get_this_binding();
-                    Value iter_val = self->get_property("__ih_iter__");
-                    double remaining = self->get_property("__ih_remaining__").to_number();
-                    if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
-                    self->set_internal_property("__ih_remaining__", Value(remaining - 1));
-                    Value next_method = self->get_property("__ih_next__");
+                    Value iter_val = self->get_internal_slot("__ih_iter__");
+                    double remaining = self->get_internal_slot("__ih_remaining__").to_number();
+                    if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                    self->set_internal_slot("__ih_remaining__", Value(remaining - 1));
+                    Value next_method = self->get_internal_slot("__ih_next__");
                     auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                     if (ctx.has_exception()) return Value();
-                    if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
                     return Value(make_iter_result(val, false));
                 }, 0);
             set_guarded_next(helper, std::move(next_fn));
@@ -923,25 +924,25 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
-            helper->set_internal_property("__ih_remaining__", Value(limit));
+            helper->set_internal_slot("__ih_remaining__", Value(limit));
 
             auto next_fn = ObjectFactory::create_native_function("next",
                 [](Context& ctx, const std::vector<Value>&) -> Value {
                     Object* self = ctx.get_this_binding();
-                    Value iter_val = self->get_property("__ih_iter__");
-                    Value next_method = self->get_property("__ih_next__");
-                    double remaining = self->get_property("__ih_remaining__").to_number();
+                    Value iter_val = self->get_internal_slot("__ih_iter__");
+                    Value next_method = self->get_internal_slot("__ih_next__");
+                    double remaining = self->get_internal_slot("__ih_remaining__").to_number();
                     while (remaining > 0) {
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         (void)val;
                         remaining -= 1;
-                        self->set_internal_property("__ih_remaining__", Value(remaining));
+                        self->set_internal_slot("__ih_remaining__", Value(remaining));
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
                     }
                     auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                     if (ctx.has_exception()) return Value();
-                    if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
                     return Value(make_iter_result(val, false));
                 }, 0);
             set_guarded_next(helper, std::move(next_fn));
@@ -967,36 +968,36 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
-            helper->set_internal_property("__ih_fn__", args[0]);
-            helper->set_internal_property("__ih_counter__", Value(0.0));
-            helper->set_internal_property("__ih_inner__", Value());
-            helper->set_internal_property("__ih_inner_next__", Value());
+            helper->set_internal_slot("__ih_fn__", args[0]);
+            helper->set_internal_slot("__ih_counter__", Value(0.0));
+            helper->set_internal_slot("__ih_inner__", Value());
+            helper->set_internal_slot("__ih_inner_next__", Value());
 
             auto next_fn = ObjectFactory::create_native_function("next",
                 [](Context& ctx, const std::vector<Value>&) -> Value {
                     Object* self = ctx.get_this_binding();
-                    Value mapper_val = self->get_property("__ih_fn__");
-                    Value iter_val = self->get_property("__ih_iter__");
-                    Value outer_next = self->get_property("__ih_next__");
+                    Value mapper_val = self->get_internal_slot("__ih_fn__");
+                    Value iter_val = self->get_internal_slot("__ih_iter__");
+                    Value outer_next = self->get_internal_slot("__ih_next__");
 
                     while (true) {
-                        Value inner_val = self->get_property("__ih_inner__");
+                        Value inner_val = self->get_internal_slot("__ih_inner__");
                         if (inner_val.is_object() || inner_val.is_function()) {
-                            Value inner_next = self->get_property("__ih_inner_next__");
+                            Value inner_next = self->get_internal_slot("__ih_inner_next__");
                             auto [ival, idone] = iterator_helper_step(ctx, inner_val, inner_next);
                             if (ctx.has_exception()) return Value();
                             if (!idone) return Value(make_iter_result(ival, false));
-                            self->set_internal_property("__ih_inner__", Value());
-                            self->set_internal_property("__ih_inner_next__", Value());
+                            self->set_internal_slot("__ih_inner__", Value());
+                            self->set_internal_slot("__ih_inner_next__", Value());
                         }
 
-                        double counter = self->get_property("__ih_counter__").to_number();
+                        double counter = self->get_internal_slot("__ih_counter__").to_number();
                         auto [val, done] = iterator_helper_step(ctx, iter_val, outer_next);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_property("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
 
                         Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
-                        self->set_internal_property("__ih_counter__", Value(counter + 1));
+                        self->set_internal_slot("__ih_counter__", Value(counter + 1));
                         if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
                         if (!mapped.is_object() && !mapped.is_function()) {
                             ctx.throw_type_error("flatMap mapper result must be an object");
@@ -1029,8 +1030,8 @@ void register_iterator_constructor(Context& ctx) {
                         Object* inner_obj = inner.is_function() ? static_cast<Object*>(inner.as_function()) : inner.as_object();
                         Value inner_next_method = inner_obj->get_property("next");
                         if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
-                        self->set_internal_property("__ih_inner__", inner);
-                        self->set_internal_property("__ih_inner_next__", inner_next_method);
+                        self->set_internal_slot("__ih_inner__", inner);
+                        self->set_internal_slot("__ih_inner_next__", inner_next_method);
                         // loop: pull from the freshly-set inner iterator next time around
                     }
                 }, 0);
@@ -1144,8 +1145,8 @@ void register_iterator_constructor(Context& ctx) {
             [](Context& ctx, const std::vector<Value>&) -> Value {
                 Object* self = ctx.get_this_binding();
                 if (!self) { ctx.throw_type_error("next on non-object"); return Value(); }
-                Value iter = self->get_property("__wfvi_iter__");
-                Value nxt = self->get_property("__wfvi_next__");
+                Value iter = self->get_internal_slot("__wfvi_iter__");
+                Value nxt = self->get_internal_slot("__wfvi_next__");
                 Value result = nxt.as_function()->call(ctx, {}, iter);
                 if (ctx.has_exception()) return Value();
                 if (!result.is_object()) { ctx.throw_type_error("Iterator result is not an object"); return Value(); }
@@ -1164,7 +1165,7 @@ void register_iterator_constructor(Context& ctx) {
                     ctx.throw_type_error("Iterator.from return: incompatible receiver");
                     return Value();
                 }
-                Value iter = self->get_property("__wfvi_iter__");
+                Value iter = self->get_internal_slot("__wfvi_iter__");
                 if (!iter.is_object() && !iter.is_function()) return Value(make_iter_result(Value(), true));
                 Object* iter_obj = iter.is_function() ? static_cast<Object*>(iter.as_function()) : iter.as_object();
                 Value ret_method = iter_obj->get_property("return");
@@ -1178,7 +1179,7 @@ void register_iterator_constructor(Context& ctx) {
         wrap_proto->set_property_descriptor("return", d);
     }
     // Store wrap_proto on the constructor for SubClass.from() to find.
-    iterator_constructor->set_internal_property("__wfvi_proto__", Value(wrap_proto.release()));
+    iterator_constructor->set_internal_slot("__wfvi_proto__", Value(wrap_proto.release()));
 
     // Static Iterator.from ( O )
     auto iterator_from = ObjectFactory::create_native_function("from",
@@ -1283,8 +1284,8 @@ void register_iterator_constructor(Context& ctx) {
             // Wrap in a WrapForValidIteratorPrototype instance.
             auto wrapper = ObjectFactory::create_object();
             wrapper->set_prototype(wrap_proto_raw);
-            wrapper->set_internal_property("__wfvi_iter__", inner_iter);
-            wrapper->set_internal_property("__wfvi_next__", inner_next);
+            wrapper->set_internal_slot("__wfvi_iter__", inner_iter);
+            wrapper->set_internal_slot("__wfvi_next__", inner_next);
             return Value(wrapper.release());
         }, 1);
     {
@@ -1316,53 +1317,53 @@ void register_iterator_constructor(Context& ctx) {
 
             auto helper = ObjectFactory::create_object();
             helper->set_prototype(Iterator::s_iterator_prototype_);
-            helper->set_internal_property("__ic_items__", Value(items.release()));
-            helper->set_internal_property("__ic_methods__", Value(methods.release()));
-            helper->set_internal_property("__ic_index__", Value(0.0));
-            helper->set_internal_property("__ic_inner__", Value());
-            helper->set_internal_property("__ic_inner_next__", Value());
-            helper->set_internal_property("__ic_running__", Value(false));
+            helper->set_internal_slot("__ic_items__", Value(items.release()));
+            helper->set_internal_slot("__ic_methods__", Value(methods.release()));
+            helper->set_internal_slot("__ic_index__", Value(0.0));
+            helper->set_internal_slot("__ic_inner__", Value());
+            helper->set_internal_slot("__ic_inner_next__", Value());
+            helper->set_internal_slot("__ic_running__", Value(false));
 
             auto next_fn = ObjectFactory::create_native_function("next",
                 [](Context& ctx, const std::vector<Value>&) -> Value {
                     Object* self = ctx.get_this_binding();
                     if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
-                    if (self->get_property("__ic_running__").to_boolean()) {
+                    if (self->get_internal_slot("__ic_running__").to_boolean()) {
                         ctx.throw_type_error("Iterator.concat helper is already running");
                         return Value();
                     }
-                    self->set_internal_property("__ic_running__", Value(true));
+                    self->set_internal_slot("__ic_running__", Value(true));
                     while (true) {
-                        Value inner_val = self->get_property("__ic_inner__");
+                        Value inner_val = self->get_internal_slot("__ic_inner__");
                         if (inner_val.is_object() || inner_val.is_function()) {
-                            Value inner_next = self->get_property("__ic_inner_next__");
+                            Value inner_next = self->get_internal_slot("__ic_inner_next__");
                             auto [val, done] = iterator_helper_step(ctx, inner_val, inner_next);
-                            if (ctx.has_exception()) { self->set_internal_property("__ic_running__", Value(false)); return Value(); }
-                            if (!done) { self->set_internal_property("__ic_running__", Value(false)); return Value(make_iter_result(val, false)); }
-                            self->set_internal_property("__ic_inner__", Value());
-                            self->set_internal_property("__ic_inner_next__", Value());
+                            if (ctx.has_exception()) { self->set_internal_slot("__ic_running__", Value(false)); return Value(); }
+                            if (!done) { self->set_internal_slot("__ic_running__", Value(false)); return Value(make_iter_result(val, false)); }
+                            self->set_internal_slot("__ic_inner__", Value());
+                            self->set_internal_slot("__ic_inner_next__", Value());
                         }
-                        double index = self->get_property("__ic_index__").to_number();
-                        Object* items_obj = self->get_property("__ic_items__").as_object();
+                        double index = self->get_internal_slot("__ic_index__").to_number();
+                        Object* items_obj = self->get_internal_slot("__ic_items__").as_object();
                         double total = items_obj->get_property("length").to_number();
-                        if (index >= total) { self->set_internal_property("__ic_running__", Value(false)); return Value(make_iter_result(Value(), true)); }
+                        if (index >= total) { self->set_internal_slot("__ic_running__", Value(false)); return Value(make_iter_result(Value(), true)); }
                         Value item = items_obj->get_property(std::to_string((uint32_t)index));
-                        Object* methods_obj = self->get_property("__ic_methods__").as_object();
+                        Object* methods_obj = self->get_internal_slot("__ic_methods__").as_object();
                         Value method = methods_obj->get_property(std::to_string((uint32_t)index));
-                        self->set_internal_property("__ic_index__", Value(index + 1));
+                        self->set_internal_slot("__ic_index__", Value(index + 1));
 
                         Value inner = method.as_function()->call(ctx, {}, item);
-                        if (ctx.has_exception()) { self->set_internal_property("__ic_running__", Value(false)); return Value(); }
+                        if (ctx.has_exception()) { self->set_internal_slot("__ic_running__", Value(false)); return Value(); }
                         if (!inner.is_object() && !inner.is_function()) {
-                            self->set_internal_property("__ic_running__", Value(false));
+                            self->set_internal_slot("__ic_running__", Value(false));
                             ctx.throw_type_error("Result of [Symbol.iterator] is not an object");
                             return Value();
                         }
                         Object* inner_obj = inner.is_function() ? static_cast<Object*>(inner.as_function()) : inner.as_object();
                         Value inner_next_method = inner_obj->get_property("next");
-                        if (ctx.has_exception()) { self->set_internal_property("__ic_running__", Value(false)); return Value(); }
-                        self->set_internal_property("__ic_inner__", inner);
-                        self->set_internal_property("__ic_inner_next__", inner_next_method);
+                        if (ctx.has_exception()) { self->set_internal_slot("__ic_running__", Value(false)); return Value(); }
+                        self->set_internal_slot("__ic_inner__", inner);
+                        self->set_internal_slot("__ic_inner_next__", inner_next_method);
                     }
                 }, 0);
             helper->set_property("next", Value(next_fn.release()));
@@ -1373,20 +1374,20 @@ void register_iterator_constructor(Context& ctx) {
                     if (self) {
                         // A reentrant return() (e.g. from the inner iterator's own
                         // return) sees the generator in the executing state.
-                        if (self->get_property("__ic_running__").to_boolean()) {
+                        if (self->get_internal_slot("__ic_running__").to_boolean()) {
                             ctx.throw_type_error("Iterator.concat helper is already running");
                             return Value();
                         }
-                        Value inner_val = self->get_property("__ic_inner__");
+                        Value inner_val = self->get_internal_slot("__ic_inner__");
                         if (inner_val.is_object() || inner_val.is_function()) {
-                            self->set_internal_property("__ic_running__", Value(true));
+                            self->set_internal_slot("__ic_running__", Value(true));
                             iterator_helper_close(ctx, inner_val);
-                            self->set_internal_property("__ic_running__", Value(false));
-                            self->set_internal_property("__ic_inner__", Value());
+                            self->set_internal_slot("__ic_running__", Value(false));
+                            self->set_internal_slot("__ic_inner__", Value());
                         }
-                        Object* items_obj = self->get_property("__ic_items__").as_object();
+                        Object* items_obj = self->get_internal_slot("__ic_items__").as_object();
                         double total = items_obj ? items_obj->get_property("length").to_number() : 0;
-                        self->set_internal_property("__ic_index__", Value(total));
+                        self->set_internal_slot("__ic_index__", Value(total));
                         if (ctx.has_exception()) return Value();
                     }
                     return Value(make_iter_result(Value(), true));
@@ -1542,15 +1543,15 @@ void register_iterator_constructor(Context& ctx) {
             nexts_arr->set_property("length", Value((double)iter_count));
             padding_arr->set_property("length", Value((double)iter_count));
             alive_arr->set_property("length", Value((double)iter_count));
-            helper->set_internal_property("__iz_iters__", Value(iters_arr.release()));
-            helper->set_internal_property("__iz_nexts__", Value(nexts_arr.release()));
-            helper->set_internal_property("__iz_padding__", Value(padding_arr.release()));
-            helper->set_internal_property("__iz_alive__", Value(alive_arr.release()));
-            helper->set_internal_property("__iz_count__", Value((double)iter_count));
-            helper->set_internal_property("__iz_mode__", Value(mode));
-            helper->set_internal_property("__iz_done__", Value(false));
-            helper->set_internal_property("__iz_keyed__", Value(false));
-            helper->set_internal_property("__iz_running__", Value(false));
+            helper->set_internal_slot("__iz_iters__", Value(iters_arr.release()));
+            helper->set_internal_slot("__iz_nexts__", Value(nexts_arr.release()));
+            helper->set_internal_slot("__iz_padding__", Value(padding_arr.release()));
+            helper->set_internal_slot("__iz_alive__", Value(alive_arr.release()));
+            helper->set_internal_slot("__iz_count__", Value((double)iter_count));
+            helper->set_internal_slot("__iz_mode__", Value(mode));
+            helper->set_internal_slot("__iz_done__", Value(false));
+            helper->set_internal_slot("__iz_keyed__", Value(false));
+            helper->set_internal_slot("__iz_running__", Value(false));
 
             auto next_fn = ObjectFactory::create_native_function("next", iterator_zip_step, 0);
             helper->set_property("next", Value(next_fn.release()));
@@ -1689,16 +1690,16 @@ void register_iterator_constructor(Context& ctx) {
             padding_arr->set_property("length", Value((double)iter_count));
             alive_arr->set_property("length", Value((double)iter_count));
             keys_arr->set_property("length", Value((double)iter_count));
-            helper->set_internal_property("__iz_iters__", Value(iters_arr.release()));
-            helper->set_internal_property("__iz_nexts__", Value(nexts_arr.release()));
-            helper->set_internal_property("__iz_padding__", Value(padding_arr.release()));
-            helper->set_internal_property("__iz_alive__", Value(alive_arr.release()));
-            helper->set_internal_property("__iz_keys__", Value(keys_arr.release()));
-            helper->set_internal_property("__iz_count__", Value((double)iter_count));
-            helper->set_internal_property("__iz_mode__", Value(mode));
-            helper->set_internal_property("__iz_done__", Value(false));
-            helper->set_internal_property("__iz_keyed__", Value(true));
-            helper->set_internal_property("__iz_running__", Value(false));
+            helper->set_internal_slot("__iz_iters__", Value(iters_arr.release()));
+            helper->set_internal_slot("__iz_nexts__", Value(nexts_arr.release()));
+            helper->set_internal_slot("__iz_padding__", Value(padding_arr.release()));
+            helper->set_internal_slot("__iz_alive__", Value(alive_arr.release()));
+            helper->set_internal_slot("__iz_keys__", Value(keys_arr.release()));
+            helper->set_internal_slot("__iz_count__", Value((double)iter_count));
+            helper->set_internal_slot("__iz_mode__", Value(mode));
+            helper->set_internal_slot("__iz_done__", Value(false));
+            helper->set_internal_slot("__iz_keyed__", Value(true));
+            helper->set_internal_slot("__iz_running__", Value(false));
 
             auto next_fn = ObjectFactory::create_native_function("next", iterator_zip_step, 0);
             helper->set_property("next", Value(next_fn.release()));

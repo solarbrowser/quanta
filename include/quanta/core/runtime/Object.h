@@ -377,6 +377,18 @@ public:
             static_cast<PropertyAttributes>(PropertyAttributes::Writable |
                                             PropertyAttributes::Configurable));
     }
+    // What the spec calls an internal slot: state a builtin keeps on an
+    // object, with no key in any shape, no attributes, and no way to reach
+    // it from script -- getOwnPropertyNames, Object.keys, defineProperty and
+    // delete all behave as if it were not there, and script cannot forge one
+    // to impersonate the object a builtin expects. set_internal_property
+    // above only takes bookkeeping out of *enumeration*; this takes it off
+    // the property table entirely, and is where bookkeeping belongs unless
+    // something outside the engine genuinely has to see it.
+    void set_internal_slot(const std::string& key, const Value& value);
+    Value get_internal_slot(const std::string& key) const;
+    bool has_internal_slot(const std::string& key) const;
+    void delete_internal_slot(const std::string& key);
     bool ordinary_set(const std::string& key, const Value& value);
     // CreateDataProperty (spec 7.3.5): installs an own, Default-attrs data
     // property WITHOUT consulting the prototype chain -- unlike set_property()
@@ -637,6 +649,8 @@ private:
     std::unordered_set<uint32_t>& ensure_deleted_elements();
     HybridDescriptorMap* descriptors() const;
     HybridDescriptorMap& ensure_descriptors();
+    std::unordered_map<std::string, Value>* internals() const;
+    std::unordered_map<std::string, Value>& ensure_internals();
     // Enumeration order for extras-resident (sparse/dictionary-mode)
     // properties only -- shape-resident property order comes from
     // Shape::properties_in_order() instead, see get_own_property_keys.
@@ -924,6 +938,11 @@ struct RareExtras {
     // lets get_own_property_keys interleave the two correctly.
     std::vector<std::pair<std::string, uint32_t>> extra_property_order;
     uint32_t next_order_snapshot = 0;
+    // Engine bookkeeping a builtin parked on this object -- see
+    // Object::set_internal_slot. Deliberately outside the property table
+    // (and outside extra_property_order), so no reflective surface can
+    // reach it and no enumeration has to skip it.
+    std::unique_ptr<std::unordered_map<std::string, Value>> internals;
 };
 
 /**

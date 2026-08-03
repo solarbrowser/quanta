@@ -90,6 +90,9 @@ void Object::trace_default(Visitor& v) {
     if (auto* so = sparse_overflow()) {
         for (const auto& entry : *so) v.visit(entry.second);
     }
+    if (auto* in = internals()) {
+        for (const auto& entry : *in) v.visit(entry.second);
+    }
     if (auto* d = descriptors()) {
         for (size_t i = 0; i < d->inline_size(); i++) {
             const PropertyDescriptor& desc = d->inline_value(i);
@@ -159,6 +162,33 @@ HybridDescriptorMap& Object::ensure_descriptors() {
     RareExtras& e = ensure_extras();
     if (!e.descriptors) e.descriptors = std::make_unique<HybridDescriptorMap>();
     return *e.descriptors;
+}
+std::unordered_map<std::string, Value>* Object::internals() const {
+    RareExtras* e = peek_extras();
+    return e ? e->internals.get() : nullptr;
+}
+std::unordered_map<std::string, Value>& Object::ensure_internals() {
+    RareExtras& e = ensure_extras();
+    if (!e.internals) e.internals = std::make_unique<std::unordered_map<std::string, Value>>();
+    return *e.internals;
+}
+
+void Object::set_internal_slot(const std::string& key, const Value& value) {
+    ensure_internals()[key] = value;
+}
+Value Object::get_internal_slot(const std::string& key) const {
+    if (auto* in = internals()) {
+        auto it = in->find(key);
+        if (it != in->end()) return it->second;
+    }
+    return Value();
+}
+bool Object::has_internal_slot(const std::string& key) const {
+    auto* in = internals();
+    return in && in->count(key) > 0;
+}
+void Object::delete_internal_slot(const std::string& key) {
+    if (auto* in = internals()) in->erase(key);
 }
 void Object::push_extra_property_order(const std::string& key) {
     RareExtras& e = ensure_extras();
