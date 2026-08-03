@@ -1373,9 +1373,9 @@ int64_t EventLoop::schedule_timer(Context& ctx, Function* callback,
     // GC-root the callback/args on the global object until the timer fires or is cleared.
     Object* global = ctx.get_global_object();
     if (global) {
-        global->set_property("__timer_" + std::to_string(id) + "_cb", Value(callback));
+        global->set_internal_property("__timer_" + std::to_string(id) + "_cb", Value(callback));
         for (size_t i = 0; i < args.size(); i++) {
-            global->set_property("__timer_" + std::to_string(id) + "_arg" + std::to_string(i), args[i]);
+            global->set_internal_property("__timer_" + std::to_string(id) + "_arg" + std::to_string(i), args[i]);
         }
     }
 

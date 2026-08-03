@@ -367,6 +367,16 @@ public:
 
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool set_property(const Value& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    // Engine bookkeeping parked on an object: writable and configurable like an
+    // ordinary property, but never enumerable. for-in and JSON.stringify visit
+    // only enumerable own keys, so this is what keeps them out of both without
+    // anyone filtering by name -- a filter that also swallowed every user key
+    // that happened to start with two underscores.
+    bool set_internal_property(const std::string& key, const Value& value) {
+        return set_property(key, value,
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                                            PropertyAttributes::Configurable));
+    }
     bool ordinary_set(const std::string& key, const Value& value);
     // CreateDataProperty (spec 7.3.5): installs an own, Default-attrs data
     // property WITHOUT consulting the prototype chain -- unlike set_property()

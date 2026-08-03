@@ -443,12 +443,12 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
         // initializer keeps the direct-eval `arguments` ban for its whole life,
         // however late it is called (marker read back in Function::call).
         if (ctx.is_in_class_field_init()) {
-            function->set_property("__in_cfi__", Value(true));
+            function->set_internal_property("__in_cfi__", Value(true));
         }
         if (!tpl.is_async) {
             Value enclosing_new_target = ctx.get_new_target();
             if (!enclosing_new_target.is_undefined()) {
-                function->set_property("__arrow_new_target__", enclosing_new_target);
+                function->set_internal_property("__arrow_new_target__", enclosing_new_target);
             }
         }
     }
@@ -492,7 +492,7 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
     }
 
     if (tpl.has_direct_eval) {
-        function->set_property("__contains_eval__", Value(true));
+        function->set_internal_property("__contains_eval__", Value(true));
     }
     return Value(function.release());
 }
@@ -857,7 +857,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     instance_method->set_declared_length(method_declared_length);
                     if (!method->get_source_text().empty()) instance_method->set_source_text(method->get_source_text());
                     instance_method->set_is_strict(true);
-                    instance_method->set_property("__private_class_brand__", Value(prototype.get()));
+                    instance_method->set_internal_property("__private_class_brand__", Value(prototype.get()));
 
                     // Private methods/accessors are stored on the prototype under the
                     // qualified key ("#m@<protoPtr>", the same key resolve_private_storage_key
@@ -1161,7 +1161,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         constructor_fn->set_is_class_constructor(true);
         constructor_fn->set_is_strict(true);
         constructor_fn->set_construct_slot_hint(static_cast<uint32_t>(field_initializers.size()));
-        constructor_fn->set_property("__private_class_brand__", Value(proto_ptr));
+        constructor_fn->set_internal_property("__private_class_brand__", Value(proto_ptr));
 
         {
             auto instance_brands = ObjectFactory::create_object();
@@ -1186,7 +1186,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 auto method_names_obj = ObjectFactory::create_object();
                 for (const auto& mn : private_instance_method_names)
                     method_names_obj->set_property(mn, Value(true));
-                constructor_fn->set_property("__private_method_names__", Value(method_names_obj.release()));
+                constructor_fn->set_internal_property("__private_method_names__", Value(method_names_obj.release()));
             }
         }
 
@@ -1282,7 +1282,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     static_method->set_declared_length(method_declared_length);
                     if (!method->get_source_text().empty()) static_method->set_source_text(method->get_source_text());
                     static_method->set_is_strict(true);
-                    static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
+                    static_method->set_internal_property("__private_class_brand__", Value(constructor_fn.get()));
                     if (instance_brands_raw)
                         static_method->set_private_brands(instance_brands_raw);
                     // member.cpp's super lookup needs to know this resolves on the constructor itself, not its .prototype.
@@ -1526,7 +1526,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (is_derived && !pm_slot_for_methods.empty())
                 fn->set_pm_brand_slot(pm_slot_for_methods);
             if (pm_names_for_methods.is_object())
-                fn->set_property("__private_method_names__", pm_names_for_methods);
+                fn->set_internal_property("__private_method_names__", pm_names_for_methods);
         };
         for (const auto& key : proto_ptr->get_own_property_keys_unfiltered()) {
             if (key == "constructor") continue;
@@ -1887,8 +1887,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                     wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                 }, 1);
-            wrapped_raw->set_property("__tr_", Value(res_fn.release()));
-            wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+            wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
+            wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
             Object* thenable_obj = expr_val.as_object();
             Value then_val = thenable_obj->get_property("then");
             if (then_val.is_function()) {
@@ -1929,8 +1929,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 });
             std::string key = std::to_string(reinterpret_cast<uintptr_t>(async_gen));
             Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-            awaited_promise->set_property("__af_" + key, Value(on_f.release()));
-            awaited_promise->set_property("__ar_" + key, Value(on_r.release()));
+            awaited_promise->set_internal_property("__af_" + key, Value(on_f.release()));
+            awaited_promise->set_internal_property("__ar_" + key, Value(on_r.release()));
             awaited_promise->then(ff_tmp_, fr_tmp_);
         } else {
             auto self = async_gen;
@@ -2006,8 +2006,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                     wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                 });
-            wrapped_raw->set_property("__tr_", Value(res_fn.release()));
-            wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+            wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
+            wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
             Object* thenable_obj = expr_val.as_object();
             Value then_val = thenable_obj->get_property("then");
             if (then_val.is_function()) {
@@ -2049,8 +2049,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 });
             std::string key = std::to_string(reinterpret_cast<uintptr_t>(exec));
             Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-            awaited_promise->set_property("__af_" + key, Value(on_f.release()));
-            awaited_promise->set_property("__ar_" + key, Value(on_r.release()));
+            awaited_promise->set_internal_property("__af_" + key, Value(on_f.release()));
+            awaited_promise->set_internal_property("__ar_" + key, Value(on_r.release()));
             awaited_promise->then(ff_tmp_, fr_tmp_);
         } else {
             // Pin settled_val too (e.g. module namespace object in microtask capture).
@@ -2233,8 +2233,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                             [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                             }, 1);
-                        wrapped_raw->set_property("__tr_", Value(res_fn.release()));
-                        wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+                        wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
+                        wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
                         Value r = wrapped_raw->get_property("__tr_");
                         Value j = wrapped_raw->get_property("__tj_");
                         AsyncUtils::call_thenable_job(gctx, then_val.as_function(), v, r, j, wrapped_raw);
@@ -2283,8 +2283,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                     });
                 std::string aw_key = "ydv_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
                 Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
-                p->set_property("__af_" + aw_key, Value(on_f.release()));
-                p->set_property("__ar_" + aw_key, Value(on_r.release()));
+                p->set_internal_property("__af_" + aw_key, Value(on_f.release()));
+                p->set_internal_property("__ar_" + aw_key, Value(on_r.release()));
                 p->then(ff_tmp, fr_tmp);
                 async_gen->await_result_ = wrapped_keepalive.is_undefined() ? v : wrapped_keepalive;
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
@@ -2458,8 +2458,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                                 });
                             std::string rkey = "yr_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
                             Function* frf = on_f2.get(); Function* frr = on_r2.get();
-                            rp->set_property("__af_" + rkey, Value(on_f2.release()));
-                            rp->set_property("__ar_" + rkey, Value(on_r2.release()));
+                            rp->set_internal_property("__af_" + rkey, Value(on_f2.release()));
+                            rp->set_internal_property("__ar_" + rkey, Value(on_r2.release()));
                             rp->then(frf, frr);
                             async_gen->await_result_ = ret_result;
                             async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
@@ -2495,8 +2495,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                                     return Value();
                                 });
                             Function* rf3 = on_f3.get(); Function* rjf3 = on_r3.get();
-                            ret_result.as_object()->set_property("__th_rf3_", Value(on_f3.release()));
-                            ret_result.as_object()->set_property("__th_rjf3_", Value(on_r3.release()));
+                            ret_result.as_object()->set_internal_property("__th_rf3_", Value(on_f3.release()));
+                            ret_result.as_object()->set_internal_property("__th_rjf3_", Value(on_r3.release()));
                             // NewPromiseResolveThenableJob: `then` is called in its own queued
                             // microtask (on the global context, for chronological ordering
                             // against unrelated Promise chains), not synchronously.
@@ -2976,8 +2976,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                             [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                             }, 1);
-                        wrapped_raw->set_property("__tr_", Value(res_fn.release()));
-                        wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+                        wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
+                        wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
                         Value r = wrapped_raw->get_property("__tr_");
                         Value j = wrapped_raw->get_property("__tj_");
                         AsyncUtils::call_thenable_job(gctx, then_val.as_function(), yield_value, r, j, wrapped_raw);
@@ -3027,8 +3027,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                         });
                     std::string aw_key = "yw_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
                     Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
-                    p->set_property("__af_" + aw_key, Value(on_f.release()));
-                    p->set_property("__ar_" + aw_key, Value(on_r.release()));
+                    p->set_internal_property("__af_" + aw_key, Value(on_f.release()));
+                    p->set_internal_property("__ar_" + aw_key, Value(on_r.release()));
                     p->then(ff_tmp, fr_tmp);
                     async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;

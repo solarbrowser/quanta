@@ -367,7 +367,7 @@ void register_function_builtins(Context& ctx) {
             *self_ptr = bound_function.get();
 
             bound_function->set_prototype(target_func->get_prototype());
-            bound_function->set_property("__bound_target__", Value(static_cast<Object*>(target_func)));
+            bound_function->set_internal_property("__bound_target__", Value(static_cast<Object*>(target_func)));
             // The closure also captures bound_this/bound_args invisibly;
             // mirror them as traced hidden properties.
             bound_function->set_property("[[BoundThis]]", bound_this);

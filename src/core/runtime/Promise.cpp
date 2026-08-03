@@ -124,8 +124,8 @@ void Promise::fulfill(const Value& value) {
             Function* rf = res_fn.get();
             Function* rj = rej_fn.get();
             // Store on inner to keep callbacks alive
-            inner->set_property("__prp_res__", Value(res_fn.release()));
-            inner->set_property("__prp_rej__", Value(rej_fn.release()));
+            inner->set_internal_property("__prp_res__", Value(res_fn.release()));
+            inner->set_internal_property("__prp_rej__", Value(rej_fn.release()));
             // rf/rj capture self (the outer promise) raw and dereference it
             // (self->fulfill/reject) whenever inner settles, which may be well
             // after this call returns. inner keeps rf/rj alive via then_records_,
@@ -155,8 +155,8 @@ void Promise::fulfill(const Value& value) {
             Promise* self = this;
             Function* then_fn = then_val.as_function();
             Value thenable = value;
-            set_property("__trp_then__", Value(then_fn));
-            set_property("__trp_val__", thenable);
+            set_internal_property("__trp_then__", Value(then_fn));
+            set_internal_property("__trp_val__", thenable);
             Context* queue_ctx = get_exec_ctx(engine_, context_);
             if (queue_ctx) {
                 queue_ctx->queue_microtask([self, then_fn, thenable]() mutable {
@@ -180,8 +180,8 @@ void Promise::fulfill(const Value& value) {
                         });
                     Function* rf = res_fn.get();
                     Function* rj = rej_fn.get();
-                    self->set_property("__trp_res__", Value(res_fn.release()));
-                    self->set_property("__trp_rej__", Value(rej_fn.release()));
+                    self->set_internal_property("__trp_res__", Value(res_fn.release()));
+                    self->set_internal_property("__trp_rej__", Value(rej_fn.release()));
                     // rf/rj capture self raw in their C++ closures and dereference it
                     // (self->fulfill/reject) whenever the thenable finally calls one of
                     // them -- which may be well after this job returns (a deferred

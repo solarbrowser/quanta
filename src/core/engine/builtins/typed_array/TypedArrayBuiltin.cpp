@@ -1448,7 +1448,7 @@ void register_typed_array_builtins(Context& ctx) {
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
-            iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
+            iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
                 (void)a; Object* it = ctx.get_this_binding();
@@ -1459,9 +1459,9 @@ void register_typed_array_builtins(Context& ctx) {
                 TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
                 size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
-                if (idx >= len) { it->set_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
+                if (idx >= len) { it->set_internal_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
                 else { auto pair = ObjectFactory::create_array(2); pair->set_element(0, Value((double)idx)); pair->set_element(1, live->get_element(idx));
-                    res->set_property("done", Value(false)); res->set_property("value", Value(pair.release())); it->set_property("__idx", Value((double)(idx + 1))); }
+                    res->set_property("done", Value(false)); res->set_property("value", Value(pair.release())); it->set_internal_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
             iter->set_property("next", Value(next.release()));
             return Value(iter.release());
@@ -1475,7 +1475,7 @@ void register_typed_array_builtins(Context& ctx) {
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
-            iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
+            iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
                 (void)a; Object* it = ctx.get_this_binding();
@@ -1485,8 +1485,8 @@ void register_typed_array_builtins(Context& ctx) {
                 TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
                 size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
-                if (idx >= len) { it->set_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
-                else { res->set_property("done", Value(false)); res->set_property("value", Value((double)idx)); it->set_property("__idx", Value((double)(idx + 1))); }
+                if (idx >= len) { it->set_internal_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
+                else { res->set_property("done", Value(false)); res->set_property("value", Value((double)idx)); it->set_internal_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
             iter->set_property("next", Value(next.release()));
             return Value(iter.release());
@@ -1500,7 +1500,7 @@ void register_typed_array_builtins(Context& ctx) {
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
-            iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
+            iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
                 (void)a; Object* it = ctx.get_this_binding();
@@ -1510,8 +1510,8 @@ void register_typed_array_builtins(Context& ctx) {
                 TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
                 size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
-                if (idx >= len) { it->set_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
-                else { res->set_property("done", Value(false)); res->set_property("value", live->get_element(idx)); it->set_property("__idx", Value((double)(idx + 1))); }
+                if (idx >= len) { it->set_internal_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
+                else { res->set_property("done", Value(false)); res->set_property("value", live->get_element(idx)); it->set_internal_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
             iter->set_property("next", Value(next.release()));
             return Value(iter.release());

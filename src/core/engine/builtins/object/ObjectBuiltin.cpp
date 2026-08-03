@@ -1975,7 +1975,7 @@ void register_object_builtins(Context& ctx) {
     object_proto_ptr->set_property("__immutableProto__", Value(true), PropertyAttributes::None);
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
 
-    ctx.get_global_object()->set_property("__addHasOwnProperty", Value(ObjectFactory::create_native_function("__addHasOwnProperty",
+    ctx.get_global_object()->set_internal_property("__addHasOwnProperty", Value(ObjectFactory::create_native_function("__addHasOwnProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) return Value();
 

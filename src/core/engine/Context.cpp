@@ -1351,8 +1351,8 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
             [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
             }, 1);
-        wrapped_raw->set_property("__tr_", Value(res_fn.release()));
-        wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+        wrapped_raw->set_internal_property("__tr_", Value(res_fn.release()));
+        wrapped_raw->set_internal_property("__tj_", Value(rej_fn.release()));
         Object* thenable_obj = value.as_object();
         Value then_val = thenable_obj->get_property("then");
         if (then_val.is_function()) {

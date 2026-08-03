@@ -980,7 +980,6 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
     bool is_regexp_obj = (obj->get_type() == Object::ObjectType::RegExp);
 
     for (const std::string& key : keys_to_process) {
-        if (key.substr(0, 2) == "__") continue;
         if (key.size() >= 2 && key[0] == '[' && key[1] == '[') continue;
         if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
         if (key.size() > 3 && key[0] == '_' && key[1] == 'i' && key[2] == 's') continue;

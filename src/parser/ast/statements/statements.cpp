@@ -1123,8 +1123,7 @@ bool ForInStatement::collect_keys(Context& ctx, Object* obj, std::vector<std::st
         }
         // Yield enumerable own keys not already blocked by a closer object
         for (const auto& k : all_own) {
-            if (k.size() >= 2 && k[0] == '_' && k[1] == '_') continue;
-            if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0 || k.find("Symbol(") == 0) continue;
+                if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0 || k.find("Symbol(") == 0) continue;
             if (blocked.count(k)) continue; // shadowed by closer level
             // Check if this own key is enumerable
             PropertyDescriptor d = cur->get_property_descriptor(k);
@@ -1689,8 +1688,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             });
                         std::string key = std::to_string(i) + "_ag_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
                         Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-                        prom->set_property("__af_" + key, Value(on_f.release()));
-                        prom->set_property("__ar_" + key, Value(on_r.release()));
+                        prom->set_internal_property("__af_" + key, Value(on_f.release()));
+                        prom->set_internal_property("__ar_" + key, Value(on_r.release()));
                         prom->then(ff_tmp_, fr_tmp_);
                     }
                 } else {
@@ -1819,8 +1818,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             });
                         std::string vw_key = "afsi_" + std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
                         Function* uf = unwrap_f.get(); Function* ur = unwrap_r.get();
-                        value_wrapper->set_property("__af_" + vw_key, Value(unwrap_f.release()));
-                        value_wrapper->set_property("__ar_" + vw_key, Value(unwrap_r.release()));
+                        value_wrapper->set_internal_property("__af_" + vw_key, Value(unwrap_f.release()));
+                        value_wrapper->set_internal_property("__ar_" + vw_key, Value(unwrap_r.release()));
                         value_wrapper->then(uf, ur);
                     }
 
@@ -1847,8 +1846,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         });
                     std::string nrkey = "afsi_outer_" + std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
                     Function* ff2 = on_f2.get(); Function* fr2 = on_r2.get();
-                    next_result_promise->set_property("__af_" + nrkey, Value(on_f2.release()));
-                    next_result_promise->set_property("__ar_" + nrkey, Value(on_r2.release()));
+                    next_result_promise->set_internal_property("__af_" + nrkey, Value(on_f2.release()));
+                    next_result_promise->set_internal_property("__ar_" + nrkey, Value(on_r2.release()));
                     next_result_promise->then(ff2, fr2);
                 } else {
                 next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
@@ -1886,8 +1885,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             });
                         std::string key = std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
                         Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-                        prom->set_property("__af_" + key, Value(on_f.release()));
-                        prom->set_property("__ar_" + key, Value(on_r.release()));
+                        prom->set_internal_property("__af_" + key, Value(on_f.release()));
+                        prom->set_internal_property("__ar_" + key, Value(on_r.release()));
                         prom->then(ff_tmp_, fr_tmp_);
                     }
                 } else {
@@ -1980,8 +1979,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 });
                             std::string vkey = "fav_" + std::to_string(i) + "_ag_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
                             Function* vff = on_f.get(); Function* vfr = on_r.get();
-                            vp->set_property("__af_" + vkey, Value(on_f.release()));
-                            vp->set_property("__ar_" + vkey, Value(on_r.release()));
+                            vp->set_internal_property("__af_" + vkey, Value(on_f.release()));
+                            vp->set_internal_property("__ar_" + vkey, Value(on_r.release()));
                             vp->then(vff, vfr);
                         }
                     } else {
