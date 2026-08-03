@@ -994,35 +994,15 @@ bool Value::instanceof_check(const Value& constructor) const {
         current = current_proto;
     }
 
-    if (ctor_name == "Array") {
-        return obj->is_array();
-    }
-    
-    if (ctor_name == "RegExp") {
-        return obj->get_type() == Object::ObjectType::RegExp;
-    }
-    
-    if (ctor_name == "Date") {
-        return obj->has_property("_isDate");
-    }
-    
-    if (ctor_name == "Error" || ctor_name == "TypeError" || ctor_name == "ReferenceError") {
-        return obj->has_property("_isError");
-    }
-    
-    if (ctor_name == "Promise") {
-        return obj->has_property("_isPromise");
-    }
-
-    if (ctor_name == "Map") {
-        return obj->get_type() == Object::ObjectType::Map;
-    }
-
-    if (ctor_name == "Set") {
-        return obj->get_type() == Object::ObjectType::Set;
-    }
-
+    // OrdinaryHasInstance is the prototype chain and nothing else. What used to
+    // sit here was a list of name-based fallbacks -- "the constructor is called
+    // Error, so anything carrying _isError is an instance" -- which answered
+    // yes for every branded object regardless of its chain: a plain Error came
+    // out as an instance of TypeError, while RangeError, absent from the list,
+    // correctly said no. They date from before these builtins had their
+    // prototypes wired up.
     return false;
+
 }
 
 
