@@ -5437,11 +5437,23 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 return emit_super_load(mem);
             }
             if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
-            if (!compile_expression(mem->get_object())) return false;
-            int obj_reg = alloc_temp();
-            if (failed_) return false;
-            emit(Op::Star);
-            emit_u8(static_cast<uint8_t>(obj_reg));
+            // A receiver that already sits in a register is its own operand.
+            // Loading it into the accumulator only to copy it back out into a
+            // temporary was two opcodes per property read, and a chain like
+            // `u.a` inside a loop pays it on every iteration.
+            int borrowed_reg = -1;
+            if (mem->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
+                borrowed_reg = plain_local_register(
+                    static_cast<const Identifier*>(mem->get_object())->get_name());
+            }
+            int obj_reg = borrowed_reg;
+            if (obj_reg < 0) {
+                if (!compile_expression(mem->get_object())) return false;
+                obj_reg = alloc_temp();
+                if (failed_) return false;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(obj_reg));
+            }
 
             if (!mem->is_computed()) {
                 const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
@@ -5460,7 +5472,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u16(alloc_keyed_feedback());
             }
-            free_temp(obj_reg);
+            if (borrowed_reg < 0) free_temp(obj_reg);
             return !failed_;
         }
 
