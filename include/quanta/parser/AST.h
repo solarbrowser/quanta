@@ -257,8 +257,6 @@ public:
 class Identifier : public ASTNode {
 private:
     std::string name_;
-    mutable Value cached_value_;
-    mutable bool cache_valid_ = false;
     mutable class Environment* cached_env_ = nullptr;
     bool has_escaped_keyword_ = false;
 

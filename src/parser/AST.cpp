@@ -272,18 +272,6 @@ Value Identifier::evaluate(Context& ctx) {
         return Value();
     }
 
-    static const std::set<std::string> cacheable_globals = {
-        "console", "Math", "JSON", "Array", "Object", "String", "Number",
-        "Boolean", "RegExp", "Error", "Date", "Infinity", "NaN", "undefined"
-    };
-
-    // Globals have fast path caching (immutable bindings)
-    if (cacheable_globals.find(name_) != cacheable_globals.end()) {
-        if (__builtin_expect(cache_valid_, 1)) {
-            return cached_value_;
-        }
-    }
-
     if (ctx.is_in_tdz(name_)) {
         ctx.throw_reference_error("Cannot access '" + name_ + "' before initialization");
         return Value();
@@ -316,12 +304,6 @@ Value Identifier::evaluate(Context& ctx) {
 
     Value result = ref_env ? ref_env->get_binding_direct(name_, &ctx) : ctx.get_binding(name_);
     if (ctx.has_exception()) return Value();
-
-    // Only cache immutable globals
-    if (cacheable_globals.find(name_) != cacheable_globals.end() && !cache_valid_) {
-        cached_value_ = result;
-        cache_valid_ = true;
-    }
 
     return result;
 }
