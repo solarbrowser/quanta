@@ -75,6 +75,11 @@ private:
     size_t current_token_index_;
     bool no_in_mode_ = false; // when true, 'in' is not parsed as a relational operator
     bool last_expr_was_parenthesized_ = false;
+    // Nesting of `? :` alternates. A member rather than a recursion parameter
+    // because the alternate is parsed as a full AssignmentExpression, so the
+    // chain leaves and re-enters parse_conditional_expression and a parameter
+    // would reset to zero at every link.
+    int ternary_depth_ = 0;
     std::vector<std::unordered_set<std::string>> private_scope_stack_; // private names per class depth
 
 public:
@@ -116,7 +121,6 @@ public:
     
     std::unique_ptr<ASTNode> parse_assignment_expression();
     std::unique_ptr<ASTNode> parse_conditional_expression();
-    std::unique_ptr<ASTNode> parse_conditional_expression_impl(int depth);
     std::unique_ptr<ASTNode> parse_logical_or_expression();
     std::unique_ptr<ASTNode> parse_nullish_coalescing_expression();
     std::unique_ptr<ASTNode> parse_logical_and_expression();

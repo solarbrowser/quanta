@@ -712,15 +712,11 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_conditional_expression() {
-    return parse_conditional_expression_impl(0);
-}
-
-std::unique_ptr<ASTNode> Parser::parse_conditional_expression_impl(int depth) {
-    if (depth > 100) {
+    if (ternary_depth_ > 100) {
         add_error("ternary nesting depth exceeded");
         return nullptr;
     }
-    
+
     auto test = parse_logical_or_expression();
     if (!test) return nullptr;
     
@@ -747,8 +743,14 @@ std::unique_ptr<ASTNode> Parser::parse_conditional_expression_impl(int depth) {
         }
         advance();
 
+        // Spec: the alternate is an AssignmentExpression too, not a nested
+        // ConditionalExpression -- `c ? x : y = z` is `c ? x : (y = z)`, and
+        // parsing it any tighter leaves the `=` to be read as an assignment to
+        // the whole conditional, which is not a valid target.
         no_in_mode_ = saved_no_in;  // restore ?In for alternate
-        auto alternate = parse_conditional_expression_impl(depth + 1);
+        ternary_depth_++;
+        auto alternate = parse_assignment_expression();
+        ternary_depth_--;
         if (!alternate) {
             add_error("Expected expression after ':' in conditional expression");
             return nullptr;
@@ -3307,17 +3309,25 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             
             DestructuringAssignment* dest = static_cast<DestructuringAssignment*>(destructuring.get());
             dest->set_source(std::move(init));
-            
+
+            // The empty name is what marks a declarator as destructuring; the
+            // position is the pattern's own, not the declaration's, so a later
+            // declarator does not report the first one's location.
+            Position pat_start = destructuring->get_start();
             auto declarator = std::make_unique<VariableDeclarator>(
-                std::make_unique<Identifier>("", start, start),
+                std::make_unique<Identifier>("", pat_start, pat_start),
                 std::move(destructuring),
                 kind,
-                start,
+                pat_start,
                 get_current_position()
             );
-            
+
             declarations.push_back(std::move(declarator));
-            break;
+            // `continue` reaches the do-while condition, which is what consumes
+            // a comma and starts the next declarator. A `break` here ended the
+            // whole declaration, so `const {a} = x, b = 2` stopped at the comma
+            // and every following token read as a stray one.
+            continue;
         }
         
         // Non-strict: yield/await/let/static can be identifiers outside strict/generator/async
@@ -8052,8 +8062,13 @@ std::unique_ptr<ASTNode> Parser::parse_return_statement() {
     }
     
     std::unique_ptr<ASTNode> argument = nullptr;
-    
-    if (!match(TokenType::SEMICOLON) && !at_end() && 
+
+    // Automatic semicolon insertion has two triggers here, not one: a line
+    // terminator before the next token, and the next token being `}` (11.9.1
+    // rule 1, second bullet). Only the newline was honoured, so `return }` --
+    // what a minifier emits for every argument-less return -- tried to parse
+    // the closing brace as the returned expression.
+    if (!match(TokenType::SEMICOLON) && !match(TokenType::RIGHT_BRACE) && !at_end() &&
         current_token().get_start().line == start.line) {
         argument = parse_expression();
         if (!argument) {
