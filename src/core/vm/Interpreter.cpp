@@ -1070,9 +1070,9 @@ BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
 #define NUMERIC_BINARY_HANDLER(name, expr)                                 \
     Value name(Frame& f, uint32_t pc, Value acc) {                         \
         const Value& lhs = f.regs[f.code[pc + 1]];                         \
-        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
-            double l = lhs.as_number();                                    \
-            double r = acc.as_number();                                    \
+        if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
+            double l = lhs.as_finite_double();                             \
+            double r = acc.as_finite_double();                             \
             (void)l; (void)r;                                              \
             acc = (expr);                                                  \
             pc += 2;                                                       \
@@ -1163,9 +1163,9 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
     do {                                                                   \
         const Value& lhs = regs[code[pc]];                                 \
         pc += 1;                                                           \
-        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
-            double l = lhs.as_number();                                    \
-            double r = acc.as_number();                                    \
+        if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
+            double l = lhs.as_finite_double();                             \
+            double r = acc.as_finite_double();                             \
             (void)l; (void)r;                                              \
             acc = (expr);                                                  \
         } else {                                                           \

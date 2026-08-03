@@ -279,6 +279,21 @@ public:
     inline bool as_boolean() const {
         return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_TRUE);
     }
+    // A finite double is the whole of arithmetic's fast path, and it is one
+    // test: NaN and both infinities are given NaN-box tags of their own, so
+    // they share the reserved exponent with every non-number tag and are
+    // excluded by the same comparison. is_number()/as_number() together ask
+    // seven questions to answer what these two answer in one, because they
+    // must also accept the three tagged forms.
+    [[nodiscard]] inline bool is_finite_double() const noexcept {
+        return (bits_ & EXPONENT_MASK) != EXPONENT_MASK;
+    }
+    // Only valid once is_finite_double() has said yes: no tag can reach here,
+    // so the bits are the double.
+    [[nodiscard]] inline double as_finite_double() const noexcept {
+        return bits_to_double(bits_);
+    }
+
     [[nodiscard]] inline double as_number() const noexcept {
         if (is_nan()) return std::numeric_limits<double>::quiet_NaN();
         if (is_positive_infinity()) return std::numeric_limits<double>::infinity();
