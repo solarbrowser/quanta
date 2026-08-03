@@ -8,8 +8,84 @@
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/gc/Heap.h"
 #include <vector>
+#include <cstring>
 
 namespace Quanta {
+
+namespace {
+
+// WTF-8 keeps an unpaired surrogate as its own three-byte sequence: ED A0-AF xx
+// for a high one, ED B0-BF xx for a low one. Concatenation can put a high one
+// immediately before a low one, and that pair is a SINGLE code point, so it has
+// to be stored as the one four-byte sequence it stands for. Left as two
+// sequences it still reports the right length and the right code units, but
+// string comparison is over the stored bytes -- so `hi + lo` did not equal the
+// same character written any other way, and codePointAt and iteration both saw
+// two characters where there is one.
+bool high_surrogate_at(const std::string& s, size_t i) {
+    unsigned char b0 = static_cast<unsigned char>(s[i]);
+    unsigned char b1 = static_cast<unsigned char>(s[i + 1]);
+    return b0 == 0xED && b1 >= 0xA0 && b1 <= 0xAF;
+}
+
+bool low_surrogate_at(const std::string& s, size_t i) {
+    unsigned char b0 = static_cast<unsigned char>(s[i]);
+    unsigned char b1 = static_cast<unsigned char>(s[i + 1]);
+    return b0 == 0xED && b1 >= 0xB0 && b1 <= 0xBF;
+}
+
+uint32_t surrogate_at(const char* p) {
+    return 0xD000u | ((static_cast<unsigned char>(p[1]) & 0x3F) << 6)
+                   | (static_cast<unsigned char>(p[2]) & 0x3F);
+}
+
+void append_pair(std::string& out, uint32_t hi, uint32_t lo) {
+    uint32_t cp = 0x10000u + ((hi - 0xD800u) << 10) + (lo - 0xDC00u);
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+}
+
+// Every String's bytes are canonical, enforced on construction rather than at
+// each of the many places that build one by appending (a template literal,
+// Array.join, String.prototype.concat, replace, repeat...). Fixing those one at
+// a time would leave whichever one nobody thought of still storing a split
+// pair. Costs a memchr, and 0xED occurs in no ASCII text at all.
+void canonicalize_pairs(std::string& s) {
+    if (s.size() < 6 || std::memchr(s.data(), 0xED, s.size()) == nullptr) return;
+    std::string out;
+    out.reserve(s.size());
+    bool merged = false;
+    size_t i = 0;
+    while (i < s.size()) {
+        if (i + 6 <= s.size() && high_surrogate_at(s, i) && low_surrogate_at(s, i + 3)) {
+            append_pair(out, surrogate_at(s.data() + i), surrogate_at(s.data() + i + 3));
+            i += 6;
+            merged = true;
+        } else {
+            out += s[i++];
+        }
+    }
+    if (merged) s = std::move(out);
+}
+
+// The rope's flatten builds its buffer directly rather than through a
+// constructor, and its pieces meet at seams the pieces themselves cannot see,
+// so it joins as it goes instead of rescanning the result.
+void append_joined(std::string& out, const std::string& add) {
+    if (out.size() >= 3 && add.size() >= 3 &&
+        high_surrogate_at(out, out.size() - 3) && low_surrogate_at(add, 0)) {
+        uint32_t hi = surrogate_at(out.data() + out.size() - 3);
+        out.resize(out.size() - 3);
+        append_pair(out, hi, surrogate_at(add.data()));
+        out.append(add, 3, std::string::npos);
+        return;
+    }
+    out += add;
+}
+
+}  // namespace
 
 void String::gc_trace(Visitor& v) const {
     if (!is_cons_) return;
@@ -28,18 +104,22 @@ void String::operator delete(void* p) noexcept {
 
 
 String::String(const std::string& str) : data_(str) {
+    canonicalize_pairs(data_);
     calculate_hash();
 }
 
 String::String(std::string&& str) noexcept : data_(std::move(str)) {
+    canonicalize_pairs(data_);
     calculate_hash();
 }
 
 String::String(std::string_view sv) : data_(sv) {
+    canonicalize_pairs(data_);
     calculate_hash();
 }
 
 String::String(const char* str) : data_(str ? str : "") {
+    canonicalize_pairs(data_);
     calculate_hash();
 }
 
@@ -81,7 +161,7 @@ void String::collect_bytes(const String* node, std::string& out) {
         const String* n = pending.back();
         pending.pop_back();
         if (!n->is_cons_ || n->flat_) {
-            out.append(n->data_);
+            append_joined(out, n->data_);
         } else {
             // Right first: the stack pops left first, preserving order.
             pending.push_back(n->right_);
@@ -170,6 +250,43 @@ size_t String::byte_pos(size_t index) const {
     const std::string& s = str();
     if (is_ascii()) return index < s.size() ? index : s.size();
     return utf16_index_to_byte_pos(s, index);
+}
+
+std::string String::substring_utf16(size_t start, size_t end) const {
+    const std::string& s = str();
+    if (end <= start) return std::string();
+    // Single-byte text has no pairs to split and no multi-byte sequences, so a
+    // UTF-16 range is a byte range.
+    if (is_ascii()) {
+        size_t b = std::min(start, s.size());
+        size_t e = std::min(end, s.size());
+        return e > b ? s.substr(b, e - b) : std::string();
+    }
+    auto append_lone = [](std::string& out, uint32_t unit) {
+        out += static_cast<char>(0xE0 | (unit >> 12));
+        out += static_cast<char>(0x80 | ((unit >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (unit & 0x3F));
+    };
+    std::string out;
+    size_t units = 0, pos = 0;
+    while (pos < s.size() && units < end) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        if (cp <= 0xFFFF) {
+            if (units >= start) out.append(s, pos, len);
+            units += 1;
+        } else {
+            uint32_t v = cp - 0x10000;
+            bool take_hi = units >= start && units < end;
+            bool take_lo = units + 1 >= start && units + 1 < end;
+            if (take_hi && take_lo) out.append(s, pos, len);
+            else if (take_hi) append_lone(out, 0xD800 + (v >> 10));
+            else if (take_lo) append_lone(out, 0xDC00 + (v & 0x3FF));
+            units += 2;
+        }
+        pos += len;
+    }
+    return out;
 }
 
 size_t utf16_length(const std::string& s) {

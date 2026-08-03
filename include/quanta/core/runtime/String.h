@@ -82,6 +82,11 @@ public:
     [[nodiscard]] int32_t code_unit_at(size_t index) const;
     // Byte offset of UTF-16 index `index`, clamped to the end.
     [[nodiscard]] size_t byte_pos(size_t index) const;
+    // The bytes for UTF-16 code units [start, end). A boundary may fall
+    // BETWEEN the halves of a surrogate pair -- `"\u{1F4A9}".slice(0, 1)` is
+    // the leading surrogate alone -- which no byte offset can express, so this
+    // emits the lone half rather than mapping to a position and cutting there.
+    [[nodiscard]] std::string substring_utf16(size_t start, size_t end) const;
 
     bool operator==(const String& other) const noexcept;
     bool operator!=(const String& other) const noexcept { return !(*this == other); }

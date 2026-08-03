@@ -1426,10 +1426,15 @@ void register_string_builtins(Context& ctx) {
             else end = std::min(end, utf16len);
 
             if (start >= end) return Value(std::string(""));
-            size_t byte_start = self ? self->byte_pos(static_cast<size_t>(start))
-                                     : utf16_index_to_byte_pos(str, static_cast<size_t>(start));
-            size_t byte_end = self ? self->byte_pos(static_cast<size_t>(end))
-                                   : utf16_index_to_byte_pos(str, static_cast<size_t>(end));
+            if (self) {
+                // Not a byte range: an endpoint may land between the halves of
+                // a surrogate pair, which substring_utf16 answers with the lone
+                // half rather than a position it cannot express.
+                return Value(self->substring_utf16(static_cast<size_t>(start),
+                                                   static_cast<size_t>(end)));
+            }
+            size_t byte_start = utf16_index_to_byte_pos(str, static_cast<size_t>(start));
+            size_t byte_end = utf16_index_to_byte_pos(str, static_cast<size_t>(end));
             return Value(str.substr(byte_start, byte_end - byte_start));
         }, 2);
     PropertyDescriptor str_slice_desc(Value(str_slice_fn.release()),
