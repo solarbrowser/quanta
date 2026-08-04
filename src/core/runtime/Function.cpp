@@ -1585,6 +1585,13 @@ std::string Function::to_string() const {
         display_name = "[Symbol." + display_name.substr(2) + "]";
     }
     if (is_native_) {
+        // A bound function's NativeFunction text carries no name. The spec
+        // leaves the string implementation-defined, but real code compares it
+        // against what every other engine prints, and ours was leaking the
+        // "bound <target>" name that bind() puts on the function.
+        if (has_internal_slot("__bound_target__")) {
+            return "function () { [native code] }";
+        }
         return "function " + display_name + "() { [native code] }";
     }
     const std::string& src = get_source_text();
