@@ -355,6 +355,23 @@ __attribute__((no_sanitize("address")))
 // memory is live. See Heap::retune_budget's caller.
 thread_local size_t g_scanned_words = 0;
 
+// A conservative scanner reads whole stack ranges on purpose, redzones and
+// all, and ASan flags every such read -- which buried every other report this
+// binary could have produced. The reads are in-bounds for the stack itself;
+// what ASan objects to is the poisoning it put between frames.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define QUANTA_NO_ASAN __attribute__((no_sanitize("address")))
+#  endif
+#endif
+#if !defined(QUANTA_NO_ASAN) && defined(__SANITIZE_ADDRESS__)
+#  define QUANTA_NO_ASAN __attribute__((no_sanitize("address")))
+#endif
+#ifndef QUANTA_NO_ASAN
+#  define QUANTA_NO_ASAN
+#endif
+
+QUANTA_NO_ASAN
 void scan_range(MarkVisitor& v, const void* lo, const void* hi) {
     auto a = (reinterpret_cast<uintptr_t>(lo) + sizeof(uint64_t) - 1) & ~(sizeof(uint64_t) - 1);
     auto b = reinterpret_cast<uintptr_t>(hi) & ~(sizeof(uint64_t) - 1);
