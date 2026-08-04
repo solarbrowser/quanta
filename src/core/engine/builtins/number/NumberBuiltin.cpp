@@ -240,16 +240,78 @@ void register_number_builtins(Context& ctx) {
                 bool negative = num < 0;
                 if (negative) num = -num;
 
-                int64_t int_part = static_cast<int64_t>(num);
+                auto digit_char = [](int d) {
+                    return d < 10 ? char('0' + d) : char('a' + d - 10);
+                };
+
                 std::string result;
-                if (int_part == 0) {
+                double whole = std::floor(num);
+                if (whole == 0.0) {
                     result = "0";
-                } else {
+                } else if (whole < 9.2e18) {
+                    int64_t int_part = static_cast<int64_t>(whole);
                     while (int_part > 0) {
-                        int digit = int_part % radix;
-                        result = (digit < 10 ? char('0' + digit) : char('a' + digit - 10)) + result;
+                        int digit = static_cast<int>(int_part % radix);
+                        result = digit_char(digit) + result;
                         int_part /= radix;
                     }
+                } else {
+                    // Past int64 the cast is undefined and produced no digits at
+                    // all, so (1e21).toString(16) came back empty. Divide in
+                    // doubles instead; a value this large has no low bits left
+                    // to lose anyway.
+                    while (whole >= 1.0) {
+                        double q = std::floor(whole / radix);
+                        result = digit_char(static_cast<int>(whole - q * radix)) + result;
+                        whole = q;
+                    }
+                }
+
+                // The fraction was simply dropped, so (255.5).toString(16) came
+                // back "ff". Digits are emitted until what is left falls below
+                // the spacing between this double and its neighbour -- past that
+                // point they would describe a precision the value does not have.
+                double frac = num - std::floor(num);
+                double delta = std::max(std::nextafter(0.0, 1.0),
+                                        0.5 * (std::nextafter(num, HUGE_VAL) - num));
+                if (frac >= delta) {
+                    std::string fraction;
+                    bool round_up = false;
+                    do {
+                        frac *= radix;
+                        delta *= radix;
+                        int digit = static_cast<int>(frac);
+                        frac -= digit;
+                        fraction += digit_char(digit);
+                        // Halfway goes to even, matching the integer path's own
+                        // rounding and what every other engine prints.
+                        if (frac > 0.5 || (frac == 0.5 && (digit & 1))) {
+                            if (frac + delta > 1.0) { round_up = true; break; }
+                        }
+                    } while (frac >= delta);
+
+                    if (round_up) {
+                        // Carry walks back through the fraction and, if it runs
+                        // off the front, on into the integer digits.
+                        size_t i = fraction.size();
+                        while (i > 0) {
+                            char& c = fraction[--i];
+                            int d = (c <= '9' ? c - '0' : c - 'a' + 10) + 1;
+                            if (d < radix) { c = digit_char(d); break; }
+                            fraction.erase(i, 1);
+                            if (i == 0) {
+                                size_t j = result.size();
+                                while (j > 0) {
+                                    char& ic = result[--j];
+                                    int id = (ic <= '9' ? ic - '0' : ic - 'a' + 10) + 1;
+                                    if (id < radix) { ic = digit_char(id); break; }
+                                    ic = '0';
+                                    if (j == 0) { result.insert(result.begin(), '1'); break; }
+                                }
+                            }
+                        }
+                    }
+                    if (!fraction.empty()) result += "." + fraction;
                 }
 
                 if (negative) result = "-" + result;

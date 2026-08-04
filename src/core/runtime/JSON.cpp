@@ -1127,10 +1127,12 @@ std::string JSON::Stringifier::stringify_string(const std::string& str) {
 }
 
 std::string JSON::Stringifier::stringify_number(double num) {
-    if (num == 0.0) return "0";
-    std::ostringstream oss;
-    oss << num;
-    return oss.str();
+    // JSON's number text IS ToString(Number) -- same digits, same rules. A
+    // default ostringstream is neither: it keeps six significant digits and
+    // reaches for scientific notation early, so 0.1 + 0.2 serialised as "0.3"
+    // and 2**53 as "9.0072e+15", neither of which reads back as the number
+    // that went in. The engine already has the right conversion.
+    return Value(num).to_string();
 }
 
 std::string JSON::Stringifier::stringify_boolean(bool value) {
