@@ -95,14 +95,31 @@ BlockAllocator::~BlockAllocator() {
 }
 
 void BlockAllocator::grow() {
-    // Windows: VirtualAlloc instead of aligned_alloc -- decommit_idle_chunks
-    // below needs a genuine VirtualAlloc'd region to hand pages back via
-    // DiscardVirtualMemory. Naturally aligned well past kBlockSize (Windows'
-    // allocation granularity is 64KB).
+    // Chunks come straight from the OS on both platforms, because
+    // decommit_idle_chunks hands their pages back and that is only safe on
+    // memory this process owns outright. aligned_alloc here meant malloc still
+    // owned the range and kept its own bookkeeping inside it, so discarding
+    // those pages zeroed the allocator's records and later corrupted unrelated
+    // allocations -- a fault that surfaced far from here, in whatever touched
+    // malloc next. Windows already did the right thing via VirtualAlloc.
 #ifdef _WIN32
     void* chunk = VirtualAlloc(nullptr, kChunkSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
-    void* chunk = std::aligned_alloc(HeapBlock::kBlockSize, kChunkSize);
+    // mmap gives no alignment guarantee beyond a page, so reserve one extra
+    // block's worth and give back whatever falls outside the aligned chunk.
+    size_t span = kChunkSize + HeapBlock::kBlockSize;
+    void* raw = mmap(nullptr, span, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* chunk = nullptr;
+    if (raw != MAP_FAILED) {
+        uintptr_t base = reinterpret_cast<uintptr_t>(raw);
+        uintptr_t aligned = (base + HeapBlock::kBlockSize - 1) & ~(HeapBlock::kBlockSize - 1);
+        if (aligned > base) munmap(raw, aligned - base);
+        uintptr_t tail = aligned + kChunkSize;
+        uintptr_t span_end = base + span;
+        if (span_end > tail) munmap(reinterpret_cast<void*>(tail), span_end - tail);
+        chunk = reinterpret_cast<void*>(aligned);
+    }
 #endif
     if (!chunk) std::abort();  // OOM on chunk map: no sane recovery path
     chunks_.push_back(chunk);
