@@ -1929,6 +1929,15 @@ std::unique_ptr<ASTNode> Parser::parse_super_expression() {
     return std::make_unique<Identifier>("super", start, end);
 }
 
+// The lexer stands a literal `${` (written `\${`) aside as this byte so the
+// split below does not mistake it for a substitution; it becomes a `$` again in
+// the text the program sees. See Lexer::read_template_literal.
+static constexpr char kEscapedDollar = '\x02';
+
+static void restore_escaped_dollars(std::string& s) {
+    for (char& c : s) if (c == kEscapedDollar) c = '$';
+}
+
 // Helper: extract text parts from a template string by splitting on ${...} markers
 static std::vector<std::string> extract_template_text_parts(const std::string& str) {
     std::vector<std::string> parts;
@@ -1949,6 +1958,7 @@ static std::vector<std::string> extract_template_text_parts(const std::string& s
         }
         pos = i;
     }
+    for (auto& part : parts) restore_escaped_dollars(part);
     return parts;
 }
 

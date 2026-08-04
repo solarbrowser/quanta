@@ -684,6 +684,9 @@ Token Lexer::read_string(char quote) {
     return tok;
 }
 
+// A `$` that came from `\$` and is followed by `{`. See read_template_literal.
+static constexpr char kEscapedDollar = '\x02';
+
 Token Lexer::read_template_literal() {
     Position start = current_position_;
     advance();
@@ -731,12 +734,24 @@ Token Lexer::read_template_literal() {
                     normalized_piece += raw_piece[i];
                 }
             }
+            // `\${` is a literal dollar-brace, not a substitution. Both the
+            // cooked and the raw strings carry text segments and expression
+            // markers in one buffer, using a plain `${` as the marker, so an
+            // escaped one cooked to `${` was indistinguishable from a real
+            // substitution and got evaluated -- in the ENCLOSING scope, which
+            // is why the name inside it read as undefined. Stand it aside as a
+            // sentinel (the same trick the invalid-segment \x01 already uses)
+            // and put the dollar back after the split.
+            bool literal_dollar_brace = cooked_char == "$" && !at_end() && current_char() == '{';
+            if (literal_dollar_brace) {
+                normalized_piece.back() = kEscapedDollar;  // raw keeps its backslash
+            }
             full_raw += normalized_piece;
             if (errors_.size() > error_count_before) {
                 errors_.resize(error_count_before);
                 seg_valid = false;
             } else if (seg_valid) {
-                seg_cooked += cooked_char;
+                seg_cooked += literal_dollar_brace ? std::string(1, kEscapedDollar) : cooked_char;
             }
         } else if (current_char() == '\r') {
             // ES6: Normalize CR and CRLF to LF in template literals
