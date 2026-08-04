@@ -3568,7 +3568,23 @@ int BytecodeCompiler::setup_loop_env(std::vector<BytecodeChunk::LoopEnvVar> extr
     if (!env_mode_) return -1;
     std::vector<BytecodeChunk::LoopEnvVar> vars = std::move(extra_vars);
     bool needs_own_env = force_own_env;
-    if (!collect_direct_lexical_decls(body, vars, needs_own_env)) return -1;
+    // A block body declares its own lexicals in its OWN environment (see the
+    // BLOCK_STATEMENT case), which is entered after the test and left before
+    // the update. Taking them here too put them in the loop's own scope, alive
+    // and in TDZ, while the test and the update run -- and those sit outside
+    // the body, so a name the body shadows still has to mean what it meant
+    // outside:
+    //     const {length: n} = a;
+    //     for (let o = 0; o < n; o++) { const n = a[o]; ... }
+    // resolved `o < n` to the body's uninitialised binding and threw. Only the
+    // flags that scan raises (a class declaration, a destructuring pattern)
+    // still matter here, since they decide whether an env is needed at all.
+    if (body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        std::vector<BytecodeChunk::LoopEnvVar> owned_by_the_block;
+        if (!collect_direct_lexical_decls(body, owned_by_the_block, needs_own_env)) return -1;
+    } else if (!collect_direct_lexical_decls(body, vars, needs_own_env)) {
+        return -1;
+    }
     // Register-resident lexicals get their TDZ re-armed at block entry
     // instead of living in the per-iteration env.
     vars.erase(std::remove_if(vars.begin(), vars.end(),
