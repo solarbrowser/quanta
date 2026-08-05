@@ -2823,6 +2823,34 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     return Value();
                 }
 
+                // Same move as shift, in the other direction, and the same
+                // reason for taking it: the keyed walk below builds two index
+                // strings per element. The gate is push's -- unshift both
+                // reads every index and writes past the end, so the prototype
+                // chain has to be clear and the receiver extensible -- plus
+                // the hole-freeness the move itself needs.
+                const uint32_t n = static_cast<uint32_t>(length);
+                const uint32_t added = static_cast<uint32_t>(argCount);
+                if (dense_fast(this_obj) && length == static_cast<double>(this_obj->element_count()) &&
+                    this_obj->is_extensible() && this_obj->proto_chain_has_no_indices() &&
+                    length + argCount <= 4294967295.0) {
+                    // Grow first: the move needs both ranges inside the store,
+                    // and appending keeps it dense.
+                    for (uint32_t k = 0; k < added; k++) {
+                        this_obj->set_element(n + k, Value());
+                        if (ctx.has_exception()) return Value();
+                    }
+                    this_obj->move_elements(added, 0, n);
+                    for (uint32_t k = 0; k < added; k++) {
+                        this_obj->set_element(k, args[k]);
+                        if (ctx.has_exception()) return Value();
+                    }
+                    bool len_ok = this_obj->set_property("length", Value(length + argCount));
+                    if (ctx.has_exception()) return Value();
+                    if (!len_ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+                    return Value(length + argCount);
+                }
+
                 for (double i = length - 1; i >= 0; i--) {
                     std::string from_key = Value(i).to_string();
                     std::string to_key = Value(i + argCount).to_string();
