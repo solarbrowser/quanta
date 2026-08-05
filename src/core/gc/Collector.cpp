@@ -549,23 +549,36 @@ std::vector<Environment*>& pending_env_frees() {
     return envs;
 }
 
-void flush_pending_env_frees() {
+
+// A pending environment may only be destroyed on the authority of a COMPLETED
+// MAJOR MARK. Entry into this list is decided by is_escaped() at scope-exit
+// time, which is a static guess about whether anything captured the
+// environment -- and a closure can hold one the guess missed (Function's
+// constructors take closure_environment_ without pinning it). Deleting on that
+// guess alone left live functions pointing at freed memory. Anything the mark
+// reached stays pending; it will be offered again next cycle, and destroyed
+// only once a mark agrees nobody can see it.
+void resolve_pending_env_frees(const MarkVisitor& v) {
     auto& pending = pending_env_frees();
     if (pending.empty()) return;
-    // Pooled: this set is rebuilt from scratch on every flush (every
-    // completed GC cycle, or every 8192 pending frees mid-cycle) -- a real,
-    // measured malloc source (SmallMapPool.h's other consumers already
-    // route through the same pool for exactly this "small map rebuilt
-    // often" pattern).
+    std::vector<Environment*> still_reachable;
+    std::vector<Environment*> unreachable;
+    still_reachable.reserve(pending.size());
+    unreachable.reserve(pending.size());
+    for (Environment* e : pending) {
+        if (v.environment_seen(e)) still_reachable.push_back(e);
+        else unreachable.push_back(e);
+    }
     std::unordered_set<Environment*, std::hash<Environment*>, std::equal_to<Environment*>,
-                        SmallMapAllocator<Environment*>> dead(pending.begin(), pending.end());
+                        SmallMapAllocator<Environment*>> dead(unreachable.begin(), unreachable.end());
     auto& rem = remembered_envs();
     rem.erase(std::remove_if(rem.begin(), rem.end(),
                              [&](Environment* e) { return dead.count(e) > 0; }),
               rem.end());
-    for (Environment* e : pending) delete e;
-    pending.clear();
+    for (Environment* e : unreachable) delete e;
+    pending = std::move(still_reachable);
 }
+
 
 bool env_flag(const char* name) {
     const char* val = std::getenv(name);
@@ -767,9 +780,10 @@ void run_minor_collection() {
     remembered_cells().clear();
     for (Environment* e : remembered_envs()) e->gc_remembered_ = false;
     remembered_envs().clear();
-    // Remembered set is empty now, so popped block envs have no remaining referents.
-    for (Environment* e : pending_env_frees()) delete e;
-    pending_env_frees().clear();
+    // Deliberately NOT freeing pending envs here: a minor traces from the roots
+    // only, so its seen_ set cannot tell a dead environment from one this cycle
+    // simply never looked at. The next completed major decides.
+    (void)0;
 
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {
@@ -883,8 +897,7 @@ void finish_major_cycle(MarkVisitor& v) {
     remembered_cells().clear();
     for (Environment* e : remembered_envs()) e->gc_remembered_ = false;
     remembered_envs().clear();
-    for (Environment* e : pending_env_frees()) delete e;
-    pending_env_frees().clear();
+    resolve_pending_env_frees(v);
 
     // Escaped-Environment survivor prune, mirroring the Context-survivor
     // loop above -- must run after the remembered-set cleanup and
@@ -1110,11 +1123,10 @@ void Collector::release_env(Environment* env) {
     if (!env) return;
     auto& pending = pending_env_frees();
     pending.push_back(env);
-    // Never flush while a major is open: the mark visitor's cycle state may
-    // still hold these addresses, and freeing one lets the allocator hand
-    // the address to a new environment the dedup would then mistake for an
-    // already-traced one. The cycle's own cleanup frees them instead.
-    if (pending.size() >= 8192 && !major_in_progress()) flush_pending_env_frees();
+    // Nothing is freed here. Whether an environment on this list is really
+    // dead is a question only a completed major mark can answer -- see
+    // resolve_pending_env_frees, which is the one place entries leave.
+    (void)pending;
 }
 
 void Collector::safepoint_slow() {
