@@ -558,24 +558,20 @@ std::vector<Environment*>& pending_env_frees() {
 // guess alone left live functions pointing at freed memory. Anything the mark
 // reached stays pending; it will be offered again next cycle, and destroyed
 // only once a mark agrees nobody can see it.
+//
+// The remembered set needs no pruning here even though it holds environment
+// pointers: the sole caller empties it on the line above this call, so no
+// entry can outlive the deletes below. Screening the dead against it used to
+// build a hash set of every environment about to be freed, on every cycle,
+// to filter a list that is empty by construction.
 void resolve_pending_env_frees(const MarkVisitor& v) {
     auto& pending = pending_env_frees();
     if (pending.empty()) return;
     std::vector<Environment*> still_reachable;
-    std::vector<Environment*> unreachable;
-    still_reachable.reserve(pending.size());
-    unreachable.reserve(pending.size());
     for (Environment* e : pending) {
         if (v.environment_seen(e)) still_reachable.push_back(e);
-        else unreachable.push_back(e);
+        else delete e;
     }
-    std::unordered_set<Environment*, std::hash<Environment*>, std::equal_to<Environment*>,
-                        SmallMapAllocator<Environment*>> dead(unreachable.begin(), unreachable.end());
-    auto& rem = remembered_envs();
-    rem.erase(std::remove_if(rem.begin(), rem.end(),
-                             [&](Environment* e) { return dead.count(e) > 0; }),
-              rem.end());
-    for (Environment* e : unreachable) delete e;
     pending = std::move(still_reachable);
 }
 
@@ -1078,7 +1074,15 @@ Collector::SliceResult Collector::mark_step(std::chrono::microseconds budget) {
         return SliceResult::CycleComplete;
     }
     auto deadline = std::chrono::steady_clock::now() + budget;
+    // step() traces a single cell, so checking the deadline after each one read
+    // the clock once per cell and made the read itself a visible share of the
+    // mark. A slice budget needs nothing like that resolution: check on a
+    // stride, which costs at most a stride's worth of overrun.
+    constexpr int kDeadlineStride = 128;
+    int until_check = kDeadlineStride;
     while (v.step()) {
+        if (--until_check > 0) continue;
+        until_check = kDeadlineStride;
         if (std::chrono::steady_clock::now() >= deadline) {
             // Never yield with context/environment work pending -- see
             // drain_contexts_and_environments on why that's unsafe.
