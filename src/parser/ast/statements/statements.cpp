@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <sstream>
 #include <iostream>
+#include <optional>
 #include <unordered_set>
 
 #ifdef __GNUC__
@@ -39,6 +40,44 @@ namespace Quanta {
 // Cleared by statements that produce real completions (ExpressionStatement, etc.).
 // BlockStatement and Program use this to implement UpdateEmpty.
 thread_local bool g_empty_completion = false;
+
+// Installs a lexical environment for the length of a statement and hands it
+// back on every exit, including an exception. The handback matches
+// Context::pop_block_scope: an escaped environment is a survivor the collector
+// still has to walk, an unescaped one is dead the moment its statement is done
+// with it. Statements that build an environment by hand have to use this --
+// restoring the previous pointer is not enough, the replacement leaks.
+namespace {
+
+class ScopedLexicalEnv {
+public:
+    ScopedLexicalEnv(Context& ctx, Environment* fresh)
+        : ctx_(ctx), saved_(ctx.get_lexical_environment()), fresh_(fresh) {
+        if (fresh_) ctx_.set_lexical_environment(fresh_);
+    }
+
+    ~ScopedLexicalEnv() { release(); }
+
+    ScopedLexicalEnv(const ScopedLexicalEnv&) = delete;
+    ScopedLexicalEnv& operator=(const ScopedLexicalEnv&) = delete;
+
+    Environment* get() const { return fresh_; }
+
+    void release() {
+        if (!fresh_) return;
+        ctx_.set_lexical_environment(saved_);
+        if (!fresh_->is_escaped()) Collector::release_env(fresh_);
+        else if (Engine* eng = ctx_.get_engine()) eng->add_survivor_environment(fresh_);
+        fresh_ = nullptr;
+    }
+
+private:
+    Context& ctx_;
+    Environment* saved_;
+    Environment* fresh_;
+};
+
+}  // namespace
 
 static bool is_anon_func_def(const ASTNode* node) {
     if (!node) return false;
@@ -1143,16 +1182,15 @@ Value ForInStatement::evaluate(Context& ctx) {
     ctx.set_current_loop_label(this_loop_label);
 
     // ES6 13.7.5.6: TDZ bindings for let/const before evaluating the object
-    Environment* pre_obj_env = nullptr;
+    std::optional<ScopedLexicalEnv> tdz_scope;
     if (left_->get_type() == Type::VARIABLE_DECLARATION) {
         auto* vd = static_cast<VariableDeclaration*>(left_.get());
         auto kind = (vd->declaration_count() > 0) ? vd->get_declarations()[0]->get_kind()
                                                    : VariableDeclarator::Kind::VAR;
         if (kind == VariableDeclarator::Kind::LET || kind == VariableDeclarator::Kind::CONST) {
-            pre_obj_env = ctx.get_lexical_environment();
-            auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_obj_env);
-            Environment* tdz_ptr = tdz_env.release();
-            ctx.set_lexical_environment(tdz_ptr);
+            tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
+                                                   ctx.get_lexical_environment()));
+            Environment* tdz_ptr = tdz_scope->get();
             for (size_t di = 0; di < vd->declaration_count(); di++) {
                 const auto& decl = vd->get_declarations()[di];
                 if (decl->get_id()) tdz_ptr->create_uninitialized_binding(decl->get_id()->get_name());
@@ -1175,17 +1213,15 @@ Value ForInStatement::evaluate(Context& ctx) {
                (left_decl_kind_ == 1 || left_decl_kind_ == 2)) {
         // for (let/const [x, y] in obj) -- TDZ for bound names during object evaluation
         auto* da = static_cast<DestructuringAssignment*>(left_.get());
-        pre_obj_env = ctx.get_lexical_environment();
-        auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_obj_env);
-        Environment* tdz_ptr = tdz_env.release();
-        ctx.set_lexical_environment(tdz_ptr);
+        tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
+                                               ctx.get_lexical_environment()));
         std::vector<std::string> bound;
         da->collect_bound_names(bound);
-        for (const auto& bname : bound) tdz_ptr->create_uninitialized_binding(bname);
+        for (const auto& bname : bound) tdz_scope->get()->create_uninitialized_binding(bname);
     }
 
     Value object = right_->evaluate(ctx);
-    if (pre_obj_env) ctx.set_lexical_environment(pre_obj_env);
+    tdz_scope.reset();
     if (ctx.has_exception()) {
         ctx.set_current_loop_label(prev_loop_label);
         return Value();
@@ -1510,16 +1546,15 @@ Value ForOfStatement::evaluate(Context& ctx) {
     // ES6 13.7.5.6: ForDeclaration bound names are in TDZ when the iterable is evaluated.
     // Create a block scope with TDZ bindings before evaluating the iterable so that
     // `for (const x of [x])` sees x as TDZ, not any outer x.
-    Environment* pre_iter_env = nullptr;
+    std::optional<ScopedLexicalEnv> tdz_scope;
     if (left_->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
         auto* vd = static_cast<VariableDeclaration*>(left_.get());
         if (vd->declaration_count() > 0 &&
                 (vd->get_declarations()[0]->get_kind() == VariableDeclarator::Kind::LET ||
                  vd->get_declarations()[0]->get_kind() == VariableDeclarator::Kind::CONST)) {
-            pre_iter_env = ctx.get_lexical_environment();
-            auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_iter_env);
-            Environment* tdz_ptr = tdz_env.release();
-            ctx.set_lexical_environment(tdz_ptr);
+            tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
+                                                   ctx.get_lexical_environment()));
+            Environment* tdz_ptr = tdz_scope->get();
             for (size_t di = 0; di < vd->declaration_count(); di++) {
                 const auto& decl = vd->get_declarations()[di];
                 if (decl->get_id()) {
@@ -1533,30 +1568,23 @@ Value ForOfStatement::evaluate(Context& ctx) {
                (left_decl_kind_ == 1 || left_decl_kind_ == 2)) {
         // for (let/const [x, y] of ...) -- TDZ for bound names during iterable evaluation
         auto* da = static_cast<DestructuringAssignment*>(left_.get());
-        pre_iter_env = ctx.get_lexical_environment();
-        auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_iter_env);
-        Environment* tdz_ptr = tdz_env.release();
-        ctx.set_lexical_environment(tdz_ptr);
+        tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
+                                               ctx.get_lexical_environment()));
         std::vector<std::string> bound;
         da->collect_bound_names(bound);
-        for (const auto& bname : bound) tdz_ptr->create_uninitialized_binding(bname);
+        for (const auto& bname : bound) tdz_scope->get()->create_uninitialized_binding(bname);
     } else if (left_->get_type() == ASTNode::Type::USING_DECLARATION) {
         auto* ud = static_cast<UsingDeclaration*>(left_.get());
-        pre_iter_env = ctx.get_lexical_environment();
-        auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_iter_env);
-        Environment* tdz_ptr = tdz_env.release();
-        ctx.set_lexical_environment(tdz_ptr);
+        tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
+                                               ctx.get_lexical_environment()));
         for (const auto& b : ud->get_bindings())
-            if (!b.name.empty()) tdz_ptr->create_uninitialized_binding(b.name);
+            if (!b.name.empty()) tdz_scope->get()->create_uninitialized_binding(b.name);
     }
 
     Value iterable = right_->evaluate(ctx);
-    if (ctx.has_exception()) {
-        if (pre_iter_env) ctx.set_lexical_environment(pre_iter_env);
-        return Value();
-    }
     // Restore outer env -- the loop body will re-create the binding per iteration
-    if (pre_iter_env) ctx.set_lexical_environment(pre_iter_env);
+    tdz_scope.reset();
+    if (ctx.has_exception()) return Value();
 
     if (is_await_) {
         // AsyncExecutor::current_ is thread-local and survives AsyncGenerator::enter_fiber's mco_resume, so it can still point at an unrelated outer exec -- check the async-generator fiber first to avoid yielding into the wrong coroutine.
@@ -3203,10 +3231,9 @@ Value SwitchStatement::evaluate(Context& ctx) {
     if (ctx.has_exception()) return Value();
 
     // Create block environment for switch (spec sec-switch-statement step 3-6)
-    Environment* old_env = ctx.get_lexical_environment();
-    auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_env);
-    Environment* block_env_ptr = block_env.release();
-    ctx.set_lexical_environment(block_env_ptr);
+    ScopedLexicalEnv block_scope(
+        ctx, new Environment(Environment::Type::Declarative, ctx.get_lexical_environment()));
+    Environment* block_env_ptr = block_scope.get();
     for (const auto& c : cases_) {
         hoist_lexical_declarations(block_env_ptr,
                                     static_cast<CaseClause*>(c.get())->get_consequent());
@@ -3222,7 +3249,7 @@ Value SwitchStatement::evaluate(Context& ctx) {
             default_case_index = static_cast<int>(i);
         } else {
             Value test_value = case_clause->get_test()->evaluate(ctx);
-            if (ctx.has_exception()) { ctx.set_lexical_environment(old_env); return Value(); }
+            if (ctx.has_exception()) return Value();
 
             if (discriminant_value.strict_equals(test_value)) {
                 matching_case_index = static_cast<int>(i);
@@ -3238,10 +3265,7 @@ Value SwitchStatement::evaluate(Context& ctx) {
         start_index = default_case_index;
     }
 
-    if (start_index < 0) {
-        ctx.set_lexical_environment(old_env);
-        return Value();
-    }
+    if (start_index < 0) return Value();
 
     Value V;
 
@@ -3251,7 +3275,7 @@ Value SwitchStatement::evaluate(Context& ctx) {
         for (const auto& stmt : case_clause->get_consequent()) {
             Value result = stmt->evaluate(ctx);
             if (!g_empty_completion) V = result;
-            if (ctx.has_exception()) { ctx.set_lexical_environment(old_env); return Value(); }
+            if (ctx.has_exception()) return Value();
 
             if (ctx.has_break()) {
                 // Only a break targeting this switch itself (unlabeled, or
@@ -3261,25 +3285,19 @@ Value SwitchStatement::evaluate(Context& ctx) {
                     ctx.clear_break_continue();
                 }
                 g_empty_completion = false;
-                ctx.set_lexical_environment(old_env);
                 return V;
             }
 
-            if (ctx.has_return_value()) {
-                ctx.set_lexical_environment(old_env);
-                return ctx.get_return_value();
-            }
+            if (ctx.has_return_value()) return ctx.get_return_value();
 
             if (ctx.has_continue()) {
                 g_empty_completion = false;
-                ctx.set_lexical_environment(old_env);
                 return V;
             }
         }
     }
 
     g_empty_completion = false;
-    ctx.set_lexical_environment(old_env);
     return V;
 }
 
