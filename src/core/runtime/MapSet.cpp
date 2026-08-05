@@ -12,7 +12,11 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/parser/AST.h"
+#include "quanta/core/runtime/String.h"
+#include "quanta/core/runtime/BigInt.h"
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <iostream>
 
 namespace Quanta {
@@ -97,7 +101,53 @@ thread_local Object* WeakRef::prototype_object = nullptr;
 thread_local Object* FinalizationRegistry::prototype_object = nullptr;
 
 
+
+// SameValueZero hashing for Map and Set keys. The equality below must agree
+// with it on every pair, so the two are written together: NaN collapses to one
+// key, -0 and +0 are the same key, and strings hash by content because two
+// distinct String objects with equal text are the same key.
+size_t SameValueZeroHash::operator()(const Value& v) const {
+    if (v.is_number()) {
+        double d = v.as_number();
+        if (std::isnan(d)) return 0x9e3779b97f4a7c15ull;
+        if (d == 0.0) d = 0.0;  // drops the sign bit of -0
+        uint64_t bits;
+        std::memcpy(&bits, &d, sizeof bits);
+        return std::hash<uint64_t>{}(bits);
+    }
+    if (v.is_string()) return v.as_string()->hash();
+    if (v.is_boolean()) return v.as_boolean() ? 0x1u : 0x2u;
+    if (v.is_undefined()) return 0x3u;
+    if (v.is_null()) return 0x4u;
+    // BigInt compares by numeric value, not identity, so it cannot be hashed
+    // by pointer. One shared bucket keeps it correct; a map keyed entirely on
+    // BigInts falls back to the scan it had before.
+    if (v.is_bigint()) return 0x5u;
+    // Objects, functions and symbols are keyed by identity.
+    return std::hash<const void*>{}(v.is_symbol()   ? static_cast<const void*>(v.as_symbol())
+                                    : v.is_function() ? static_cast<const void*>(v.as_function())
+                                                      : static_cast<const void*>(v.as_object()));
+}
+
+bool SameValueZeroEqual::operator()(const Value& a, const Value& b) const {
+    if (a.is_number() && b.is_number()) {
+        double x = a.as_number(), y = b.as_number();
+        if (std::isnan(x) && std::isnan(y)) return true;
+        return x == y;  // +0 == -0, which is what SameValueZero wants
+    }
+    return a.strict_equals(b);
+}
+
 Map::Map() : Object(ObjectType::Map), size_(0) {
+}
+
+void Map::build_index() {
+    index_.clear();
+    index_.reserve(entries_.size() * 2);
+    for (uint32_t i = 0; i < entries_.size(); i++) {
+        if (!entries_[i].deleted) index_.emplace(entries_[i].key, i);
+    }
+    indexed_ = true;
 }
 
 bool Map::has(const Value& key) const {
@@ -112,30 +162,36 @@ Value Map::get(const Value& key) const {
     return Value();
 }
 
-void Map::set(const Value& key, const Value& value) {
+void Map::set(const Value& raw_key, const Value& value) {
     Collector::write_barrier(this);
+    // A -0 key is stored as +0 (spec Map.prototype.set step 6): the two are the
+    // same key, and this is the one the iterators hand back.
+    const Value key = (raw_key.is_number() && raw_key.as_number() == 0.0) ? Value(0.0) : raw_key;
     auto it = find_entry(key);
     if (it != entries_.end()) {
         it->value = value;
-    } else {
-        entries_.emplace_back(key, value);
-        size_++;
+        return;
     }
+    entries_.emplace_back(key, value);
+    size_++;
+    if (indexed_) index_.emplace(key, static_cast<uint32_t>(entries_.size() - 1));
+    else if (entries_.size() > kLinearLimit) build_index();
 }
 
 bool Map::delete_key(const Value& key) {
     auto it = find_entry(key);
-    if (it != entries_.end()) {
-        // Soft-delete (don't erase) so live forEach iteration (by index) keeps stable positions.
-        it->deleted = true;
-        size_--;
-        return true;
-    }
-    return false;
+    if (it == entries_.end()) return false;
+    // Soft-delete (don't erase) so live forEach iteration (by index) keeps stable positions.
+    it->deleted = true;
+    if (indexed_) index_.erase(key);
+    size_--;
+    return true;
 }
 
 void Map::clear() {
     entries_.clear();
+    index_.clear();
+    indexed_ = false;
     size_ = 0;
 }
 
@@ -173,28 +229,37 @@ std::vector<std::pair<Value, Value>> Map::entries() const {
     return result;
 }
 
+namespace {
+// The scan the index replaces past kLinearLimit. Kept for small collections,
+// where it beats hashing, and it is the only path a const lookup can take
+// before the first mutation builds the index.
+template <typename It, typename Get>
+It scan_for(It begin, It end, const Value& key, Get get) {
+    SameValueZeroEqual eq;
+    for (It it = begin; it != end; ++it) {
+        if (it->deleted) continue;
+        if (eq(get(*it), key)) return it;
+    }
+    return end;
+}
+}
+
 std::vector<Map::MapEntry>::iterator Map::find_entry(const Value& key) {
-    return std::find_if(entries_.begin(), entries_.end(),
-        [&key](const MapEntry& entry) {
-            if (entry.deleted) return false;
-            // SameValueZero: NaN equals NaN, +0 equals -0
-            if (key.is_number() && entry.key.is_number()) {
-                if (std::isnan(key.as_number()) && std::isnan(entry.key.as_number())) return true;
-            }
-            return entry.key.strict_equals(key);
-        });
+    if (indexed_) {
+        auto it = index_.find(key);
+        return it == index_.end() ? entries_.end() : entries_.begin() + it->second;
+    }
+    return scan_for(entries_.begin(), entries_.end(), key,
+                    [](const MapEntry& e) -> const Value& { return e.key; });
 }
 
 std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) const {
-    return std::find_if(entries_.begin(), entries_.end(),
-        [&key](const MapEntry& entry) {
-            if (entry.deleted) return false;
-            // SameValueZero: NaN equals NaN, +0 equals -0
-            if (key.is_number() && entry.key.is_number()) {
-                if (std::isnan(key.as_number()) && std::isnan(entry.key.as_number())) return true;
-            }
-            return entry.key.strict_equals(key);
-        });
+    if (indexed_) {
+        auto it = index_.find(key);
+        return it == index_.end() ? entries_.end() : entries_.begin() + it->second;
+    }
+    return scan_for(entries_.begin(), entries_.end(), key,
+                    [](const MapEntry& e) -> const Value& { return e.key; });
 }
 
 Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
@@ -666,27 +731,40 @@ bool Set::has(const Value& value) const {
     return find_value(value) != values_.end();
 }
 
-void Set::add(const Value& value) {
-    Collector::write_barrier(this);
-    if (find_value(value) == values_.end()) {
-        values_.emplace_back(value);
-        size_++;
+void Set::build_index() {
+    index_.clear();
+    index_.reserve(values_.size() * 2);
+    for (uint32_t i = 0; i < values_.size(); i++) {
+        if (!values_[i].deleted) index_.emplace(values_[i].value, i);
     }
+    indexed_ = true;
+}
+
+void Set::add(const Value& raw_value) {
+    Collector::write_barrier(this);
+    // Same -0 normalisation as Map::set (spec Set.prototype.add step 4).
+    const Value value = (raw_value.is_number() && raw_value.as_number() == 0.0) ? Value(0.0) : raw_value;
+    if (find_value(value) != values_.end()) return;
+    values_.emplace_back(value);
+    size_++;
+    if (indexed_) index_.emplace(value, static_cast<uint32_t>(values_.size() - 1));
+    else if (values_.size() > kLinearLimit) build_index();
 }
 
 bool Set::delete_value(const Value& value) {
     auto it = find_value(value);
-    if (it != values_.end()) {
-        // Soft-delete (don't erase) so live forEach iteration (by index) keeps stable positions.
-        it->deleted = true;
-        size_--;
-        return true;
-    }
-    return false;
+    if (it == values_.end()) return false;
+    // Soft-delete (don't erase) so live forEach iteration (by index) keeps stable positions.
+    it->deleted = true;
+    if (indexed_) index_.erase(value);
+    size_--;
+    return true;
 }
 
 void Set::clear() {
     values_.clear();
+    index_.clear();
+    indexed_ = false;
     size_ = 0;
 }
 
@@ -716,23 +794,21 @@ std::vector<std::pair<Value, Value>> Set::entries() const {
 }
 
 std::vector<Set::SetEntry>::iterator Set::find_value(const Value& value) {
-    return std::find_if(values_.begin(), values_.end(),
-        [&value](const SetEntry& e) {
-            if (e.deleted) return false;
-            const Value& v = e.value;
-            if (value.is_number() && v.is_number() && std::isnan(value.as_number()) && std::isnan(v.as_number())) return true;
-            return v.strict_equals(value);
-        });
+    if (indexed_) {
+        auto it = index_.find(value);
+        return it == index_.end() ? values_.end() : values_.begin() + it->second;
+    }
+    return scan_for(values_.begin(), values_.end(), value,
+                    [](const SetEntry& e) -> const Value& { return e.value; });
 }
 
 std::vector<Set::SetEntry>::const_iterator Set::find_value(const Value& value) const {
-    return std::find_if(values_.begin(), values_.end(),
-        [&value](const SetEntry& e) {
-            if (e.deleted) return false;
-            const Value& v = e.value;
-            if (value.is_number() && v.is_number() && std::isnan(value.as_number()) && std::isnan(v.as_number())) return true;
-            return v.strict_equals(value);
-        });
+    if (indexed_) {
+        auto it = index_.find(value);
+        return it == index_.end() ? values_.end() : values_.begin() + it->second;
+    }
+    return scan_for(values_.begin(), values_.end(), value,
+                    [](const SetEntry& e) -> const Value& { return e.value; });
 }
 
 Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {

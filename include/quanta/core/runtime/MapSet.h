@@ -17,6 +17,12 @@ namespace Quanta {
 
 class Context;
 
+// SameValueZero, the equality Map and Set are both specified with: strict
+// equality except that NaN matches itself and -0 matches +0. Shared by both
+// collections' key indexes.
+struct SameValueZeroHash { size_t operator()(const Value& v) const; };
+struct SameValueZeroEqual { bool operator()(const Value& a, const Value& b) const; };
+
 class Map : public Object {
 private:
     struct MapEntry {
@@ -29,19 +35,17 @@ private:
     
     std::vector<MapEntry> entries_;
     size_t size_;
-    
-    struct ValueHash {
-        size_t operator()(const Value& v) const {
-            return v.hash();
-        }
-    };
-    
-    struct ValueEqual {
-        bool operator()(const Value& a, const Value& b) const {
-            return a.strict_equals(b);
-        }
-    };
-    
+
+    // Key -> position in entries_. Insertion order and stable positions still
+    // come from the vector (a live forEach walks it by index), but every
+    // lookup used to be a scan of it, so building a map was quadratic.
+    // Small maps stay on the scan: below the threshold a contiguous compare
+    // beats hashing the key.
+    std::unordered_map<Value, uint32_t, SameValueZeroHash, SameValueZeroEqual> index_;
+    bool indexed_ = false;
+    static constexpr size_t kLinearLimit = 8;
+    void build_index();
+
 public:
     Map();
     void trace(Visitor& v);
@@ -98,6 +102,13 @@ private:
     };
     std::vector<SetEntry> values_;
     size_t size_;
+
+    // Same arrangement as Map: the vector keeps insertion order and stable
+    // positions, the index makes lookup constant-time past a small size.
+    std::unordered_map<Value, uint32_t, SameValueZeroHash, SameValueZeroEqual> index_;
+    bool indexed_ = false;
+    static constexpr size_t kLinearLimit = 8;
+    void build_index();
 
 public:
     Set();
