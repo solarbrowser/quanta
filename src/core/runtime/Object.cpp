@@ -1600,6 +1600,23 @@ void Object::move_elements(uint32_t dst, uint32_t src, uint32_t count) {
                  static_cast<size_t>(count) * sizeof(Value));
 }
 
+void Object::copy_elements_from(const Object& src, uint32_t src_i, uint32_t dst_i,
+                               uint32_t count) {
+    if (!count) return;
+    if (dst_i + count > elements_length()) resize_elements(dst_i + count);
+    Collector::write_barrier(this);
+    // memmove, not memcpy: the source may be this same array.
+    std::memmove(element_ptr(dst_i + count - 1), src.element_ptr(src_i + count - 1),
+                 static_cast<size_t>(count) * sizeof(Value));
+}
+
+void Object::copy_elements_reversed_from(const Object& src, uint32_t count) {
+    if (!count) return;
+    if (count > elements_length()) resize_elements(count);
+    Collector::write_barrier(this);
+    for (uint32_t i = 0; i < count; i++) *element_ptr(i) = *src.element_ptr(count - 1 - i);
+}
+
 bool Object::set_element(uint32_t index, const Value& value) {
     Collector::write_barrier(this);
     // Same dispatch problem as get_element: TypedArrayBase::set_element(size_t) doesn't

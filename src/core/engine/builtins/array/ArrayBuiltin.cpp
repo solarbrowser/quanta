@@ -1100,6 +1100,16 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* result_obj = result.get();
             const bool with_fast = dense_fast(this_obj) &&
                                    length == static_cast<double>(this_obj->element_count());
+            if (with_fast) {
+                // Everything but the replaced index is a verbatim run.
+                const uint32_t n = static_cast<uint32_t>(length);
+                const uint32_t at = static_cast<uint32_t>(actual_index);
+                result_obj->copy_elements_from(*this_obj, 0, 0, at);
+                result_obj->copy_elements_from(*this_obj, at + 1, at + 1, n - at - 1);
+                result_obj->set_element(at, new_value);
+                result_obj->set_length(n);
+                return Value(result.release());
+            }
             for (double i = 0; i < length; i++) {
                 Value v;
                 if (i == actual_index) {
@@ -1761,11 +1771,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             const bool rev_fast = dense_fast(this_obj) &&
                                   len_d == static_cast<double>(this_obj->element_count());
+            if (rev_fast) {
+                result->copy_elements_reversed_from(*this_obj, length);
+                result->set_length(length);
+                return Value(result.release());
+            }
             for (uint32_t i = 0; i < length; i++) {
-                if (rev_fast) {
-                    result->set_element(i, this_obj->get_element_unchecked(length - 1 - i));
-                    continue;
-                }
                 result->set_element(i, this_obj->get_property(Value(length - 1 - i).to_string()));
                 if (ctx.has_exception()) return Value();
             }
@@ -1883,6 +1894,17 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             const bool spliced_fast = dense_fast(this_obj) &&
                                       length == static_cast<double>(this_obj->element_count());
+            if (spliced_fast) {
+                const uint32_t st = static_cast<uint32_t>(actual_start);
+                const uint32_t dc = static_cast<uint32_t>(actual_delete_count);
+                const uint32_t ic = static_cast<uint32_t>(item_count);
+                const uint32_t nl = static_cast<uint32_t>(new_len);
+                result_obj->copy_elements_from(*this_obj, 0, 0, st);
+                for (uint32_t k = 0; k < ic; k++) result_obj->set_element(st + k, args[k + 2]);
+                result_obj->copy_elements_from(*this_obj, st + dc, st + ic, nl - st - ic);
+                result_obj->set_length(nl);
+                return Value(result.release());
+            }
             double i = 0;
             double r = actual_start;
             for (; i < actual_start; i++) {

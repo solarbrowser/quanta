@@ -416,6 +416,20 @@ public:
     // it up, and that is what a shift or an unshift actually costs.
     void move_elements(uint32_t dst, uint32_t src, uint32_t count);
 
+    // Copies a run out of another array's dense store, growing this one's to
+    // fit. The source must have passed has_only_dense_elements() with the run
+    // inside its element_count(); this side is meant to be an array the caller
+    // just created, which nothing else can observe yet.
+    //
+    // One write barrier covers the whole run. That is the point of both of
+    // these: set_element pays a barrier, a receiver-type test and a
+    // per-index descriptor probe on every single element, and on a bulk copy
+    // the first two are loop invariant while the third is exactly what the
+    // dense gate already answered.
+    void copy_elements_from(const Object& src, uint32_t src_i, uint32_t dst_i, uint32_t count);
+    // Same, in reverse order, which is a loop rather than a block move.
+    void copy_elements_reversed_from(const Object& src, uint32_t count);
+
     // True when every index this object claims to have really is in the dense
     // element vector: a genuine Array, no per-index attributes, no holes,
     // nothing spilled to sparse storage, and length matching the storage. Only
