@@ -553,7 +553,12 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
             ctx.throw_type_error("Symbol.toPrimitive is not a function");
             return Value();
         }
-        bool prefer_string = obj->has_property("_isDate") || hint == "string";
+        // A Date reads as a string for "default" as well as "string", which is
+        // what makes `date + 1` concatenate. "number" is not one of them: every
+        // arithmetic and bitwise operator asks for that hint and has to reach
+        // valueOf. Only Dates whose @@toPrimitive was removed get here at all.
+        bool prefer_string = hint == "string" ||
+                             (hint != "number" && obj->has_property("_isDate"));
 
         if (prefer_string) {
             Value toString_method = obj->get_property("toString");
@@ -638,8 +643,8 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
             else if (rv.is_bigint() && lv.is_object()) lv = toBigIntCoerce(ctx, lv);
             if (ctx.has_exception()) return Value();
             // Also apply toPrimitive so Object(1n) becomes 1n
-            if (lv.is_object()) lv = toPrimitive(lv);
-            if (rv.is_object()) rv = toPrimitive(rv);
+            if (lv.is_object()) lv = toPrimitive(lv, "number");
+            if (rv.is_object()) rv = toPrimitive(rv, "number");
             if (ctx.has_exception()) return Value();
             try {
                 if (op == Operator::DIVIDE) return lv.divide(rv);
@@ -818,9 +823,9 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
         case Operator::LEFT_SHIFT:
         case Operator::RIGHT_SHIFT:
         case Operator::UNSIGNED_RIGHT_SHIFT: {
-            Value lv = toPrimitive(left_value);
+            Value lv = toPrimitive(left_value, "number");
             if (ctx.has_exception()) return Value();
-            Value rv = toPrimitive(right_value);
+            Value rv = toPrimitive(right_value, "number");
             if (ctx.has_exception()) return Value();
             if (lv.is_bigint() && rv.is_object()) rv = toBigIntCoerce(ctx, rv);
             else if (rv.is_bigint() && lv.is_object()) lv = toBigIntCoerce(ctx, lv);
