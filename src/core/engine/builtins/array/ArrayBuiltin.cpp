@@ -1484,6 +1484,17 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             double count = std::min(end - start, length - target);
 
+            // A dense array copies its own elements; the keyed form below
+            // builds two index strings per element, which is all a copyWithin
+            // of any size does.
+            if (count > 0 && dense_fast(this_obj) &&
+                length == static_cast<double>(this_obj->element_count())) {
+                this_obj->move_elements(static_cast<uint32_t>(target),
+                                        static_cast<uint32_t>(start),
+                                        static_cast<uint32_t>(count));
+                return Value(this_obj);
+            }
+
             auto copy_one = [&](double from, double to) -> bool {
                 std::string from_key = Value(from).to_string();
                 std::string to_key = Value(to).to_string();
@@ -2376,6 +2387,19 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             double new_length = length - 1;
+
+            // Popping a dense array is a read and a length store; the keyed
+            // form builds the index string and does three keyed operations
+            // with it, every call.
+            if (dense_fast(this_obj) &&
+                length == static_cast<double>(this_obj->element_count())) {
+                Value last = this_obj->get_element_unchecked(static_cast<uint32_t>(new_length));
+                bool len_ok = this_obj->set_property("length", Value(new_length));
+                if (ctx.has_exception()) return Value();
+                if (!len_ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+                return last;
+            }
+
             std::string idx = Value(new_length).to_string();
             Value element = this_obj->get_property(idx);
             if (ctx.has_exception()) return Value();
@@ -2747,6 +2771,39 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!len_ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
 
             std::vector<Value> items_to_insert(args.begin() + (args.size() > 2 ? 2 : args.size()), args.end());
+
+            // The tail move is the same one shift and unshift make, in whichever
+            // direction the splice needs. The keyed walk below builds two index
+            // strings per element moved, which is the whole cost of a splice on
+            // an array of any size. Growing needs push's extra terms because it
+            // writes past the end; shrinking only needs the store to be dense.
+            const bool splice_grows = item_count > delete_count;
+            if (dense_fast(this_obj) &&
+                length == static_cast<double>(this_obj->element_count()) &&
+                length + item_count - delete_count <= 4294967295.0 &&
+                (!splice_grows ||
+                 (this_obj->is_extensible() && this_obj->proto_chain_has_no_indices()))) {
+                const uint32_t st = static_cast<uint32_t>(start);
+                const uint32_t dc = static_cast<uint32_t>(delete_count);
+                const uint32_t ic = static_cast<uint32_t>(item_count);
+                const uint32_t n = static_cast<uint32_t>(length);
+                const uint32_t tail = n - st - dc;
+                if (splice_grows) {
+                    for (uint32_t k = 0; k < ic - dc; k++) {
+                        this_obj->set_element(n + k, Value());
+                        if (ctx.has_exception()) return Value();
+                    }
+                }
+                if (ic != dc) this_obj->move_elements(st + ic, st + dc, tail);
+                for (uint32_t k = 0; k < ic; k++) {
+                    this_obj->set_element(st + k, items_to_insert[k]);
+                    if (ctx.has_exception()) return Value();
+                }
+                bool ok = this_obj->set_property("length", Value(length - delete_count + item_count));
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+                return result_val;
+            }
 
             if (item_count < delete_count) {
                 for (double k = start; k < length - delete_count; k++) {
