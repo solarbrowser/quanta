@@ -1464,6 +1464,14 @@ void collect_free_names(const ASTNode* node,
             } else if (left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                 unknown = true;
                 return;
+            } else {
+                // Not a declaration: the head ASSIGNS to something that already
+                // exists, and the parser allows an identifier, a member
+                // expression or an array/object literal pattern here. Those
+                // names were never scanned, so `for (captured of xs) {}` looked
+                // like a closure with no free names at all while it writes
+                // straight through to an outer binding.
+                collect_free_names(left, scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
             }
             collect_free_names(right, scope_stack, in_arrow, free_out, saw_eval, saw_class, unknown);
             if (has_frame) scope_stack.push_back(std::move(frame));
