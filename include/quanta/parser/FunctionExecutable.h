@@ -172,6 +172,12 @@ public:
     mutable int8_t closure_props_state = -1;
     mutable int8_t self_name_state = -1;
     mutable int8_t super_marker_state = -1;
+    // Whether this body can observe its own `arguments` object. The register
+    // path already asks the chunk (needs_arguments); the tree-walker had no
+    // equivalent and materialized one on every call, so a function that never
+    // names `arguments` still paid for an Arguments object, its butterfly and
+    // the descriptor map that retyping `length` forces.
+    mutable int8_t needs_arguments_state = -1;
 
     // Every term of Function::call_default's register-mode gate that lives on
     // this executable, ANDed once. The gate used to read six fields across two

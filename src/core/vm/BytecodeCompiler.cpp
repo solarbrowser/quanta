@@ -936,8 +936,62 @@ bool uses_arguments(const ASTNode* node) {
             const auto* n = static_cast<const AwaitExpression*>(node);
             return n->get_argument() && uses_arguments(n->get_argument());
         }
-        default:
+        case ASTNode::Type::WITH_STATEMENT: {
+            // The body has to be walked even though `with` can shadow the name:
+            // whether the object supplies `arguments` is only knowable at run
+            // time, so the binding must exist either way.
+            const auto* n = static_cast<const WithStatement*>(node);
+            return uses_arguments(n->get_object()) || uses_arguments(n->get_body());
+        }
+        case ASTNode::Type::USING_DECLARATION: {
+            const auto* n = static_cast<const UsingDeclaration*>(node);
+            for (const auto& b : n->get_bindings()) {
+                if (uses_arguments(b.initializer.get())) return true;
+            }
             return false;
+        }
+
+        // Leaves and nodes whose children are reached through their parent's
+        // case above (a CatchClause body via TRY_STATEMENT, a CaseClause's
+        // statements via SWITCH_STATEMENT), plus the forms that cannot appear
+        // inside a function body at all.
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::REGEX_LITERAL:
+        case ASTNode::Type::EMPTY_STATEMENT:
+        case ASTNode::Type::BREAK_STATEMENT:
+        case ASTNode::Type::CONTINUE_STATEMENT:
+        case ASTNode::Type::META_PROPERTY:
+        case ASTNode::Type::ENGINE_HELPER:
+        case ASTNode::Type::PARAMETER:
+        case ASTNode::Type::VARIABLE_DECLARATOR:
+        case ASTNode::Type::CATCH_CLAUSE:
+        case ASTNode::Type::CASE_CLAUSE:
+        // A class static block is evaluated with its own binding set, and the
+        // spec makes naming `arguments` in one an early error.
+        case ASTNode::Type::CLASS_STATIC_BLOCK:
+        case ASTNode::Type::PROGRAM:
+        case ASTNode::Type::IMPORT_STATEMENT:
+        case ASTNode::Type::EXPORT_STATEMENT:
+        case ASTNode::Type::IMPORT_SPECIFIER:
+        case ASTNode::Type::EXPORT_SPECIFIER:
+        case ASTNode::Type::JSX_ELEMENT:
+        case ASTNode::Type::JSX_TEXT:
+        case ASTNode::Type::JSX_EXPRESSION:
+        case ASTNode::Type::JSX_ATTRIBUTE:
+            return false;
+
+        // Anything not named above is assumed to reach `arguments`. Callers
+        // skip materializing the object on a false, and the fallback for a
+        // form this walk has never seen has to be the slow, correct one --
+        // a `with` body used to land here and answer false, which left the
+        // binding missing entirely.
+        default:
+            return true;
     }
 }
 

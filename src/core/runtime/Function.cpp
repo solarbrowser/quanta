@@ -1065,8 +1065,36 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     
     // Arrow functions don't have their own arguments object -- they resolve
     // `arguments` lexically through closure_environment_ to the enclosing scope.
+    // Everything else only gets one if the body (or a parameter initializer)
+    // can actually name it, mirroring the register path's needs_arguments gate.
+    // A direct eval keeps it: eval can name `arguments` at runtime, which no
+    // static walk of this body can see.
     if (!is_arrow_) {
-        create_arguments_object(function_context, args);
+        if (executable_->needs_arguments_state < 0) {
+            bool needs = true;
+            if (body_) {
+                needs = BytecodeCompiler::references_arguments(body_);
+                if (!needs) {
+                    for (const auto& p : parameter_objects_) {
+                        if ((p->has_default() &&
+                             BytecodeCompiler::references_arguments(p->get_default_value())) ||
+                            (p->has_destructuring() &&
+                             BytecodeCompiler::references_arguments(p->get_destructuring_pattern()))) {
+                            needs = true;
+                            break;
+                        }
+                    }
+                }
+                if (!needs && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
+                    static_cast<BlockStatement*>(body_)->has_direct_eval_cached()) {
+                    needs = true;
+                }
+            }
+            executable_->needs_arguments_state = needs ? 1 : 0;
+        }
+        if (executable_->needs_arguments_state == 1) {
+            create_arguments_object(function_context, args);
+        }
     }
 
     // Use actual_this which respects strict mode (can be undefined in strict mode)
