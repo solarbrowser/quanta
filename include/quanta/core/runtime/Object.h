@@ -504,6 +504,11 @@ public:
     uint32_t get_length() const;
     void set_length(uint32_t length);
     bool set_array_length_coerced(uint32_t new_length);
+    // True when this array's length is the ordinary header-backed one, with no
+    // attribute recorded for it by defineProperty. Only then is a direct store
+    // what a keyed write would have done: a length made non-writable has to
+    // refuse, and the keyed path is what knows to refuse.
+    bool has_plain_array_length() const;
     void push(const Value& value);
     Value pop();
     void unshift(const Value& value);

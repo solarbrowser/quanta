@@ -129,7 +129,30 @@ static bool fresh_dense_target(Object* o) {
            o->is_extensible() && o->proto_chain_has_no_indices();
 }
 
+// The length of an ordinary array is a header field, and get_property returns
+// exactly that for one -- but only after building the key string and walking
+// the generic property path to reach it. Every array method starts with this
+// call, and push and pop are little else.
+static bool array_length_fast(Object* obj, double& out) {
+    if (!obj || obj->get_type() != Object::ObjectType::Array) return false;
+    out = static_cast<double>(obj->get_length());
+    return true;
+}
+
+// The write side of the same shortcut. Unlike the read it needs a gate: a
+// length that defineProperty made non-writable must refuse the store, and the
+// keyed path is what knows to.
+static bool set_array_length_fast(Context& ctx, Object* obj, double new_length) {
+    if (obj->has_plain_array_length() && new_length >= 0 && new_length <= 4294967295.0) {
+        return obj->set_array_length_coerced(static_cast<uint32_t>(new_length));
+    }
+    bool ok = obj->set_property("length", Value(new_length));
+    return ok && !ctx.has_exception();
+}
+
 static double array_like_length(Context& ctx, Object* obj) {
+    double fast;
+    if (array_length_fast(obj, fast)) return fast;
     Value len_val = obj->get_property("length");
     if (ctx.has_exception()) return 0;
     double n = to_number_throwing(ctx, len_val);
@@ -1505,10 +1528,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 length++;
             }
 
-            bool ok = this_obj->set_property("length", Value(length));
-            if (ctx.has_exception()) return Value();
-            if (!ok) {
-                ctx.throw_type_error("Cannot set property 'length'");
+            if (!set_array_length_fast(ctx, this_obj, length)) {
+                if (!ctx.has_exception()) ctx.throw_type_error("Cannot set property 'length'");
                 return Value();
             }
 
@@ -2517,9 +2538,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (dense_fast(this_obj) &&
                 length == static_cast<double>(this_obj->element_count())) {
                 Value last = this_obj->get_element_unchecked(static_cast<uint32_t>(new_length));
-                bool len_ok = this_obj->set_property("length", Value(new_length));
-                if (ctx.has_exception()) return Value();
-                if (!len_ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+                if (!set_array_length_fast(ctx, this_obj, new_length)) {
+                    if (!ctx.has_exception()) ctx.throw_type_error("Cannot set property 'length'");
+                    return Value();
+                }
                 return last;
             }
 

@@ -1132,6 +1132,12 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 // Everything ArraySetLength does once the new length is a number. The
 // caller owns the coercion, which is observable through valueOf and must
 // run exactly once however the write was spelled.
+bool Object::has_plain_array_length() const {
+    if (get_type() != ObjectType::Array) return false;
+    auto* d = descriptors();
+    return !d || !d->find("length");
+}
+
 bool Object::set_array_length_coerced(uint32_t new_length) {
 
     uint32_t old_length = static_cast<uint32_t>(elements_length());
@@ -1661,7 +1667,11 @@ bool Object::set_element(uint32_t index, const Value& value) {
     // densely cannot move length, and get_length() looks "length" up by
     // string, which is too much to spend on every in-bounds write.
     if (is_new_element && get_type() == ObjectType::Array &&
+        !has_plain_array_length() &&
         static_cast<double>(index) >= static_cast<double>(get_length())) {
+        // Only an array whose length carries a recorded attribute can refuse;
+        // for the ordinary header-backed one the lookup was the whole cost of
+        // an append.
         PropertyDescriptor length_desc = get_property_descriptor("length");
         if (length_desc.has_writable() && !length_desc.is_writable()) {
             return false;
