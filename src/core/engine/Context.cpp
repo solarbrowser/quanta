@@ -49,7 +49,7 @@ namespace Quanta {
 
 #if defined(__GLIBCXX__)
 static_assert(sizeof(Context) == 208);
-static_assert(sizeof(Environment) == 176);
+static_assert(sizeof(Environment) == 184);  // 176 and 184 land in the same allocator bin
 #else
 static_assert(sizeof(Context) <= 896);
 static_assert(sizeof(Environment) <= 512);
@@ -888,12 +888,32 @@ void Context::clear_break_continue() {
 }
 
 
+namespace {
+thread_local uint32_t g_capture_epoch = 1;
+}
+
+uint32_t capture_epoch() { return g_capture_epoch; }
+
+// Bumped by: Function's three AST/executable constructors and
+// set_closure_environment (a closure taking closure_environment_),
+// Engine::add_survivor_environment and Engine::add_survivor_context (either
+// pool taking one, directly or through a context's lexical chain).
+// Saturates instead of wrapping. A wrapped counter could land back on some
+// live environment's birth value and make it look provably dead, which would
+// free it underneath its holder; at the ceiling the fast path simply switches
+// off for the rest of the run and everything goes back through the collector.
+void bump_capture_epoch() {
+    if (g_capture_epoch != UINT32_MAX) g_capture_epoch++;
+}
+
 Environment::Environment(Type type, Environment* outer)
-    : type_(type), outer_environment_(outer), binding_object_(nullptr) {
+    : type_(type), outer_environment_(outer), binding_object_(nullptr),
+      birth_epoch_(g_capture_epoch) {
 }
 
 Environment::Environment(Object* binding_object, Environment* outer)
-    : type_(Type::Object), outer_environment_(outer), binding_object_(binding_object) {
+    : type_(Type::Object), outer_environment_(outer), binding_object_(binding_object),
+      birth_epoch_(g_capture_epoch) {
 }
 
 bool Environment::has_binding(const std::string& name) const {

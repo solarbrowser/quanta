@@ -59,7 +59,15 @@ thread_local Object* Function::s_throw_type_error_ = nullptr;
 static Environment* capture_closure_environment(Context* closure_context, bool mark_escaped_now = true) {
     if (!closure_context) return nullptr;
     Environment* env = closure_context->get_lexical_environment();
-    if (env && mark_escaped_now) env->mark_escaped();
+    if (!env) return nullptr;
+    if (mark_escaped_now) {
+        env->mark_escaped();  // bumps the capture epoch itself
+    } else {
+        // The caller has proven this closure cannot observe the environment, so
+        // it is not pinned -- but the pointer is still stored in
+        // closure_environment_ and read by the tracer, so the capture counts.
+        bump_capture_epoch();
+    }
     return env;
 }
 
@@ -1369,7 +1377,7 @@ void Function::set_function_prototype(Object* proto) {
 
 void Function::set_closure_environment(Environment* env) {
     Collector::write_barrier(this);
-    if (env) env->mark_escaped();
+    if (env) env->mark_escaped();  // bumps the capture epoch itself
     closure_environment_ = env;
 }
 

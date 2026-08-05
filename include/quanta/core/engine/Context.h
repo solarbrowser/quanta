@@ -410,6 +410,20 @@ private:
 /**
  * Environment for variable bindings
  */
+// Counts the events that can put an Environment* somewhere it will outlive the
+// scope that made it: a closure capturing one, and either survivor pool taking
+// one. An Environment can only be captured by something created during its own
+// lifetime -- anything older never saw it, anything newer comes after it is
+// gone -- so if this has not moved between an environment's construction and
+// its release, nothing can be holding it and it is provably dead.
+//
+// The direction matters: this is only ever used to take a faster path when it
+// proves nothing happened. Missing a bump would free a live environment, so
+// every site that stores one beyond its scope has to be here. They are listed
+// at bump_capture_epoch's definition.
+uint32_t capture_epoch();
+void bump_capture_epoch();
+
 class Environment {
 public:
     enum class Type {
@@ -553,6 +567,8 @@ private:
     bool is_with_environment_ = false; // ES6 8.1.1.2.1 HasBinding: only `with` object environments consult @@unscopables
     bool is_closure_boundary_ = false; // marks script-level env: stop snapshot loops here
     bool escaped_ = false;  // see is_escaped()
+    // capture_epoch() as of construction -- see its comment above.
+    uint32_t birth_epoch_ = 0;
 
 public:
     // Write-barrier dedup flag, owned by the Collector (set on first binding
@@ -597,7 +613,17 @@ public:
     // deleted on pop instead of leaking. Marking walks the outer chain so every
     // env reachable from a captured one is pinned too.
     bool is_escaped() const { return escaped_; }
+    // True when nothing that could have captured this environment was created
+    // during its lifetime, which makes it unreachable without asking the
+    // collector.
+    bool provably_unreachable() const {
+        const uint32_t now = capture_epoch();
+        return now != UINT32_MAX && birth_epoch_ == now;
+    }
     void mark_escaped() {
+        // Something is taking a reference that outlives this scope, which is
+        // exactly what the capture epoch counts.
+        bump_capture_epoch();
         for (Environment* e = this; e && !e->escaped_; e = e->outer_environment_) {
             e->escaped_ = true;
         }

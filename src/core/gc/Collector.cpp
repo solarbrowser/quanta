@@ -1125,12 +1125,17 @@ void Collector::write_barrier_env(Environment* env) {
 
 void Collector::release_env(Environment* env) {
     if (!env) return;
-    auto& pending = pending_env_frees();
-    pending.push_back(env);
-    // Nothing is freed here. Whether an environment on this list is really
-    // dead is a question only a completed major mark can answer -- see
-    // resolve_pending_env_frees, which is the one place entries leave.
-    (void)pending;
+    // Nothing that could hold a reference to this environment was created
+    // during its lifetime, so it is unreachable and can go now -- no queue and
+    // no collection. This is the common case: a scope that makes no closures.
+    if (env->provably_unreachable()) {
+        delete env;
+        return;
+    }
+    // Otherwise whether it is really dead is a question only a completed major
+    // mark can answer -- see resolve_pending_env_frees, the one place entries
+    // leave this list.
+    pending_env_frees().push_back(env);
 }
 
 void Collector::safepoint_slow() {

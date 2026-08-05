@@ -333,6 +333,8 @@ Context* Engine::get_current_context() const {
 
 void Engine::add_survivor_context(Context* ctx) {
     if (!ctx) return;
+    // The context keeps its lexical chain alive past the scope that made it.
+    bump_capture_epoch();
     survivor_contexts_.push_back(ctx);
     // Real memory the cell-based heap doesn't see -- charge it toward the
     // same GC budget as ordinary cells (see Heap::note_extra_bytes).
@@ -341,6 +343,7 @@ void Engine::add_survivor_context(Context* ctx) {
 
 void Engine::add_survivor_environment(Environment* env) {
     if (!env) return;
+    bump_capture_epoch();
     survivor_environments_.push_back(env);
     Heap::note_extra_bytes(sizeof(Environment));
 }
