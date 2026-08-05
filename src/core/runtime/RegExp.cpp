@@ -2405,9 +2405,61 @@ static void sanitize_utf16_surrogates(std::u16string& s) {
     }
 }
 
+// The last subject decoded to UTF-16, with the bytes it came from. A global
+// regex is driven one exec per match, so each call used to re-decode the whole
+// subject: walking a string cost a decode per match rather than one decode.
+//
+// One entry, shared by every RegExp on the thread rather than stored per
+// instance. Repeated decoding of the same subject is a property of the call
+// sequence, not of the pattern -- a replace and a match over the same text hit
+// it too -- and RegExp is size-checked, so a per-instance copy would cost
+// every regex in the program for a benefit only the hot one sees.
+//
+// Keyed on the bytes, not on the String object: this is not a GC-traced type,
+// so it must neither keep a cell alive nor read one that may have been swept.
+// The comparison is a memcmp where the miss is a full decode.
+static const std::u16string& decode_subject(const std::string& str, std::u16string& scratch) {
+    static thread_local std::string cached_src;
+    static thread_local std::u16string cached;
+    if (cached_src.size() == str.size() && cached_src == str) return cached;
+    // Only long subjects are worth remembering. Storing one costs a copy of
+    // the bytes, and for the short strings a router or a validator matches
+    // against -- each one different, so never a hit -- that copy is pure loss.
+    if (str.size() < 256) {
+        scratch = wtf8_to_utf16(str);
+        return scratch;
+    }
+    cached = wtf8_to_utf16(str);
+    cached_src = str;
+    return cached;
+}
+
+// True when the units contain a surrogate that is not part of a valid pair.
+// Sanitizing rewrites those to U+FFFD, and it has to work on a copy so capture
+// text can still report the originals -- but the copy is only worth making
+// when there is something to rewrite, which for ordinary text there is not.
+static bool has_lone_surrogate(const std::u16string& s) {
+    for (size_t i = 0; i < s.size(); i++) {
+        char16_t c = s[i];
+        if (c < 0xD800 || c > 0xDFFF) continue;
+        if (c <= 0xDBFF && i + 1 < s.size() && s[i + 1] >= 0xDC00 && s[i + 1] <= 0xDFFF) {
+            i++;
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 bool RegExp::test(const std::string& str) {
-    std::u16string subject = wtf8_to_utf16(str);
-    if (unicode_) sanitize_utf16_surrogates(subject);
+    std::u16string decode_scratch;
+    const std::u16string& decoded = decode_subject(str, decode_scratch);
+    std::u16string sanitized;
+    if (unicode_ && has_lone_surrogate(decoded)) {
+        sanitized = decoded;
+        sanitize_utf16_surrogates(sanitized);
+    }
+    const std::u16string& subject = (unicode_ && !sanitized.empty()) ? sanitized : decoded;
 
     size_t start = 0;
     if ((global_ || sticky_) && last_index_ > 0) {
@@ -2454,9 +2506,14 @@ bool RegExp::test(const std::string& str) {
 
 Value RegExp::exec(const std::string& str) {
     // orig holds the unsanitized units so capture text preserves lone surrogates.
-    std::u16string orig = wtf8_to_utf16(str);
-    std::u16string subject = orig;
-    if (unicode_) sanitize_utf16_surrogates(subject);
+    std::u16string decode_scratch;
+    const std::u16string& orig = decode_subject(str, decode_scratch);
+    std::u16string sanitized;
+    if (unicode_ && has_lone_surrogate(orig)) {
+        sanitized = orig;
+        sanitize_utf16_surrogates(sanitized);
+    }
+    const std::u16string& subject = sanitized.empty() ? orig : sanitized;
 
     bool advances = global_ || sticky_;
     size_t start = 0;

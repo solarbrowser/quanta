@@ -35,7 +35,7 @@ class String {
     mutable uint8_t ascii_ = 0;
 
     void ensure_flat() const;
-    void calculate_hash() noexcept;
+    void calculate_hash() const noexcept;
     static void collect_bytes(const String* node, std::string& out);
 
 public:
@@ -66,7 +66,15 @@ public:
     [[nodiscard]] size_t             length()const noexcept { return str().length(); }
     [[nodiscard]] size_t             size()  const noexcept { return str().size(); }
     [[nodiscard]] bool               empty() const noexcept { return !is_cons_ && data_.empty(); }
-    [[nodiscard]] size_t             hash()  const noexcept { if (!hash_) ensure_flat(); return hash_; }
+    // Lazily computed. Hashing is a full pass over the bytes and most strings
+    // are never used as a key, so the constructors no longer pay it up front --
+    // a regex handing back its subject on every match was hashing the whole
+    // subject each time. Zero doubles as "not computed yet"; a string that
+    // genuinely hashes to zero simply recomputes, which costs nothing else.
+    [[nodiscard]] size_t hash() const noexcept {
+        if (!hash_) { if (is_cons_) ensure_flat(); else calculate_hash(); }
+        return hash_;
+    }
     [[nodiscard]] bool               interned() const noexcept { return interned_; }
     // What JS calls .length: UTF-16 code units, not bytes. Cached -- see
     // utf16_len_. Prefer this over the free utf16_length(std::string) below

@@ -105,22 +105,18 @@ void String::operator delete(void* p) noexcept {
 
 String::String(const std::string& str) : data_(str) {
     canonicalize_pairs(data_);
-    calculate_hash();
 }
 
 String::String(std::string&& str) noexcept : data_(std::move(str)) {
     canonicalize_pairs(data_);
-    calculate_hash();
 }
 
 String::String(std::string_view sv) : data_(sv) {
     canonicalize_pairs(data_);
-    calculate_hash();
 }
 
 String::String(const char* str) : data_(str ? str : "") {
     canonicalize_pairs(data_);
-    calculate_hash();
 }
 
 bool String::operator==(const String& other) const noexcept {
@@ -145,7 +141,7 @@ String String::intern(const std::string& s) {
     return result;
 }
 
-void String::calculate_hash() noexcept {
+void String::calculate_hash() const noexcept {
     hash_ = std::hash<std::string>{}(data_);
 }
 
