@@ -2487,6 +2487,21 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
+            // A dense array moves its elements. The keyed walk below builds two
+            // index strings per element and does three keyed lookups with them,
+            // which on an array of any size is the whole cost of the method --
+            // the actual data movement is nothing next to it.
+            if (dense_fast(this_obj) &&
+                length == static_cast<double>(this_obj->element_count())) {
+                Value first = this_obj->get_element_unchecked(0);
+                const uint32_t n = static_cast<uint32_t>(length);
+                this_obj->move_elements(0, 1, n - 1);
+                bool ok = this_obj->set_property("length", Value(length - 1));
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+                return first;
+            }
+
             Value first = this_obj->get_property("0");
             if (ctx.has_exception()) return Value();
 

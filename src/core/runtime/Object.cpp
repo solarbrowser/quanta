@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Object.h"
+#include <cstring>
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/gc/Visitor.h"
@@ -1587,6 +1588,16 @@ Value Object::get_element(uint32_t index) const {
         return proto ? proto->get_property(key) : Value();
     }
     return Value();
+}
+
+void Object::move_elements(uint32_t dst, uint32_t src, uint32_t count) {
+    if (!count || dst == src) return;
+    Collector::write_barrier(this);
+    // Elements run downward in memory (element_ptr subtracts the index), so a
+    // run of `count` starting at `i` is the block whose lowest address is
+    // element_ptr(i + count - 1).
+    std::memmove(element_ptr(dst + count - 1), element_ptr(src + count - 1),
+                 static_cast<size_t>(count) * sizeof(Value));
 }
 
 bool Object::set_element(uint32_t index, const Value& value) {

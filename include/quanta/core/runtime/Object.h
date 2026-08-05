@@ -408,6 +408,14 @@ public:
         return *element_ptr(index);
     }
 
+    // Moves `count` elements from index `src` to index `dst` within the dense
+    // store, overlapping ranges included. Callers must have established
+    // has_only_dense_elements() and that both ranges lie inside
+    // element_count(); nothing here checks, which is the whole point -- the
+    // keyed form of the same move builds an index string per element and looks
+    // it up, and that is what a shift or an unshift actually costs.
+    void move_elements(uint32_t dst, uint32_t src, uint32_t count);
+
     // True when every index this object claims to have really is in the dense
     // element vector: a genuine Array, no per-index attributes, no holes,
     // nothing spilled to sparse storage, and length matching the storage. Only
