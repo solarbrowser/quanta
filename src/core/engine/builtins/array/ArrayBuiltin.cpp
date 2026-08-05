@@ -117,6 +117,18 @@ static bool dense_fast(Object* o) {
     return o && o->has_only_dense_elements();
 }
 
+// True when a result array may be filled by writing its elements rather than
+// defining each index one at a time. The species constructor can hand back
+// anything at all, so this asks for the whole shape: an ordinary Array, still
+// empty, extensible, no per-index attributes of its own, and no index property
+// inherited from its prototype. On such an object a CreateDataProperty at an
+// index and an element store are indistinguishable.
+static bool fresh_dense_target(Object* o) {
+    return o && o->get_type() == Object::ObjectType::Array &&
+           !o->has_index_descriptor() && o->element_count() == 0 &&
+           o->is_extensible() && o->proto_chain_has_no_indices();
+}
+
 static double array_like_length(Context& ctx, Object* obj) {
     Value len_val = obj->get_property("length");
     if (ctx.has_exception()) return 0;
@@ -1976,6 +1988,22 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     return false;
                 }
                 bool src_fast = dense_fast(obj);
+                // Re-asked per source: the destination has to still be the
+                // ordinary dense array it started as, and everything written
+                // so far has to be exactly its elements, or the block copy
+                // would land somewhere the defines below would not.
+                const bool dest_bulk =
+                    result->get_type() == Object::ObjectType::Array &&
+                    !result->has_index_descriptor() && result->is_extensible() &&
+                    result->proto_chain_has_no_indices() &&
+                    static_cast<double>(result->element_count()) == n;
+                if (src_fast && dest_bulk &&
+                    obj_length == static_cast<double>(obj->element_count())) {
+                    result->copy_elements_from(*obj, 0, static_cast<uint32_t>(n),
+                                               static_cast<uint32_t>(obj_length));
+                    n += obj_length;
+                    return true;
+                }
                 for (double i = 0; i < obj_length; i++) {
                     bool present;
                     Value elem;
@@ -2668,6 +2696,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             double n = 0;
             bool slice_fast = dense_fast(this_obj);
+            if (slice_fast && length == static_cast<double>(this_obj->element_count()) &&
+                fresh_dense_target(result)) {
+                const uint32_t cnt = static_cast<uint32_t>(count);
+                result->copy_elements_from(*this_obj, static_cast<uint32_t>(start), 0, cnt);
+                result->set_length(cnt);
+                return result_val;
+            }
             for (double k = start; k < end; k++) {
                 bool present;
                 Value elem;
