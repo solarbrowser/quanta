@@ -1098,11 +1098,26 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             auto result = ObjectFactory::create_array(static_cast<uint32_t>(length));
             Object* result_obj = result.get();
+            const bool with_fast = dense_fast(this_obj) &&
+                                   length == static_cast<double>(this_obj->element_count());
             for (double i = 0; i < length; i++) {
-                Value v = (i == actual_index) ? new_value : this_obj->get_property(Value(i).to_string());
-                if (ctx.has_exception()) return Value();
-                if (!create_data_property_or_throw(ctx, result_obj, Value(i).to_string(), v)) return Value();
+                Value v;
+                if (i == actual_index) {
+                    v = new_value;
+                } else if (with_fast) {
+                    v = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                } else {
+                    v = this_obj->get_property(Value(i).to_string());
+                    if (ctx.has_exception()) return Value();
+                }
+                // The result is the array this call just made: nothing can
+                // observe it yet, so the define is an element store. Going
+                // through CreateDataProperty would build an index string for
+                // every element, which is what the read above just stopped
+                // doing.
+                result_obj->set_element(static_cast<uint32_t>(i), v);
             }
+            result_obj->set_length(static_cast<uint32_t>(length));
 
             return Value(result.release());
         }, 2);
@@ -1643,12 +1658,19 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             for (; k >= 0; k--) {
-                std::string key = Value(k).to_string();
-                bool present = this_obj->has_property(key);
-                if (ctx.has_exception()) return Value();
-                if (!present) continue;
-                Value element = this_obj->get_property(key);
-                if (ctx.has_exception()) return Value();
+                Value element;
+                // Re-asked every iteration, like reduce: the callback is user
+                // code and may put a hole in the array or make it sparse.
+                if (dense_fast(this_obj) && k < static_cast<double>(this_obj->element_count())) {
+                    element = this_obj->get_element_unchecked(static_cast<uint32_t>(k));
+                } else {
+                    std::string key = Value(k).to_string();
+                    bool present = this_obj->has_property(key);
+                    if (ctx.has_exception()) return Value();
+                    if (!present) continue;
+                    element = this_obj->get_property(key);
+                    if (ctx.has_exception()) return Value();
+                }
                 std::vector<Value> callback_args = { accumulator, element, Value(k), Value(this_obj) };
                 accumulator = callback_func->call(ctx, callback_args, Value());
                 if (ctx.has_exception()) return Value();
@@ -1737,7 +1759,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             uint32_t length = static_cast<uint32_t>(len_d);
             auto result = ObjectFactory::create_array(length);
 
+            const bool rev_fast = dense_fast(this_obj) &&
+                                  len_d == static_cast<double>(this_obj->element_count());
             for (uint32_t i = 0; i < length; i++) {
+                if (rev_fast) {
+                    result->set_element(i, this_obj->get_element_unchecked(length - 1 - i));
+                    continue;
+                }
                 result->set_element(i, this_obj->get_property(Value(length - 1 - i).to_string()));
                 if (ctx.has_exception()) return Value();
             }
@@ -1774,7 +1802,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             std::vector<Value> items;
             ValueVectorRoot items_root(&items);
             items.reserve(static_cast<size_t>(length));
+            const bool sorted_fast = dense_fast(this_obj) &&
+                                     length == static_cast<double>(this_obj->element_count());
             for (double i = 0; i < length; i++) {
+                if (sorted_fast) {
+                    items.push_back(this_obj->get_element_unchecked(static_cast<uint32_t>(i)));
+                    continue;
+                }
                 items.push_back(this_obj->get_property(Value(i).to_string()));
                 if (ctx.has_exception()) return Value();
             }
@@ -1847,24 +1881,37 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             auto result = ObjectFactory::create_array(static_cast<uint32_t>(new_len));
             Object* result_obj = result.get();
 
+            const bool spliced_fast = dense_fast(this_obj) &&
+                                      length == static_cast<double>(this_obj->element_count());
             double i = 0;
             double r = actual_start;
             for (; i < actual_start; i++) {
-                std::string key = Value(i).to_string();
-                Value v = this_obj->get_property(key);
-                if (ctx.has_exception()) return Value();
-                if (!create_data_property_or_throw(ctx, result_obj, key, v)) return Value();
+                Value v;
+                if (spliced_fast) {
+                    v = this_obj->get_element_unchecked(static_cast<uint32_t>(i));
+                } else {
+                    v = this_obj->get_property(Value(i).to_string());
+                    if (ctx.has_exception()) return Value();
+                }
+                // Same as with(): the result is this call's own fresh array.
+                result_obj->set_element(static_cast<uint32_t>(i), v);
             }
             for (size_t arg_i = 2; arg_i < args.size(); arg_i++) {
-                if (!create_data_property_or_throw(ctx, result_obj, Value(i).to_string(), args[arg_i])) return Value();
+                result_obj->set_element(static_cast<uint32_t>(i), args[arg_i]);
                 i++;
             }
             r += actual_delete_count;
             for (; i < new_len; i++, r++) {
-                Value v = this_obj->get_property(Value(r).to_string());
-                if (ctx.has_exception()) return Value();
-                if (!create_data_property_or_throw(ctx, result_obj, Value(i).to_string(), v)) return Value();
+                Value v;
+                if (spliced_fast) {
+                    v = this_obj->get_element_unchecked(static_cast<uint32_t>(r));
+                } else {
+                    v = this_obj->get_property(Value(r).to_string());
+                    if (ctx.has_exception()) return Value();
+                }
+                result_obj->set_element(static_cast<uint32_t>(i), v);
             }
+            result_obj->set_length(static_cast<uint32_t>(new_len));
 
             return Value(result.release());
         }, 2);
