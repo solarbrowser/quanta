@@ -606,6 +606,32 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
+            // Copying a plain dense array with the default iterator still in
+            // place: the protocol below would build an iterator object, a
+            // result object and a next() call for every element, none of which
+            // anything can observe here. No mapfn, and no species constructor
+            // to hand the result to.
+            if (!mapfn && Object::array_iterator_protector_intact() &&
+                (items.is_object() || items.is_function())) {
+                // `this` is the constructor the result comes from, and for a
+                // plain Array.from(...) call that is this realm's Array
+                // itself -- the same identity check array_species_create
+                // makes. A subclass or a foreign realm's Array has to go
+                // through the protocol.
+                Value realm_array = ctx.get_binding("Array");
+                const bool plain_ctor = !ctor ||
+                    (realm_array.is_function() && realm_array.as_function() == ctor);
+                Object* src = items.is_function() ? static_cast<Object*>(items.as_function())
+                                                  : items.as_object();
+                if (plain_ctor && dense_fast(src)) {
+                    const uint32_t n = static_cast<uint32_t>(src->element_count());
+                    auto out = ObjectFactory::create_array(n);
+                    out->copy_elements_from(*src, 0, 0, n);
+                    out->set_length(n);
+                    return Value(out.release());
+                }
+            }
+
             // Iterable protocol -- also handle primitives (number/boolean/bigint/symbol) by boxing.
             bool is_iterable_candidate = items.is_object() || items.is_function() || items.is_string()
                 || items.is_number() || items.is_boolean() || items.is_bigint() || items.is_symbol();
