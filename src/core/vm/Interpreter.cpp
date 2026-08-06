@@ -373,6 +373,38 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     bool ordinary = obj->get_type() == Object::ObjectType::Ordinary;
     uint64_t cur_epoch = Object::descriptor_epoch();
 
+    // Asked before the receiver's own descriptor is built, not after: that
+    // query walks own properties and, on an Array, recomputes length -- all of
+    // it wasted once this hits. The gate is what makes the order safe: the
+    // shape fixes which own properties exist, has_descriptor_override covers
+    // the ones a shape cannot show, and an Array receiver is admitted only for
+    // a key that is neither length nor an index, so elements cannot answer it
+    // either. Which is the same thing the descriptor query would have
+    // established, only without doing it.
+    const bool exotic_proto_ok =
+        obj->get_type() == Object::ObjectType::Array &&
+        name != "length" && !(!name.empty() && name[0] >= '0' && name[0] <= '9');
+    if (owner && fb && !fb->proto_mega &&
+        (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
+        !obj->has_descriptor_override(name)) {
+        Shape* shape = obj->get_shape();
+        Object* proto0 = obj->get_prototype();
+        uint64_t epoch = Object::proto_epoch();
+        for (uint8_t i = 0; i < fb->proto_count; i++) {
+            const auto& pe = fb->proto_entries[i];
+            if (pe.receiver_shape == shape && pe.prototype == proto0 && pe.proto_epoch == epoch) {
+                if (pe.from_descriptor) {
+                    if (pe.desc_epoch == cur_epoch) return pe.cached_value;
+                    break;
+                }
+                const Value* slot = pe.holder->get_shape_slot_unchecked(pe.slot_index);
+                if (slot) return *slot;
+                break;
+            }
+        }
+    }
+
+
     // Fast path: a previously-learned entry for this exact shape already
     // confirmed "no descriptors_ override for this key" -- if the global
     // descriptor epoch hasn't moved since, trust that without rescanning
@@ -473,28 +505,6 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             // by the time control reaches here the receiver has been shown to
             // have no own property for this key, so what is left is the plain
             // prototype walk. Those two keys are excluded outright.
-            const bool exotic_proto_ok =
-                obj->get_type() == Object::ObjectType::Array &&
-                name != "length" && !(!name.empty() && name[0] >= '0' && name[0] <= '9');
-            if (owner && fb && !fb->proto_mega &&
-                (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
-                !obj->has_descriptor_override(name)) {
-                Shape* shape = obj->get_shape();
-                Object* proto0 = obj->get_prototype();
-                uint64_t epoch = Object::proto_epoch();
-                for (uint8_t i = 0; i < fb->proto_count; i++) {
-                    const auto& pe = fb->proto_entries[i];
-                    if (pe.receiver_shape == shape && pe.prototype == proto0 && pe.proto_epoch == epoch) {
-                        if (pe.from_descriptor) {
-                            if (pe.desc_epoch == cur_epoch) return pe.cached_value;
-                            break;
-                        }
-                        const Value* slot = pe.holder->get_shape_slot_unchecked(pe.slot_index);
-                        if (slot) return *slot;
-                        break;
-                    }
-                }
-            }
             for (Object* proto = obj->get_prototype(); proto; proto = proto->get_prototype()) {
                 PropertyDescriptor proto_desc = proto->get_property_descriptor(name);
                 if (proto_desc.is_accessor_descriptor()) {
