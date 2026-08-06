@@ -1023,6 +1023,10 @@ private:
     bool is_class_constructor_ : 1 = false;  // Class constructors must be called with new
     bool is_strict_ : 1 = false;       // Function runs in strict mode (e.g. class methods)
     bool is_param_default_ : 1 = false;  // Created as a default param expression; uses param scope as outer env
+    // "this function should have a .prototype, and it has not been built yet"
+    // -- distinct from prototype_ == nullptr, which means it never has one
+    // (arrows, methods, accessors). Mutable for the same reason prototype_ is.
+    mutable bool prototype_pending_ : 1 = false;
     // Set ONLY by setup_mapped_arguments() on the getter/setter closures it
     // creates -- a C++-only trust bit (no public setter) so Object.cpp's
     // mapped-arguments fast paths can never be fooled by a JS-settable
@@ -1386,7 +1390,7 @@ public:
     // from prototype_ when it is set, but only after comparing the key against
     // "name" and "length" on the way in.
     Value constructor_prototype() const {
-        if (prototype_) return Value(prototype_);
+        if (prototype_ || prototype_pending_) return Value(ensure_prototype());
         return get_property("prototype");
     }
 
@@ -1413,7 +1417,7 @@ public:
     std::vector<std::string> get_own_property_keys() const;
     std::vector<std::string> get_internal_property_keys() const;
     bool has_own_property(const std::string& key) const {
-        if (key == "prototype" && prototype_ != nullptr) return true;
+        if (key == "prototype" && (prototype_ != nullptr || prototype_pending_)) return true;
         // "name"/"length" are virtually present (own, just not materialized
         // into descriptors_/shape yet) unless explicitly deleted -- see the
         // lazy-installation comment on name_deleted_/length_deleted_ above.
@@ -1441,6 +1445,8 @@ public:
     }
 
     Object* get_function_prototype() const { return prototype_; }
+    // Builds the deferred .prototype (and its "constructor") on first demand.
+    Object* ensure_prototype() const;
     void set_function_prototype(Object* proto);
 
     static Function* create_function_prototype();

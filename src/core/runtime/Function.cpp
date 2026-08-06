@@ -96,24 +96,11 @@ Function::Function(const std::string& name,
     exe->parameters = params;
     exe->body = std::move(body);
 
-    if (create_prototype) {
-        auto proto = ObjectFactory::create_object();
-        prototype_ = proto.release();
-
-        // ES5 13.2: function.prototype is {writable:true, enumerable:false, configurable:false}
-        // No descriptors_ entry: Function's own accessors answer for
-        // "prototype" from prototype_ alone, which is exactly the state any
-        // `f.prototype = x` already leaves behind (set_property deletes the
-        // entry). Materializing one here bought nothing and cost every
-        // function a 304-byte descriptor block. Native constructors below
-        // still keep theirs -- theirs is non-writable, which the synthesized
-        // answer does not cover.
-
-        // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}
-        PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
-            PropertyAttributes::Writable | PropertyAttributes::Configurable));
-        prototype_->set_property_descriptor("constructor", ctor_desc);
-    }
+    // Deferred: the object, and the 304-byte descriptor block its own
+    // "constructor" entry needs, are built the first time anything asks for
+    // them. Most functions are never used as constructors and never have
+    // .prototype read, so most never pay for either. See ensure_prototype().
+    prototype_pending_ = create_prototype;
 
     // "name"/"length" are lazy -- see the class-header comment on
     // name_deleted_/length_deleted_. exe->declared_length mirrors this
@@ -145,22 +132,11 @@ Function::Function(const std::string& name,
     exe->parameter_objects = std::move(params);
     exe->body = std::move(body);
 
-    if (create_prototype) {
-        auto proto = ObjectFactory::create_object();
-        prototype_ = proto.release();
-
-        // No descriptors_ entry: Function's own accessors answer for
-        // "prototype" from prototype_ alone, which is exactly the state any
-        // `f.prototype = x` already leaves behind (set_property deletes the
-        // entry). Materializing one here bought nothing and cost every
-        // function a 304-byte descriptor block. Native constructors below
-        // still keep theirs -- theirs is non-writable, which the synthesized
-        // answer does not cover.
-
-        PropertyDescriptor ctor_desc2(Value(this), static_cast<PropertyAttributes>(
-            PropertyAttributes::Writable | PropertyAttributes::Configurable));
-        prototype_->set_property_descriptor("constructor", ctor_desc2);
-    }
+    // Deferred: the object, and the 304-byte descriptor block its own
+    // "constructor" entry needs, are built the first time anything asks for
+    // them. Most functions are never used as constructors and never have
+    // .prototype read, so most never pay for either. See ensure_prototype().
+    prototype_pending_ = create_prototype;
 
     // "name"/"length" are lazy -- see the class-header comment. ES6: length =
     // number of params before first rest or default.
@@ -192,22 +168,11 @@ Function::Function(const std::string& name,
     // override if a sibling already claimed a different one (see
     // assign_decl_site_name's own doc comment).
     assign_decl_site_name(name);
-    if (create_prototype) {
-        auto proto = ObjectFactory::create_object();
-        prototype_ = proto.release();
-
-        // No descriptors_ entry: Function's own accessors answer for
-        // "prototype" from prototype_ alone, which is exactly the state any
-        // `f.prototype = x` already leaves behind (set_property deletes the
-        // entry). Materializing one here bought nothing and cost every
-        // function a 304-byte descriptor block. Native constructors below
-        // still keep theirs -- theirs is non-writable, which the synthesized
-        // answer does not cover.
-
-        PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
-            PropertyAttributes::Writable | PropertyAttributes::Configurable));
-        prototype_->set_property_descriptor("constructor", ctor_desc);
-    }
+    // Deferred: the object, and the 304-byte descriptor block its own
+    // "constructor" entry needs, are built the first time anything asks for
+    // them. Most functions are never used as constructors and never have
+    // .prototype read, so most never pay for either. See ensure_prototype().
+    prototype_pending_ = create_prototype;
 
     // Spec length is set explicitly by the caller via set_declared_length()
     // (writes through to executable_->declared_length) -- it depends on
@@ -1224,9 +1189,9 @@ PropertyDescriptor Function::get_property_descriptor(const std::string& key) con
     // prototype_ without an entry of its own: {writable, not enumerable, not
     // configurable} per ES5 13.2. A native constructor's is non-writable and
     // does get a real entry, which the check above hands back instead.
-    if (key == "prototype" && prototype_ && !(d && d->count("prototype")) &&
-        !has_shape_slot("prototype")) {
-        PropertyDescriptor pd(Value(prototype_), PropertyAttributes::Writable);
+    if (key == "prototype" && (prototype_ || prototype_pending_) &&
+        !(d && d->count("prototype")) && !has_shape_slot("prototype")) {
+        PropertyDescriptor pd(Value(ensure_prototype()), PropertyAttributes::Writable);
         pd.set_enumerable(false);
         pd.set_configurable(false);
         return pd;
@@ -1282,9 +1247,9 @@ bool Function::set_property_descriptor(const std::string& key, const PropertyDes
     } else if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         PropertyDescriptor mat(Value(static_cast<double>(get_declared_length())), PropertyAttributes::Configurable);
         Object::set_property_descriptor_default("length", mat);
-    } else if (key == "prototype" && prototype_ && !(d && d->count("prototype")) &&
-               !has_shape_slot("prototype")) {
-        PropertyDescriptor mat(Value(prototype_), PropertyAttributes::Writable);
+    } else if (key == "prototype" && (prototype_ || prototype_pending_) &&
+               !(d && d->count("prototype")) && !has_shape_slot("prototype")) {
+        PropertyDescriptor mat(Value(ensure_prototype()), PropertyAttributes::Writable);
         mat.set_enumerable(false);
         mat.set_configurable(false);
         Object::set_property_descriptor_default("prototype", mat);
@@ -1347,7 +1312,7 @@ Value Function::get_property(const std::string& key) const {
         return Value(static_cast<double>(get_declared_length()));
     }
     if (key == "prototype") {
-        if (prototype_ != nullptr) return Value(prototype_);
+        if (prototype_ || prototype_pending_) return Value(ensure_prototype());
         Value base_val = get_own_property(key);
         if (!base_val.is_undefined()) return base_val;
         return Value();
@@ -1400,8 +1365,24 @@ Value Function::get_property(const std::string& key) const {
     return Value();
 }
 
+Object* Function::ensure_prototype() const {
+    if (prototype_) return prototype_;
+    if (!prototype_pending_) return nullptr;
+    prototype_pending_ = false;
+    Function* self = const_cast<Function*>(this);
+    auto proto = ObjectFactory::create_object();
+    Collector::write_barrier(self);
+    self->prototype_ = proto.release();
+    // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}
+    PropertyDescriptor ctor_desc(Value(self), static_cast<PropertyAttributes>(
+        PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    self->prototype_->set_property_descriptor("constructor", ctor_desc);
+    return prototype_;
+}
+
 void Function::set_function_prototype(Object* proto) {
     Collector::write_barrier(this);
+    prototype_pending_ = false;
     prototype_ = proto;
     if (!proto) remove_own_property("prototype");
 }
@@ -1453,7 +1434,8 @@ std::vector<std::string> Function::get_own_property_keys() const {
     if (!name_deleted_ && !(d && d->count("name"))) {
         all.push_back("name");
     }
-    if (prototype_ && !(d && d->count("prototype")) && !has_shape_slot("prototype")) {
+    if ((prototype_ || prototype_pending_) && !(d && d->count("prototype")) &&
+        !has_shape_slot("prototype")) {
         all.push_back("prototype");
     }
     std::vector<std::string> result;
@@ -1492,11 +1474,13 @@ bool Function::set_property(const std::string& key, const Value& value, Property
             }
         }
         if (value.is_object()) {
+            prototype_pending_ = false;
             prototype_ = value.as_object();
             Object::delete_property_default(key);
             return true;
         }
         if (value.is_function()) {
+            prototype_pending_ = false;
             prototype_ = value.as_function();
             Object::delete_property_default(key);
             return true;
@@ -1505,6 +1489,7 @@ bool Function::set_property(const std::string& key, const Value& value, Property
         // function's own: without an entry of its own the write would walk the
         // chain and hand itself to an accessor inherited from
         // Function.prototype, which ES5 13.2 step 18 forbids.
+        prototype_pending_ = false;
         prototype_ = nullptr;
         if (attrs == PropertyAttributes::Default && !(descriptors() && descriptors()->count(key)) &&
             !has_shape_slot(key)) {
