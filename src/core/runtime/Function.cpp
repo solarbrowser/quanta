@@ -1115,6 +1115,10 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             function_context.create_binding(self_name, Value(this), false);
         }
 
+        // The scope the parameters were bound in, kept only when the body gets
+        // a variable environment of its own below -- that is the one case where
+        // a var can repeat a parameter name and not find it.
+        Environment* param_env = nullptr;
         {
             bool has_complex_params = false;
             for (const auto& p : parameter_objects_) {
@@ -1124,13 +1128,14 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 }
             }
             if (has_complex_params) {
+                param_env = function_context.get_lexical_environment();
                 function_context.push_block_scope();
                 function_context.set_variable_environment(function_context.get_lexical_environment());
             }
         }
 
         if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            scan_for_var_declarations(body_, function_context);
+            scan_for_var_declarations(body_, function_context, param_env);
         }
 
         Context* prev_context = Object::current_context_;
@@ -1718,7 +1723,7 @@ std::unique_ptr<Function> create_native_constructor(const std::string& name,
 
 }
 
-void Function::scan_for_var_declarations(ASTNode* node, Context& ctx) {
+void Function::scan_for_var_declarations(ASTNode* node, Context& ctx, Environment* param_env) {
     if (!node) return;
 
     if (node->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
@@ -1730,7 +1735,18 @@ void Function::scan_for_var_declarations(ASTNode* node, Context& ctx) {
 
                 auto* var_env = ctx.get_variable_environment();
                 if (!var_env || !var_env->has_own_binding(name)) {
-                    ctx.create_var_binding(name, Value(), true);
+                    // Non-simple parameters put the body's vars in an
+                    // environment of their own, so a var repeating a parameter
+                    // name no longer finds it and used to start at undefined,
+                    // dropping the argument. Spec seeds it from the parameter
+                    // instead. Only the parameter scope is consulted: asking
+                    // the whole chain would pick up an outer variable that has
+                    // nothing to do with this function.
+                    Value initial;
+                    if (param_env && param_env->has_own_binding(name)) {
+                        initial = param_env->get_binding_direct(name, &ctx);
+                    }
+                    ctx.create_var_binding(name, initial, true);
                 }
             }
         }
@@ -1739,62 +1755,62 @@ void Function::scan_for_var_declarations(ASTNode* node, Context& ctx) {
     if (node->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         BlockStatement* block = static_cast<BlockStatement*>(node);
         for (const auto& stmt : block->get_statements()) {
-            scan_for_var_declarations(stmt.get(), ctx);
+            scan_for_var_declarations(stmt.get(), ctx, param_env);
         }
     }
     else if (node->get_type() == ASTNode::Type::IF_STATEMENT) {
         IfStatement* if_stmt = static_cast<IfStatement*>(node);
-        scan_for_var_declarations(if_stmt->get_consequent(), ctx);
+        scan_for_var_declarations(if_stmt->get_consequent(), ctx, param_env);
         if (if_stmt->get_alternate()) {
-            scan_for_var_declarations(if_stmt->get_alternate(), ctx);
+            scan_for_var_declarations(if_stmt->get_alternate(), ctx, param_env);
         }
     }
     else if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
         ForStatement* for_stmt = static_cast<ForStatement*>(node);
         if (for_stmt->get_init()) {
-            scan_for_var_declarations(for_stmt->get_init(), ctx);
+            scan_for_var_declarations(for_stmt->get_init(), ctx, param_env);
         }
-        scan_for_var_declarations(for_stmt->get_body(), ctx);
+        scan_for_var_declarations(for_stmt->get_body(), ctx, param_env);
     }
     else if (node->get_type() == ASTNode::Type::WHILE_STATEMENT) {
         WhileStatement* while_stmt = static_cast<WhileStatement*>(node);
-        scan_for_var_declarations(while_stmt->get_body(), ctx);
+        scan_for_var_declarations(while_stmt->get_body(), ctx, param_env);
     }
     else if (node->get_type() == ASTNode::Type::DO_WHILE_STATEMENT) {
         DoWhileStatement* do_stmt = static_cast<DoWhileStatement*>(node);
-        scan_for_var_declarations(do_stmt->get_body(), ctx);
+        scan_for_var_declarations(do_stmt->get_body(), ctx, param_env);
     }
     else if (node->get_type() == ASTNode::Type::WITH_STATEMENT) {
         WithStatement* with_stmt = static_cast<WithStatement*>(node);
-        scan_for_var_declarations(with_stmt->get_body(), ctx);
+        scan_for_var_declarations(with_stmt->get_body(), ctx, param_env);
     }
     else if (node->get_type() == ASTNode::Type::TRY_STATEMENT) {
         TryStatement* try_stmt = static_cast<TryStatement*>(node);
-        scan_for_var_declarations(try_stmt->get_try_block(), ctx);
-        if (try_stmt->get_catch_clause()) scan_for_var_declarations(try_stmt->get_catch_clause(), ctx);
-        if (try_stmt->get_finally_block()) scan_for_var_declarations(try_stmt->get_finally_block(), ctx);
+        scan_for_var_declarations(try_stmt->get_try_block(), ctx, param_env);
+        if (try_stmt->get_catch_clause()) scan_for_var_declarations(try_stmt->get_catch_clause(), ctx, param_env);
+        if (try_stmt->get_finally_block()) scan_for_var_declarations(try_stmt->get_finally_block(), ctx, param_env);
     }
     else if (node->get_type() == ASTNode::Type::SWITCH_STATEMENT) {
         SwitchStatement* sw = static_cast<SwitchStatement*>(node);
         for (const auto& c : sw->get_cases()) {
             for (const auto& s : static_cast<CaseClause*>(c.get())->get_consequent()) {
-                scan_for_var_declarations(s.get(), ctx);
+                scan_for_var_declarations(s.get(), ctx, param_env);
             }
         }
     }
     else if (node->get_type() == ASTNode::Type::LABELED_STATEMENT) {
         LabeledStatement* lbl = static_cast<LabeledStatement*>(node);
-        scan_for_var_declarations(lbl->get_statement(), ctx);
+        scan_for_var_declarations(lbl->get_statement(), ctx, param_env);
     }
     else if (node->get_type() == ASTNode::Type::FOR_IN_STATEMENT) {
         ForInStatement* forin = static_cast<ForInStatement*>(node);
-        if (forin->get_left()) scan_for_var_declarations(forin->get_left(), ctx);
-        scan_for_var_declarations(forin->get_body(), ctx);
+        if (forin->get_left()) scan_for_var_declarations(forin->get_left(), ctx, param_env);
+        scan_for_var_declarations(forin->get_body(), ctx, param_env);
     }
     else if (node->get_type() == ASTNode::Type::FOR_OF_STATEMENT) {
         ForOfStatement* forof = static_cast<ForOfStatement*>(node);
-        if (forof->get_left()) scan_for_var_declarations(forof->get_left(), ctx);
-        scan_for_var_declarations(forof->get_body(), ctx);
+        if (forof->get_left()) scan_for_var_declarations(forof->get_left(), ctx, param_env);
+        scan_for_var_declarations(forof->get_body(), ctx, param_env);
     }
 }
 
