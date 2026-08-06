@@ -15,6 +15,8 @@
 #include "quanta/parser/Parser.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
+#include <cstdint>
+#include <vector>
 #include <cstdlib>
 #include <sstream>
 #include <iostream>
@@ -164,6 +166,63 @@ static bool uri_decode(Context& ctx, const std::string& input, bool (*reserved)(
     return true;
 }
 
+
+// Accumulates a run of digits exactly and rounds once, at the end. Rounding at
+// every step instead (`result = result * radix + d` in a double) is only exact
+// while the radix is a power of two, where each step is a shift; for radix 10
+// or 36 the value drifts as soon as it passes 2**53, and the drift is what a
+// parseInt round-trip of a large toString() output tripped over.
+static double digits_to_double(const std::vector<int>& digits, int radix) {
+    // Nearly everything fits here, and a uint64 -> double cast already rounds
+    // to nearest, so the exact path below is only for genuinely long inputs.
+    uint64_t small = 0;
+    size_t i = 0;
+    for (; i < digits.size(); i++) {
+        if (small > (UINT64_MAX - static_cast<uint64_t>(digits[i])) / static_cast<uint64_t>(radix)) break;
+        small = small * static_cast<uint64_t>(radix) + static_cast<uint64_t>(digits[i]);
+    }
+    if (i == digits.size()) return static_cast<double>(small);
+
+    std::vector<uint32_t> limbs;  // base 2**32, least significant first
+    limbs.push_back(static_cast<uint32_t>(small & 0xFFFFFFFFu));
+    limbs.push_back(static_cast<uint32_t>(small >> 32));
+    for (; i < digits.size(); i++) {
+        uint64_t carry = static_cast<uint64_t>(digits[i]);
+        for (uint32_t& limb : limbs) {
+            uint64_t cur = static_cast<uint64_t>(limb) * static_cast<uint64_t>(radix) + carry;
+            limb = static_cast<uint32_t>(cur);
+            carry = cur >> 32;
+        }
+        while (carry) {
+            limbs.push_back(static_cast<uint32_t>(carry));
+            carry >>= 32;
+        }
+    }
+    while (!limbs.empty() && limbs.back() == 0) limbs.pop_back();
+    if (limbs.empty()) return 0.0;
+
+    size_t bits = limbs.size() * 32;
+    while (bits > 0 && !((limbs[(bits - 1) >> 5] >> ((bits - 1) & 31)) & 1u)) bits--;
+    auto bit_at = [&](size_t b) { return (limbs[b >> 5] >> (b & 31)) & 1u; };
+
+    if (bits <= 64) {
+        uint64_t v = 0;
+        for (size_t b = bits; b-- > 0; ) v = (v << 1) | bit_at(b);
+        return static_cast<double>(v);
+    }
+
+    // Keep the top 64 bits and fold everything below into a sticky low bit, so
+    // the single cast that follows cannot round to even across a boundary the
+    // discarded bits had already pushed past.
+    uint64_t hi = 0;
+    for (size_t k = 0; k < 64; k++) hi = (hi << 1) | bit_at(bits - 1 - k);
+    for (size_t b = 0; b + 64 < bits; b++) {
+        if (bit_at(b)) { hi |= 1; break; }
+    }
+    return std::ldexp(static_cast<double>(hi), static_cast<int>(bits) - 64);
+}
+
+
 void register_global_builtins(Context& ctx) {
     if (!ctx.get_lexical_environment()) return;
     
@@ -238,25 +297,21 @@ void register_global_builtins(Context& ctx) {
                 start += 2;
             }
 
-            // Digit-by-digit double accumulation: exact for values a 64-bit
-            // integer parse would overflow on (e.g. parseInt("0x1" + "0"*17, 16)).
             auto digit_val = [](char c) -> int {
                 if (c >= '0' && c <= '9') return c - '0';
                 if (c >= 'a' && c <= 'z') return c - 'a' + 10;
                 if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
                 return -1;
             };
-            double result = 0.0;
-            size_t digits = 0;
+            std::vector<int> digits;
             while (start < str.length()) {
                 int d = digit_val(str[start]);
                 if (d < 0 || d >= radix) break;
-                result = result * radix + d;
+                digits.push_back(d);
                 ++start;
-                ++digits;
             }
-            if (digits == 0) return Value::nan();
-            return Value(sign * result);
+            if (digits.empty()) return Value::nan();
+            return Value(sign * digits_to_double(digits, radix));
         }, 2);
     Function* parseInt_raw = parseInt_fn.get();
     ctx.get_lexical_environment()->create_binding("parseInt", Value(parseInt_fn.release()), true, true, false);

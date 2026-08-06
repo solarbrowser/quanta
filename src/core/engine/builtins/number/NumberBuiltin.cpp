@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <vector>
 
 namespace Quanta {
 
@@ -257,13 +258,46 @@ void register_number_builtins(Context& ctx) {
                     }
                 } else {
                     // Past int64 the cast is undefined and produced no digits at
-                    // all, so (1e21).toString(16) came back empty. Divide in
-                    // doubles instead; a value this large has no low bits left
-                    // to lose anyway.
-                    while (whole >= 1.0) {
-                        double q = std::floor(whole / radix);
-                        result = digit_char(static_cast<int>(whole - q * radix)) + result;
-                        whole = q;
+                    // all, so (1e21).toString(16) came back empty. Dividing in
+                    // doubles instead is not a fix either: above 2**53 the
+                    // quotient is no longer representable, so the digits drift,
+                    // and the remainder could even come out at or above the
+                    // radix and print as a character past 'z'.
+                    //
+                    // The integer part of a double is exactly mantissa * 2**exp
+                    // with a 53-bit mantissa, so build that as a big integer and
+                    // divide it by the radix. Every digit is then the real one.
+                    int exp2 = 0;
+                    uint64_t mantissa = static_cast<uint64_t>(
+                        std::ldexp(std::frexp(whole, &exp2), 53));
+                    exp2 -= 53;
+
+                    std::vector<uint32_t> limbs;  // base 2**32, least significant first
+                    limbs.push_back(static_cast<uint32_t>(mantissa & 0xFFFFFFFFu));
+                    limbs.push_back(static_cast<uint32_t>(mantissa >> 32));
+
+                    // whole >= 9.2e18 > 2**53, so the exponent left over after
+                    // the mantissa is never negative and this only shifts up.
+                    limbs.insert(limbs.begin(), static_cast<size_t>(exp2 / 32), 0u);
+                    if (int bit_shift = exp2 % 32) {
+                        uint32_t carry = 0;
+                        for (uint32_t& limb : limbs) {
+                            uint64_t v = (static_cast<uint64_t>(limb) << bit_shift) | carry;
+                            limb = static_cast<uint32_t>(v);
+                            carry = static_cast<uint32_t>(v >> 32);
+                        }
+                        if (carry) limbs.push_back(carry);
+                    }
+
+                    while (!limbs.empty()) {
+                        uint64_t rem = 0;
+                        for (size_t i = limbs.size(); i-- > 0; ) {
+                            uint64_t cur = (rem << 32) | limbs[i];
+                            limbs[i] = static_cast<uint32_t>(cur / radix);
+                            rem = cur % radix;
+                        }
+                        result = digit_char(static_cast<int>(rem)) + result;
+                        while (!limbs.empty() && limbs.back() == 0) limbs.pop_back();
                     }
                 }
 
