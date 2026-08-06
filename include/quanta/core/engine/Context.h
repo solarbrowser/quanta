@@ -279,6 +279,15 @@ public:
     void run_dispose_resources();  // dispose current scope, pop it
 
     bool has_binding(const std::string& name) const;
+    // The realm's %String.prototype% and friends, captured once the builtins
+    // are installed. A primitive's property lookup goes through these: the spec
+    // reaches for the intrinsic and never for the global String/Number/...
+    // binding, which user code can reassign -- and resolving through that
+    // binding cost a scope lookup plus a property read on every access.
+    enum class PrimitiveKind : uint8_t { String, Number, Boolean, BigInt, Symbol, Count };
+    static Object* primitive_prototype(PrimitiveKind kind);
+    void capture_primitive_prototypes();
+
     Value get_binding(const std::string& name) const;
     bool set_binding(const std::string& name, const Value& value);
     std::unordered_map<std::string, Value> snapshot_bindings() const;

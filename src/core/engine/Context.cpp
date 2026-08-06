@@ -753,6 +753,26 @@ void Context::initialize_global_context() {
     Object::arm_array_iterator_protector();
 }
 
+namespace {
+// One realm per thread for this purpose, matching Generator's own
+// s_generator_prototype_. Never cleared: these live as long as the builtins do.
+thread_local Object* g_primitive_protos[static_cast<size_t>(Context::PrimitiveKind::Count)] = {};
+}  // namespace
+
+Object* Context::primitive_prototype(PrimitiveKind kind) {
+    return g_primitive_protos[static_cast<size_t>(kind)];
+}
+
+void Context::capture_primitive_prototypes() {
+    static const char* names[] = {"String", "Number", "Boolean", "BigInt", "Symbol"};
+    for (size_t i = 0; i < static_cast<size_t>(PrimitiveKind::Count); i++) {
+        Value ctor = get_binding(names[i]);
+        if (!ctor.is_function()) continue;
+        Value proto = ctor.as_function()->get_property("prototype");
+        if (proto.is_object()) g_primitive_protos[i] = proto.as_object();
+    }
+}
+
 void Context::initialize_built_ins() {
     Symbol::initialize_well_known_symbols();
 
@@ -814,6 +834,10 @@ void Context::initialize_built_ins() {
     register_arraybuffer_builtins(*this);
     Proxy::setup_proxy(*this);
     Reflect::setup_reflect(*this);
+
+    // Everything is registered and still pristine here, which is the only
+    // moment the intrinsics can be read off the globals honestly.
+    capture_primitive_prototypes();
 }
 
 

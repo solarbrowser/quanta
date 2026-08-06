@@ -128,18 +128,19 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
             return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
         }
     }
-    const char* ctor_name = prim.is_string() ? "String"
-        : prim.is_number() ? "Number"
-        : prim.is_bigint() ? "BigInt"
-        : prim.is_boolean() ? "Boolean"
-        : prim.is_symbol() ? "Symbol"
-        : nullptr;
-    if (!ctor_name) return Value();
-    Value ctor = ctx.get_binding(ctor_name);
-    if (ctx.has_exception() || !ctor.is_function()) return Value();
-    Value proto = ctor.as_function()->get_property("prototype");
-    if (ctx.has_exception() || !proto.is_object()) return Value();
-    Object* proto_obj = proto.as_object();
+    using PK = Context::PrimitiveKind;
+    PK kind = prim.is_string() ? PK::String
+        : prim.is_number() ? PK::Number
+        : prim.is_bigint() ? PK::BigInt
+        : prim.is_boolean() ? PK::Boolean
+        : prim.is_symbol() ? PK::Symbol
+        : PK::Count;
+    if (kind == PK::Count) return Value();
+    // The realm intrinsic, not `globalThis.String.prototype`: reassigning the
+    // global binding must not change what a string's methods resolve to, and
+    // going through it cost a scope lookup and a property read every time.
+    Object* proto_obj = Context::primitive_prototype(kind);
+    if (!proto_obj) return Value();
 
     // Mono/poly cache keyed on proto_obj's OWN shape (every string shares the
     // same String.prototype, etc.) -- not the receiver's shape, which is why

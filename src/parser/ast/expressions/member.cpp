@@ -379,15 +379,16 @@ Value MemberExpression::evaluate(Context& ctx) {
                 return Value(static_cast<double>(object_value.as_string()->utf16_length()));
             }
 
-            std::string ctor_name = object_value.is_string() ? "String" :
-                object_value.is_number() ? "Number" :
-                object_value.is_bigint() ? "BigInt" : "Boolean";
-            Value ctor = ctx.get_binding(ctor_name);
-            if (ctor.is_object() || ctor.is_function()) {
-                Object* ctor_obj = ctor.is_object() ? ctor.as_object() : ctor.as_function();
-                Value prototype = ctor_obj->get_property("prototype");
-                if (prototype.is_object()) {
-                    Object* proto_obj = prototype.as_object();
+            // The realm intrinsic, not `globalThis.String.prototype` -- the spec
+            // never consults the global binding here, and reassigning it must
+            // not change what a primitive's methods resolve to.
+            using PK = Context::PrimitiveKind;
+            PK kind = object_value.is_string() ? PK::String :
+                object_value.is_number() ? PK::Number :
+                object_value.is_bigint() ? PK::BigInt : PK::Boolean;
+            {
+                Object* proto_obj = Context::primitive_prototype(kind);
+                if (proto_obj) {
 
                     // Check for accessor getter on prototype
                     PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
