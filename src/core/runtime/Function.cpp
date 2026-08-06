@@ -101,10 +101,13 @@ Function::Function(const std::string& name,
         prototype_ = proto.release();
 
         // ES5 13.2: function.prototype is {writable:true, enumerable:false, configurable:false}
-        PropertyDescriptor proto_desc(Value(prototype_), PropertyAttributes::Writable);
-        proto_desc.set_enumerable(false);
-        proto_desc.set_configurable(false);
-        this->set_property_descriptor("prototype", proto_desc);
+        // No descriptors_ entry: Function's own accessors answer for
+        // "prototype" from prototype_ alone, which is exactly the state any
+        // `f.prototype = x` already leaves behind (set_property deletes the
+        // entry). Materializing one here bought nothing and cost every
+        // function a 304-byte descriptor block. Native constructors below
+        // still keep theirs -- theirs is non-writable, which the synthesized
+        // answer does not cover.
 
         // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}
         PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
@@ -146,10 +149,13 @@ Function::Function(const std::string& name,
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
 
-        PropertyDescriptor proto_desc2(Value(prototype_), PropertyAttributes::Writable);
-        proto_desc2.set_enumerable(false);
-        proto_desc2.set_configurable(false);
-        this->set_property_descriptor("prototype", proto_desc2);
+        // No descriptors_ entry: Function's own accessors answer for
+        // "prototype" from prototype_ alone, which is exactly the state any
+        // `f.prototype = x` already leaves behind (set_property deletes the
+        // entry). Materializing one here bought nothing and cost every
+        // function a 304-byte descriptor block. Native constructors below
+        // still keep theirs -- theirs is non-writable, which the synthesized
+        // answer does not cover.
 
         PropertyDescriptor ctor_desc2(Value(this), static_cast<PropertyAttributes>(
             PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -190,10 +196,13 @@ Function::Function(const std::string& name,
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
 
-        PropertyDescriptor proto_desc(Value(prototype_), PropertyAttributes::Writable);
-        proto_desc.set_enumerable(false);
-        proto_desc.set_configurable(false);
-        this->set_property_descriptor("prototype", proto_desc);
+        // No descriptors_ entry: Function's own accessors answer for
+        // "prototype" from prototype_ alone, which is exactly the state any
+        // `f.prototype = x` already leaves behind (set_property deletes the
+        // entry). Materializing one here bought nothing and cost every
+        // function a 304-byte descriptor block. Native constructors below
+        // still keep theirs -- theirs is non-writable, which the synthesized
+        // answer does not cover.
 
         PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
             PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1211,6 +1220,17 @@ PropertyDescriptor Function::get_property_descriptor(const std::string& key) con
     if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         return PropertyDescriptor(Value(static_cast<double>(get_declared_length())), PropertyAttributes::Configurable);
     }
+    // Same treatment for "prototype", whose object the constructors keep in
+    // prototype_ without an entry of its own: {writable, not enumerable, not
+    // configurable} per ES5 13.2. A native constructor's is non-writable and
+    // does get a real entry, which the check above hands back instead.
+    if (key == "prototype" && prototype_ && !(d && d->count("prototype")) &&
+        !has_shape_slot("prototype")) {
+        PropertyDescriptor pd(Value(prototype_), PropertyAttributes::Writable);
+        pd.set_enumerable(false);
+        pd.set_configurable(false);
+        return pd;
+    }
     return Object::get_property_descriptor_default(key);
 }
 
@@ -1262,6 +1282,12 @@ bool Function::set_property_descriptor(const std::string& key, const PropertyDes
     } else if (key == "length" && !length_deleted_ && !(d && d->count("length")) && !has_shape_slot("length")) {
         PropertyDescriptor mat(Value(static_cast<double>(get_declared_length())), PropertyAttributes::Configurable);
         Object::set_property_descriptor_default("length", mat);
+    } else if (key == "prototype" && prototype_ && !(d && d->count("prototype")) &&
+               !has_shape_slot("prototype")) {
+        PropertyDescriptor mat(Value(prototype_), PropertyAttributes::Writable);
+        mat.set_enumerable(false);
+        mat.set_configurable(false);
+        Object::set_property_descriptor_default("prototype", mat);
     }
     return Object::set_property_descriptor_default(key, desc);
 }
@@ -1427,6 +1453,9 @@ std::vector<std::string> Function::get_own_property_keys() const {
     if (!name_deleted_ && !(d && d->count("name"))) {
         all.push_back("name");
     }
+    if (prototype_ && !(d && d->count("prototype")) && !has_shape_slot("prototype")) {
+        all.push_back("prototype");
+    }
     std::vector<std::string> result;
     result.reserve(all.size());
 
@@ -1472,7 +1501,19 @@ bool Function::set_property(const std::string& key, const Value& value, Property
             Object::delete_property_default(key);
             return true;
         }
+        // A non-object value clears prototype_, but the property is still this
+        // function's own: without an entry of its own the write would walk the
+        // chain and hand itself to an accessor inherited from
+        // Function.prototype, which ES5 13.2 step 18 forbids.
         prototype_ = nullptr;
+        if (attrs == PropertyAttributes::Default && !(descriptors() && descriptors()->count(key)) &&
+            !has_shape_slot(key)) {
+            PropertyDescriptor own(value, PropertyAttributes::Writable);
+            own.set_enumerable(false);
+            own.set_configurable(false);
+            Object::set_property_descriptor_default(key, own);
+            return true;
+        }
         return Object::set_property_default(key, value, attrs);
     }
 
