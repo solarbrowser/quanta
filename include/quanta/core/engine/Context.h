@@ -286,6 +286,10 @@ public:
     // binding cost a scope lookup plus a property read on every access.
     enum class PrimitiveKind : uint8_t { String, Number, Boolean, BigInt, Symbol, Count };
     static Object* primitive_prototype(PrimitiveKind kind);
+    // The realm's %Promise%, captured the same way and for the same reason:
+    // Promise.resolve's fast path has to know it is dealing with the untouched
+    // constructor before it may skip building a capability.
+    static Function* intrinsic_promise();
     void capture_primitive_prototypes();
 
     Value get_binding(const std::string& name) const;

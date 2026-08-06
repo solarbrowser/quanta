@@ -386,64 +386,79 @@ void register_promise_builtins(Context& ctx) {
             Function* species_ctor = species_constructor(ctx, this_obj, default_ctor_val.as_function());
             if (ctx.has_exception()) return Value();
 
+            // With this realm's own Promise and no species override there is
+            // nothing to observe the capability: its resolve/reject pair, the
+            // executor and the state shared between them exist only so the
+            // wrappers below can settle the child, which the child can do
+            // itself. A subclass or a species override still builds the real
+            // capability, since those must see their constructor invoked.
             PromiseCapabilityResult cap;
-            if (!new_promise_capability(ctx, Value(species_ctor), cap)) return Value();
+            Promise* fast_child = nullptr;
+            Value result_promise;
+            if (species_ctor == Context::intrinsic_promise()) {
+                auto owned = ObjectFactory::create_promise(&ctx);
+                fast_child = static_cast<Promise*>(owned.get());
+                result_promise = Value(owned.release());
+            } else {
+                if (!new_promise_capability(ctx, Value(species_ctor), cap)) return Value();
+                result_promise = cap.promise;
+            }
             Function* cap_resolve = cap.resolve;
             Function* cap_reject = cap.reject;
 
             // PerformPromiseThen's "Identity"/"Thrower" defaults: with no real handler,
             // forward the value/reason to the capability unchanged rather than skipping it.
             auto ful_wrapper = ObjectFactory::create_native_function("",
-                [on_fulfilled, cap_resolve, cap_reject](Context& ctx, const std::vector<Value>& args) -> Value {
+                [on_fulfilled, cap_resolve, cap_reject, fast_child](Context& ctx, const std::vector<Value>& args) -> Value {
+                    auto settle = [&](const Value& v, bool ok) {
+                        if (fast_child) { ok ? fast_child->fulfill(v) : fast_child->reject(v); return; }
+                        std::vector<Value> a = { v };
+                        (ok ? cap_resolve : cap_reject)->call(ctx, a);
+                    };
                     Value val = args.empty() ? Value() : args[0];
-                    if (!on_fulfilled) {
-                        std::vector<Value> ra = { val };
-                        cap_resolve->call(ctx, ra);
-                        return Value();
-                    }
+                    if (!on_fulfilled) { settle(val, true); return Value(); }
                     Value result = on_fulfilled->call(ctx, { val });
                     if (ctx.has_exception()) {
                         Value exc = ctx.get_exception(); ctx.clear_exception();
-                        std::vector<Value> rja = { exc };
-                        cap_reject->call(ctx, rja);
+                        settle(exc, false);
                     } else {
-                        std::vector<Value> ra = { result };
-                        cap_resolve->call(ctx, ra);
+                        settle(result, true);
                     }
                     return Value();
                 }, 1);
-            ful_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
-            ful_wrapper->set_property("[[CapReject]]", Value(cap_reject));
             auto rej_wrapper = ObjectFactory::create_native_function("",
-                [on_rejected, cap_resolve, cap_reject](Context& ctx, const std::vector<Value>& args) -> Value {
+                [on_rejected, cap_resolve, cap_reject, fast_child](Context& ctx, const std::vector<Value>& args) -> Value {
+                    auto settle = [&](const Value& v, bool ok) {
+                        if (fast_child) { ok ? fast_child->fulfill(v) : fast_child->reject(v); return; }
+                        std::vector<Value> a = { v };
+                        (ok ? cap_resolve : cap_reject)->call(ctx, a);
+                    };
                     Value reason = args.empty() ? Value() : args[0];
-                    if (!on_rejected) {
-                        std::vector<Value> rja = { reason };
-                        cap_reject->call(ctx, rja);
-                        return Value();
-                    }
+                    if (!on_rejected) { settle(reason, false); return Value(); }
                     Value result = on_rejected->call(ctx, { reason });
                     if (ctx.has_exception()) {
                         Value exc = ctx.get_exception(); ctx.clear_exception();
-                        std::vector<Value> rja = { exc };
-                        cap_reject->call(ctx, rja);
+                        settle(exc, false);
                     } else {
-                        std::vector<Value> ra = { result };
-                        cap_resolve->call(ctx, ra);
+                        settle(result, true);
                     }
                     return Value();
                 }, 1);
-            rej_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
-            rej_wrapper->set_property("[[CapReject]]", Value(cap_reject));
 
             // Lambda captures are invisible to the collector: mirror them as
-            // hidden properties so the wrappers keep their handler/capability.
+            // hidden properties so the wrappers keep whatever they will settle.
             if (on_fulfilled) ful_wrapper->set_property("[[Handler]]", Value(on_fulfilled));
-            ful_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
-            ful_wrapper->set_property("[[CapReject]]", Value(cap_reject));
             if (on_rejected) rej_wrapper->set_property("[[Handler]]", Value(on_rejected));
-            rej_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
-            rej_wrapper->set_property("[[CapReject]]", Value(cap_reject));
+            if (fast_child) {
+                Value child_val(static_cast<Object*>(fast_child));
+                ful_wrapper->set_property("[[Child]]", child_val);
+                rej_wrapper->set_property("[[Child]]", child_val);
+            } else {
+                ful_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
+                ful_wrapper->set_property("[[CapReject]]", Value(cap_reject));
+                rej_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
+                rej_wrapper->set_property("[[CapReject]]", Value(cap_reject));
+            }
 
             // The native child this creates is intentionally discarded -- cap.promise (built
             // via the species constructor above) is the promise actually returned to JS;
@@ -451,7 +466,7 @@ void register_promise_builtins(Context& ctx) {
             // them alive until they fire, same as any other .then() call.
             promise->then(ful_wrapper.release(), rej_wrapper.release());
 
-            return cap.promise;
+            return result_promise;
         }, 2);
     promise_prototype->set_property("then", Value(promise_then.release()), PropertyAttributes::BuiltinFunction);
 
@@ -589,6 +604,18 @@ void register_promise_builtins(Context& ctx) {
                         return value;
                     }
                 }
+            }
+            // With this realm's own Promise there is nobody to observe the
+            // capability: its resolve/reject pair, the executor wrapping them
+            // and the state shared between them all exist to make one call to
+            // the resolution procedure, which Promise::fulfill already is.
+            // A subclass or a replaced constructor still goes the long way.
+            if (c_val.is_function() && c_val.as_function() == Context::intrinsic_promise()) {
+                auto fresh = ObjectFactory::create_promise(&ctx);
+                Promise* p = static_cast<Promise*>(fresh.get());
+                p->fulfill(value);
+                if (ctx.has_exception()) return Value();
+                return Value(fresh.release());
             }
             PromiseCapabilityResult cap;
             if (!new_promise_capability(ctx, c_val, cap)) return Value();

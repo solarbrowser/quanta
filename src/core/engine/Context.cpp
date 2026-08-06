@@ -757,7 +757,10 @@ namespace {
 // One realm per thread for this purpose, matching Generator's own
 // s_generator_prototype_. Never cleared: these live as long as the builtins do.
 thread_local Object* g_primitive_protos[static_cast<size_t>(Context::PrimitiveKind::Count)] = {};
+thread_local Function* g_intrinsic_promise = nullptr;
 }  // namespace
+
+Function* Context::intrinsic_promise() { return g_intrinsic_promise; }
 
 Object* Context::primitive_prototype(PrimitiveKind kind) {
     return g_primitive_protos[static_cast<size_t>(kind)];
@@ -771,6 +774,8 @@ void Context::capture_primitive_prototypes() {
         Value proto = ctor.as_function()->get_property("prototype");
         if (proto.is_object()) g_primitive_protos[i] = proto.as_object();
     }
+    Value promise_ctor = get_binding("Promise");
+    if (promise_ctor.is_function()) g_intrinsic_promise = promise_ctor.as_function();
 }
 
 void Context::initialize_built_ins() {
