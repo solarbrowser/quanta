@@ -26,7 +26,8 @@ const std::string* Shape::intern(const std::string& key) {
 
 Shape::Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is_accessor)
     : parent_(parent), added_key_(key),
-      slot_count_(slot_index + (is_accessor ? 2u : 1u)), is_accessor_added_(is_accessor) {
+      slot_count_(slot_index + (is_accessor ? 2u : 1u)), is_accessor_added_(is_accessor),
+      has_any_accessor_(is_accessor || (parent && parent->has_any_accessor_)) {
     if (parent_) slots_ = parent_->slots_;
     slots_.set(key, slot_index, is_accessor);
 }

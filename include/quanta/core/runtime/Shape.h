@@ -64,7 +64,9 @@ public:
 
     // True if `key` names an accessor-kind slot (its value at find_slot(key)
     // is a getter Value; the paired setter Value lives at find_slot(key)+1).
-    bool is_accessor_slot(const std::string& key) const { return slots_.is_accessor(key); }
+    bool is_accessor_slot(const std::string& key) const {
+        return has_any_accessor_ && slots_.is_accessor(key);
+    }
     // find_slot + is_accessor_slot from ONE probe: SlotMap keeps both in the
     // same entry, so asking separately hashes the key twice.
     int32_t find_data_slot(const std::string& key) const { return slots_.find_data(key); }
@@ -121,6 +123,12 @@ private:
     // either null or a TransitionMap*. See those fields' own doc comment.
     bool transitions_is_single_ : 1 = false;
     bool accessor_transitions_is_single_ : 1 = false;
+    // True if this shape or any ancestor added an accessor, i.e. whether
+    // slots_ can hold an accessor entry at all. Almost no shape can, and
+    // is_accessor_slot() is asked on every inline-cache hit (it is half of
+    // has_descriptor_override's guard), so answering from a bit spares those
+    // hits a keyed probe of the slot table.
+    bool has_any_accessor_ : 1 = false;
 
     // Slot table (key -> flattened slot index), same inline+overflow idiom
     // as HybridDescriptorMap (Object.h). No migration/erase needed --
