@@ -18,9 +18,15 @@ class String {
     String* left_  = nullptr;
     String* right_ = nullptr;
     mutable size_t hash_ = 0;
-    bool interned_       = false;
-    bool is_cons_        = false;
-    mutable bool flat_   = false; // true when data_ holds the materialized bytes
+    // Bit-fields, not plain bools: ascii_ below was added after the comment
+    // promising 64 bytes was written and pushed sizeof(String) to 72, which
+    // rounds up to the 80-byte heap class. Packed into one byte together they
+    // fit in the padding utf16_len_'s alignment leaves, so a string cell is
+    // 64 again -- and a rope's cons nodes are strings too.
+    bool interned_       : 1 = false;
+    bool is_cons_        : 1 = false;
+    mutable bool flat_   : 1 = false; // true when data_ holds the materialized bytes
+    mutable uint8_t ascii_ : 2 = 0;
     // UTF-16 length, computed once. `.length` is a scan of the whole UTF-8
     // buffer, so reading it in a loop over a growing string is quadratic;
     // strings are immutable, so the answer never changes once known. Fits the
@@ -32,7 +38,6 @@ class String {
     // IS a byte index and the length IS the byte count, so every indexed read
     // becomes O(1) instead of a decode from the start of the string. 0 unknown,
     // 1 single-byte, 2 has multi-byte sequences.
-    mutable uint8_t ascii_ = 0;
 
     void ensure_flat() const;
     void calculate_hash() const noexcept;
