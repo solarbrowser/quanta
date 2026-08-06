@@ -770,6 +770,22 @@ inline bool dense_element_slot(const Value& receiver, uint32_t index, Object*& o
     return true;
 }
 
+// The same question for a typed array. current_length() is the spec-current
+// length, and already answers 0 for a detached buffer and for a view whose
+// window no longer fits its resizable buffer, so one bound test covers those.
+// Fractional, negative and out-of-range keys deliberately stay on the generic
+// path: there a canonical numeric index reads as undefined and writes as a
+// silent no-op without ever consulting the prototype, which is not something
+// this shortcut should be trying to reproduce.
+inline bool typed_element_slot(const Value& receiver, uint32_t index, TypedArrayBase*& out) {
+    Object* obj = as_object_like(receiver);
+    if (!obj || obj->get_type() != Object::ObjectType::TypedArray) return false;
+    auto* ta = static_cast<TypedArrayBase*>(obj);
+    if (index >= ta->current_length()) return false;
+    out = ta;
+    return true;
+}
+
 // GetKeyed's own cache: get_named()'s FeedbackSlot-based cache can't be
 // reused directly here because GetNamed's `name` is a compile-time constant
 // per bytecode site, while GetKeyed's key comes from a register and can
@@ -1437,7 +1453,12 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 CHECK_EXC();
                 break;
             case Op::ToPropertyKey:
-                if (!acc.is_string()) {
+                // A number is left alone: converting it is what the keyed
+                // opcodes downstream already do for themselves, and unlike an
+                // object key it has no valueOf/toString to observe, so running
+                // the conversion here early buys nothing and costs every
+                // compound element write its index string.
+                if (!acc.is_string() && !acc.is_number()) {
                     acc = Value(acc.to_property_key());
                     CHECK_EXC();
                 }
@@ -2279,9 +2300,16 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 }
                 uint32_t index;
                 Object* dense;
-                if (array_index_key(acc, index) && dense_element_slot(recv, index, dense)) {
-                    acc = dense->get_element_unchecked(index);
-                    break;
+                TypedArrayBase* typed;
+                if (array_index_key(acc, index)) {
+                    if (dense_element_slot(recv, index, dense)) {
+                        acc = dense->get_element_unchecked(index);
+                        break;
+                    }
+                    if (typed_element_slot(recv, index, typed)) {
+                        acc = typed->get_element(index);
+                        break;
+                    }
                 }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
@@ -2303,9 +2331,16 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 }
                 uint32_t index;
                 Object* dense;
-                if (array_index_key(regs[key_reg], index) && dense_element_slot(recv, index, dense)) {
-                    dense->set_element(index, acc);
-                    break;
+                TypedArrayBase* typed;
+                if (array_index_key(regs[key_reg], index)) {
+                    if (dense_element_slot(recv, index, dense)) {
+                        dense->set_element(index, acc);
+                        break;
+                    }
+                    if (typed_element_slot(recv, index, typed)) {
+                        typed->set_element(index, acc);
+                        break;
+                    }
                 }
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();
@@ -3066,7 +3101,12 @@ Value h_gen_ToPropertyKey(Frame& f, uint32_t pc, Value acc) {
     instr_pc = pc;
     pc += 1;
     do {
-                if (!acc.is_string()) {
+                // A number is left alone: converting it is what the keyed
+                // opcodes downstream already do for themselves, and unlike an
+                // object key it has no valueOf/toString to observe, so running
+                // the conversion here early buys nothing and costs every
+                // compound element write its index string.
+                if (!acc.is_string() && !acc.is_number()) {
                     acc = Value(acc.to_property_key());
                     CHECK_EXC();
                 }
@@ -4578,11 +4618,19 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc);
 Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
     uint32_t index;
     Object* dense;
-    if (LIKELY(array_index_key(acc, index) &&
-               dense_element_slot(f.regs[f.code[pc + 1]], index, dense))) {
-        acc = dense->get_element_unchecked(index);
-        pc += 4;
-        DISPATCH();
+    TypedArrayBase* typed;
+    if (LIKELY(array_index_key(acc, index))) {
+        const Value& recv = f.regs[f.code[pc + 1]];
+        if (LIKELY(dense_element_slot(recv, index, dense))) {
+            acc = dense->get_element_unchecked(index);
+            pc += 4;
+            DISPATCH();
+        }
+        if (typed_element_slot(recv, index, typed)) {
+            acc = typed->get_element(index);
+            pc += 4;
+            DISPATCH();
+        }
     }
     [[clang::musttail]] return h_gen_GetKeyed(f, pc, acc);
 }
@@ -4657,9 +4705,16 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
                 }
                 uint32_t index;
                 Object* dense;
-                if (array_index_key(acc, index) && dense_element_slot(recv, index, dense)) {
-                    acc = dense->get_element_unchecked(index);
-                    break;
+                TypedArrayBase* typed;
+                if (array_index_key(acc, index)) {
+                    if (dense_element_slot(recv, index, dense)) {
+                        acc = dense->get_element_unchecked(index);
+                        break;
+                    }
+                    if (typed_element_slot(recv, index, typed)) {
+                        acc = typed->get_element(index);
+                        break;
+                    }
                 }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
@@ -4695,9 +4750,16 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                 }
                 uint32_t index;
                 Object* dense;
-                if (array_index_key(regs[key_reg], index) && dense_element_slot(recv, index, dense)) {
-                    dense->set_element(index, acc);
-                    break;
+                TypedArrayBase* typed;
+                if (array_index_key(regs[key_reg], index)) {
+                    if (dense_element_slot(recv, index, dense)) {
+                        dense->set_element(index, acc);
+                        break;
+                    }
+                    if (typed_element_slot(recv, index, typed)) {
+                        typed->set_element(index, acc);
+                        break;
+                    }
                 }
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();

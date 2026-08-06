@@ -819,10 +819,14 @@ Value Object::get_property_default(const std::string& key) const {
     if (this->get_type() == ObjectType::TypedArray) {
         const TypedArrayBase* typed_array = static_cast<const TypedArrayBase*>(this);
         
-        char* end;
-        unsigned long index = std::strtoul(key.c_str(), &end, 10);
-        if (*end == '\0' && index < typed_array->length()) {
-            return typed_array->get_element(static_cast<size_t>(index));
+        // Only a canonical numeric index reaches the buffer. strtoul used to
+        // stand in for that test and accepted everything it happens to parse,
+        // so "01", " 1" and "+1" each read an element that the spec says is an
+        // ordinary property lookup, answering undefined off the prototype.
+        double num_idx;
+        if (TypedArrayBase::canonical_numeric_index(key, num_idx)) {
+            if (!typed_array->is_valid_integer_index(num_idx)) return Value();
+            return typed_array->get_element(static_cast<size_t>(num_idx));
         }
         
         if (key == "length") {
