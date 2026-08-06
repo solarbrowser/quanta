@@ -3066,6 +3066,15 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         for (const auto& info : declared_pre) {
             if (info.is_catch_param) {
                 env_resident.insert(info.name);
+            } else if (info.is_lexical && direct_pre.count(info.name) &&
+                       decl_count[info.name] > 1 && !sibling_safe.count(info.name)) {
+                // Declared directly here AND again in a region nested inside
+                // it: two bindings, one name, both live. A register can hold
+                // only one of them, and refusing on that basis handed the
+                // whole function to the tree-walker over a single shadowed
+                // loop variable. The environment chain already keeps repeated
+                // declarations apart, so let this one live there.
+                env_resident.insert(info.name);
             } else if (info.is_lexical && !direct_pre.count(info.name)) {
                 if (decl_count[info.name] > 1 && !env_resident.count(info.name) &&
                     sibling_safe.count(info.name)) {
