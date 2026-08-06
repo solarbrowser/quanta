@@ -3168,9 +3168,21 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // A local named "arguments" needs the implicit arguments-object
         // hoisting semantics neither storage mode replicates.
         if (info.name == "arguments") return nullptr;
+        bool aliases_param = false;
         for (const auto& p : param_names) {
-            if (p == info.name) return nullptr;  // param/local aliasing: stay on tree-walker
+            if (p != info.name) continue;
+            // `var x` where x is already a parameter does not introduce a
+            // second binding: FunctionDeclarationInstantiation reuses the
+            // parameter's, which keeps the argument's value rather than being
+            // re-initialized to undefined. So there is nothing to declare, and
+            // references resolve to the parameter's register on their own. A
+            // lexical of the same name is a SyntaxError, so it never gets here
+            // from valid source and still refuses.
+            if (info.is_lexical) return nullptr;
+            aliases_param = true;
+            break;
         }
+        if (aliases_param) continue;
         if (has_rest && rest_name == info.name) return nullptr;
         // Runtime const-immutability isn't implemented for the register path;
         // refuse rather than compile an incorrectly-mutable const.
