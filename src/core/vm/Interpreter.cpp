@@ -147,8 +147,16 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     // though it shares the same fb/kMaxEntries budget (proto_obj's Shape* is
     // always distinct from any real receiver's shape, so entries from each
     // never collide/alias, they just compete for the same 4 slots).
+    // One descriptors_ lookup, reused for the descriptor below: asking
+    // has_descriptor_override() and then get_property_descriptor() scanned the
+    // same map for the same key with no mutation in between, and a builtin
+    // prototype's methods all live in that map, so this ran on every
+    // `"str".method` in the program. Same consolidation get_named already made.
+    PropertyDescriptor* override_desc = proto_obj->find_descriptor_override(name);
+    Shape* proto_shape = proto_obj->get_shape();
     bool cacheable = fb && !fb->mega && proto_obj->get_type() == Object::ObjectType::Ordinary &&
-                      !proto_obj->has_descriptor_override(name);
+                      !override_desc &&
+                      !(proto_shape && proto_shape->is_accessor_slot(name));
     if (cacheable) {
         Shape* shape = proto_obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
@@ -161,14 +169,15 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
             }
         }
     }
-    PropertyDescriptor desc = proto_obj->get_property_descriptor(name);
+    PropertyDescriptor desc = override_desc ? *override_desc
+                                            : proto_obj->get_property_descriptor(name);
     if (desc.is_accessor_descriptor()) {
         if (!desc.has_getter()) return Value();
         Function* getter = as_function(desc.get_getter());
         return getter ? getter->call_register_args(ctx, {}, prim) : Value();
     }
     if (cacheable && desc.has_value()) {
-        Shape* s = proto_obj->get_shape();
+        Shape* s = proto_shape;
         int32_t idx = s ? s->find_slot(name) : -1;
         if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
     }
