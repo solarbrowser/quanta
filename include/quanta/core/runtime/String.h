@@ -7,6 +7,8 @@
 #ifndef QUANTA_STRING_H
 #define QUANTA_STRING_H
 
+#include <new>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <cstdint>
@@ -14,9 +16,16 @@
 namespace Quanta {
 
 class String {
-    mutable std::string data_;
-    String* left_  = nullptr;
-    String* right_ = nullptr;
+    // Flat bytes and cons children are mutually exclusive -- a node is one or
+    // the other, never both -- so they share storage. That is the difference
+    // between a 64-byte cell and a 48-byte one, and a rope's nodes are cells
+    // too, so an append loop pays it once per link. is_cons_ is the only
+    // discriminant: every transition destroys one member and constructs the
+    // other, which is why the copy/move/destroy below are all hand-written.
+    union {
+        mutable std::string data_;
+        struct { String* left; String* right; } cons_;
+    };
     mutable size_t hash_ = 0;
     // Bit-fields, not plain bools: ascii_ below was added after the comment
     // promising 64 bytes was written and pushed sizeof(String) to 72, which
@@ -24,8 +33,7 @@ class String {
     // fit in the padding utf16_len_'s alignment leaves, so a string cell is
     // 64 again -- and a rope's cons nodes are strings too.
     bool interned_       : 1 = false;
-    bool is_cons_        : 1 = false;
-    mutable bool flat_   : 1 = false; // true when data_ holds the materialized bytes
+    mutable bool is_cons_ : 1 = false;
     mutable uint8_t ascii_ : 2 = 0;
     // UTF-16 length, computed once. `.length` is a scan of the whole UTF-8
     // buffer, so reading it in a loop over a growing string is quadratic;
@@ -40,6 +48,19 @@ class String {
     // 1 single-byte, 2 has multi-byte sequences.
 
     void ensure_flat() const;
+    void destroy_payload() noexcept { if (!is_cons_) data_.~basic_string(); }
+    void copy_bits(const String& o) noexcept {
+        hash_ = o.hash_; interned_ = o.interned_; is_cons_ = o.is_cons_;
+        ascii_ = o.ascii_; utf16_len_ = o.utf16_len_;
+    }
+    void copy_from(const String& o) {
+        copy_bits(o);
+        if (is_cons_) cons_ = o.cons_; else new (&data_) std::string(o.data_);
+    }
+    void move_from(String&& o) noexcept {
+        copy_bits(o);
+        if (is_cons_) cons_ = o.cons_; else new (&data_) std::string(std::move(o.data_));
+    }
     void calculate_hash() const noexcept;
     static void collect_bytes(const String* node, std::string& out);
 
@@ -51,22 +72,29 @@ public:
     static void* operator new[](size_t) = delete;
     static void  operator delete[](void*) = delete;
 
-    String() = default;
+    String() { new (&data_) std::string(); }
     explicit String(const std::string& str);
     void gc_trace(class Visitor& v) const;
     explicit String(std::string&& str) noexcept;
     explicit String(std::string_view sv);
     explicit String(const char* str);
     // Cons node — created only via make_concat
-    String(String* left, String* right) noexcept
-        : left_(left), right_(right), is_cons_(true), flat_(false) {}
+    String(String* left, String* right) noexcept : cons_{left, right} { is_cons_ = true; }
 
-    String(const String&) = default;
-    String(String&&) noexcept = default;
-    String& operator=(const String&) = default;
-    String& operator=(String&&) noexcept = default;
+    ~String() { if (!is_cons_) data_.~basic_string(); }
 
-    [[nodiscard]] const std::string& str()   const noexcept { if (is_cons_ && !flat_) ensure_flat(); return data_; }
+    String(const String& o) { copy_from(o); }
+    String(String&& o) noexcept { move_from(std::move(o)); }
+    String& operator=(const String& o) {
+        if (this != &o) { destroy_payload(); copy_from(o); }
+        return *this;
+    }
+    String& operator=(String&& o) noexcept {
+        if (this != &o) { destroy_payload(); move_from(std::move(o)); }
+        return *this;
+    }
+
+    [[nodiscard]] const std::string& str()   const noexcept { if (is_cons_) ensure_flat(); return data_; }
     [[nodiscard]] const char*        c_str() const noexcept { return str().c_str(); }
     [[nodiscard]] size_t             length()const noexcept { return str().length(); }
     [[nodiscard]] size_t             size()  const noexcept { return str().size(); }

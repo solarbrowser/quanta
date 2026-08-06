@@ -89,8 +89,8 @@ void append_joined(std::string& out, const std::string& add) {
 
 void String::gc_trace(Visitor& v) const {
     if (!is_cons_) return;
-    v.visit_string(left_);
-    v.visit_string(right_);
+    v.visit_string(cons_.left);
+    v.visit_string(cons_.right);
 }
 
 
@@ -156,12 +156,12 @@ void String::collect_bytes(const String* node, std::string& out) {
     while (!pending.empty()) {
         const String* n = pending.back();
         pending.pop_back();
-        if (!n->is_cons_ || n->flat_) {
+        if (!n->is_cons_) {
             append_joined(out, n->data_);
         } else {
             // Right first: the stack pops left first, preserving order.
-            pending.push_back(n->right_);
-            pending.push_back(n->left_);
+            pending.push_back(n->cons_.right);
+            pending.push_back(n->cons_.left);
         }
     }
 }
@@ -169,8 +169,16 @@ void String::collect_bytes(const String* node, std::string& out) {
 void String::ensure_flat() const {
     std::string result;
     collect_bytes(this, result);
-    data_  = std::move(result);
-    flat_  = true;
+    // Hand the union over: the children are plain pointers with nothing to
+    // destroy, and the bytes have to be constructed in their place before
+    // anything reads data_.
+    is_cons_ = false;
+    new (&data_) std::string(std::move(result));
+    // The node holds its own bytes now, so it is an ordinary flat string and
+    // its children are nobody's business. Keeping is_cons_ set left gc_trace
+    // visiting them, which pinned the whole tree behind a rope that had
+    // already been collapsed -- for an append loop that is every node ever
+    // built.
     hash_  = std::hash<std::string>{}(data_);
 }
 
