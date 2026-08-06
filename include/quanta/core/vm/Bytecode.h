@@ -292,6 +292,22 @@ struct FeedbackSlot {
     std::array<ProtoEntry, kMaxEntries> proto_entries{};
     uint8_t proto_count = 0;
     bool proto_mega = false;
+
+    // GetNamed on a primitive receiver. The prototype is fixed by the
+    // primitive's type and the site's name is a compile-time constant, so one
+    // entry per site is the entire cache -- there is no receiver shape to key a
+    // table on. A builtin prototype method has to be non-enumerable and so
+    // lives in the descriptor map, where the shape-slot caches cannot reach it.
+    // The value is cached, not the descriptor's address: pointing into the map
+    // looked cheaper but skipped whatever get_property_descriptor does on the
+    // way to the same value, and the result was heap corruption that ASan's
+    // allocator did not reproduce. This learns from what that call returned.
+    // `prim_value` and `prim_proto` are real GC cells -- see BytecodeChunk::trace.
+    Object* prim_proto = nullptr;
+    Value prim_value;
+    bool prim_is_getter = false;
+    bool prim_valid = false;
+    uint64_t prim_desc_epoch = 0;
 };
 
 // Inline cache for one GetPrivate/SetPrivate site: the resolved qualified

@@ -47,6 +47,11 @@ void BytecodeChunk::trace(Visitor& v) const {
         for (uint8_t i = 0; i < fb.transition_count; i++) {
             v.visit_object(fb.transitions[i].prototype);
         }
+        // The primitive-prototype entry holds no Value, but its descriptor
+        // lives inside the prototype's own map, so the prototype has to stay
+        // alive for the pointer to mean anything.
+        v.visit_object(fb.prim_proto);
+        v.visit(fb.prim_value);
     }
 }
 

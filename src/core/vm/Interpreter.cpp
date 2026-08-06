@@ -113,7 +113,7 @@ void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index,
 
 // Mirrors MemberExpression::evaluate's primitive-receiver branch.
 Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name,
-                           FeedbackSlot* fb) {
+                           FeedbackSlot* fb, Function* owner) {
     if (prim.is_string()) {
         // Straight off the String, not through to_string(): that returns by
         // value, so every `.length` read used to copy the whole buffer before
@@ -147,6 +147,19 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     // though it shares the same fb/kMaxEntries budget (proto_obj's Shape* is
     // always distinct from any real receiver's shape, so entries from each
     // never collide/alias, they just compete for the same 4 slots).
+    // A builtin prototype method lives in the descriptor map, so the two
+    // lookups below are what every `"str".method` in the program pays. The
+    // descriptor's address is stable while the epoch holds -- insert, attribute
+    // change and erase all move it -- so the site can point straight at it.
+    // Only the lookups are skipped, not the prototype resolution above: nothing
+    // guards `String.prototype` itself being reassigned.
+    if (fb && fb->prim_valid && fb->prim_proto == proto_obj &&
+        fb->prim_desc_epoch == Object::descriptor_epoch()) {
+        if (!fb->prim_is_getter) return fb->prim_value;
+        Function* getter = as_function(as_object_like(fb->prim_value));
+        return getter ? getter->call_register_args(ctx, {}, prim) : Value();
+    }
+
     // One descriptors_ lookup, reused for the descriptor below: asking
     // has_descriptor_override() and then get_property_descriptor() scanned the
     // same map for the same key with no mutation in between, and a builtin
@@ -169,8 +182,17 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
             }
         }
     }
-    PropertyDescriptor desc = override_desc ? *override_desc
-                                            : proto_obj->get_property_descriptor(name);
+    PropertyDescriptor desc = proto_obj->get_property_descriptor(name);
+    // Learn from what that call produced, rather than from the descriptor it
+    // read: only this value has been through whatever the call does on the way.
+    if (fb && owner && (desc.is_accessor_descriptor() || desc.has_value())) {
+        Collector::write_barrier(owner);
+        fb->prim_proto = proto_obj;
+        fb->prim_is_getter = desc.is_accessor_descriptor();
+        fb->prim_value = fb->prim_is_getter ? Value(desc.get_getter()) : desc.get_value();
+        fb->prim_desc_epoch = Object::descriptor_epoch();
+        fb->prim_valid = true;
+    }
     if (desc.is_accessor_descriptor()) {
         if (!desc.has_getter()) return Value();
         Function* getter = as_function(desc.get_getter());
@@ -327,7 +349,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         return Value();
     }
     Object* obj = as_object_like(receiver);
-    if (!obj) return get_primitive_named(ctx, receiver, name, fb);
+    if (!obj) return get_primitive_named(ctx, receiver, name, fb, owner);
 
     // Array.length is always live-computed from elements_ (never reliably
     // mirrored in a shape slot -- push/index-growth never syncs one, only

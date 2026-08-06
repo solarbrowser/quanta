@@ -161,6 +161,15 @@ HybridDescriptorMap* Object::descriptors() const {
     return e ? e->descriptors.get() : nullptr;
 }
 HybridDescriptorMap& Object::ensure_descriptors() {
+    // Every path that mutates the map comes through here (reads take
+    // descriptors(), which never creates one), so this is the one place that
+    // can promise the epoch moves on an INSERT as well as on the attribute
+    // changes and erases that already bumped it. A cache holding a
+    // PropertyDescriptor* needs that promise: inserting can spill the inline
+    // entries into the overflow map and move every one of their addresses.
+    // Over-invalidating on a call that turns out not to insert is free next to
+    // how rare defining a descriptor is.
+    bump_descriptor_epoch();
     RareExtras& e = ensure_extras();
     if (!e.descriptors) e.descriptors = std::make_unique<HybridDescriptorMap>();
     return *e.descriptors;
