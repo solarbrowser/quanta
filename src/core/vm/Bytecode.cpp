@@ -40,6 +40,9 @@ void BytecodeChunk::trace(Visitor& v) const {
         for (uint8_t i = 0; i < fb.proto_count; i++) {
             v.visit_object(fb.proto_entries[i].holder);
             v.visit_object(fb.proto_entries[i].prototype);
+            // A descriptor-backed entry caches the value itself rather than
+            // pointing at a shape slot, so it is a reference of its own.
+            v.visit(fb.proto_entries[i].cached_value);
         }
         for (uint8_t i = 0; i < fb.transition_count; i++) {
             v.visit_object(fb.transitions[i].prototype);

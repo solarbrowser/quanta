@@ -279,6 +279,15 @@ struct FeedbackSlot {
         uint64_t proto_epoch = 0;
         Object* holder = nullptr;
         uint32_t slot_index = 0;
+        // A holder whose property lives in its descriptor map rather than in a
+        // shape slot -- which is every builtin prototype method, since those
+        // have to be non-enumerable and a shape slot carries no attributes.
+        // Such an entry caches the value itself, and `desc_epoch` is what
+        // keeps it honest: any write that could change it moves the global
+        // descriptor epoch. slot_index is meaningless when this is set.
+        bool from_descriptor = false;
+        uint64_t desc_epoch = 0;
+        Value cached_value;
     };
     std::array<ProtoEntry, kMaxEntries> proto_entries{};
     uint8_t proto_count = 0;

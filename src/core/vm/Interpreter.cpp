@@ -273,18 +273,22 @@ void learn_transition(FeedbackSlot* fb, Shape* from_shape, Shape* to_shape,
 // write_barrier(owner) covers holder/prototype being real GC cells stored
 // into owner's (possibly already-old) BytecodeChunk.
 void learn_proto(FeedbackSlot* fb, Shape* receiver_shape, Object* prototype,
-                  Object* holder, uint32_t slot_index, uint64_t epoch, Function* owner) {
+                  Object* holder, uint32_t slot_index, uint64_t epoch, Function* owner,
+                  bool from_descriptor = false, const Value& cached = Value(),
+                  uint64_t desc_epoch = 0) {
+    FeedbackSlot::ProtoEntry fresh{receiver_shape, prototype, epoch, holder, slot_index,
+                                    from_descriptor, desc_epoch, cached};
     for (uint8_t i = 0; i < fb->proto_count; i++) {
         auto& pe = fb->proto_entries[i];
         if (pe.receiver_shape == receiver_shape && pe.prototype == prototype) {
             Collector::write_barrier(owner);
-            pe = {receiver_shape, prototype, epoch, holder, slot_index};
+            pe = fresh;
             return;
         }
     }
     if (fb->proto_count < FeedbackSlot::kMaxEntries) {
         Collector::write_barrier(owner);
-        fb->proto_entries[fb->proto_count++] = {receiver_shape, prototype, epoch, holder, slot_index};
+        fb->proto_entries[fb->proto_count++] = fresh;
     } else {
         fb->proto_mega = true;
     }
@@ -430,7 +434,18 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             // owner != nullptr -- run_script's ownerless chunk (see
             // VM::run_script) never populates or trusts this cache, since
             // its holder/prototype fields would have no GC root otherwise.
-            if (owner && fb && !fb->proto_mega && obj->get_type() == Object::ObjectType::Ordinary &&
+            // An exotic receiver may use this cache too, for a key it answers
+            // ordinarily. The restriction to Ordinary belongs to the
+            // receiver-side cache above, where an array's length and its
+            // indices come from type-specific logic rather than a shape slot;
+            // by the time control reaches here the receiver has been shown to
+            // have no own property for this key, so what is left is the plain
+            // prototype walk. Those two keys are excluded outright.
+            const bool exotic_proto_ok =
+                obj->get_type() == Object::ObjectType::Array &&
+                name != "length" && !(!name.empty() && name[0] >= '0' && name[0] <= '9');
+            if (owner && fb && !fb->proto_mega &&
+                (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
                 !obj->has_descriptor_override(name)) {
                 Shape* shape = obj->get_shape();
                 Object* proto0 = obj->get_prototype();
@@ -438,6 +453,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 for (uint8_t i = 0; i < fb->proto_count; i++) {
                     const auto& pe = fb->proto_entries[i];
                     if (pe.receiver_shape == shape && pe.prototype == proto0 && pe.proto_epoch == epoch) {
+                        if (pe.from_descriptor) {
+                            if (pe.desc_epoch == cur_epoch) return pe.cached_value;
+                            break;
+                        }
                         const Value* slot = pe.holder->get_shape_slot_unchecked(pe.slot_index);
                         if (slot) return *slot;
                         break;
@@ -455,13 +474,36 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                     // Learn: proto is the holder. Only cacheable as a plain
                     // shape slot (Ordinary, no descriptor override) -- same
                     // trust rule as the receiver-side cache.
-                    if (owner && fb && !fb->proto_mega && proto->get_type() == Object::ObjectType::Ordinary &&
-                        !proto->has_descriptor_override(name)) {
+                    // The holder may be exotic too. Array.prototype is itself an
+                    // array, as the spec requires, so insisting on an Ordinary
+                    // holder ruled out every array method there is. What the
+                    // cache needs from the holder is only that the value it
+                    // hands back is the one a read would produce, which the
+                    // descriptor and shape-slot branches below each establish
+                    // on their own terms.
+                    const bool holder_ok =
+                        proto->get_type() == Object::ObjectType::Ordinary ||
+                        (proto->get_type() == Object::ObjectType::Array &&
+                         name != "length" &&
+                         !(!name.empty() && name[0] >= '0' && name[0] <= '9'));
+                    if (owner && fb && !fb->proto_mega &&
+                        (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
+                        holder_ok) {
                         Shape* hs = proto->get_shape();
-                        int32_t hidx = hs ? hs->find_slot(name) : -1;
+                        int32_t hidx = proto->has_descriptor_override(name)
+                                           ? -1
+                                           : (hs ? hs->find_slot(name) : -1);
                         if (hidx >= 0) {
                             learn_proto(fb, obj->get_shape(), obj->get_prototype(), proto,
                                         static_cast<uint32_t>(hidx), Object::proto_epoch(), owner);
+                        } else if (!proto_desc.is_accessor_descriptor() && proto_desc.has_value()) {
+                            // The holder keeps it in its descriptor map, which is
+                            // where every builtin prototype method lives. Cache
+                            // the value and let the descriptor epoch invalidate.
+                            learn_proto(fb, obj->get_shape(), obj->get_prototype(), proto,
+                                        0, Object::proto_epoch(), owner,
+                                        /*from_descriptor=*/true, proto_desc.get_value(),
+                                        Object::descriptor_epoch());
                         }
                     }
                     break;

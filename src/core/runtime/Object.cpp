@@ -1342,6 +1342,12 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
             if (d) {
                 auto* dit = d->find(key);
                 if (dit && dit->is_data_descriptor()) {
+                    // A cached inherited read holds this value directly, since a
+                    // descriptor-backed property has no shape slot to point at
+                    // (see FeedbackSlot::ProtoEntry). This is the one write that
+                    // can change it without changing any attribute, so it is the
+                    // one that has to move the epoch.
+                    bump_descriptor_epoch();
                     dit->set_value(value);
                 }
             }
@@ -1469,6 +1475,7 @@ bool Object::delete_property_default(const std::string& key) {
         // Mapped arguments accessor: descriptor erase alone makes the property gone,
         // even if delete_element finds no physical elements_ slot to clear.
         auto* d0 = descriptors();
+        if (d0 && d0->find(key)) bump_descriptor_epoch();
         bool had_descriptor = d0 && d0->erase(key) > 0;
         bool deleted = delete_element(index);
         return deleted || had_descriptor;
@@ -1491,6 +1498,10 @@ bool Object::delete_property_default(const std::string& key) {
     // by Function::set_property without storing in shape/overflow)
     if (auto* d = descriptors()) {
         if (d->find(key)) {
+            // An inherited-read cache can be holding this value directly (see
+            // FeedbackSlot::ProtoEntry), and removing it has to be visible to
+            // that cache the same way changing it is.
+            bump_descriptor_epoch();
             d->erase(key);
             erase_extra_property_order(key);
             return true;
