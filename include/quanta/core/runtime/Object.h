@@ -857,7 +857,7 @@ public:
 
     PropertyDescriptor* find(const std::string& key) {
         for (size_t i = 0; i < inline_count_; i++) {
-            if (inline_[i].key == key) return &inline_[i].desc;
+            if (*inline_[i].key == key) return &inline_[i].desc;
         }
         if (overflow_) {
             auto it = overflow_->find(key);
@@ -873,7 +873,7 @@ public:
     PropertyDescriptor& operator[](const std::string& key) {
         if (PropertyDescriptor* existing = find(key)) return *existing;
         if (!overflow_ && inline_count_ < kInlineCapacity) {
-            inline_[inline_count_].key = key;
+            inline_[inline_count_].key = Shape::intern(key);
             return inline_[inline_count_++].desc;
         }
         if (!overflow_) {
@@ -881,7 +881,7 @@ public:
             // fall through to insert the new key there too.
             overflow_ = std::make_unique<OverflowMap>();
             for (size_t i = 0; i < inline_count_; i++) {
-                (*overflow_)[inline_[i].key] = inline_[i].desc;
+                (*overflow_)[*inline_[i].key] = inline_[i].desc;
             }
             inline_count_ = 0;
         }
@@ -890,7 +890,7 @@ public:
 
     bool erase(const std::string& key) {
         for (size_t i = 0; i < inline_count_; i++) {
-            if (inline_[i].key == key) {
+            if (*inline_[i].key == key) {
                 // Swap-with-last to compact -- relocates the last entry's
                 // address if it isn't the one being erased.
                 inline_[i] = std::move(inline_[inline_count_ - 1]);
@@ -909,8 +909,8 @@ public:
     bool find_if(const std::function<bool(const std::string&, const PropertyDescriptor&)>& pred,
                  std::string* out_key) const {
         for (size_t i = 0; i < inline_count_; i++) {
-            if (pred(inline_[i].key, inline_[i].desc)) {
-                if (out_key) *out_key = inline_[i].key;
+            if (pred(*inline_[i].key, inline_[i].desc)) {
+                if (out_key) *out_key = *inline_[i].key;
                 return true;
             }
         }
@@ -933,13 +933,19 @@ public:
     // Plain accessors for Object::trace's GC-hot loop -- a direct span +
     // overflow-map walk, no lambda/callback indirection in that path.
     size_t inline_size() const { return inline_count_; }
-    const std::string& inline_key(size_t i) const { return inline_[i].key; }
+    const std::string& inline_key(size_t i) const { return *inline_[i].key; }
     const PropertyDescriptor& inline_value(size_t i) const { return inline_[i].desc; }
     const OverflowMap* overflow() const { return overflow_.get(); }
 
 private:
+    // The key is interned (Shape::intern, the pool Shape/Context/Environment
+    // already share), so an entry carries an 8-byte pointer instead of a
+    // 32-byte std::string. find()/erase() still take a plain, possibly
+    // uninterned key and compare against the pointee by value -- interning on
+    // a lookup would cost more than the compare it replaces. Only insertion
+    // interns. Same split Shape::SlotMap uses.
     struct Entry {
-        std::string key;
+        const std::string* key = nullptr;
         PropertyDescriptor desc;
     };
     std::array<Entry, kInlineCapacity> inline_;
