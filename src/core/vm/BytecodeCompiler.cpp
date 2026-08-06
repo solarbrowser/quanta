@@ -4078,7 +4078,7 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
 
     // A `...rest` needs the keys the pattern already took, including any
     // computed ones, so they are accumulated into an array as we go.
-    int keys_reg = -1, keys_idx_reg = -1;
+    int keys_reg = -1, keys_idx_reg = -1, keys_hold_reg = -1;
     if (has_rest) {
         emit(Op::CreateArray);
         emit_u16(0);
@@ -4091,9 +4091,16 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
         emit(Op::LdaZero);
         emit(Op::Star);
         emit_u8(static_cast<uint8_t>(keys_idx_reg));
+        keys_hold_reg = alloc_temp();
+        if (failed_) return false;
     }
     auto record_key = [&]() {  // key in acc; leaves it there
         if (!has_rest) return;
+        // Bumping the counter ends in Star, which lands in the accumulator and
+        // would take the key's place -- the caller reads it from there for the
+        // GetKeyed that follows. Park the key first and put it back after.
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(keys_hold_reg));
         emit(Op::DefineElement);
         emit_u8(static_cast<uint8_t>(keys_reg));
         emit_u8(static_cast<uint8_t>(keys_idx_reg));
@@ -4102,6 +4109,8 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
         emit(Op::Inc);
         emit(Op::Star);
         emit_u8(static_cast<uint8_t>(keys_idx_reg));
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(keys_hold_reg));
     };
 
     for (const auto& prop : props) {

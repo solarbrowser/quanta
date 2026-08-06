@@ -615,7 +615,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             return right_value;
         }
         
-        if (member->is_computed() && obj && obj->is_array()) {
+        // Plain `=` only. The shortcut stores the right-hand value as it stands,
+        // which for `a[i] += x` is the operand rather than the result: the read
+        // and the operator both belong to the general path below.
+        if (operator_ == Operator::ASSIGN && member->is_computed() && obj && obj->is_array()) {
             Value prop_value = computed_key_value;
 
             if (__builtin_expect(prop_value.is_number(), 1)) {
