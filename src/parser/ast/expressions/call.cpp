@@ -51,53 +51,58 @@ void append_spread_values(Context& ctx, const Value& spread_value, std::vector<V
                 Object* spread_obj = spread_value.is_function()
                     ? static_cast<Object*>(spread_value.as_function())
                     : spread_value.as_object();
-                bool used_iterator = false;
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
                 // A plain Array skips the protocol only while the protector
                 // holds; once anything redefines array iteration (a replaced
                 // Array.prototype[@@iterator], an own @@iterator on an
                 // instance, or a patched %ArrayIteratorPrototype%.next) every
                 // array falls back to the spec path, permanently.
-                if (iter_sym && (!spread_obj->is_array() || !Object::array_iterator_protector_intact())) {
-                    Value iter_method = spread_obj->get_property(iter_sym->to_property_key());
-                    if (ctx.has_exception()) return;
-                    if (!iter_method.is_undefined()) {
-                        // GetMethod: non-null/undefined non-callable throws TypeError
-                        if (!iter_method.is_null() && !iter_method.is_function()) {
-                            ctx.throw_type_error("Symbol.iterator is not callable");
-                            return;
-                        }
-                        if (iter_method.is_null()) {
-                            // null means GetMethod returns undefined, Call(undefined) throws TypeError
-                            ctx.throw_type_error("Symbol.iterator is not a function");
-                            return;
-                        }
-                        // iter_method is a function -- call it
-                        Value iter_obj = iter_method.as_function()->call(ctx, {}, spread_value);
-                        if (ctx.has_exception()) return;
-                        if (!iter_obj.is_object()) {
-                            ctx.throw_type_error("Symbol.iterator must return an Object");
-                            return;
-                        }
-                        Value next_fn = iter_obj.as_object()->get_property("next");
-                        if (next_fn.is_function()) {
-                            used_iterator = true;
-                            for (;;) {
-                                Collector::safepoint();
-                                Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                if (ctx.has_exception()) return;
-                                if (!res.is_object()) break;
-                                if (res.as_object()->get_property("done").to_boolean()) break;
-                                arg_values.push_back(res.as_object()->get_property("value"));
-                            }
-                        }
-                    }
-                }
-                if (!used_iterator) {
+                if (iter_sym && spread_obj->is_array() &&
+                    Object::array_iterator_protector_intact()) {
                     uint32_t spread_length = spread_obj->get_length();
                     for (uint32_t j = 0; j < spread_length; ++j) {
                         arg_values.push_back(spread_obj->get_element(j));
                     }
+                    return;
+                }
+                // Everything else is the protocol, and every way it can fail is
+                // a TypeError. There used to be an array-like fallback here for
+                // an object with no @@iterator, which quietly spread a plain
+                // {length: n} and a {} instead of refusing them.
+                Value iter_method = iter_sym
+                    ? spread_obj->get_property(iter_sym->to_property_key())
+                    : Value();
+                if (ctx.has_exception()) return;
+                if (iter_method.is_undefined() || iter_method.is_null()) {
+                    ctx.throw_type_error("Spread syntax requires an iterable");
+                    return;
+                }
+                if (!iter_method.is_function()) {
+                    ctx.throw_type_error("Symbol.iterator is not callable");
+                    return;
+                }
+                Value iter_obj = iter_method.as_function()->call(ctx, {}, spread_value);
+                if (ctx.has_exception()) return;
+                if (!iter_obj.is_object()) {
+                    ctx.throw_type_error("Symbol.iterator must return an Object");
+                    return;
+                }
+                Value next_fn = iter_obj.as_object()->get_property("next");
+                if (ctx.has_exception()) return;
+                if (!next_fn.is_function()) {
+                    ctx.throw_type_error("Iterator has no callable next method");
+                    return;
+                }
+                for (;;) {
+                    Collector::safepoint();
+                    Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                    if (ctx.has_exception()) return;
+                    if (!res.is_object()) {
+                        ctx.throw_type_error("Iterator result is not an object");
+                        return;
+                    }
+                    if (res.as_object()->get_property("done").to_boolean()) break;
+                    arg_values.push_back(res.as_object()->get_property("value"));
                 }
             } else if (spread_value.is_string()) {
                 const std::string& str = spread_value.as_string()->str();
@@ -306,6 +311,12 @@ Value CallExpression::evaluate(Context& ctx) {
         } else if (base.is_function()) {
             method_val = base.as_function()->get_property(prop_name);
         }
+        // `o?.g?.()`: the call's own `?.` still gets to short-circuit after the
+        // base survived the chain's first one.
+        if (is_optional_ && (method_val.is_null() || method_val.is_undefined())) {
+            g_optional_chain_shortcircuit = true;
+            return Value();
+        }
         if (!method_val.is_function()) {
             ctx.throw_type_error(prop_name + " is not a function");
             return Value();
@@ -375,39 +386,49 @@ Value CallExpression::evaluate(Context& ctx) {
             TemplateLiteral* tmpl = static_cast<TemplateLiteral*>(arguments_[0].get());
             const auto& elements = tmpl->get_elements();
 
-            // Build the strings array from TEXT elements (no raw-pointer caching to avoid GC issues).
-            std::vector<std::string> cooked_parts;
-            std::vector<std::string> raw_parts;
-            for (const auto& el : elements) {
-                if (el.type == TemplateLiteral::Element::Type::TEXT) {
-                    cooked_parts.push_back(el.text);
-                    raw_parts.push_back(el.raw_text);
+            Value cached_strings = tmpl->cached_template_object();
+            if (!cached_strings.is_object()) {
+                std::vector<std::string> cooked_parts;
+                std::vector<std::string> raw_parts;
+                for (const auto& el : elements) {
+                    if (el.type == TemplateLiteral::Element::Type::TEXT) {
+                        cooked_parts.push_back(el.text);
+                        raw_parts.push_back(el.raw_text);
+                    }
                 }
-            }
 
-            auto strings_obj = ObjectFactory::create_array(static_cast<int>(cooked_parts.size()));
-            Object* strings_array = strings_obj.get();
-            for (size_t i = 0; i < cooked_parts.size(); i++) {
-                if (cooked_parts[i] == "\x01") {
-                    strings_array->set_property(std::to_string(i), Value());
-                } else {
-                    strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
+                auto strings_obj = ObjectFactory::create_array(static_cast<int>(cooked_parts.size()));
+                Object* strings_array = strings_obj.get();
+                for (size_t i = 0; i < cooked_parts.size(); i++) {
+                    if (cooked_parts[i] == "\x01") {
+                        strings_array->set_property(std::to_string(i), Value());
+                    } else {
+                        strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
+                    }
                 }
-            }
-            strings_array->set_property("length", Value(static_cast<double>(cooked_parts.size())));
+                strings_array->set_property("length", Value(static_cast<double>(cooked_parts.size())));
 
-            auto raw_obj = ObjectFactory::create_array(static_cast<int>(raw_parts.size()));
-            Object* raw_array = raw_obj.get();
-            for (size_t i = 0; i < raw_parts.size(); i++) {
-                raw_array->set_property(std::to_string(i), Value(raw_parts[i]));
-            }
-            raw_array->set_property("length", Value(static_cast<double>(raw_parts.size())));
+                auto raw_obj = ObjectFactory::create_array(static_cast<int>(raw_parts.size()));
+                Object* raw_array = raw_obj.get();
+                for (size_t i = 0; i < raw_parts.size(); i++) {
+                    raw_array->set_property(std::to_string(i), Value(raw_parts[i]));
+                }
+                raw_array->set_property("length", Value(static_cast<double>(raw_parts.size())));
 
-            strings_array->set_property("raw", Value(raw_obj.release()));
+                // The template object and its raw array are frozen (GetTemplateObject
+                // step 11): a tag receives an object it cannot alter, which is what
+                // lets one be shared across calls at all.
+                raw_array->freeze();
+                strings_array->set_property("raw", Value(raw_obj.release()));
+                strings_array->freeze();
+
+                cached_strings = Value(strings_obj.release());
+                tmpl->cache_template_object(cached_strings);
+            }
 
             // Build argument list: [strings_array, expr1, expr2, ...]
             std::vector<Value> arg_values;
-            arg_values.push_back(Value(strings_obj.release()));
+            arg_values.push_back(cached_strings);
 
             // Evaluate expression elements
             for (const auto& el : elements) {

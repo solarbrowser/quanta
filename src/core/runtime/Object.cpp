@@ -1129,6 +1129,48 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         default: return set_property_default(key, value, attrs);
     }
 }
+
+// ToPrimitive(this, hint). Declared for a long time and never defined, so the
+// only callers were the ones that hand-rolled it. @@toPrimitive wins when
+// present; otherwise the two ordinary orders are toString-then-valueOf for the
+// string hint and valueOf-then-toString for the others.
+Value Object::to_primitive(const std::string& hint) const {
+    Context* ctx = current_context_;
+    Object* self = const_cast<Object*>(this);
+    if (!ctx) return Value(self);
+
+    Symbol* to_prim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+    if (to_prim_sym) {
+        Value to_prim = self->get_property(to_prim_sym->to_property_key());
+        if (ctx->has_exception()) return Value();
+        if (to_prim.is_function()) {
+            const std::string& h = hint.empty() ? std::string("default") : hint;
+            Value r = to_prim.as_function()->call(*ctx, {Value(h)}, Value(self));
+            if (ctx->has_exception()) return Value();
+            if (!r.is_object() && !r.is_function()) return r;
+            ctx->throw_type_error("Cannot convert object to primitive value");
+            return Value();
+        }
+        if (!to_prim.is_undefined() && !to_prim.is_null()) {
+            ctx->throw_type_error("Symbol.toPrimitive is not a function");
+            return Value();
+        }
+    }
+
+    const char* order[2] = {"valueOf", "toString"};
+    if (hint == "string") { order[0] = "toString"; order[1] = "valueOf"; }
+    for (const char* name : order) {
+        Value fn = self->get_property(name);
+        if (ctx->has_exception()) return Value();
+        if (!fn.is_function()) continue;
+        Value r = fn.as_function()->call(*ctx, {}, Value(self));
+        if (ctx->has_exception()) return Value();
+        if (!r.is_object() && !r.is_function()) return r;
+    }
+    ctx->throw_type_error("Cannot convert object to primitive value");
+    return Value();
+}
+
 // Everything ArraySetLength does once the new length is a number. The
 // caller owns the coercion, which is observable through valueOf and must
 // run exactly once however the write was spelled.
@@ -1391,6 +1433,12 @@ bool Object::set_property(const Value& key, const Value& value, PropertyAttribut
 
 // OrdinarySet semantics: if prototype chain has non-writable data property, silently fail
 bool Object::ordinary_set(const std::string& key, const Value& value) {
+    // A Proxy's [[Set]] is the trap itself, never OrdinarySet. Falling into the
+    // own-property probe below would run the `has` trap, which the spec does not
+    // call on an assignment at all.
+    if (get_type() == ObjectType::Proxy) {
+        return set_property(key, value);
+    }
     if (!has_own_property(key)) {
         Object* cur = proto_;
         while (cur) {

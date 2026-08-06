@@ -2291,7 +2291,14 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         std::string qualified = resolve_private_storage_key(prop_key, target_obj);
                                         if (target_obj->has_private_slot(qualified)) prop_key = qualified;
                                     }
-                                    if (target_obj) target_obj->ordinary_set(prop_key, value);
+                                    if (target_obj) {
+                                        bool ok = target_obj->ordinary_set(prop_key, value);
+                                        if (!ok && loop_ctx->is_strict_mode()) {
+                                            loop_ctx->throw_type_error("Cannot assign to read only property '" + prop_key + "'");
+                                            close_iterator();
+                                            return Value();
+                                        }
+                                    }
                                 } else if (left_->get_type() == Type::ARRAY_LITERAL ||
                                            left_->get_type() == Type::OBJECT_LITERAL) {
                                     AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), value);
@@ -2526,7 +2533,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         std::string qualified = resolve_private_storage_key(prop_key, target_obj);
                         if (target_obj->has_private_slot(qualified)) prop_key = qualified;
                     }
-                    if (target_obj) target_obj->ordinary_set(prop_key, element);
+                    if (target_obj) {
+                        bool ok = target_obj->ordinary_set(prop_key, element);
+                        if (!ok && loop_ctx->is_strict_mode()) {
+                            loop_ctx->throw_type_error("Cannot assign to read only property '" + prop_key + "'");
+                            return Value();
+                        }
+                    }
                 } else if (left_->get_type() == Type::ARRAY_LITERAL ||
                            left_->get_type() == Type::OBJECT_LITERAL) {
                     AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), element);

@@ -69,8 +69,13 @@ void Generator::run_body() {
                 body_->evaluate(*generator_context_);
             }
         }
-    } catch (const GeneratorReturnException&) {
-        // return() called -- generator terminated cleanly
+    } catch (const GeneratorReturnException& e) {
+        // return() called -- generator terminated cleanly. Record the argument so
+        // a next() that resumed a `yield` inside a finally block still reports it;
+        // a `return` in that finally has already set its own value and wins.
+        if (!generator_context_->has_return_value()) {
+            generator_context_->set_return_value(e.return_value);
+        }
     } catch (const std::exception&) {
         // Other exceptions -- propagated via generator_context_
     } catch (...) {}
@@ -189,6 +194,16 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
         Value ret_val = generator_context_->get_return_value();
         generator_context_->clear_return_value();
         return GeneratorResult(ret_val, true);
+    }
+    // A `yield` inside a finally block observes the return completion mid-unwind
+    // and suspends again, so return() is not necessarily the last word: report the
+    // yielded value and let the next resume carry the completion to the end.
+    if (state_ != State::Completed) {
+        if (yield_raw_result_) {
+            yield_raw_result_ = false;
+            return GeneratorResult::make_raw(yielded_result_);
+        }
+        return GeneratorResult(yielded_value_, false);
     }
     // The fiber may have updated return_argument_ (e.g. yield* delegating to inner
     // iterator whose return() returns a different value). Use it as the return value.

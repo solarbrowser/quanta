@@ -351,6 +351,24 @@ size_t utf16_index_to_byte_pos(const std::string& s, size_t index) {
     return s.size();
 }
 
+size_t utf16_index_from_byte_pos(const std::string& s, size_t byte_pos) {
+    size_t pos = 0, units = 0;
+    while (pos < s.size() && pos < byte_pos) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        units += (cp > 0xFFFF) ? 2 : 1;
+        pos += len;
+    }
+    return units;
+}
+
+bool utf8_is_ascii(const std::string& s) {
+    for (unsigned char c : s) {
+        if (c >= 0x80) return false;
+    }
+    return true;
+}
+
 bool utf16_is_well_formed(const std::string& s) {
     size_t pos = 0;
     bool pending_high = false;

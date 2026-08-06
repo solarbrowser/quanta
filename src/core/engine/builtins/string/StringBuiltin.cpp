@@ -57,7 +57,11 @@ static size_t is_unicode_whitespace(const std::string& str, size_t i) {
         if (i + 2 < str.size()) {
             unsigned char c2 = static_cast<unsigned char>(str[i+2]);
             if (c == 0xEF && c1 == 0xBB && c2 == 0xBF) return 3;
-            if (c == 0xE2 && c1 == 0x80 && c2 >= 0x80 && c2 <= 0xAB) return 3;
+            // U+2000..U+200A, plus the two line separators. The range used to
+            // run to U+202B, which swept in U+200B ZERO WIDTH SPACE and the
+            // directional marks after it -- none of those are WhiteSpace.
+            if (c == 0xE2 && c1 == 0x80 && c2 >= 0x80 && c2 <= 0x8A) return 3;
+            if (c == 0xE2 && c1 == 0x80 && (c2 == 0xA8 || c2 == 0xA9)) return 3;
             if (c == 0xE2 && c1 == 0x80 && c2 == 0xAF) return 3;
             if (c == 0xE2 && c1 == 0x81 && c2 == 0x9F) return 3;
             if (c == 0xE1 && c1 == 0x9A && c2 == 0x80) return 3;
@@ -1094,8 +1098,16 @@ void register_string_builtins(Context& ctx) {
                 if (!std::isnan(pos) && pos >= 0) start = static_cast<size_t>(pos);
             }
 
-            size_t found_pos = str.find(search, start);
-            return Value(found_pos == std::string::npos ? -1.0 : static_cast<double>(found_pos));
+            // `start` arrives as a UTF-16 index and find() answers in bytes,
+            // so both ends need converting -- the two coincide only while the
+            // subject is ASCII, which is why that case skips the work rather
+            // than being the only case that was ever right.
+            const bool ascii = utf8_is_ascii(str);
+            size_t start_bytes = ascii ? start : utf16_index_to_byte_pos(str, start);
+            size_t found_pos = str.find(search, start_bytes);
+            if (found_pos == std::string::npos) return Value(-1.0);
+            return Value(static_cast<double>(
+                ascii ? found_pos : utf16_index_from_byte_pos(str, found_pos)));
         }, 1);
     PropertyDescriptor string_indexOf_desc(Value(str_indexOf_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1453,17 +1465,23 @@ void register_string_builtins(Context& ctx) {
 
             std::string search = obj_to_string(ctx, args[0]);
             if (ctx.has_exception()) return Value();
+            // Same unit-versus-byte split as indexOf: the position argument and
+            // the answer are UTF-16 indices, rfind works in bytes.
+            const bool ascii = utf8_is_ascii(str);
+            const size_t units = ascii ? str.length() : utf16_length(str);
             size_t start = str.length();
 
             if (args.size() > 1 && !args[1].is_undefined()) {
                 double pos = args[1].to_number();
                 if (ctx.has_exception()) return Value();
-                if (std::isnan(pos) || pos >= static_cast<double>(str.length())) {
+                if (std::isnan(pos) || pos >= static_cast<double>(units)) {
                     start = str.length();
                 } else if (pos < 0) {
                     start = 0;
                 } else {
-                    start = static_cast<size_t>(pos) + search.length();
+                    size_t pos_bytes = ascii ? static_cast<size_t>(pos)
+                                             : utf16_index_to_byte_pos(str, static_cast<size_t>(pos));
+                    start = pos_bytes + search.length();
                     if (start > str.length()) {
                         start = str.length();
                     }
@@ -1472,11 +1490,15 @@ void register_string_builtins(Context& ctx) {
 
             // Search backwards from start position
             if (search.empty()) {
-                return Value(static_cast<double>(std::min(start, str.length())));
+                size_t at = std::min(start, str.length());
+                return Value(static_cast<double>(
+                    ascii ? at : utf16_index_from_byte_pos(str, at)));
             }
 
             size_t found_pos = str.rfind(search, start);
-            return Value(found_pos == std::string::npos ? -1.0 : static_cast<double>(found_pos));
+            if (found_pos == std::string::npos) return Value(-1.0);
+            return Value(static_cast<double>(
+                ascii ? found_pos : utf16_index_from_byte_pos(str, found_pos)));
         }, 1);
     PropertyDescriptor str_lastIndexOf_desc(Value(str_lastIndexOf_fn.release()),
         PropertyAttributes::BuiltinFunction);

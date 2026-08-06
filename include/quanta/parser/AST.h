@@ -219,10 +219,22 @@ public:
 
 private:
     std::vector<Element> elements_;
+    // Slot of this site's frozen call-site object in the collector-rooted store,
+    // or -1 until a tag first asks for it. Keying on the node rather than on a
+    // pointer map means a site that is freed cannot hand its object to whatever
+    // is parsed at the same address later.
+    int32_t template_object_slot_ = -1;
 
 public:
     TemplateLiteral(std::vector<Element> elements, const Position& start, const Position& end)
         : ASTNode(Type::TEMPLATE_LITERAL, start, end), elements_(std::move(elements)) {}
+
+    ~TemplateLiteral() override;
+
+    // GetTemplateObject: every evaluation of one site hands the tag the same
+    // object, which is what lets a tag cache against its argument's identity.
+    Value cached_template_object() const;
+    void cache_template_object(const Value& obj);
     
     const std::vector<Element>& get_elements() const { return elements_; }
 

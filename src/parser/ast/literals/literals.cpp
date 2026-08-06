@@ -97,8 +97,22 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                 spread_obj = spread_value.as_object();
             } else if (spread_value.is_function()) {
                 spread_obj = spread_value.as_function();
+            } else if (spread_value.is_string()) {
+                // A boxed string carries one own enumerable property per code
+                // unit; a number or a boolean genuinely carries none, which is
+                // why the branch below is right for them and was not for this.
+                String* src = spread_value.as_string();
+                const size_t units = src->utf16_length();
+                for (size_t u = 0; u < units; u++) {
+                    const int32_t unit = src->code_unit_at(u);
+                    if (unit < 0) break;
+                    object->set_property(std::to_string(u),
+                                         Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
+                    if (ctx.has_exception()) return Value();
+                }
+                continue;
             } else {
-                continue; // primitives have no enumerable own properties
+                continue; // number and boolean have no enumerable own properties
             }
             if (!spread_obj) {
                 ctx.throw_exception(Value(std::string("Error: Could not convert value to object")));

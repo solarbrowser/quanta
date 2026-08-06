@@ -115,6 +115,12 @@ int32_t utf16_code_unit_at(const std::string& utf8, size_t utf16_index);
 int32_t utf16_code_point_at(const std::string& utf8, size_t utf16_index);
 std::string encode_utf16_unit(uint32_t unit);
 size_t utf16_index_to_byte_pos(const std::string& utf8, size_t index);
+// The inverse: how many UTF-16 units precede a byte position. What a builtin
+// that searched in bytes has to hand back, since JS indices are units.
+size_t utf16_index_from_byte_pos(const std::string& utf8, size_t byte_pos);
+// True when every byte is below 0x80, in which case byte offsets and UTF-16
+// indices coincide and neither conversion above has to run.
+bool utf8_is_ascii(const std::string& utf8);
 bool utf16_is_well_formed(const std::string& utf8);
 std::string utf16_to_well_formed(const std::string& utf8);
 

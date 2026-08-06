@@ -1388,6 +1388,13 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
                 if (iter_sym) {
                     Value iter_method = source_arr->get_property(iter_sym->to_property_key());
+                    // Array destructuring is defined in terms of GetIterator, so a
+                    // source without a callable @@iterator is simply not iterable --
+                    // an array-like shape does not stand in for one.
+                    if (!iter_method.is_function()) {
+                        ctx.throw_type_error("Cannot destructure a non-iterable value");
+                        return;
+                    }
                     if (iter_method.is_function()) {
                         Value iter_obj = iter_method.as_function()->call(ctx, {}, source_value);
                         if (!ctx.has_exception() && iter_obj.is_object()) {

@@ -1696,15 +1696,30 @@ void register_typed_array_builtins(Context& ctx) {
 
             std::vector<Value> items;
             bool got_iterator = false;
-            if (source.is_object()) {
-                Object* src_obj = source.as_object();
+            // A primitive can still be iterable through its prototype, and a
+            // string is: Array.from boxes for exactly this reason, and skipping
+            // it here meant a string source fell through to the array-like
+            // fallback, where a primitive reports no length and produced an
+            // empty result.
+            Value iter_source = source;
+            if (source.is_string() || source.is_number() || source.is_boolean() ||
+                source.is_bigint() || source.is_symbol()) {
+                Value obj_ctor = ctx.get_binding("Object");
+                if (obj_ctor.is_function()) {
+                    Value boxed = obj_ctor.as_function()->call(ctx, {source});
+                    if (ctx.has_exception()) return Value();
+                    if (boxed.is_object()) iter_source = boxed;
+                }
+            }
+            if (iter_source.is_object()) {
+                Object* src_obj = iter_source.as_object();
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
                 if (iter_sym) {
                     Value iter_fn = src_obj->get_property(iter_sym->to_property_key());
                     if (ctx.has_exception()) return Value();
                     if (iter_fn.is_function()) {
                         got_iterator = true;
-                        Value iterator = iter_fn.as_function()->call(ctx, {}, source);
+                        Value iterator = iter_fn.as_function()->call(ctx, {}, iter_source);
                         if (ctx.has_exception()) return Value();
                         Object* it = iterator.is_object() ? iterator.as_object() : nullptr;
                         while (it) {

@@ -9,6 +9,7 @@
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/String.h"
+#include "quanta/core/gc/Collector.h"
 #include <set>
 #include <map>
 #include <cstdio>
@@ -160,22 +161,73 @@ std::unique_ptr<ASTNode> UndefinedLiteral::clone() const {
 
 
 std::string TemplateLiteral::stringify_element(Context& ctx, const Value& v) {
-    // ES6: Template literals use ToString which calls toString() on objects
+    // A substitution is ToString(value). This used to call the object's
+    // toString directly, which skipped @@toPrimitive entirely, never refused a
+    // symbol, and cleared whatever the call threw before falling back to a
+    // default rendering -- so a throwing toString produced a string instead of
+    // propagating.
+    if (v.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+        return std::string();
+    }
     if (v.is_object() || v.is_function()) {
         Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
-        Value toString_fn = obj->get_property("toString");
-        if (toString_fn.is_function()) {
-            std::vector<Value> no_args;
-            Value str_result = toString_fn.as_function()->call(ctx, no_args, v);
-            if (!ctx.has_exception() && str_result.is_string()) {
-                return str_result.to_string();
-            }
-            ctx.clear_exception();
-            return v.to_string();
+        Value prim = obj->to_primitive("string");
+        if (ctx.has_exception()) return std::string();
+        if (prim.is_symbol()) {
+            ctx.throw_type_error("Cannot convert a Symbol value to a string");
+            return std::string();
         }
-        return v.to_string();
+        return prim.to_string();
     }
     return v.to_string();
+}
+
+namespace {
+
+// One process-wide store, registered with the collector once and never
+// released. Sites index into it; a freed site returns its slot for reuse so an
+// eval loop cannot grow this without bound.
+std::vector<Value>& template_object_store() {
+    static std::vector<Value>* store = [] {
+        auto* v = new std::vector<Value>();
+        Collector::push_value_vector(v);
+        return v;
+    }();
+    return *store;
+}
+
+std::vector<int32_t>& template_object_free_slots() {
+    static std::vector<int32_t> slots;
+    return slots;
+}
+
+}  // namespace
+
+TemplateLiteral::~TemplateLiteral() {
+    if (template_object_slot_ < 0) return;
+    template_object_store()[template_object_slot_] = Value();
+    template_object_free_slots().push_back(template_object_slot_);
+}
+
+Value TemplateLiteral::cached_template_object() const {
+    if (template_object_slot_ < 0) return Value();
+    return template_object_store()[template_object_slot_];
+}
+
+void TemplateLiteral::cache_template_object(const Value& obj) {
+    auto& store = template_object_store();
+    if (template_object_slot_ < 0) {
+        auto& free_slots = template_object_free_slots();
+        if (!free_slots.empty()) {
+            template_object_slot_ = free_slots.back();
+            free_slots.pop_back();
+        } else {
+            template_object_slot_ = static_cast<int32_t>(store.size());
+            store.push_back(Value());
+        }
+    }
+    store[template_object_slot_] = obj;
 }
 
 Value TemplateLiteral::evaluate(Context& ctx) {
@@ -188,6 +240,7 @@ Value TemplateLiteral::evaluate(Context& ctx) {
             Value expr_value = element.expression->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             result += stringify_element(ctx, expr_value);
+            if (ctx.has_exception()) return Value();
         }
     }
 
