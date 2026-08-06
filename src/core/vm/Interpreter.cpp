@@ -1964,6 +1964,13 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             case Op::CreateForInKeys: {
                 uint8_t obj_out = code[pc];
                 pc += 1;
+                // ToObject, same as the tree-walker's head evaluation: a string
+                // enumerates through its wrapper. Null and undefined pass
+                // through unboxed and produce no keys, which is their answer.
+                if (!acc.is_object_like() && !acc.is_null() && !acc.is_undefined()) {
+                    acc = ObjectFactory::box_primitive_this_sloppy(ctx, acc);
+                    CHECK_EXC();
+                }
                 Object* obj = as_object_like(acc);
                 // The loop re-asks this object whether a key is still there, so
                 // it has to be the very object enumerated here rather than the
@@ -3936,6 +3943,13 @@ Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint8_t obj_out = code[pc];
                 pc += 1;
+                // ToObject, same as the tree-walker's head evaluation: a string
+                // enumerates through its wrapper. Null and undefined pass
+                // through unboxed and produce no keys, which is their answer.
+                if (!acc.is_object_like() && !acc.is_null() && !acc.is_undefined()) {
+                    acc = ObjectFactory::box_primitive_this_sloppy(ctx, acc);
+                    CHECK_EXC();
+                }
                 Object* obj = as_object_like(acc);
                 // The loop re-asks this object whether a key is still there, so
                 // it has to be the very object enumerated here rather than the

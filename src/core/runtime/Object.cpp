@@ -11,6 +11,7 @@
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Value.h"
+#include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/DataView.h"
@@ -3632,13 +3633,21 @@ std::unique_ptr<Object> create_function() {
 
 std::unique_ptr<Object> create_string(const std::string& value) {
     auto str_obj = std::make_unique<Object>(Object::ObjectType::String);
-    PropertyDescriptor length_desc(Value(static_cast<double>(value.length())),
+    // Indices and length are counted in UTF-16 code units, not in the bytes
+    // the storage happens to use. Walking bytes gave a wrapper whose length
+    // was the byte count and whose properties each held one byte of a
+    // multi-byte sequence, so Object("a<astral>b") reported six characters and
+    // none of them were characters.
+    const size_t units = utf16_length(value);
+    PropertyDescriptor length_desc(Value(static_cast<double>(units)),
         static_cast<PropertyAttributes>(PropertyAttributes::None));
     str_obj->set_property_descriptor("length", length_desc);
     str_obj->set_property("[[PrimitiveValue]]", Value(value), PropertyAttributes::Writable);
     // String exotic: each index is a non-writable, non-configurable, enumerable character property
-    for (size_t i = 0; i < value.size(); i++) {
-        PropertyDescriptor char_desc(Value(std::string(1, value[i])),
+    for (size_t i = 0; i < units; i++) {
+        const int32_t unit = utf16_code_unit_at(value, i);
+        if (unit < 0) break;
+        PropertyDescriptor char_desc(Value(encode_utf16_unit(static_cast<uint32_t>(unit))),
             static_cast<PropertyAttributes>(PropertyAttributes::Enumerable));
         str_obj->set_property_descriptor(std::to_string(i), char_desc);
     }

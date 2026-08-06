@@ -1233,6 +1233,18 @@ Value ForInStatement::evaluate(Context& ctx) {
         return Value();
     }
 
+    // ForIn/OfHeadEvaluation calls ToObject on everything else, which is how a
+    // string enumerates its indices. Skipping it meant `for (k in "ab")` ran
+    // zero times; a number or a boolean boxes to an object with no enumerable
+    // own properties and so still runs zero times, now for the right reason.
+    if (!object.is_object_like()) {
+        object = ObjectFactory::box_primitive_this_sloppy(ctx, object);
+        if (ctx.has_exception()) {
+            ctx.set_current_loop_label(prev_loop_label);
+            return Value();
+        }
+    }
+
     if (object.is_object_like()) {
         Object* obj = object.is_object() ? object.as_object() : object.as_function();
 
