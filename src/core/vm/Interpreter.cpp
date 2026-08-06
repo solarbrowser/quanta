@@ -1154,6 +1154,33 @@ NUMERIC_BINARY_HANDLER(h_TestNe, Value(l != r))
 NUMERIC_BINARY_HANDLER(h_TestStrictEq, Value(l == r))
 NUMERIC_BINARY_HANDLER(h_TestStrictNe, Value(l != r))
 
+// Same lean shape as NUMERIC_BINARY_HANDLER, for the same reason: a bitwise op
+// is a couple of instructions of real work, and going through the generated
+// handler made it pay that handler's whole prologue (chunk, ctx, instr_pc)
+// first. ToInt32 already answers for NaN and the infinities, so being a number
+// is the entire gate; anything else falls back to the general path.
+#define BITWISE_BINARY_HANDLER(name, expr)                                 \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
+            int32_t l = js_to_int32(lhs.as_number());                      \
+            int32_t r = js_to_int32(acc.as_number());                      \
+            (void)l; (void)r;                                              \
+            acc = (expr);                                                  \
+            pc += 2;                                                       \
+            DISPATCH();                                                    \
+        }                                                                  \
+        [[clang::musttail]] return h_switch(f, pc, acc);                   \
+    }
+
+BITWISE_BINARY_HANDLER(h_BitAnd, Value(static_cast<double>(l & r)))
+BITWISE_BINARY_HANDLER(h_BitOr,  Value(static_cast<double>(l | r)))
+BITWISE_BINARY_HANDLER(h_BitXor, Value(static_cast<double>(l ^ r)))
+BITWISE_BINARY_HANDLER(h_Shl,
+    Value(static_cast<double>(static_cast<int32_t>(static_cast<uint32_t>(l) << (r & 31)))))
+BITWISE_BINARY_HANDLER(h_Sar, Value(static_cast<double>(l >> (r & 31))))
+BITWISE_BINARY_HANDLER(h_Shr, Value(static_cast<double>(static_cast<uint32_t>(l) >> (r & 31))))
+
 #define UNARY_STEP_HANDLER(name, delta)                                    \
     Value name(Frame& f, uint32_t pc, Value acc) {                         \
         if (LIKELY(acc.is_number())) {                                     \
@@ -5296,12 +5323,12 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::Div)] = &h_gen_Div;
     t[static_cast<uint8_t>(Op::Mod)] = &h_gen_Mod;
     t[static_cast<uint8_t>(Op::Exp)] = &h_gen_Exp;
-    t[static_cast<uint8_t>(Op::BitAnd)] = &h_gen_BitAnd;
-    t[static_cast<uint8_t>(Op::BitOr)] = &h_gen_BitOr;
-    t[static_cast<uint8_t>(Op::BitXor)] = &h_gen_BitXor;
-    t[static_cast<uint8_t>(Op::Shl)] = &h_gen_Shl;
-    t[static_cast<uint8_t>(Op::Sar)] = &h_gen_Sar;
-    t[static_cast<uint8_t>(Op::Shr)] = &h_gen_Shr;
+    t[static_cast<uint8_t>(Op::BitAnd)] = &h_BitAnd;
+    t[static_cast<uint8_t>(Op::BitOr)] = &h_BitOr;
+    t[static_cast<uint8_t>(Op::BitXor)] = &h_BitXor;
+    t[static_cast<uint8_t>(Op::Shl)] = &h_Shl;
+    t[static_cast<uint8_t>(Op::Sar)] = &h_Sar;
+    t[static_cast<uint8_t>(Op::Shr)] = &h_Shr;
     t[static_cast<uint8_t>(Op::TestInstanceOf)] = &h_gen_TestInstanceOf;
     t[static_cast<uint8_t>(Op::TestIn)] = &h_gen_TestIn;
     t[static_cast<uint8_t>(Op::Neg)] = &h_gen_Neg;
