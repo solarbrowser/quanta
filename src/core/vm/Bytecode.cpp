@@ -82,7 +82,7 @@ const OpInfo& op_info(Op op) {
         {"EnterLoopEnv", 2, 'z'}, {"AdvanceLoopEnv", 2, 'z'}, {"ExitLoopEnv", 0, '-'},
         {"SaveEnv", 0, '-'}, {"RestoreEnv", 0, '-'}, {"PopEnvSave", 0, '-'},
         {"GetIterator", 1, 'r'}, {"IteratorNextOrJump", 4, 'j'}, {"IteratorClose", 2, 'r'},
-        {"CreateForInKeys", 0, '-'},
+        {"CreateForInKeys", 1, 'r'},
         {"JumpIfNotNullish", 2, 'o'}, {"JumpIfNullish", 2, 'o'}, {"JumpIfNotUndefined", 2, 'o'},
         {"CreateClosure", 2, 'z'},
         {"DeclareFunction", 2, 'z'},

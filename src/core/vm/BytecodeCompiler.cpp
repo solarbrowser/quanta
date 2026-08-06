@@ -3722,8 +3722,11 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     if (!destr && !is_local(var_name)) return false;
     // A keywordless target is an assignment, and assigning to a const has to
     // throw. emit_write_local would emit a plain Star and silently overwrite
-    // it, so hand the whole loop to the tree-walker, which raises.
-    if (!destr && const_locals_.count(var_name)) return false;
+    // it, so hand the whole loop to the tree-walker, which raises. A declared
+    // target is not that case: `for (const k of ...)` binds k afresh each
+    // iteration rather than assigning to an existing const, and refusing it
+    // here kept whole functions out of the compiler over their loop heads.
+    if (!destr && !declare_fresh && const_locals_.count(var_name)) return false;
 
     // Entered before compiling `right`: a lexical ForDeclaration's bound name
     // is in TDZ even during the head's own iterable/object expression (spec).
@@ -3747,7 +3750,18 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     }
 
     if (!compile_expression(right)) return false;  // acc = iterable/object
-    if (is_for_in) emit(Op::CreateForInKeys);  // acc = Array of enumerable key strings
+    // for-in enumerates a snapshot of the keys, so one deleted while the body
+    // runs would still be visited. Keep the object around to re-ask.
+    int forin_obj_reg = -1;
+    int forin_key_reg = -1;
+    if (is_for_in) {
+        forin_obj_reg = alloc_temp();
+        if (failed_) return false;
+        forin_key_reg = alloc_temp();
+        if (failed_) return false;
+        emit(Op::CreateForInKeys);  // acc = Array of enumerable key strings
+        emit_u8(static_cast<uint8_t>(forin_obj_reg));
+    }
 
     int next_fn_reg = alloc_temp();
     if (failed_) return false;
@@ -3775,6 +3789,21 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     emit_u8(static_cast<uint8_t>(next_fn_reg));
     size_t next_jump = code_.size();
     emit_u16(0);  // patched below to pre_exit (done, or the iterator threw)
+
+    // Same skip the tree-walker performs: a key the object no longer has is
+    // passed over rather than bound, which is what `delete` inside the body
+    // has to be able to do.
+    if (is_for_in) {
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(forin_key_reg));
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(forin_obj_reg));
+        emit(Op::TestIn);
+        emit_u8(static_cast<uint8_t>(forin_key_reg));
+        if (!emit_jump_back(Op::JumpIfFalse, loop_start)) return false;
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(forin_key_reg));
+    }
 
     if (destr) {
         const ASTNode* lit = destr->get_pattern_literal();

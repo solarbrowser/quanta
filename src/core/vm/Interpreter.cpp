@@ -1962,7 +1962,13 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             }
 
             case Op::CreateForInKeys: {
+                uint8_t obj_out = code[pc];
+                pc += 1;
                 Object* obj = as_object_like(acc);
+                // The loop re-asks this object whether a key is still there, so
+                // it has to be the very object enumerated here rather than the
+                // head's value: a receiver this converts stays converted.
+                regs[obj_out] = obj ? Value(obj) : Value();
                 Object* result = ObjectFactory::create_array(0).release();
                 if (obj) {
                     std::vector<std::string> keys;
@@ -3921,12 +3927,20 @@ Value h_gen_IteratorClose(Frame& f, uint32_t pc, Value acc) {
 Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     pc += 1;
     do {
                 {
+                uint8_t obj_out = code[pc];
+                pc += 1;
                 Object* obj = as_object_like(acc);
+                // The loop re-asks this object whether a key is still there, so
+                // it has to be the very object enumerated here rather than the
+                // head's value: a receiver this converts stays converted.
+                regs[obj_out] = obj ? Value(obj) : Value();
                 Object* result = ObjectFactory::create_array(0).release();
                 if (obj) {
                     std::vector<std::string> keys;
