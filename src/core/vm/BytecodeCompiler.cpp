@@ -3189,21 +3189,17 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             // second binding: FunctionDeclarationInstantiation reuses the
             // parameter's, which keeps the argument's value rather than being
             // re-initialized to undefined. So there is nothing to declare, and
-            // references resolve to the parameter's register on their own. A
-            // lexical of the same name is a SyntaxError, so it never gets here
-            // from valid source and still refuses.
-            // Not the SyntaxError case the paragraph above describes: that
-            // one is a top-level lexical, and the parser rejects it. This is
-            // a nested block's own binding, which the block that owns it
-            // declares, so there is nothing to declare at function level.
-            // Only selective env mode can represent it: there the name is
-            // env-resident and the chain keeps the two bindings apart. Full
-            // env mode writes a nested block's lexicals into the function's
-            // own environment, where they would collapse onto the
-            // parameter's binding and seed it with a TDZ the parameter must
-            // not have, so that stays on the tree-walker.
+            // references resolve to the parameter's register on their own.
+            //
+            // A lexical of the same name is NOT the SyntaxError it looks
+            // like: only one at the function's own top level is, and the
+            // parser already rejects that. This is a nested block's own
+            // binding, declared by the block that owns it, so there is
+            // nothing to declare at function level. It needs the name to
+            // live in an environment, where the chain keeps the two bindings
+            // apart -- a register cannot hold both.
             if (info.is_lexical) {
-                if (!env_mode || !env_resident.count(info.name)) return nullptr;
+                if (!env_mode || !(full_env || env_resident.count(info.name))) return nullptr;
                 nested_lexical_shadows_param = true;
                 break;
             }
@@ -5316,6 +5312,15 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 bool needs_own_env = false;
                 for (const auto& c : cases) {
                     for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                        // `case X: let a = 1;` declares a in the switch's own
+                        // scope; `case X: { let a = 1; }` declares it in that
+                        // block's. Handing the braced form to a collector that
+                        // reads a block as "the scope whose lexicals I want"
+                        // hoisted it into the switch env, where it shadowed
+                        // every other reader of that name for the whole switch
+                        // body -- with a TDZ, so reading an outer binding of
+                        // the same name threw. The block declares its own.
+                        if (s->get_type() == ASTNode::Type::BLOCK_STATEMENT) continue;
                         if (!collect_direct_lexical_decls(s.get(), vars, needs_own_env)) return false;
                     }
                 }
