@@ -4,7 +4,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include <cstdio>
+#include <cstdlib>
 #include "quanta/parser/Parser.h"
+#include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "utf8proc.h"
 #include <algorithm>
@@ -67,6 +70,19 @@ void append_declarator_names(const VariableDeclarator* d, std::vector<std::strin
     }
 }
 
+}
+
+ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
+    // The unit has to exist before the parse so BuildScope can stamp literals
+    // as they are built; the root is handed over once the parse finishes.
+    auto unit = ScriptUnit::create(nullptr);
+    std::unique_ptr<Program> program;
+    {
+        ScriptUnit::BuildScope scope(unit.get());
+        program = parse_program();
+    }
+    unit->set_root(std::move(program));
+    return unit;
 }
 
 std::unique_ptr<Program> Parser::parse_program() {
@@ -3543,35 +3559,39 @@ static void collect_var_declared_names(ASTNode* node, std::vector<std::string>& 
 
 namespace { void append_declarator_names(const VariableDeclarator* d, std::vector<std::string>& out); }
 
-static std::string find_block_lexical_duplicate(const std::vector<std::unique_ptr<ASTNode>>& stmts,
+// Takes a view rather than the statements themselves: the check only reads
+// declaration names, and the caller that assembles a switch's cases into one
+// list would otherwise have to deep-copy every statement in the switch to
+// build it.
+static std::string find_block_lexical_duplicate(const std::vector<ASTNode*>& stmts,
                                                 bool function_body_scope = false) {
     std::vector<std::string> lexical;
     std::vector<std::string> vars;
 
-    for (const auto& stmt : stmts) {
+    for (ASTNode* stmt : stmts) {
         if (!stmt) continue;
         if (stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
             // At a function body's top level a function declaration is
             // var-scoped, so it coexists with `var` of the same name and with
             // another function declaration. Inside a block it is lexical.
-            auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
+            auto* fn = static_cast<FunctionDeclaration*>(stmt);
             if (fn->get_id()) {
                 (function_body_scope ? vars : lexical).push_back(fn->get_id()->get_name());
             }
         } else if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
-            auto* cls = static_cast<ClassDeclaration*>(stmt.get());
+            auto* cls = static_cast<ClassDeclaration*>(stmt);
             if (cls->get_id()) lexical.push_back(cls->get_id()->get_name());
         } else if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
-            auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+            auto* vd = static_cast<VariableDeclaration*>(stmt);
             bool is_var = vd->get_kind() == VariableDeclarator::Kind::VAR;
             for (const auto& decl : vd->get_declarations()) {
                 append_declarator_names(decl.get(), is_var ? vars : lexical);
             }
         } else if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) {
-            auto* ud = static_cast<UsingDeclaration*>(stmt.get());
+            auto* ud = static_cast<UsingDeclaration*>(stmt);
             for (const auto& b : ud->get_bindings()) lexical.push_back(b.name);
         } else {
-            collect_var_declared_names(stmt.get(), vars);
+            collect_var_declared_names(stmt, vars);
         }
     }
 
@@ -3713,7 +3733,10 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         // A function body is a declaration scope like any block: two lexical
         // declarations of one name, or a lexical name that a `var` also
         // declares, are both early errors there too.
-        std::string dup = find_block_lexical_duplicate(statements, is_function_body);
+        std::vector<ASTNode*> stmt_view;
+        stmt_view.reserve(statements.size());
+        for (const auto& s : statements) stmt_view.push_back(s.get());
+        std::string dup = find_block_lexical_duplicate(stmt_view, is_function_body);
         if (!dup.empty()) {
             add_error("Identifier '" + dup + "' has already been declared");
             return nullptr;
@@ -9236,11 +9259,10 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
 
     // SwitchStatement early error: LexicallyDeclaredNames across all cases must be unique
     {
-        std::vector<std::unique_ptr<ASTNode>> all_stmts;
+        std::vector<ASTNode*> all_stmts;
         for (const auto& c : cases) {
             auto* cc = static_cast<CaseClause*>(c.get());
-            for (const auto& s : cc->get_consequent())
-                all_stmts.push_back(s ? s->clone() : nullptr);
+            for (const auto& s : cc->get_consequent()) all_stmts.push_back(s.get());
         }
         std::string dup = find_block_lexical_duplicate(all_stmts);
         if (!dup.empty()) {
