@@ -10,6 +10,7 @@
 #include "quanta/lexer/Lexer.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/parser/AST.h"
+#include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/ProxyReflect.h"
@@ -91,7 +92,16 @@ void register_function_builtins(Context& ctx) {
                 TokenSequence tokens = lexer.tokenize();
                 Parser parser(tokens);
                 parser.set_source(func_code);
-                auto expr = parser.parse_expression();
+                // The tree outlives this call inside the function being built,
+                // so it is owned by a unit rather than by this frame. Parsing
+                // inside the scope also stamps the literals nested in the body,
+                // which is what keeps them from copying themselves later.
+                auto unit = ScriptUnit::create(nullptr);
+                std::unique_ptr<ASTNode> expr;
+                {
+                    ScriptUnit::BuildScope scope(unit.get());
+                    expr = parser.parse_expression();
+                }
 
                 // Check for parser errors (e.g. invalid syntax in body)
                 if (parser.has_errors()) {
@@ -112,13 +122,15 @@ void register_function_builtins(Context& ctx) {
                     std::unique_ptr<Function> func = ObjectFactory::create_js_function(
                         "anonymous", // ES6: new Function creates "anonymous" named function
                         std::move(cloned_params),
-                        func_expr->get_body()->clone(),
+                        nullptr,
                         &ctx
                     );
                     if (!func) {
                         ctx.throw_syntax_error("Failed to create function object");
                         return Value();
                     }
+                    func->borrow_body_from(unit, func_expr->get_body());
+                    unit->set_root(std::move(expr));
                     func->set_source_text(toString_src);
 
                     // Detect "use strict" directive via body string

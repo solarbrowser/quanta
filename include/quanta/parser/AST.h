@@ -10,6 +10,7 @@
 #include "quanta/lexer/Token.h"
 #include "quanta/core/runtime/Value.h"
 #include "quanta/parser/FunctionExecutable.h"
+#include "quanta/parser/ScriptUnit.h"
 #include <memory>
 #include <vector>
 #include <string>
@@ -270,7 +271,6 @@ public:
 class Identifier : public ASTNode {
 private:
     std::string name_;
-    mutable class Environment* cached_env_ = nullptr;
     bool has_escaped_keyword_ = false;
 
 public:
@@ -1057,6 +1057,10 @@ private:
     // FunctionExecutable's own doc comment for why a durable clone, not a
     // borrow, is required).
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
+    // Which parse tree this literal belongs to, recorded when the node was
+    // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
+    // which still take their own clone.
+    ScriptUnit* owning_unit_ = ScriptUnit::building();
 
 public:
     FunctionDeclaration(std::unique_ptr<Identifier> id,
@@ -1076,6 +1080,7 @@ public:
     void set_source_text(const std::string& s) { source_text_ = s; }
     const std::string& get_source_text() const { return source_text_; }
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
 
     Value evaluate(Context& ctx) override;
@@ -1245,6 +1250,10 @@ private:
     // (not a borrow) is required. Same lazy-cache idiom as
     // cached_param_names_ above.
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
+    // Which parse tree this literal belongs to, recorded when the node was
+    // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
+    // which still take their own clone.
+    ScriptUnit* owning_unit_ = ScriptUnit::building();
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
@@ -1291,6 +1300,7 @@ public:
     // this node; every later evaluation reuses the same shared_ptr instead
     // of cloning body_/params_ again.
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
 
     Value evaluate(Context& ctx) override;
@@ -1322,6 +1332,10 @@ private:
     // non-async branch (async arrows are a Function subclass, not yet
     // sharing an executable).
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
+    // Which parse tree this literal belongs to, recorded when the node was
+    // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
+    // which still take their own clone.
+    ScriptUnit* owning_unit_ = ScriptUnit::building();
 
 public:
     ArrowFunctionExpression(std::vector<std::unique_ptr<Parameter>> params,
@@ -1339,6 +1353,7 @@ public:
     void set_source_text(const std::string& s) { source_text_ = s; }
     const std::string& get_source_text() const { return source_text_; }
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
 
     Value evaluate(Context& ctx) override;
@@ -1391,9 +1406,14 @@ private:
     // Same cache-on-node pattern as FunctionExpression/FunctionDeclaration/
     // ArrowFunctionExpression's own cached_executable_.
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
+    // Which parse tree this literal belongs to, recorded when the node was
+    // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
+    // which still take their own clone.
+    ScriptUnit* owning_unit_ = ScriptUnit::building();
 
 public:
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
     AsyncFunctionExpression(std::unique_ptr<Identifier> id,
                            std::vector<std::unique_ptr<Parameter>> params,

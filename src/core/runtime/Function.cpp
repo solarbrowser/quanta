@@ -14,6 +14,7 @@
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/parser/AST.h"
+#include "quanta/parser/ScriptUnit.h"
 #include <optional>
 #include <sstream>
 #include <iostream>
@@ -94,7 +95,7 @@ Function::Function(const std::string& name,
     auto exe = make_executable_ref();
     exe->name = name;  // fresh executable, guaranteed empty -- no compare needed
     exe->parameters = params;
-    exe->body = std::move(body);
+    exe->adopt_body(std::move(body));
 
     // Deferred: the object, and the 304-byte descriptor block its own
     // "constructor" entry needs, are built the first time anything asks for
@@ -130,7 +131,7 @@ Function::Function(const std::string& name,
         exe->parameters.push_back(param->get_name()->get_name());
     }
     exe->parameter_objects = std::move(params);
-    exe->body = std::move(body);
+    exe->adopt_body(std::move(body));
 
     // Deferred: the object, and the 304-byte descriptor block its own
     // "constructor" entry needs, are built the first time anything asks for
@@ -153,6 +154,14 @@ Function::Function(const std::string& name,
     if (Object* func_proto = ObjectFactory::get_function_prototype()) {
         set_prototype(func_proto);
     }
+}
+
+void Function::borrow_body_from(const ExecutableRef<ScriptUnit>& unit, ASTNode* body) {
+    // Only ever called right after construction, on an executable this
+    // function is still the sole owner of -- a decl site that shares its
+    // executable with siblings already has its body installed.
+    if (!executable_) return;
+    const_cast<FunctionExecutable*>(executable_.get())->borrow_body(unit, body);
 }
 
 Function::Function(const std::string& name,
@@ -446,13 +455,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // the block outright instead of re-asking three questions it settled on
     // its first trip through.
     if (executable_ && !executable_->fast_gate && executable_->bytecode_chunk) {
-        if (executable_->strict_directive_state < 0 && executable_->body) {
+        if (executable_->strict_directive_state < 0 && executable_->has_body()) {
             // A concise arrow body is an expression, which cannot carry a
             // directive prologue -- resolved, not skipped, or the gate below
             // never opens for one.
             executable_->strict_directive_state =
-                (!is_strict_ && executable_->body->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
-                 static_cast<BlockStatement*>(executable_->body.get())->has_use_strict_directive()) ? 1 : 0;
+                (!is_strict_ && executable_->body()->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
+                 static_cast<BlockStatement*>(executable_->body())->has_use_strict_directive()) ? 1 : 0;
             executable_->recompute_fast_gate();
         }
         if (executable_->closure_props_state < 0) {

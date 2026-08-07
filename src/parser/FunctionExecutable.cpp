@@ -5,7 +5,10 @@
  */
 
 #include "quanta/parser/FunctionExecutable.h"
+#include <cstdio>
+#include <cstdlib>
 #include "quanta/parser/AST.h"
+#include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/vm/Bytecode.h"
 
 namespace Quanta {
@@ -14,7 +17,9 @@ namespace Quanta {
 // per-executable allocation at all: the intrusive links below cost less than
 // a set node plus its share of the bucket array.
 #if defined(__GLIBCXX__)
-static_assert(sizeof(FunctionExecutable) == 176);
+// Grew by a borrowed-body pointer and the ScriptUnitRef that keeps it alive.
+// Paid once per function literal, against a body that is no longer copied.
+static_assert(sizeof(FunctionExecutable) == 192);
 #else
 static_assert(sizeof(FunctionExecutable) <= 224);
 #endif
@@ -40,4 +45,16 @@ void FunctionExecutable::gc_trace_roots(Visitor& v) {
     }
 }
 
+void FunctionExecutable::adopt_body(std::unique_ptr<ASTNode> node) {
+    owned_body_ = std::move(node);
+    unit_ = ExecutableRef<ScriptUnit>();
+    body_ = owned_body_.get();
 }
+
+void FunctionExecutable::borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTNode* node) {
+    owned_body_.reset();
+    unit_ = unit;
+    body_ = node;
+}
+
+}  // namespace Quanta

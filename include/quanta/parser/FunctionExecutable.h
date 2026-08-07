@@ -15,6 +15,7 @@
 namespace Quanta {
 
 class ASTNode;
+class ScriptUnit;
 class Parameter;
 class Visitor;
 class FunctionExecutable;
@@ -91,6 +92,12 @@ public:
     FunctionExecutable(const FunctionExecutable&) = delete;
     FunctionExecutable& operator=(const FunctionExecutable&) = delete;
 
+private:
+    std::unique_ptr<ASTNode> owned_body_;      // set only by adopt_body
+    ExecutableRef<ScriptUnit> unit_;           // set only by borrow_body
+    ASTNode* body_ = nullptr;
+
+public:
     // Backs ExecutableRef<T> above -- intentionally not atomic, see that
     // template's own doc comment.
     void ref() const { ++ref_count_; }
@@ -100,7 +107,17 @@ public:
     // containers, then 4-byte counters, then the 1-byte flags last) so the
     // small members share one tail block instead of each forcing its own
     // alignment padding before the next 8-byte-aligned field.
-    std::unique_ptr<ASTNode> body;
+    // The body is reached through body(). It is either owned outright
+    // (adopt_body, for a tree nobody else keeps) or borrowed from the
+    // ScriptUnit held alongside it (borrow_body). That is why the pointer is
+    // private: there is no way to aim this at a node without also saying what
+    // keeps that node alive, so a later eval-like path cannot quietly leave a
+    // dangling body behind.
+    void adopt_body(std::unique_ptr<ASTNode> node);
+    void borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTNode* node);
+    ASTNode* body() const { return body_; }
+    bool has_body() const { return body_ != nullptr; }
+
     std::vector<std::unique_ptr<Parameter>> parameter_objects;
     std::vector<std::string> parameters;
 

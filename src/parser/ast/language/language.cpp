@@ -6,6 +6,7 @@
 
 #include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/parser/AST.h"
+#include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
@@ -258,14 +259,42 @@ static bool contains_direct_eval(ASTNode* node) {
 // Builds (once per decl site) the executable every instance of this literal
 // shares: a durable clone of the body and parameters, plus the source text
 // toString() reports. Callers pass the node's own cached_executable_ slot.
+// Same choice ensure_shared_executable makes, for the method and constructor
+// literals that reach their executable by another route: lend the body when the
+// literal knows which tree owns it, copy it when it does not. Copying is what
+// leaves the copy's own nested literals unowned, so every site that skips this
+// spreads copying to everything underneath it.
+static void install_literal_body(FunctionExecutable* exe, ASTNode* value_node) {
+    if (value_node && value_node->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+        auto* fe = static_cast<FunctionExpression*>(value_node);
+        if (ScriptUnit* unit = fe->owning_unit()) {
+            exe->borrow_body(ExecutableRef<ScriptUnit>(unit), fe->get_body());
+            return;
+        }
+    }
+    exe->adopt_body(value_node && value_node->get_type() == ASTNode::Type::FUNCTION_EXPRESSION
+                        ? static_cast<FunctionExpression*>(value_node)->get_body()->clone()
+                        : nullptr);
+}
+
 static ExecutableRef<FunctionExecutable> ensure_shared_executable(
         const ExecutableRef<FunctionExecutable>& cached,
         const ASTNode* body,
         const std::vector<std::unique_ptr<Parameter>>& params,
-        const std::string& source_text) {
+        const std::string& source_text,
+        ScriptUnit* owning_unit = nullptr) {
     if (cached) return cached;
     ExecutableRef<FunctionExecutable> exe = make_executable_ref();
-    exe->body = body->clone();
+    // A literal that knows which tree it came from lends its body out and the
+    // executable keeps that tree alive; one that does not (any entry point not
+    // yet handing out units) still takes a copy, which is what kept a borrowed
+    // subtree from outliving its parse before units existed.
+    if (owning_unit) {
+        exe->borrow_body(ExecutableRef<ScriptUnit>(owning_unit),
+                         const_cast<ASTNode*>(body));
+    } else {
+        exe->adopt_body(body->clone());
+    }
     for (const auto& param : params) {
         exe->parameter_objects.push_back(
             std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
@@ -327,7 +356,8 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
                 tpl.needs_outer_env = fe->get_needs_outer_env_state() != 0;
             }
             tpl.executable = ensure_shared_executable(fe->get_cached_executable(), fe->get_body(),
-                                                      fe->get_params(), fe->get_source_text());
+                                                      fe->get_params(), fe->get_source_text(),
+                                                      fe->owning_unit());
             if (!fe->get_cached_executable()) fe->set_cached_executable(tpl.executable);
             break;
         }
@@ -342,7 +372,8 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.body_is_strict = fd->get_body()->has_use_strict_directive();
             tpl.has_direct_eval = fd->get_body()->has_direct_eval_cached();
             tpl.executable = ensure_shared_executable(fd->get_cached_executable(), fd->get_body(),
-                                                      fd->get_params(), fd->get_source_text());
+                                                      fd->get_params(), fd->get_source_text(),
+                                                      fd->owning_unit());
             if (!fd->get_cached_executable()) fd->set_cached_executable(tpl.executable);
             tpl.declared_length = spec_length_of(*tpl.executable);
             break;
@@ -356,7 +387,8 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.needs_outer_env = !ar->is_async();
             tpl.has_direct_eval = contains_direct_eval(const_cast<ASTNode*>(ar->get_body()));
             tpl.executable = ensure_shared_executable(ar->get_cached_executable(), ar->get_body(),
-                                                      ar->get_params(), ar->get_source_text());
+                                                      ar->get_params(), ar->get_source_text(),
+                                                      ar->owning_unit());
             if (!ar->get_cached_executable()) ar->set_cached_executable(tpl.executable);
             tpl.declared_length = spec_length_of(*tpl.executable);
             break;
@@ -372,7 +404,8 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.body_is_strict = af->get_body()->has_use_strict_directive();
             tpl.has_direct_eval = af->get_body()->has_direct_eval_cached();
             tpl.executable = ensure_shared_executable(af->get_cached_executable(), af->get_body(),
-                                                      af->get_params(), af->get_source_text());
+                                                      af->get_params(), af->get_source_text(),
+                                                      af->owning_unit());
             if (!af->get_cached_executable()) af->set_cached_executable(tpl.executable);
             tpl.declared_length = spec_length_of(*tpl.executable);
             break;
@@ -821,7 +854,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         // Only the first evaluation of this method literal clones;
                         // every later one reuses the executable off the node.
                         exe = make_executable_ref();
-                        exe->body = method->get_value()->get_body()->clone();
+                        install_literal_body(exe.get(), method->get_value());
                         if (method_func_expr) {
                             for (const auto& param : method_func_expr->get_params()) {
                                 exe->parameter_objects.push_back(
@@ -1106,7 +1139,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         ctor_exe = ctor_func_expr->get_cached_executable();
         if (!ctor_exe) {
             ctor_exe = make_executable_ref();
-            ctor_exe->body = ctor_func_expr->get_body()->clone();
+            install_literal_body(ctor_exe.get(), ctor_func_expr);
             for (const auto& param : ctor_func_expr->get_params()) {
                 ctor_exe->parameter_objects.push_back(
                     std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
@@ -1121,7 +1154,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         ctor_exe = std::move(cached_ctor);
         if (!ctor_exe) {
             ctor_exe = make_executable_ref();
-            ctor_exe->body = std::move(constructor_body);
+            ctor_exe->adopt_body(std::move(constructor_body));
             ctor_exe->parameter_objects = std::move(constructor_params);
             for (const auto& p : ctor_exe->parameter_objects) {
                 ctor_exe->parameters.push_back(p->get_name()->get_name());
@@ -1254,7 +1287,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     if (method_func_expr) exe = method_func_expr->get_cached_executable();
                     if (!exe) {
                         exe = make_executable_ref();
-                        exe->body = method->get_value()->get_body()->clone();
+                        install_literal_body(exe.get(), method->get_value());
                         for (const auto& p : static_params) exe->parameters.push_back(p->get_name()->get_name());
                         exe->parameter_objects = std::move(static_params);
                         if (method_func_expr) method_func_expr->set_cached_executable(exe);

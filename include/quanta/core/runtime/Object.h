@@ -26,6 +26,7 @@ namespace Quanta {
 
 class PropertyDescriptor;
 class HybridDescriptorMap;
+class ScriptUnit;
 struct RareExtras;
 
 // Fixed-position header for Object::butterfly_ -- always exactly 3
@@ -1402,7 +1403,14 @@ public:
 
     // Shared decl-site data (null only for native functions).
     const ExecutableRef<const FunctionExecutable>& get_executable() const { return executable_; }
-    class ASTNode* ast_body() const { return executable_ ? executable_->body.get() : nullptr; }
+    // Point this function's body at a tree owned by a unit instead of copying
+    // it. For entry points that parse their own source (the Function
+    // constructor family): construct with a null body, then call this. The
+    // unit keeps the tree alive for as long as the executable needs it, and
+    // the literals nested in that tree stay stamped, so they lend their own
+    // bodies out too rather than each starting a fresh round of copying.
+    void borrow_body_from(const ExecutableRef<ScriptUnit>& unit, class ASTNode* body);
+    class ASTNode* ast_body() const { return executable_ ? executable_->body() : nullptr; }
 
     // Non-virtual: switches on get_function_kind(), same reasoning as
     // trace() above. call_default() is the plain-Function body.

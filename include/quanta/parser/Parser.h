@@ -8,6 +8,7 @@
 #define QUANTA_PARSER_H
 
 #include "quanta/parser/AST.h"
+#include "quanta/parser/ScriptUnit.h"
 #include "quanta/lexer/Token.h"
 #include "quanta/lexer/Lexer.h"
 #include <memory>
@@ -87,6 +88,11 @@ public:
     Parser(TokenSequence tokens, const ParseOptions& options);
     
     std::unique_ptr<Program> parse_program();
+    // Same parse, wrapped in a ScriptUnit so the function literals inside are
+    // stamped with an owner and their executables can borrow their bodies
+    // instead of copying them. Callers that still hand a bare tree to
+    // parse_program() keep the copying behaviour.
+    ExecutableRef<ScriptUnit> parse_program_unit();
     std::unique_ptr<ASTNode> parse_statement();
     std::unique_ptr<ASTNode> parse_expression();
     

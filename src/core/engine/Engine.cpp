@@ -22,6 +22,7 @@
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/parser/AST.h"
 #include "quanta/parser/Parser.h"
+#include "quanta/parser/ScriptUnit.h"
 #include "quanta/lexer/Lexer.h"
 #include "quanta/core/engine/CallStack.h"
 #include <fstream>
@@ -485,7 +486,11 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         
         Parser parser(tokens);
         parser.set_source(source);
-        auto program = parser.parse_program();
+        // The tree is owned by a unit, so the function literals inside it lend
+        // their bodies to their executables instead of each taking a copy. The
+        // unit outlives this call whenever a closure escaped it.
+        auto program_unit = parser.parse_program_unit();
+        auto* program = static_cast<Program*>(program_unit->root());
 
         if (parser.has_errors()) {
             const auto& errors = parser.get_errors();
