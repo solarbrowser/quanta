@@ -109,6 +109,18 @@ public:
         return hash_;
     }
     [[nodiscard]] bool               interned() const noexcept { return interned_; }
+
+    // One shared cell per single-byte character, instead of a fresh 64-byte
+    // cell every time one is produced. Splitting, scanning or indexing a
+    // string yields these by the million and they are all equal to one of 128
+    // values; strings are immutable, so sharing one is not observable.
+    //
+    // Cells belong to the heap they were allocated from, so the table is
+    // dropped whenever the active heap changes (a realm switch) rather than
+    // handing one heap's cell to another. Traced as a root: nothing else
+    // refers to an entry that is currently unused.
+    static String* single_char(unsigned char c);
+    static void gc_trace_roots(class Visitor& v);
     // What JS calls .length: UTF-16 code units, not bytes. Cached -- see
     // utf16_len_. Prefer this over the free utf16_length(std::string) below
     // whenever a String* is at hand; the free function has nowhere to cache

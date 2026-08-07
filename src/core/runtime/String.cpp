@@ -94,6 +94,39 @@ void String::gc_trace(Visitor& v) const {
 }
 
 
+namespace {
+// Owner is tracked so a cell is never handed to a heap that did not allocate
+// it: HeapScope swaps the active heap for the duration of a realm's call, and
+// a cell from the previous heap would be swept by a collector that never
+// traced it.
+struct SingleCharCache {
+    Heap* owner = nullptr;
+    String* cells[128] = {};
+};
+thread_local SingleCharCache g_single_char;
+}  // namespace
+
+String* String::single_char(unsigned char c) {
+    if (c >= 128) return nullptr;
+    Heap* active = Heap::active_or_null();
+    if (!active) return nullptr;
+    if (g_single_char.owner != active) {
+        // The old heap's cells are simply forgotten: they are ordinary cells
+        // there and its own collector reclaims them.
+        for (String*& cell : g_single_char.cells) cell = nullptr;
+        g_single_char.owner = active;
+    }
+    String*& slot = g_single_char.cells[c];
+    if (!slot) slot = new String(std::string(1, static_cast<char>(c)));
+    return slot;
+}
+
+void String::gc_trace_roots(Visitor& v) {
+    if (g_single_char.owner != Heap::active_or_null()) return;
+    for (String* cell : g_single_char.cells)
+        if (cell) v.visit_string(cell);
+}
+
 void* String::operator new(size_t size) {
     return Heap::active().allocate(size, CellKind::String);
 }

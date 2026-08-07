@@ -751,6 +751,7 @@ void run_minor_collection() {
     for (const FixedArray<Value>* arr : value_array_roots())
         for (const Value& val : *arr) v.visit(val);
     Symbol::gc_trace_roots(v);
+    String::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
     FunctionExecutable::gc_trace_roots(v);
     auto t2 = std::chrono::steady_clock::now();
@@ -835,6 +836,7 @@ void scan_major_roots(MarkVisitor& v) {
     for (const FixedArray<Value>* arr : value_array_roots())
         for (const Value& val : *arr) v.visit(val);
     Symbol::gc_trace_roots(v);
+    String::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
     FunctionExecutable::gc_trace_roots(v);
 }

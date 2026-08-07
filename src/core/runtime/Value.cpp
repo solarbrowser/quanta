@@ -54,8 +54,14 @@ Value::Value(Object* obj) {
 }
 
 Value::Value(const std::string& str) {
-    auto string_obj = std::make_unique<String>(str);
-    String* raw_ptr = string_obj.release();
+    // A single-byte character is one of 128 values; sharing the cell keeps a
+    // scan that yields one per position from allocating one per position.
+    String* raw_ptr = str.size() == 1 ? String::single_char(static_cast<unsigned char>(str[0]))
+                                      : nullptr;
+    if (!raw_ptr) {
+        auto string_obj = std::make_unique<String>(str);
+        raw_ptr = string_obj.release();
+    }
     
     #if PLATFORM_POINTER_COMPRESSION
     uint64_t compressed = compress_pointer(raw_ptr);
