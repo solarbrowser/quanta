@@ -2133,6 +2133,23 @@ bool Object::set_property_descriptor_default(const std::string& key, const Prope
         return false;
     }
 
+    // A brand-new plain data property carrying exactly the default attributes
+    // is indistinguishable from what an assignment creates, so it belongs in
+    // the shape like one. Defining it through descriptors_ instead materialized
+    // a map for the object and dropped it out of shape mode -- and JSON.parse
+    // defines every member of every parsed object this way, so a payload paid
+    // a map entry per key. Anything exotic, pre-existing, index-shaped or
+    // short of all three attributes still takes the full path below.
+    if (get_type() == ObjectType::Ordinary && !existed_before_this_call &&
+        desc.is_data_descriptor() && desc.has_value() &&
+        desc.has_writable() && desc.is_writable() &&
+        desc.has_enumerable() && desc.is_enumerable() &&
+        desc.has_configurable() && desc.is_configurable() &&
+        !is_array_index(key)) {
+        store_in_overflow(key, desc.get_value());
+        return true;
+    }
+
     HybridDescriptorMap& descs = ensure_descriptors();
 
     // Early non-configurable check -- runs BEFORE elements_ is written.

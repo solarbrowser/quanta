@@ -184,6 +184,12 @@ static void fa_request_arraylike_next(Context& ctx, Promise* result_promise);
 // same observable result without building a key string; anything else -- a
 // species-created object, an array that already has per-index attributes --
 // goes through the keyed form below.
+// Every builder that fills a result by ascending index should come through
+// here, not through the keyed form: defining an index as a descriptor puts it
+// in the descriptor map and drops the array out of dense mode, so a
+// hundred-thousand-element result pays a map entry per element instead of a
+// slot. The keyed form is still the fallback whenever the shape below does not
+// hold, so routing a call site here can only help.
 static bool create_indexed_data_property(Context& ctx, Object* target, double index, const Value& v) {
     // Appending at exactly the end of the dense region is the shape every one
     // of these builders has: it grows by one, so no gap is opened and the
@@ -239,7 +245,7 @@ static void fa_set_and_advance(Context& ctx, Promise* result_promise, const Valu
     Value idx_v = result_promise->get_internal_slot("__fa_idx__");
     uint32_t idx = static_cast<uint32_t>(idx_v.to_number());
     if (arr_v.is_object()) {
-        if (!create_data_property_or_throw(ctx, arr_v.as_object(), std::to_string(idx), value)) {
+        if (!create_indexed_data_property(ctx, arr_v.as_object(), static_cast<double>(idx), value)) {
             Value e = ctx.get_exception(); ctx.clear_exception();
             fa_reject(ctx, result_promise, e);
             return;
@@ -687,7 +693,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                         for (uint32_t i = 0; i < len; i++) {
                             Value el(std::string(1, str[i]));
                             if (mapfn) { el = mapfn->call(ctx, {el, Value(static_cast<double>(i))}, thisArg); if (ctx.has_exception()) return Value(); }
-                            if (!create_data_property_or_throw(ctx, res, std::to_string(i), el)) return Value();
+                            if (!create_indexed_data_property(ctx, res, static_cast<double>(i), el)) return Value();
                         }
                         res->set_property("length", Value(static_cast<double>(len)));
                         return Value(res);
@@ -749,7 +755,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                                 val = mapfn->call(ctx, {val, Value(static_cast<double>(idx))}, thisArg);
                                 if (ctx.has_exception()) { close_iter(); return Value(); }
                             }
-                            if (!create_data_property_or_throw(ctx, res, std::to_string(idx), val)) { close_iter(); return Value(); }
+                            if (!create_indexed_data_property(ctx, res, static_cast<double>(idx), val)) { close_iter(); return Value(); }
                             idx++;
                         }
                         bool ok = res->set_property("length", Value(static_cast<double>(idx)));
@@ -773,7 +779,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 Value el = al_obj ? al_obj->get_property(std::to_string(i)) : Value();
                 if (ctx.has_exception()) return Value();
                 if (mapfn) { el = mapfn->call(ctx, {el, Value(static_cast<double>(i))}, thisArg); if (ctx.has_exception()) return Value(); }
-                if (!create_data_property_or_throw(ctx, res, std::to_string(i), el)) return Value();
+                if (!create_indexed_data_property(ctx, res, static_cast<double>(i), el)) return Value();
             }
             bool ok = res->set_property("length", Value(static_cast<double>(length)));
             if (!ok) { ctx.throw_type_error("Cannot set length"); return Value(); }
@@ -1908,7 +1914,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.has_exception()) return Value();
 
             for (size_t j = 0; j < items.size(); j++) {
-                if (!create_data_property_or_throw(ctx, result.get(), std::to_string(j), items[j])) return Value();
+                if (!create_indexed_data_property(ctx, result.get(), static_cast<double>(j), items[j])) return Value();
             }
 
             return Value(result.release());
