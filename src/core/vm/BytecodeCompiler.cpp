@@ -3103,6 +3103,19 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // (closures still pin the env for CreateClosure delegation; a
         // suspendable body or a delegated expr -- e.g. `[]=x;`, no targets --
         // keeps env_mode on regardless, see env_mode2).
+        // A nested block's `let`/`const` may legally repeat a parameter's
+        // name -- only one at the function's own top level is a SyntaxError.
+        // Those are two bindings sharing a name, so the parameter cannot stay
+        // in a register: a read inside that block would find the register
+        // instead of the binding that shadows it. Keeping the name in the
+        // environment lets the chain tell the two apart, which is what the
+        // shadow-duplicated case above already relies on.
+        for (const auto& info : declared_pre) {
+            if (!info.is_lexical) continue;
+            for (const auto& p : param_names) {
+                if (p == info.name) { env_resident.insert(info.name); break; }
+            }
+        }
         if (env_resident.empty() && !has_closures && !suspendable && !has_delegated_expr) {
             selective = false;
         }
@@ -3169,6 +3182,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // hoisting semantics neither storage mode replicates.
         if (info.name == "arguments") return nullptr;
         bool aliases_param = false;
+        bool nested_lexical_shadows_param = false;
         for (const auto& p : param_names) {
             if (p != info.name) continue;
             // `var x` where x is already a parameter does not introduce a
@@ -3178,11 +3192,25 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             // references resolve to the parameter's register on their own. A
             // lexical of the same name is a SyntaxError, so it never gets here
             // from valid source and still refuses.
-            if (info.is_lexical) return nullptr;
+            // Not the SyntaxError case the paragraph above describes: that
+            // one is a top-level lexical, and the parser rejects it. This is
+            // a nested block's own binding, which the block that owns it
+            // declares, so there is nothing to declare at function level.
+            // Only selective env mode can represent it: there the name is
+            // env-resident and the chain keeps the two bindings apart. Full
+            // env mode writes a nested block's lexicals into the function's
+            // own environment, where they would collapse onto the
+            // parameter's binding and seed it with a TDZ the parameter must
+            // not have, so that stays on the tree-walker.
+            if (info.is_lexical) {
+                if (!env_mode || !env_resident.count(info.name)) return nullptr;
+                nested_lexical_shadows_param = true;
+                break;
+            }
             aliases_param = true;
             break;
         }
-        if (aliases_param) continue;
+        if (nested_lexical_shadows_param || aliases_param) continue;
         if (has_rest && rest_name == info.name) return nullptr;
         // Runtime const-immutability isn't implemented for the register path;
         // refuse rather than compile an incorrectly-mutable const.
