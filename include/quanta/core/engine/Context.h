@@ -460,6 +460,13 @@ public:
         bool mutable_flag = true;   // is_mutable_binding: absent -> mutable
         bool initialized = false;   // is_initialized_binding: absent -> not yet
         bool deletable = false;     // ES1 DontDelete: absent -> not deletable
+        // Whether the binding came from a let/const (and which). These are
+        // facts about one binding, so they belong on it -- they used to live in
+        // a pair of name-keyed hash sets, which meant a block with a let paid a
+        // set, its bucket array and a copy of every name, on every entry.
+        // Object environments keep no slot, so those still use the sets below.
+        bool lexical = false;
+        bool const_binding = false;
     };
 
     // Like HybridDescriptorMap's inline array (Object.h), but can't copy its
@@ -694,16 +701,20 @@ public:
     // environment does not bind `name` at all, leaving `out` untouched.
     bool try_get_binding(const std::string& name, Value& out, Context* ctx) const;
     bool has_lexical_declaration(const std::string& name) const {
+        if (const BindingSlot* s = slots_.find(name)) return s->lexical;
         return lexical_names_ && lexical_names_->lexical.count(name) > 0;
     }
     void mark_lexical_declaration(const std::string& name) {
+        if (BindingSlot* s = slots_.find(name)) { s->lexical = true; return; }
         if (!lexical_names_) lexical_names_ = std::make_unique<LexicalNames>();
         lexical_names_->lexical.insert(name);
     }
     bool is_const_binding(const std::string& name) const {
+        if (const BindingSlot* s = slots_.find(name)) return s->const_binding;
         return lexical_names_ && lexical_names_->const_binding.count(name) > 0;
     }
     void mark_const_binding(const std::string& name) {
+        if (BindingSlot* s = slots_.find(name)) { s->const_binding = true; return; }
         if (!lexical_names_) lexical_names_ = std::make_unique<LexicalNames>();
         lexical_names_->const_binding.insert(name);
     }
