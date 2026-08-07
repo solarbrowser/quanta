@@ -1146,10 +1146,15 @@ public:
         bool is_static_method = false;
     };
 private:
+    // Only `feedback` is held inline. The other two are for rare events (a
+    // per-instance name/source override, and the class-related slots a plain
+    // function has none of), and carry a std::string each, so keeping them
+    // inline made every instance that merely caches a name lookup pay for
+    // both. They are allocated when something actually writes one.
     struct NonNativeInstanceData {
         InstanceFeedback feedback;
-        InstanceOverrides overrides;
-        ClassSlots class_slots;
+        std::unique_ptr<InstanceOverrides> overrides;
+        std::unique_ptr<ClassSlots> class_slots;
     };
     mutable void* instance_data_ = nullptr;
     // Every one of these four checks is_native_ itself (not just
@@ -1174,6 +1179,11 @@ private:
     }
     NonNativeInstanceData* instance_data() const {
         return (!is_native_ && instance_data_) ? static_cast<NonNativeInstanceData*>(instance_data_) : nullptr;
+    }
+    InstanceOverrides& ensure_overrides() const {
+        NonNativeInstanceData& d = ensure_instance_data();
+        if (!d.overrides) d.overrides = std::make_unique<InstanceOverrides>();
+        return *d.overrides;
     }
 
 
@@ -1233,7 +1243,7 @@ public:
     const std::string& get_name() const {
         static const std::string empty;
         if (name_is_empty_) return empty;
-        if (auto* d = instance_data()) { if (d->overrides.has_name) return d->overrides.name; }
+        if (auto* d = instance_data()) { if (d->overrides && d->overrides->has_name) return d->overrides->name; }
         if (executable_) return executable_->name;
         auto* nd = native_data();
         return nd ? nd->name : empty;
@@ -1253,9 +1263,9 @@ public:
         if (name.empty()) {
             name_is_empty_ = true;
             if (executable_->name.empty()) return;
-            if (auto* d = instance_data()) {
-                d->overrides.name.clear();
-                d->overrides.has_name = false;
+            if (auto* d = instance_data(); d && d->overrides) {
+                d->overrides->name.clear();
+                d->overrides->has_name = false;
             }
             return;
         }
@@ -1266,13 +1276,13 @@ public:
             // a later instantiation of a literal in NamedEvaluation position
             // is constructed anonymously and records an empty name here, which
             // would otherwise keep shadowing the shared one.
-            if (auto* d = instance_data()) {
-                d->overrides.name.clear();
-                d->overrides.has_name = false;
+            if (auto* d = instance_data(); d && d->overrides) {
+                d->overrides->name.clear();
+                d->overrides->has_name = false;
             }
             return;
         }
-        auto& overrides = ensure_instance_data().overrides;
+        auto& overrides = ensure_overrides();
         overrides.name = name;
         overrides.has_name = true;
     }
@@ -1322,7 +1332,7 @@ public:
     void set_construct_slot_hint(uint32_t count) { if (executable_) executable_->construct_slot_hint = count; }
     uint32_t get_construct_slot_hint() const { return executable_ ? executable_->construct_slot_hint : 0; }
     const std::string& get_source_text() const {
-        if (auto* d = instance_data()) { if (d->overrides.has_source_text) return d->overrides.source_text; }
+        if (auto* d = instance_data()) { if (d->overrides && d->overrides->has_source_text) return d->overrides->source_text; }
         static const std::string empty;
         return executable_ ? executable_->source_text : empty;
     }
@@ -1343,7 +1353,7 @@ public:
         } else if (is_native_) {
             return;
         }
-        auto& overrides = ensure_instance_data().overrides;
+        auto& overrides = ensure_overrides();
         overrides.source_text = s;
         overrides.has_source_text = true;
     }
@@ -1369,9 +1379,13 @@ public:
     const ClassSlots& class_slots() const {
         static const ClassSlots kNone;
         NonNativeInstanceData* d = instance_data();
-        return d ? d->class_slots : kNone;
+        return (d && d->class_slots) ? *d->class_slots : kNone;
     }
-    ClassSlots& mutable_class_slots() { return ensure_instance_data().class_slots; }
+    ClassSlots& mutable_class_slots() {
+        NonNativeInstanceData& d = ensure_instance_data();
+        if (!d.class_slots) d.class_slots = std::make_unique<ClassSlots>();
+        return *d.class_slots;
+    }
 
     // Out of line: the three pointer slots need a write barrier, which would
     // pull the collector into this header.
