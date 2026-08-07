@@ -1882,6 +1882,13 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
                 if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                    // Skipping the name lookup is the point of this path; the
+                    // barrier initialize_binding runs below is not optional
+                    // with it. An environment already traced by an open major
+                    // is never revisited on its own, so a declaration storing
+                    // a fresh cell here would leave it unmarked and swept
+                    // while the binding still points at it.
+                    Collector::write_barrier_env(ctx.get_lexical_environment());
                     e->slot.value = acc;
                     e->slot.initialized = true;
                     break;
@@ -3723,6 +3730,13 @@ Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
                 if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                    // Skipping the name lookup is the point of this path; the
+                    // barrier initialize_binding runs below is not optional
+                    // with it. An environment already traced by an open major
+                    // is never revisited on its own, so a declaration storing
+                    // a fresh cell here would leave it unmarked and swept
+                    // while the binding still points at it.
+                    Collector::write_barrier_env(ctx.get_lexical_environment());
                     e->slot.value = acc;
                     e->slot.initialized = true;
                     break;
