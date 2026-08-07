@@ -95,7 +95,7 @@ const OpInfo& op_info(Op op) {
         {"CopyRestProperties", 2, 'r'},
         {"CreateRestArray", 1, 'r'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
-        {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"HasPrivate", 2, 'n'},
+        {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"ObjectSpreadInto", 1, 'r'}, {"HasPrivate", 2, 'n'},
         {"LdaEngineHelper", 1, 'E'},
         {"CreateRegExp", 4, 'X'},
         {"GetSuper", 2, 'n'}, {"ResolveSuperBase", 1, 'r'}, {"SetSuper", 3, 'l'},

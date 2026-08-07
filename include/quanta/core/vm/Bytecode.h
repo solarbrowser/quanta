@@ -131,6 +131,11 @@ enum class Op : uint8_t {
     // a bytecode loop so a plain Array skips the per-element iterator
     // protocol entirely.
     SpreadInto,      // r_arr r_idx
+    // Merges everything acc's value contributes as an object spread into the
+    // object in r_obj, in place and in source order. Shares
+    // object_spread_into with the tree-walker's ObjectLiteral::evaluate, so
+    // the primitive/boxed-string/Proxy rules cannot drift between the two.
+    ObjectSpreadInto, // r_obj
     HasPrivate,      // n -- acc = (#name in acc), the ergonomic brand check
     // k -- acc = the engine helper for EngineHelper::Kind k, read from the
     // global object's internal slots. Not a name lookup: these back the

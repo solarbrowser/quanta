@@ -34,6 +34,9 @@ namespace Quanta {
 // Defined in the tree-walker's call.cpp: one shared definition of what a
 // spread expands to, so Op::SpreadInto and the tree-walker cannot drift.
 void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& out);
+// Defined in literals.cpp: the single definition of what an object spread
+// copies, shared with the tree-walker (see Op::ObjectSpreadInto).
+bool object_spread_into(Context&, Object*, const Value&);
 // From the tree-walker's misc.cpp, backing Op::CreateRegExp.
 Value create_regexp_literal(Context& ctx, const std::string& pattern, const std::string& flags);
 // Likewise from binary.cpp, backing Op::HasPrivate.
@@ -2340,6 +2343,16 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
 
+            case Op::ObjectSpreadInto: {
+                uint8_t obj_reg = code[pc];
+                pc += 1;
+                if (Object* target = as_object_like(regs[obj_reg])) {
+                    object_spread_into(ctx, target, acc);
+                }
+                CHECK_EXC();
+                break;
+            }
+
             case Op::GetNamed: {
                 uint8_t obj_reg = code[pc];
                 uint16_t name_idx = read_u16(code, pc + 1);
@@ -4577,6 +4590,28 @@ Value h_gen_SuperCall(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_ObjectSpreadInto(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t obj_reg = code[pc];
+                pc += 1;
+                if (Object* target = as_object_like(regs[obj_reg])) {
+                    object_spread_into(ctx, target, acc);
+                }
+                CHECK_EXC();
+                }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_SpreadInto(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5468,6 +5503,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::SetSuperKeyed)] = &h_gen_SetSuperKeyed;
     t[static_cast<uint8_t>(Op::SuperCall)] = &h_gen_SuperCall;
     t[static_cast<uint8_t>(Op::SpreadInto)] = &h_gen_SpreadInto;
+    t[static_cast<uint8_t>(Op::ObjectSpreadInto)] = &h_gen_ObjectSpreadInto;
     t[static_cast<uint8_t>(Op::GetNamed)] = &h_GetNamedFast;
     t[static_cast<uint8_t>(Op::SetNamed)] = &h_SetNamedFast;
     t[static_cast<uint8_t>(Op::GetPrivate)] = &h_gen_GetPrivate;

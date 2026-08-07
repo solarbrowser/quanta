@@ -68,6 +68,77 @@ static std::string literal_to_property_key(Context& ctx, const Value& val) {
     return "";
 }
 
+// One definition of what an object spread copies, shared by the tree-walker's
+// ObjectLiteral::evaluate and the VM's Op::ObjectSpreadInto so the two cannot
+// drift -- the same reason append_spread_values exists for the array and
+// argument forms. Returns false with an exception pending on the context.
+bool object_spread_into(Context& ctx, Object* target, const Value& spread_value) {
+        if (ctx.has_exception()) return false;
+
+        // ES2018: null/undefined in object spread are silently ignored
+        if (spread_value.is_null() || spread_value.is_undefined()) return true;
+        if (!spread_value.is_object() && !spread_value.is_function() &&
+                !spread_value.is_string() && !spread_value.is_number() && !spread_value.is_boolean()) {
+            ctx.throw_type_error("Spread syntax can only be applied to objects");
+            return false;
+        }
+
+        // Box primitives for spread
+        Object* spread_obj = nullptr;
+        if (spread_value.is_object()) {
+            spread_obj = spread_value.as_object();
+        } else if (spread_value.is_function()) {
+            spread_obj = spread_value.as_function();
+        } else if (spread_value.is_string()) {
+            // A boxed string carries one own enumerable property per code
+            // unit; a number or a boolean genuinely carries none, which is
+            // why the branch below is right for them and was not for this.
+            String* src = spread_value.as_string();
+            const size_t units = src->utf16_length();
+            for (size_t u = 0; u < units; u++) {
+                const int32_t unit = src->code_unit_at(u);
+                if (unit < 0) break;
+                target->set_property(std::to_string(u),
+                                     Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
+                if (ctx.has_exception()) return false;
+            }
+            return true;
+        } else {
+            return true; // number and boolean have no enumerable own properties
+        }
+        if (!spread_obj) {
+            ctx.throw_exception(Value(std::string("Error: Could not convert value to object")));
+            return false;
+        }
+
+        try {
+            if (spread_obj->get_type() == Object::ObjectType::Proxy) {
+                // get_enumerable_keys()/get_property() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec.
+                Proxy* proxy = static_cast<Proxy*>(spread_obj);
+                for (const auto& prop_name : proxy->own_keys_trap()) {
+                    // own_keys_trap() returns symbol keys as their "@@sym:" string encoding; decode back to the real Symbol so traps receive the original key, not its string form.
+                    Symbol* sym = Symbol::find_by_property_key(prop_name);
+                    Value key_value = sym ? Value(sym) : Value(prop_name);
+                    PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(key_value);
+                    if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
+                    if (!desc.is_enumerable()) continue;
+                    Value prop_value = proxy->get_trap(key_value);
+                    target->set_property(prop_name, prop_value);
+                }
+            } else {
+                auto property_names = spread_obj->get_enumerable_keys();
+                for (const auto& prop_name : property_names) {
+                    Value prop_value = spread_obj->get_property(prop_name);
+                    target->set_property(prop_name, prop_value);
+                }
+            }
+        } catch (const std::exception& e) {
+            ctx.throw_exception(Value("Error processing spread properties: " + std::string(e.what())));
+            return false;
+        }
+    return true;
+}
+
 Value ObjectLiteral::evaluate(Context& ctx) {
     auto object = ObjectFactory::create_object();
     if (!object) {
@@ -81,69 +152,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         if (prop->key == nullptr && prop->value && prop->value->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
             SpreadElement* spread = static_cast<SpreadElement*>(prop->value.get());
             Value spread_value = spread->get_argument()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-
-            // ES2018: null/undefined in object spread are silently ignored
-            if (spread_value.is_null() || spread_value.is_undefined()) continue;
-            if (!spread_value.is_object() && !spread_value.is_function() &&
-                    !spread_value.is_string() && !spread_value.is_number() && !spread_value.is_boolean()) {
-                ctx.throw_type_error("Spread syntax can only be applied to objects");
-                return Value();
-            }
-
-            // Box primitives for spread
-            Object* spread_obj = nullptr;
-            if (spread_value.is_object()) {
-                spread_obj = spread_value.as_object();
-            } else if (spread_value.is_function()) {
-                spread_obj = spread_value.as_function();
-            } else if (spread_value.is_string()) {
-                // A boxed string carries one own enumerable property per code
-                // unit; a number or a boolean genuinely carries none, which is
-                // why the branch below is right for them and was not for this.
-                String* src = spread_value.as_string();
-                const size_t units = src->utf16_length();
-                for (size_t u = 0; u < units; u++) {
-                    const int32_t unit = src->code_unit_at(u);
-                    if (unit < 0) break;
-                    object->set_property(std::to_string(u),
-                                         Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
-                    if (ctx.has_exception()) return Value();
-                }
-                continue;
-            } else {
-                continue; // number and boolean have no enumerable own properties
-            }
-            if (!spread_obj) {
-                ctx.throw_exception(Value(std::string("Error: Could not convert value to object")));
-                return Value();
-            }
-
-            try {
-                if (spread_obj->get_type() == Object::ObjectType::Proxy) {
-                    // get_enumerable_keys()/get_property() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec.
-                    Proxy* proxy = static_cast<Proxy*>(spread_obj);
-                    for (const auto& prop_name : proxy->own_keys_trap()) {
-                        // own_keys_trap() returns symbol keys as their "@@sym:" string encoding; decode back to the real Symbol so traps receive the original key, not its string form.
-                        Symbol* sym = Symbol::find_by_property_key(prop_name);
-                        Value key_value = sym ? Value(sym) : Value(prop_name);
-                        PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(key_value);
-                        if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
-                        if (!desc.is_enumerable()) continue;
-                        Value prop_value = proxy->get_trap(key_value);
-                        object->set_property(prop_name, prop_value);
-                    }
-                } else {
-                    auto property_names = spread_obj->get_enumerable_keys();
-                    for (const auto& prop_name : property_names) {
-                        Value prop_value = spread_obj->get_property(prop_name);
-                        object->set_property(prop_name, prop_value);
-                    }
-                }
-            } catch (const std::exception& e) {
-                ctx.throw_exception(Value("Error processing spread properties: " + std::string(e.what())));
-                return Value();
-            }
+            if (!object_spread_into(ctx, object.get(), spread_value)) return Value();
             continue;
         }
 

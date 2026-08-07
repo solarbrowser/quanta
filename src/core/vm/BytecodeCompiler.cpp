@@ -532,7 +532,8 @@ bool spread_call_delegates(const CallExpression* n) {
 // all have native codegen (see the OBJECT_LITERAL case below).
 bool object_literal_is_complex(const ObjectLiteral* lit) {
     for (const auto& prop : lit->get_properties()) {
-        if (!prop->key) return true;  // spread: null key
+        // A spread has a null key and is emitted by Op::ObjectSpreadInto.
+        if (!prop->key) continue;
         bool is_accessor = prop->type == ObjectLiteral::PropertyType::Getter ||
                             prop->type == ObjectLiteral::PropertyType::Setter;
         if (prop->computed) {
@@ -548,7 +549,10 @@ bool object_literal_is_complex(const ObjectLiteral* lit) {
             return true;
         }
     }
-    return lit->get_properties().size() > 200;
+    // The only structural limit is Op::CreateObject's u16 property count;
+    // each property's key/value temps are freed within its own iteration, so
+    // a long literal costs no more registers than a short one.
+    return lit->get_properties().size() > 0xFFFF;
 }
 
 // True if an always-delegated expression -- a bare destructuring assignment
@@ -3116,6 +3120,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 if (p == info.name) { env_resident.insert(info.name); break; }
             }
         }
+        // A const that is assigned somewhere cannot live in a register: the
+        // refusal that assignment has to raise is carried by the environment
+        // binding's mutable flag, and a register has nowhere to put it.
+        for (const auto& info : declared_pre) {
+            if (info.is_const && assigns_to_identifier(body, info.name)) {
+                env_resident.insert(info.name);
+            }
+        }
         if (env_resident.empty() && !has_closures && !suspendable && !has_delegated_expr) {
             selective = false;
         }
@@ -3208,11 +3220,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         }
         if (nested_lexical_shadows_param || aliases_param) continue;
         if (has_rest && rest_name == info.name) return nullptr;
-        // Runtime const-immutability isn't implemented for the register path;
-        // refuse rather than compile an incorrectly-mutable const.
-        if (info.is_const && assigns_to_identifier(body, info.name)) return nullptr;
-
         bool resident = env_mode && (!selective || env_resident.count(info.name) > 0);
+        // An environment-resident const carries its own immutability (the
+        // binding's mutable flag, which the store opcode checks); a register
+        // cannot, so an assigned const that did not become resident still
+        // refuses rather than compile as mutable.
+        if (info.is_const && !resident && assigns_to_identifier(body, info.name)) return nullptr;
         if (resident) {
             // A repeat declare_local (shadowed name) is fine -- the Environment
             // chain resolves each occurrence to its own scope at runtime.
@@ -6818,6 +6831,16 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             constexpr uint8_t kSuperFreeFlag = 0x4;
 
             for (const auto& prop : lit->get_properties()) {
+                if (!prop->key) {
+                    // Spread: no key of its own, and its properties land in
+                    // source order relative to the ones around it, which is
+                    // why it is emitted here rather than hoisted.
+                    const auto* spread = static_cast<const SpreadElement*>(prop->value.get());
+                    if (!compile_expression(spread->get_argument())) return false;
+                    emit(Op::ObjectSpreadInto);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    continue;
+                }
                 bool is_method = prop->type == ObjectLiteral::PropertyType::Method;
                 bool is_getter = prop->type == ObjectLiteral::PropertyType::Getter;
                 bool is_setter = prop->type == ObjectLiteral::PropertyType::Setter;
