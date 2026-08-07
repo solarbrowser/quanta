@@ -6550,12 +6550,20 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // so none of the identifier cases below can apply to it; the
             // generic tail loads it from its slot and calls it normally.
             const bool engine_callee = callee->get_type() == ASTNode::Type::ENGINE_HELPER;
-            // Plain-identifier callees otherwise: direct eval never compiles.
-            if (!engine_callee && callee->get_type() != ASTNode::Type::IDENTIFIER) return false;
-            static const std::string kEngineCalleeName = "";
-            const std::string& callee_name = engine_callee
-                ? kEngineCalleeName : static_cast<const Identifier*>(callee)->get_name();
-            if (!engine_callee && callee_name == "super") {
+            // Anything else reaching here is an expression whose value is
+            // called with an undefined `this`: every receiver-carrying callee
+            // form -- member, optional chain, super property -- returns from
+            // the branch above rather than falling through. `f()()`,
+            // `(a || b)()` and `(0, o.m)()` are all that shape, and refusing
+            // them handed the whole function to the tree-walker. Only the
+            // diagnostic name the call site records needs the identifier.
+            const bool named_callee = callee->get_type() == ASTNode::Type::IDENTIFIER;
+            static const std::string kUnnamedCallee = "";
+            const std::string& callee_name = named_callee
+                ? static_cast<const Identifier*>(callee)->get_name() : kUnnamedCallee;
+            // super(), direct eval and import() are each spelled as a bare
+            // identifier, so only a named callee can be one of them.
+            if (named_callee && callee_name == "super") {
                 // The whole derived-constructor ceremony lives in
                 // perform_super_call; this only marshals the arguments. It needs
                 // the super bindings on the context chain, like the property forms.
@@ -6576,7 +6584,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u8(static_cast<uint8_t>(call_args.size()));
                 return !failed_;
             }
-            if (!engine_callee && (callee_name == "eval" || callee_name == "import")) {
+            if (named_callee && (callee_name == "eval" || callee_name == "import")) {
                 return false;
             }
 
