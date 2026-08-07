@@ -116,11 +116,12 @@ build/errors.log
 
 ## Roadmap
 
-- Improve **spec compliance** 
-- Implement **bytecode virtual machine (VM)**
-- Implement **incremental gc**
-
-More [here](https://quanta.js.org/roadmap.html)
+- Improve memory usage & speed
+- Prepare documents
+- Initial release (1.0.0)
+- icu4x integration for intl support (~1.1)
+- temporal api support (not sure 2.0 or 3.0)
+- wasm engine
 
 ## Contributing
 
