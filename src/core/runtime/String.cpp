@@ -22,13 +22,13 @@ namespace {
 // string comparison is over the stored bytes -- so `hi + lo` did not equal the
 // same character written any other way, and codePointAt and iteration both saw
 // two characters where there is one.
-bool high_surrogate_at(const std::string& s, size_t i) {
+bool high_surrogate_at(std::string_view s, size_t i) {
     unsigned char b0 = static_cast<unsigned char>(s[i]);
     unsigned char b1 = static_cast<unsigned char>(s[i + 1]);
     return b0 == 0xED && b1 >= 0xA0 && b1 <= 0xAF;
 }
 
-bool low_surrogate_at(const std::string& s, size_t i) {
+bool low_surrogate_at(std::string_view s, size_t i) {
     unsigned char b0 = static_cast<unsigned char>(s[i]);
     unsigned char b1 = static_cast<unsigned char>(s[i + 1]);
     return b0 == 0xED && b1 >= 0xB0 && b1 <= 0xBF;
@@ -73,13 +73,13 @@ void canonicalize_pairs(std::string& s) {
 // The rope's flatten builds its buffer directly rather than through a
 // constructor, and its pieces meet at seams the pieces themselves cannot see,
 // so it joins as it goes instead of rescanning the result.
-void append_joined(std::string& out, const std::string& add) {
+void append_joined(std::string& out, std::string_view add) {
     if (out.size() >= 3 && add.size() >= 3 &&
         high_surrogate_at(out, out.size() - 3) && low_surrogate_at(add, 0)) {
         uint32_t hi = surrogate_at(out.data() + out.size() - 3);
         out.resize(out.size() - 3);
         append_pair(out, hi, surrogate_at(add.data()));
-        out.append(add, 3, std::string::npos);
+        out.append(add.substr(3));
         return;
     }
     out += add;
@@ -89,6 +89,7 @@ void append_joined(std::string& out, const std::string& add) {
 
 void String::gc_trace(Visitor& v) const {
     if (!is_cons_) return;
+    if (is_tail_) { v.visit_string(tail_.left); return; }
     v.visit_string(cons_.left);
     v.visit_string(cons_.right);
 }
@@ -184,17 +185,26 @@ void String::collect_bytes(const String* node, std::string& out) {
     // per link put the rope's depth directly on the C stack and a few hundred
     // thousand appends -- ordinary code, and exactly what a code generator
     // that accumulates its output does -- overflowed it.
-    std::vector<const String*> pending;
-    pending.push_back(node);
+    // A link's inline bytes have no node of their own, so the entry says which
+    // of the two the node is being visited for -- its subtree, or the bytes it
+    // carries. Order is left subtree first, then those bytes.
+    struct Item { const String* node; bool tail_bytes; };
+    std::vector<Item> pending;
+    pending.push_back({node, false});
     while (!pending.empty()) {
-        const String* n = pending.back();
+        Item it = pending.back();
         pending.pop_back();
-        if (!n->is_cons_) {
-            append_joined(out, n->data_);
+        if (it.tail_bytes) {
+            append_joined(out, it.node->inline_tail());
+        } else if (!it.node->is_cons_) {
+            append_joined(out, it.node->data_);
+        } else if (it.node->is_tail_) {
+            pending.push_back({it.node, true});
+            pending.push_back({it.node->tail_.left, false});
         } else {
             // Right first: the stack pops left first, preserving order.
-            pending.push_back(n->cons_.right);
-            pending.push_back(n->cons_.left);
+            pending.push_back({it.node->cons_.right, false});
+            pending.push_back({it.node->cons_.left, false});
         }
     }
 }
@@ -206,6 +216,7 @@ void String::ensure_flat() const {
     // destroy, and the bytes have to be constructed in their place before
     // anything reads data_.
     is_cons_ = false;
+    is_tail_ = false;
     new (&data_) std::string(std::move(result));
     // The node holds its own bytes now, so it is an ordinary flat string and
     // its children are nobody's business. Keeping is_cons_ set left gc_trace
@@ -217,6 +228,29 @@ void String::ensure_flat() const {
 
 static constexpr size_t CONS_THRESHOLD = 32;
 
+// The bytes an append would put in the rope's last link. Built on the stack:
+// the limit is above the length a std::string keeps in its own storage, so
+// going through one would put a heap allocation on the hottest append path.
+struct TailBuf { char bytes[String::kInlineTail]; size_t len; };
+
+static bool merged_tail(std::string_view head, const std::string& add, TailBuf& out) {
+    const size_t n = head.size() + add.size();
+    if (n > String::kInlineTail) return false;
+    std::memcpy(out.bytes, head.data(), head.size());
+    std::memcpy(out.bytes + head.size(), add.data(), add.size());
+    out.len = n;
+    // A surrogate pair split across the seam is one code point and has to be
+    // stored as the one sequence it stands for. Nothing but a 0xED byte can
+    // begin half of one, so the rewrite cannot be needed without one.
+    if (std::memchr(out.bytes, 0xED, n) == nullptr) return true;
+    std::string joined(out.bytes, n);
+    canonicalize_pairs(joined);
+    if (joined.size() > String::kInlineTail) return false;
+    std::memcpy(out.bytes, joined.data(), joined.size());
+    out.len = joined.size();
+    return true;
+}
+
 String* String::make_concat(String* a, String* b) {
     if (!a || a->empty()) return b;
     if (!b || b->empty()) return a;
@@ -224,6 +258,19 @@ String* String::make_concat(String* a, String* b) {
     // Don't call str() on a cons node here — that would defeat the whole purpose.
     if (!a->is_cons_ && !b->is_cons_ && a->data_.size() + b->data_.size() <= CONS_THRESHOLD) {
         return new String(a->data_ + b->data_);
+    }
+    // Put a small append in the last link rather than growing the rope by one.
+    // `a` is untouched -- it is immutable and may be shared, so this builds a
+    // second rope over the same left subtree, spelling the same bytes.
+    if (a->is_cons_ && !b->is_cons_) {
+        TailBuf merged;
+        if (a->is_tail_) {
+            if (merged_tail(a->inline_tail(), b->data_, merged))
+                return new String(a->tail_.left, merged.bytes, merged.len);
+        } else if (!a->cons_.right->is_cons_) {
+            if (merged_tail(a->cons_.right->data_, b->data_, merged))
+                return new String(a->cons_.left, merged.bytes, merged.len);
+        }
     }
     return new String(a, b);
 }

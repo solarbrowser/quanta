@@ -25,6 +25,15 @@ class String {
     union {
         mutable std::string data_;
         struct { String* left; String* right; } cons_;
+        // A link that carries the rope's last few bytes itself instead of
+        // pointing at a cell for them. `s += piece` in a loop appends a
+        // handful of bytes at a time and a plain link costs a whole cell no
+        // matter how little text it adds, so a rope built that way is mostly
+        // pointers describing very little text. This form spends the same one
+        // cell per append but only starts a new link once the bytes fill up,
+        // so the live link count follows the TEXT rather than the number of
+        // appends. Sized to fill the union the flat form already needs.
+        struct { String* left; uint8_t len; char bytes[23]; } tail_;
     };
     mutable size_t hash_ = 0;
     // Bit-fields, not plain bools: ascii_ below was added after the comment
@@ -33,7 +42,10 @@ class String {
     // fit in the padding utf16_len_'s alignment leaves, so a string cell is
     // 64 again -- and a rope's cons nodes are strings too.
     bool interned_       : 1 = false;
+    // "not flat": the bytes have to be collected from below. is_tail_ then
+    // says which of the two link layouts this is.
     mutable bool is_cons_ : 1 = false;
+    mutable bool is_tail_ : 1 = false;
     mutable uint8_t ascii_ : 2 = 0;
     // UTF-16 length, computed once. `.length` is a scan of the whole UTF-8
     // buffer, so reading it in a loop over a growing string is quadratic;
@@ -51,20 +63,30 @@ class String {
     void destroy_payload() noexcept { if (!is_cons_) data_.~basic_string(); }
     void copy_bits(const String& o) noexcept {
         hash_ = o.hash_; interned_ = o.interned_; is_cons_ = o.is_cons_;
-        ascii_ = o.ascii_; utf16_len_ = o.utf16_len_;
+        is_tail_ = o.is_tail_; ascii_ = o.ascii_; utf16_len_ = o.utf16_len_;
+    }
+    void copy_link(const String& o) noexcept {
+        if (is_tail_) tail_ = o.tail_; else cons_ = o.cons_;
     }
     void copy_from(const String& o) {
         copy_bits(o);
-        if (is_cons_) cons_ = o.cons_; else new (&data_) std::string(o.data_);
+        if (is_cons_) copy_link(o); else new (&data_) std::string(o.data_);
     }
     void move_from(String&& o) noexcept {
         copy_bits(o);
-        if (is_cons_) cons_ = o.cons_; else new (&data_) std::string(std::move(o.data_));
+        if (is_cons_) copy_link(o); else new (&data_) std::string(std::move(o.data_));
     }
     void calculate_hash() const noexcept;
     static void collect_bytes(const String* node, std::string& out);
+    // Bytes of a link's inline tail, empty for every other form.
+    std::string_view inline_tail() const noexcept {
+        return is_tail_ ? std::string_view(tail_.bytes, tail_.len) : std::string_view();
+    }
 
 public:
+    // Bytes a link can carry inline; see the tail_ member above.
+    static constexpr size_t kInlineTail = 23;
+
     // GC cell protocol (see Object.h): heap strings are String-kind cells;
     // stack/value instances never touch these. Rope cons nodes are cells too.
     static void* operator new(size_t size);
@@ -78,8 +100,15 @@ public:
     explicit String(std::string&& str) noexcept;
     explicit String(std::string_view sv);
     explicit String(const char* str);
-    // Cons node — created only via make_concat
+    // Link nodes — created only via make_concat
     String(String* left, String* right) noexcept : cons_{left, right} { is_cons_ = true; }
+    String(String* left, const char* bytes, size_t len) noexcept {
+        tail_.left = left;
+        tail_.len = static_cast<uint8_t>(len);
+        for (size_t i = 0; i < len; ++i) tail_.bytes[i] = bytes[i];
+        is_cons_ = true;
+        is_tail_ = true;
+    }
 
     ~String() { if (!is_cons_) data_.~basic_string(); }
 
