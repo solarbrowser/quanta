@@ -19,6 +19,7 @@ namespace Quanta {
 thread_local Heap* Heap::active_ = nullptr;
 thread_local bool Heap::gc_requested_ = false;
 thread_local bool Heap::major_gc_requested_ = false;
+thread_local uint32_t Heap::major_request_scale_ = 1;
 
 Heap& Heap::active() {
     assert(active_ && "no active Heap -- Engine init must install a HeapScope "
@@ -159,7 +160,7 @@ void account_bytes(size_t size, bool needs_major) {
     if (g_bytes_since_gc >= gc_budget()) {
         g_bytes_since_gc = 0;
         Heap::request_gc();
-        if (g_survivor_bytes >= gc_budget()) {
+        if (g_survivor_bytes >= gc_budget() * Heap::major_request_scale()) {
             g_survivor_bytes = 0;
             Heap::request_major_gc();
         }

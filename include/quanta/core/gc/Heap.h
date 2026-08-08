@@ -96,6 +96,13 @@ public:
     // A request that specifically needs a major collection (see note_extra_bytes).
     static bool major_gc_requested() { return major_gc_requested_; }
     static void request_major_gc() { major_gc_requested_ = true; }
+    // How much survivor growth it takes to force a major, as a multiple of the
+    // ordinary budget. Raised by the collector when a major marks a large live
+    // set to reclaim almost nothing, so a call-heavy program stops paying for
+    // a full mark it has already been told will not pay for itself. Back to 1
+    // as soon as a major earns its keep.
+    static void set_major_request_scale(uint32_t s) { major_request_scale_ = s ? s : 1; }
+    static uint32_t major_request_scale() { return major_request_scale_; }
     static void clear_major_gc_request() { major_gc_requested_ = false; }
     // Charges `bytes` toward gc_requested()'s budget for memory the cell
     // heap doesn't see directly (pinned survivor Contexts). Requests a
@@ -144,6 +151,7 @@ private:
     static thread_local Heap* active_;
     static thread_local bool gc_requested_;
     static thread_local bool major_gc_requested_;
+    static thread_local uint32_t major_request_scale_;
 
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into
