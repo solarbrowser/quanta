@@ -244,6 +244,32 @@ void CallContextPool::drain() {
 }
 
 Context::~Context() {
+    // Block scopes still open when the context dies were abandoned outright:
+    // only owned_env_ was ever released here, and a `return` out of a loop
+    // body or an exception unwinding past one leaves its Environment on the
+    // chain with nothing else pointing at it. They go through the same path
+    // pop_block_scope uses, which is what decides whether a closure could
+    // still be holding one.
+    //
+    // Only after the walk has found owned_env_ on this chain: a context that
+    // took no environment of its own is looking at a scope chain that belongs
+    // to somebody else, and those are not ours to free.
+    if (owned_env_ && lexical_environment_ && lexical_environment_ != owned_env_) {
+        bool chain_is_ours = false;
+        for (Environment* e = lexical_environment_; e; e = e->get_outer()) {
+            if (e == owned_env_) { chain_is_ours = true; break; }
+        }
+        if (chain_is_ours) {
+            Environment* e = lexical_environment_;
+            while (e != owned_env_) {
+                Environment* outer = e->get_outer();
+                if (!e->is_escaped()) Collector::release_env(e);
+                else if (engine_) engine_->add_survivor_environment(e);
+                e = outer;
+            }
+            lexical_environment_ = owned_env_;
+        }
+    }
     if (owned_env_) {
         if (!owned_env_->is_escaped()) {
             Collector::release_env(owned_env_);
