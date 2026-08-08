@@ -605,7 +605,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // stashes current_context_ somewhere long-lived (Promise's own ctor,
     // setTimeout), it's THIS context that would leak. ContextSurvivorGuard
     // consults this instead of registering unconditionally.
-    ctx.mark_exposed_to_escape();
+    if (native_captures_ctx_) ctx.mark_exposed_to_escape();
     Context* prev_context = Object::current_context_;
     Object::current_context_ = &ctx;
     // The native signature demands a vector; rebuild one only when the

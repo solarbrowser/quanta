@@ -1025,6 +1025,12 @@ private:
     // these used to force by being split across two separate byte clusters.
     FunctionKind function_kind_ : 2 = FunctionKind::Plain;
     bool is_native_ : 1 = false;
+    // Whether calling this native could make the CALLER's context outlive the
+    // call. Natives run on the caller's context rather than one of their own,
+    // so one that stores it (queueMicrotask, a timer, a promise reaction)
+    // leaves it reachable after the call returns. Conservative by default:
+    // only a native proven to keep nothing clears it.
+    bool native_captures_ctx_ : 1 = true;
     bool is_constructor_ : 1 = false;  // Whether this function has [[Construct]] internal method
     bool is_arrow_ : 1 = false;        // Arrow functions have lexical this binding
     bool is_class_constructor_ : 1 = false;  // Class constructors must be called with new
@@ -1297,6 +1303,10 @@ public:
     const ASTNode* get_body() const { return ast_body(); }
     size_t get_arity() const { return get_parameters().size(); }
     bool is_native() const { return is_native_; }
+    bool native_captures_ctx() const { return native_captures_ctx_; }
+    // For natives that read and compute only: no closure over the context, no
+    // queued job, nothing stored anywhere the call does not own.
+    void mark_native_context_safe() { native_captures_ctx_ = false; }
     bool is_constructor() const { return is_constructor_; }
     void set_is_constructor(bool value) { is_constructor_ = value; }
     bool is_arrow() const { return is_arrow_; }
