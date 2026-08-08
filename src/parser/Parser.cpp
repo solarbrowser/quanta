@@ -81,6 +81,8 @@ ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
         ScriptUnit::BuildScope scope(unit.get());
         program = parse_program();
     }
+    // The literals inside recorded ranges into this text, so the unit keeps it.
+    unit->set_source(source_);
     unit->set_root(std::move(program));
     return unit;
 }
@@ -5393,7 +5395,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, false, is_generator
     );
-    fn_decl->set_source_text(get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1));
+    fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     return fn_decl;
 }
 
@@ -5780,7 +5782,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 
     Position end = get_current_position();
 
-    std::string class_src = get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1);
+    size_t class_src_start = start.offset;
     std::unique_ptr<ClassDeclaration> cls_decl;
     if (superclass) {
         cls_decl = std::make_unique<ClassDeclaration>(
@@ -5796,7 +5798,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             start, end
         );
     }
-    cls_decl->set_source_text(class_src);
+    cls_decl->set_source_range(class_src_start, last_meaningful_token().get_start().offset + 1);
     return cls_decl;
 }
 
@@ -6134,7 +6136,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 
     Position end = get_current_position();
 
-    std::string cls_expr_src = get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1);
+    size_t cls_expr_src_start = start.offset;
     std::unique_ptr<ClassDeclaration> cls_expr;
     if (id) {
         if (superclass) {
@@ -6168,7 +6170,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             );
         }
     }
-    cls_expr->set_source_text(cls_expr_src);
+    cls_expr->set_source_range(cls_expr_src_start, last_meaningful_token().get_start().offset + 1);
     cls_expr->set_is_expression(true);
     return cls_expr;
 }
@@ -6679,7 +6681,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         }
     }
 
-    std::string method_src = get_source_slice(src_start.offset, last_meaningful_token().get_start().offset + 1);
+    size_t method_src_start = src_start.offset;
+    size_t method_src_end = last_meaningful_token().get_start().offset + 1;
 
     auto function_expr = std::make_unique<FunctionExpression>(
         nullptr,
@@ -6687,7 +6690,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, get_current_position(), is_generator, is_async
     );
-    function_expr->set_source_text(method_src);
+    function_expr->set_source_range(method_src_start, method_src_end);
 
     Position end = get_current_position();
     auto method = std::make_unique<MethodDefinition>(
@@ -6695,7 +6698,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         std::move(function_expr),
         kind, is_static, computed, start, end
     );
-    method->set_source_text(method_src);
+    method->set_source_range(method_src_start, method_src_end);
     return method;
 }
 
@@ -7036,7 +7039,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, is_generator
     );
-    fn_expr->set_source_text(get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1));
+    fn_expr->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     return fn_expr;
 }
 
@@ -7324,14 +7327,15 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     }
 
     Position end = get_current_position();
-    std::string src_text = get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1);
+    size_t src_text_start = start.offset;
+    size_t src_text_end = last_meaningful_token().get_start().offset + 1;
     if (is_generator) {
         auto gen_expr = std::make_unique<FunctionExpression>(
             std::move(id), std::move(params),
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
             start, end, true, true
         );
-        gen_expr->set_source_text(src_text);
+        gen_expr->set_source_range(src_text_start, src_text_end);
         return gen_expr;
     }
     auto async_expr = std::make_unique<AsyncFunctionExpression>(
@@ -7339,7 +7343,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end
     );
-    async_expr->set_source_text(src_text);
+    async_expr->set_source_range(src_text_start, src_text_end);
     return async_expr;
 }
 
@@ -7624,7 +7628,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, true, is_generator
     );
-    async_fn_decl->set_source_text(get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1));
+    async_fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     return async_fn_decl;
 }
 
@@ -7859,7 +7863,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         size_t src_end = (last.get_start().offset == last.get_end().offset)
             ? last.get_start().offset + 1
             : last.get_end().offset;
-        arrow_expr->set_source_text(get_source_slice(start.offset, src_end));
+        arrow_expr->set_source_range(start.offset, src_end);
     }
     return arrow_expr;
 }
@@ -8729,10 +8733,11 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             }
             
             {
-                std::string method_src = get_source_slice(prop_start.offset, last_meaningful_token().get_start().offset + 1);
-                if (!method_src.empty()) {
+                size_t method_src_start = prop_start.offset;
+                size_t method_src_end = last_meaningful_token().get_start().offset + 1;
+                if (method_src_end > method_src_start) {
                     if (method_value->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
-                        static_cast<FunctionExpression*>(method_value.get())->set_source_text(method_src);
+                        static_cast<FunctionExpression*>(method_value.get())->set_source_range(method_src_start, method_src_end);
                     }
                 }
             }

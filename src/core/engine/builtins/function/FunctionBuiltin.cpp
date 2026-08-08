@@ -130,6 +130,7 @@ void register_function_builtins(Context& ctx) {
                         return Value();
                     }
                     func->borrow_body_from(unit, func_expr->get_body());
+                    unit->set_source(func_code);
                     unit->set_root(std::move(expr));
                     func->set_source_text(toString_src);
 

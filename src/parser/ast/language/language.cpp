@@ -281,7 +281,8 @@ static ExecutableRef<FunctionExecutable> ensure_shared_executable(
         const ExecutableRef<FunctionExecutable>& cached,
         const ASTNode* body,
         const std::vector<std::unique_ptr<Parameter>>& params,
-        const std::string& source_text,
+        uint32_t src_start,
+        uint32_t src_end,
         ScriptUnit* owning_unit = nullptr) {
     if (cached) return cached;
     ExecutableRef<FunctionExecutable> exe = make_executable_ref();
@@ -300,9 +301,12 @@ static ExecutableRef<FunctionExecutable> ensure_shared_executable(
             std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
         exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
     }
-    // Function::set_source_text writes here anyway and short-circuits on an
-    // identical value, so hoisting it out of every instantiation is a no-op.
-    if (!source_text.empty()) exe->source_text = source_text;
+    // Cut from the unit's source here rather than at the call site: this runs
+    // once per declaration site, while the call site runs on every closure
+    // instantiation and would materialize the same bytes each time.
+    if (owning_unit && src_end > src_start) {
+        exe->source_text = owning_unit->source_range(src_start, src_end);
+    }
     return exe;
 }
 
@@ -356,7 +360,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
                 tpl.needs_outer_env = fe->get_needs_outer_env_state() != 0;
             }
             tpl.executable = ensure_shared_executable(fe->get_cached_executable(), fe->get_body(),
-                                                      fe->get_params(), fe->get_source_text(),
+                                                      fe->get_params(), fe->source_start(), fe->source_end(),
                                                       fe->owning_unit());
             if (!fe->get_cached_executable()) fe->set_cached_executable(tpl.executable);
             break;
@@ -372,7 +376,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.body_is_strict = fd->get_body()->has_use_strict_directive();
             tpl.has_direct_eval = fd->get_body()->has_direct_eval_cached();
             tpl.executable = ensure_shared_executable(fd->get_cached_executable(), fd->get_body(),
-                                                      fd->get_params(), fd->get_source_text(),
+                                                      fd->get_params(), fd->source_start(), fd->source_end(),
                                                       fd->owning_unit());
             if (!fd->get_cached_executable()) fd->set_cached_executable(tpl.executable);
             tpl.declared_length = spec_length_of(*tpl.executable);
@@ -387,7 +391,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.needs_outer_env = !ar->is_async();
             tpl.has_direct_eval = contains_direct_eval(const_cast<ASTNode*>(ar->get_body()));
             tpl.executable = ensure_shared_executable(ar->get_cached_executable(), ar->get_body(),
-                                                      ar->get_params(), ar->get_source_text(),
+                                                      ar->get_params(), ar->source_start(), ar->source_end(),
                                                       ar->owning_unit());
             if (!ar->get_cached_executable()) ar->set_cached_executable(tpl.executable);
             tpl.declared_length = spec_length_of(*tpl.executable);
@@ -404,7 +408,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.body_is_strict = af->get_body()->has_use_strict_directive();
             tpl.has_direct_eval = af->get_body()->has_direct_eval_cached();
             tpl.executable = ensure_shared_executable(af->get_cached_executable(), af->get_body(),
-                                                      af->get_params(), af->get_source_text(),
+                                                      af->get_params(), af->source_start(), af->source_end(),
                                                       af->owning_unit());
             if (!af->get_cached_executable()) af->set_cached_executable(tpl.executable);
             tpl.declared_length = spec_length_of(*tpl.executable);
@@ -612,8 +616,9 @@ std::unique_ptr<ASTNode> FunctionDeclaration::clone() const {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
         start_, end_, is_async_, is_generator_
     );
-    // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
-    cloned->set_source_text(source_text_);
+    // The source range is recorded post-construction, so clone() must carry it
+    // (and the unit it points into) explicitly or toString() loses the source.
+    cloned->set_source_ref(nullptr, src_start_, src_end_);
     return cloned;
 }
 
@@ -1226,8 +1231,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         if (!has_explicit_constructor) {
             constructor_fn->set_default_ctor();
         }
-        if (!source_text_.empty()) {
-            constructor_fn->set_source_text(source_text_);
+        if (has_source_range()) {
+            constructor_fn->set_source_text(get_source_text());
         }
 
         prototype.release();
@@ -1725,7 +1730,7 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
             start_, end_
         );
     }
-    cloned->set_source_text(source_text_);
+    cloned->set_source_ref(nullptr, src_start_, src_end_);
     cloned->set_is_expression(is_expression_);
     return cloned;
 }
@@ -1837,8 +1842,9 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
         start_, end_, is_generator_, is_async_
     );
-    // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
-    cloned->set_source_text(source_text_);
+    // The source range is recorded post-construction, so clone() must carry it
+    // (and the unit it points into) explicitly or toString() loses the source.
+    cloned->set_source_ref(nullptr, src_start_, src_end_);
     cloned->set_decl_form(is_decl_form_);
     cloned->set_method_shorthand(is_method_shorthand_);
     return cloned;
@@ -1884,8 +1890,9 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
         is_async_,
         start_, end_
     );
-    // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
-    cloned->set_source_text(source_text_);
+    // The source range is recorded post-construction, so clone() must carry it
+    // (and the unit it points into) explicitly or toString() loses the source.
+    cloned->set_source_ref(nullptr, src_start_, src_end_);
     return cloned;
 }
 

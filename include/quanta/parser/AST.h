@@ -1051,7 +1051,8 @@ private:
     std::unique_ptr<BlockStatement> body_;
     bool is_async_;
     bool is_generator_;
-    std::string source_text_;
+    uint32_t src_start_ = 0;
+    uint32_t src_end_ = 0;
     // Built once on first evaluate(), reused by every instantiation -- same
     // idiom as FunctionExpression::cached_executable_ (see
     // FunctionExecutable's own doc comment for why a durable clone, not a
@@ -1077,8 +1078,28 @@ public:
     size_t param_count() const { return params_.size(); }
     bool is_async() const { return is_async_; }
     bool is_generator() const { return is_generator_; }
-    void set_source_text(const std::string& s) { source_text_ = s; }
-    const std::string& get_source_text() const { return source_text_; }
+    // A range into the owning unit's source rather than a copy of it; see
+    // ScriptUnit::source(). Materialized only when something actually asks,
+    // which in practice is Function.prototype.toString.
+    void set_source_range(size_t start, size_t end) {
+        src_start_ = static_cast<uint32_t>(start);
+        src_end_ = static_cast<uint32_t>(end);
+    }
+    std::string get_source_text() const {
+        return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
+    }
+    bool has_source_range() const { return src_end_ > src_start_; }
+    // A clone is built outside the parse that stamped the original, so it
+    // carries the original's unit over explicitly or it has no source to
+    // report.
+    void set_source_ref(ScriptUnit* unit, uint32_t start, uint32_t end) {
+        owning_unit_ = unit;
+        src_start_ = start;
+        src_end_ = end;
+    }
+    ScriptUnit* source_unit() const { return owning_unit_; }
+    uint32_t source_start() const { return src_start_; }
+    uint32_t source_end() const { return src_end_; }
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
@@ -1093,7 +1114,11 @@ private:
     std::unique_ptr<Identifier> id_;
     std::unique_ptr<ASTNode> superclass_;
     std::unique_ptr<BlockStatement> body_;
-    std::string source_text_;
+    // Which parse tree this node belongs to, recorded when it was built
+    // (see ScriptUnit::BuildScope) so its source range can be resolved.
+    ScriptUnit* owning_unit_ = ScriptUnit::building();
+    uint32_t src_start_ = 0;
+    uint32_t src_end_ = 0;
     std::string inferred_name_;
     bool is_expression_ = false;
     // The constructor executable for this class site. Building it means cloning
@@ -1134,8 +1159,28 @@ public:
     bool has_superclass() const { return superclass_ != nullptr; }
     const ExecutableRef<FunctionExecutable>& get_cached_ctor_exe() const { return cached_ctor_exe_; }
     void set_cached_ctor_exe(ExecutableRef<FunctionExecutable> e) const { cached_ctor_exe_ = std::move(e); }
-    void set_source_text(const std::string& s) { source_text_ = s; }
-    const std::string& get_source_text() const { return source_text_; }
+    // A range into the owning unit's source rather than a copy of it; see
+    // ScriptUnit::source(). Materialized only when something actually asks,
+    // which in practice is Function.prototype.toString.
+    void set_source_range(size_t start, size_t end) {
+        src_start_ = static_cast<uint32_t>(start);
+        src_end_ = static_cast<uint32_t>(end);
+    }
+    std::string get_source_text() const {
+        return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
+    }
+    bool has_source_range() const { return src_end_ > src_start_; }
+    // A clone is built outside the parse that stamped the original, so it
+    // carries the original's unit over explicitly or it has no source to
+    // report.
+    void set_source_ref(ScriptUnit* unit, uint32_t start, uint32_t end) {
+        owning_unit_ = unit;
+        src_start_ = start;
+        src_end_ = end;
+    }
+    ScriptUnit* source_unit() const { return owning_unit_; }
+    uint32_t source_start() const { return src_start_; }
+    uint32_t source_end() const { return src_end_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1158,7 +1203,11 @@ private:
     Kind kind_;
     bool is_static_;
     bool computed_;
-    std::string source_text_;
+    // Which parse tree this node belongs to, recorded when it was built
+    // (see ScriptUnit::BuildScope) so its source range can be resolved.
+    ScriptUnit* owning_unit_ = ScriptUnit::building();
+    uint32_t src_start_ = 0;
+    uint32_t src_end_ = 0;
 
 public:
     MethodDefinition(std::unique_ptr<ASTNode> key,
@@ -1176,8 +1225,28 @@ public:
     Kind get_kind() const { return kind_; }
     bool is_static() const { return is_static_; }
     bool is_constructor() const { return kind_ == CONSTRUCTOR; }
-    void set_source_text(const std::string& s) { source_text_ = s; }
-    const std::string& get_source_text() const { return source_text_; }
+    // A range into the owning unit's source rather than a copy of it; see
+    // ScriptUnit::source(). Materialized only when something actually asks,
+    // which in practice is Function.prototype.toString.
+    void set_source_range(size_t start, size_t end) {
+        src_start_ = static_cast<uint32_t>(start);
+        src_end_ = static_cast<uint32_t>(end);
+    }
+    std::string get_source_text() const {
+        return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
+    }
+    bool has_source_range() const { return src_end_ > src_start_; }
+    // A clone is built outside the parse that stamped the original, so it
+    // carries the original's unit over explicitly or it has no source to
+    // report.
+    void set_source_ref(ScriptUnit* unit, uint32_t start, uint32_t end) {
+        owning_unit_ = unit;
+        src_start_ = start;
+        src_end_ = end;
+    }
+    ScriptUnit* source_unit() const { return owning_unit_; }
+    uint32_t source_start() const { return src_start_; }
+    uint32_t source_end() const { return src_end_; }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1227,7 +1296,8 @@ private:
     std::unique_ptr<BlockStatement> body_;
     bool is_generator_;
     bool is_async_;
-    std::string source_text_;
+    uint32_t src_start_ = 0;
+    uint32_t src_end_ = 0;
     bool is_decl_form_ = false; // `export default function fn(){}`: HoistableDeclaration, not NamedEvaluation
     bool is_method_shorthand_ = false; // `{m(){}}`/`get x(){}`: non-constructible, skip the .prototype build
 
@@ -1273,8 +1343,28 @@ public:
     bool is_named() const { return id_ != nullptr; }
     bool is_generator() const { return is_generator_; }
     bool is_async() const { return is_async_; }
-    void set_source_text(const std::string& s) { source_text_ = s; }
-    const std::string& get_source_text() const { return source_text_; }
+    // A range into the owning unit's source rather than a copy of it; see
+    // ScriptUnit::source(). Materialized only when something actually asks,
+    // which in practice is Function.prototype.toString.
+    void set_source_range(size_t start, size_t end) {
+        src_start_ = static_cast<uint32_t>(start);
+        src_end_ = static_cast<uint32_t>(end);
+    }
+    std::string get_source_text() const {
+        return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
+    }
+    bool has_source_range() const { return src_end_ > src_start_; }
+    // A clone is built outside the parse that stamped the original, so it
+    // carries the original's unit over explicitly or it has no source to
+    // report.
+    void set_source_ref(ScriptUnit* unit, uint32_t start, uint32_t end) {
+        owning_unit_ = unit;
+        src_start_ = start;
+        src_end_ = end;
+    }
+    ScriptUnit* source_unit() const { return owning_unit_; }
+    uint32_t source_start() const { return src_start_; }
+    uint32_t source_end() const { return src_end_; }
     void set_decl_form(bool v) { is_decl_form_ = v; }
     bool is_decl_form() const { return is_decl_form_; }
     void set_method_shorthand(bool v) { is_method_shorthand_ = v; }
@@ -1326,7 +1416,8 @@ private:
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<ASTNode> body_;
     bool is_async_;
-    std::string source_text_;
+    uint32_t src_start_ = 0;
+    uint32_t src_end_ = 0;
     // Built once on first evaluate(), reused by every instantiation -- same
     // idiom as FunctionExpression::cached_executable_. Only used by the
     // non-async branch (async arrows are a Function subclass, not yet
@@ -1350,8 +1441,28 @@ public:
     size_t param_count() const { return params_.size(); }
     bool is_async() const { return is_async_; }
     bool has_block_body() const { return body_->get_type() == Type::BLOCK_STATEMENT; }
-    void set_source_text(const std::string& s) { source_text_ = s; }
-    const std::string& get_source_text() const { return source_text_; }
+    // A range into the owning unit's source rather than a copy of it; see
+    // ScriptUnit::source(). Materialized only when something actually asks,
+    // which in practice is Function.prototype.toString.
+    void set_source_range(size_t start, size_t end) {
+        src_start_ = static_cast<uint32_t>(start);
+        src_end_ = static_cast<uint32_t>(end);
+    }
+    std::string get_source_text() const {
+        return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
+    }
+    bool has_source_range() const { return src_end_ > src_start_; }
+    // A clone is built outside the parse that stamped the original, so it
+    // carries the original's unit over explicitly or it has no source to
+    // report.
+    void set_source_ref(ScriptUnit* unit, uint32_t start, uint32_t end) {
+        owning_unit_ = unit;
+        src_start_ = start;
+        src_end_ = end;
+    }
+    ScriptUnit* source_unit() const { return owning_unit_; }
+    uint32_t source_start() const { return src_start_; }
+    uint32_t source_end() const { return src_end_; }
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
@@ -1401,7 +1512,8 @@ private:
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
     bool is_arrow_ = false;
-    std::string source_text_;
+    uint32_t src_start_ = 0;
+    uint32_t src_end_ = 0;
     bool is_decl_form_ = false; // `export default async function fn(){}`: HoistableDeclaration, not NamedEvaluation
     // Same cache-on-node pattern as FunctionExpression/FunctionDeclaration/
     // ArrowFunctionExpression's own cached_executable_.
@@ -1429,8 +1541,28 @@ public:
     BlockStatement* get_body() const { return body_.get(); }
     size_t param_count() const { return params_.size(); }
     bool is_arrow() const { return is_arrow_; }
-    void set_source_text(const std::string& s) { source_text_ = s; }
-    const std::string& get_source_text() const { return source_text_; }
+    // A range into the owning unit's source rather than a copy of it; see
+    // ScriptUnit::source(). Materialized only when something actually asks,
+    // which in practice is Function.prototype.toString.
+    void set_source_range(size_t start, size_t end) {
+        src_start_ = static_cast<uint32_t>(start);
+        src_end_ = static_cast<uint32_t>(end);
+    }
+    std::string get_source_text() const {
+        return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
+    }
+    bool has_source_range() const { return src_end_ > src_start_; }
+    // A clone is built outside the parse that stamped the original, so it
+    // carries the original's unit over explicitly or it has no source to
+    // report.
+    void set_source_ref(ScriptUnit* unit, uint32_t start, uint32_t end) {
+        owning_unit_ = unit;
+        src_start_ = start;
+        src_end_ = end;
+    }
+    ScriptUnit* source_unit() const { return owning_unit_; }
+    uint32_t source_start() const { return src_start_; }
+    uint32_t source_end() const { return src_end_; }
     void set_decl_form(bool v) { is_decl_form_ = v; }
     bool is_decl_form() const { return is_decl_form_; }
 

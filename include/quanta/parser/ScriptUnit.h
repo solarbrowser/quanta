@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 #include "quanta/parser/FunctionExecutable.h"
 
@@ -33,6 +34,18 @@ public:
     void unref() const { if (--ref_count_ == 0) delete this; }
 
     ASTNode* root() const { return root_.get(); }
+
+    // The text the tree was parsed from. Function literals record a range into
+    // it rather than each carrying its own copy of their own source: a nested
+    // function's text is contained in every ancestor's, so copying meant the
+    // same bytes stored once per nesting level.
+    const std::string& source() const { return source_; }
+    void set_source(std::string src) { source_ = std::move(src); }
+    std::string source_range(uint32_t start, uint32_t end) const {
+        if (start >= source_.size() || end <= start) return std::string();
+        if (end > source_.size()) end = static_cast<uint32_t>(source_.size());
+        return source_.substr(start, end - start);
+    }
     // Only used to hand the tree over once the parse that BuildScope wrapped
     // has finished -- the unit must already exist for the stamping to work.
     void set_root(std::unique_ptr<ASTNode> root);
@@ -63,6 +76,7 @@ private:
     ~ScriptUnit();
 
     std::unique_ptr<ASTNode> root_;
+    std::string source_;
     mutable uint32_t ref_count_ = 0;
 
     static thread_local ScriptUnit* building_;
