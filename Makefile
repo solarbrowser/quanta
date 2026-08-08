@@ -24,7 +24,15 @@ DEBUG_FLAGS = -g -DDEBUG -O0
 
 # On top of the default -O3 set, not -O0/DEBUG_FLAGS: some GC-rooting bugs
 # only reproduce under -O3's register allocation, never under -O0/-O1.
-ASAN_FLAGS = -g -fsanitize=address,undefined -fno-omit-frame-pointer
+# use-after-return is off because it is incompatible with the collector, not
+# because it is noisy: it moves a function's locals off the real stack into a
+# heap-allocated fake frame, and the conservative stack scan that finds our
+# roots only walks the real stack. Every local holding the sole reference to a
+# cell becomes invisible, so live objects get swept and the damage surfaces
+# far away as corrupted string bytes -- under GC stress the same script
+# returned a different answer on every run, with nothing wrong in the engine.
+ASAN_FLAGS = -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+             -fsanitize-address-use-after-return=never
 
 PCRE2_DIR = third_party/pcre2/src
 PCRE2_CFLAGS = -O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -I$(PCRE2_DIR) -march=native -fomit-frame-pointer
