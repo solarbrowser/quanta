@@ -335,6 +335,27 @@ bool BlockStatement::has_direct_eval_cached() const {
 // needs_outer_env below is not one rule: each form pinned the closure
 // environment differently before this was shared, and those differences are
 // reproduced rather than unified.
+// Reads the two body-derived flags an instantiation needs, computing them
+// from the body the first time. Cached on the literal so they survive the
+// body being dropped -- see set_body_facts.
+template <typename Literal>
+static void load_body_facts(const Literal* lit, bool& is_strict, bool& has_eval) {
+    if (lit->body_strict_state() < 0) {
+        const ASTNode* body = lit->get_body();
+        bool strict = false, eval = false;
+        if (body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            const auto* block = static_cast<const BlockStatement*>(body);
+            strict = block->has_use_strict_directive();
+            eval = block->has_direct_eval_cached();
+        } else if (body) {
+            eval = contains_direct_eval(const_cast<ASTNode*>(body));
+        }
+        lit->set_body_facts(strict, eval);
+    }
+    is_strict = lit->body_strict_state() == 1;
+    has_eval = lit->body_direct_eval_state() == 1;
+}
+
 ClosureTemplate closure_template_for(const ASTNode* literal) {
     ClosureTemplate tpl;
     switch (literal->get_type()) {
@@ -346,8 +367,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.is_async = fe->is_async();
             tpl.is_method_shorthand = fe->is_method_shorthand();
             tpl.needs_self_binding = fe->is_named() && !fe->is_decl_form();
-            tpl.body_is_strict = fe->get_body()->has_use_strict_directive();
-            tpl.has_direct_eval = fe->get_body()->has_direct_eval_cached();
+            load_body_facts(fe, tpl.body_is_strict, tpl.has_direct_eval);
             tpl.declared_length = static_cast<uint32_t>(fe->get_cached_spec_length());
             if (fe->is_generator()) {
                 tpl.needs_outer_env = true;  // suspendable body: not analyzed, keep the pin
@@ -373,8 +393,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.is_async = fd->is_async();
             // Only the plain branch ever pinned the environment.
             tpl.needs_outer_env = !fd->is_generator() && !fd->is_async();
-            tpl.body_is_strict = fd->get_body()->has_use_strict_directive();
-            tpl.has_direct_eval = fd->get_body()->has_direct_eval_cached();
+            load_body_facts(fd, tpl.body_is_strict, tpl.has_direct_eval);
             tpl.executable = ensure_shared_executable(fd->get_cached_executable(), fd->get_body(),
                                                       fd->get_params(), fd->source_start(), fd->source_end(),
                                                       fd->owning_unit());
@@ -389,7 +408,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.is_arrow = true;
             // Only the sync branch ever pinned the environment.
             tpl.needs_outer_env = !ar->is_async();
-            tpl.has_direct_eval = contains_direct_eval(const_cast<ASTNode*>(ar->get_body()));
+            { bool unused_strict = false; load_body_facts(ar, unused_strict, tpl.has_direct_eval); }
             tpl.executable = ensure_shared_executable(ar->get_cached_executable(), ar->get_body(),
                                                       ar->get_params(), ar->source_start(), ar->source_end(),
                                                       ar->owning_unit());
@@ -405,8 +424,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.is_arrow = af->is_arrow();
             tpl.needs_self_binding = af->get_id() && !af->is_arrow() && !af->is_decl_form();
             tpl.needs_outer_env = false;
-            tpl.body_is_strict = af->get_body()->has_use_strict_directive();
-            tpl.has_direct_eval = af->get_body()->has_direct_eval_cached();
+            load_body_facts(af, tpl.body_is_strict, tpl.has_direct_eval);
             tpl.executable = ensure_shared_executable(af->get_cached_executable(), af->get_body(),
                                                       af->get_params(), af->source_start(), af->source_end(),
                                                       af->owning_unit());

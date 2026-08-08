@@ -84,7 +84,30 @@ ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
     // The literals inside recorded ranges into this text, so the unit keeps it.
     unit->set_source(source_);
     unit->set_root(std::move(program));
+    // Handed over last: nothing reads the sequence through the parser after
+    // the parse, and the tree's own token ranges index into it.
+    unit->set_tokens(std::move(tokens_));
     return unit;
+}
+
+std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
+                                               bool is_generator, bool is_async) {
+    if (tok_index >= tokens_.size()) return nullptr;
+    current_token_index_ = tok_index;
+    errors_.clear();
+    options_.strict_mode = strict;
+    options_.in_generator_body = is_generator;
+    options_.in_async_body = is_async;
+    // A body is a function body wherever it came from: its directive prologue
+    // and its var scope belong to the function, not to whatever block encloses
+    // the call that asked for it.
+    options_.function_depth++;
+    if (!is_generator && !is_async) options_.non_arrow_function_depth++;
+    auto body = parse_block_statement(true);
+    options_.function_depth--;
+    if (!is_generator && !is_async) options_.non_arrow_function_depth--;
+    if (has_errors()) return nullptr;
+    return body;
 }
 
 std::unique_ptr<Program> Parser::parse_program() {
@@ -3658,6 +3681,7 @@ static std::string check_params_body_lex_conflict(
 
 std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
     Position start = get_current_position();
+    const size_t body_tok_first = current_token_index_;
 
     if (!consume(TokenType::LEFT_BRACE)) {
         add_error("Expected '{'");
@@ -3746,6 +3770,10 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
     }
 
     Position end = get_current_position();
+    if (is_function_body) {
+        last_body_tok_first_ = body_tok_first;
+        last_body_tok_last_ = current_token_index_;
+    }
     return std::make_unique<BlockStatement>(std::move(statements), start, end);
 }
 
@@ -5396,6 +5424,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         start, end, false, is_generator
     );
     fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
+    fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
     return fn_decl;
 }
 
@@ -6691,6 +6720,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         start, get_current_position(), is_generator, is_async
     );
     function_expr->set_source_range(method_src_start, method_src_end);
+    function_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
 
     Position end = get_current_position();
     auto method = std::make_unique<MethodDefinition>(
@@ -7040,6 +7070,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         start, end, is_generator
     );
     fn_expr->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
+    fn_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
     return fn_expr;
 }
 
@@ -7336,6 +7367,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             start, end, true, true
         );
         gen_expr->set_source_range(src_text_start, src_text_end);
+        gen_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
         return gen_expr;
     }
     auto async_expr = std::make_unique<AsyncFunctionExpression>(
@@ -7344,6 +7376,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         start, end
     );
     async_expr->set_source_range(src_text_start, src_text_end);
+    async_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
     return async_expr;
 }
 
@@ -7629,6 +7662,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         start, end, true, is_generator
     );
     async_fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
+    async_fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
     return async_fn_decl;
 }
 
@@ -7864,6 +7898,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             ? last.get_start().offset + 1
             : last.get_end().offset;
         arrow_expr->set_source_range(start.offset, src_end);
+        arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
     }
     return arrow_expr;
 }

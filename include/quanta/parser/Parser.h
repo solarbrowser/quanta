@@ -69,6 +69,12 @@ public:
 
 private:
     TokenSequence tokens_;
+    // Token span of the most recently parsed function body, so the literal
+    // built right after it can record where its body lives. Only read
+    // immediately after that body's parse returns, before any nested parse
+    // can overwrite it.
+    size_t last_body_tok_first_ = 0;
+    size_t last_body_tok_last_ = 0;
     ParseOptions options_;
     std::vector<ParseError> errors_;
     std::string source_;
@@ -189,6 +195,14 @@ public:
     bool is_reserved_word_as_property_name();
     void check_for_use_strict_directive();
     bool is_strict_mode() const { return options_.strict_mode; }
+    // Parses one function body starting at `tok_index`, which must be the
+    // index of its opening brace. Used to build a body that was recorded as a
+    // token range instead of being kept as a tree; the caller supplies the
+    // context the body was originally parsed in, since a body's grammar
+    // depends on it (yield and await are identifiers or operators depending
+    // on the enclosing function's kind).
+    std::unique_ptr<ASTNode> parse_body_at(size_t tok_index, bool strict,
+                                           bool is_generator, bool is_async);
     bool check_substatement_restrictions(bool is_loop_body = true);
     bool validate_array_destructuring(ArrayLiteral* arr);
     bool validate_object_destructuring(ObjectLiteral* obj);

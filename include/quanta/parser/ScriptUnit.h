@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 
+#include "quanta/lexer/Token.h"
+
 #include "quanta/parser/FunctionExecutable.h"
 
 namespace Quanta {
@@ -40,6 +42,13 @@ public:
     // function's text is contained in every ancestor's, so copying meant the
     // same bytes stored once per nesting level.
     const std::string& source() const { return source_; }
+
+    // The token stream the tree was parsed from, kept so a function body can
+    // be parsed later from the tokens it already occupies instead of being
+    // held as a tree the whole time. Cheap next to what it replaces: for a
+    // 3MB script the tokens come to single-digit megabytes.
+    const TokenSequence& tokens() const { return tokens_; }
+    void set_tokens(TokenSequence t) { tokens_ = std::move(t); }
     void set_source(std::string src) { source_ = std::move(src); }
     std::string source_range(uint32_t start, uint32_t end) const {
         if (start >= source_.size() || end <= start) return std::string();
@@ -77,6 +86,7 @@ private:
 
     std::unique_ptr<ASTNode> root_;
     std::string source_;
+    TokenSequence tokens_;
     mutable uint32_t ref_count_ = 0;
 
     static thread_local ScriptUnit* building_;

@@ -1053,6 +1053,10 @@ private:
     bool is_generator_;
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
+    uint32_t body_tok_first_ = 0;
+    uint32_t body_tok_last_ = 0;
+    mutable int8_t body_strict_state_ = -1;
+    mutable int8_t body_direct_eval_state_ = -1;
     // Built once on first evaluate(), reused by every instantiation -- same
     // idiom as FunctionExpression::cached_executable_ (see
     // FunctionExecutable's own doc comment for why a durable clone, not a
@@ -1089,6 +1093,25 @@ public:
         return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
     }
     bool has_source_range() const { return src_end_ > src_start_; }
+    // Where this literal's body sits in the owning unit's token stream, so the
+    // body can be parsed from there later instead of being kept as a tree.
+    void set_body_token_range(size_t first, size_t last) {
+        body_tok_first_ = static_cast<uint32_t>(first);
+        body_tok_last_ = static_cast<uint32_t>(last);
+    }
+    uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_token_last() const { return body_tok_last_; }
+    bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
+    // Facts about the body that instantiation needs. Cached on the literal
+    // because they have to outlive the body itself: the tree is what gets
+    // dropped, and asking the body again is exactly what is being avoided.
+    // -1 not computed yet, 0 no, 1 yes.
+    int8_t body_strict_state() const { return body_strict_state_; }
+    int8_t body_direct_eval_state() const { return body_direct_eval_state_; }
+    void set_body_facts(bool strict, bool direct_eval) const {
+        body_strict_state_ = strict ? 1 : 0;
+        body_direct_eval_state_ = direct_eval ? 1 : 0;
+    }
     // A clone is built outside the parse that stamped the original, so it
     // carries the original's unit over explicitly or it has no source to
     // report.
@@ -1119,6 +1142,10 @@ private:
     ScriptUnit* owning_unit_ = ScriptUnit::building();
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
+    uint32_t body_tok_first_ = 0;
+    uint32_t body_tok_last_ = 0;
+    mutable int8_t body_strict_state_ = -1;
+    mutable int8_t body_direct_eval_state_ = -1;
     std::string inferred_name_;
     bool is_expression_ = false;
     // The constructor executable for this class site. Building it means cloning
@@ -1170,6 +1197,25 @@ public:
         return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
     }
     bool has_source_range() const { return src_end_ > src_start_; }
+    // Where this literal's body sits in the owning unit's token stream, so the
+    // body can be parsed from there later instead of being kept as a tree.
+    void set_body_token_range(size_t first, size_t last) {
+        body_tok_first_ = static_cast<uint32_t>(first);
+        body_tok_last_ = static_cast<uint32_t>(last);
+    }
+    uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_token_last() const { return body_tok_last_; }
+    bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
+    // Facts about the body that instantiation needs. Cached on the literal
+    // because they have to outlive the body itself: the tree is what gets
+    // dropped, and asking the body again is exactly what is being avoided.
+    // -1 not computed yet, 0 no, 1 yes.
+    int8_t body_strict_state() const { return body_strict_state_; }
+    int8_t body_direct_eval_state() const { return body_direct_eval_state_; }
+    void set_body_facts(bool strict, bool direct_eval) const {
+        body_strict_state_ = strict ? 1 : 0;
+        body_direct_eval_state_ = direct_eval ? 1 : 0;
+    }
     // A clone is built outside the parse that stamped the original, so it
     // carries the original's unit over explicitly or it has no source to
     // report.
@@ -1208,6 +1254,10 @@ private:
     ScriptUnit* owning_unit_ = ScriptUnit::building();
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
+    uint32_t body_tok_first_ = 0;
+    uint32_t body_tok_last_ = 0;
+    mutable int8_t body_strict_state_ = -1;
+    mutable int8_t body_direct_eval_state_ = -1;
 
 public:
     MethodDefinition(std::unique_ptr<ASTNode> key,
@@ -1236,6 +1286,25 @@ public:
         return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
     }
     bool has_source_range() const { return src_end_ > src_start_; }
+    // Where this literal's body sits in the owning unit's token stream, so the
+    // body can be parsed from there later instead of being kept as a tree.
+    void set_body_token_range(size_t first, size_t last) {
+        body_tok_first_ = static_cast<uint32_t>(first);
+        body_tok_last_ = static_cast<uint32_t>(last);
+    }
+    uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_token_last() const { return body_tok_last_; }
+    bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
+    // Facts about the body that instantiation needs. Cached on the literal
+    // because they have to outlive the body itself: the tree is what gets
+    // dropped, and asking the body again is exactly what is being avoided.
+    // -1 not computed yet, 0 no, 1 yes.
+    int8_t body_strict_state() const { return body_strict_state_; }
+    int8_t body_direct_eval_state() const { return body_direct_eval_state_; }
+    void set_body_facts(bool strict, bool direct_eval) const {
+        body_strict_state_ = strict ? 1 : 0;
+        body_direct_eval_state_ = direct_eval ? 1 : 0;
+    }
     // A clone is built outside the parse that stamped the original, so it
     // carries the original's unit over explicitly or it has no source to
     // report.
@@ -1298,6 +1367,10 @@ private:
     bool is_async_;
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
+    uint32_t body_tok_first_ = 0;
+    uint32_t body_tok_last_ = 0;
+    mutable int8_t body_strict_state_ = -1;
+    mutable int8_t body_direct_eval_state_ = -1;
     bool is_decl_form_ = false; // `export default function fn(){}`: HoistableDeclaration, not NamedEvaluation
     bool is_method_shorthand_ = false; // `{m(){}}`/`get x(){}`: non-constructible, skip the .prototype build
 
@@ -1354,6 +1427,25 @@ public:
         return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
     }
     bool has_source_range() const { return src_end_ > src_start_; }
+    // Where this literal's body sits in the owning unit's token stream, so the
+    // body can be parsed from there later instead of being kept as a tree.
+    void set_body_token_range(size_t first, size_t last) {
+        body_tok_first_ = static_cast<uint32_t>(first);
+        body_tok_last_ = static_cast<uint32_t>(last);
+    }
+    uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_token_last() const { return body_tok_last_; }
+    bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
+    // Facts about the body that instantiation needs. Cached on the literal
+    // because they have to outlive the body itself: the tree is what gets
+    // dropped, and asking the body again is exactly what is being avoided.
+    // -1 not computed yet, 0 no, 1 yes.
+    int8_t body_strict_state() const { return body_strict_state_; }
+    int8_t body_direct_eval_state() const { return body_direct_eval_state_; }
+    void set_body_facts(bool strict, bool direct_eval) const {
+        body_strict_state_ = strict ? 1 : 0;
+        body_direct_eval_state_ = direct_eval ? 1 : 0;
+    }
     // A clone is built outside the parse that stamped the original, so it
     // carries the original's unit over explicitly or it has no source to
     // report.
@@ -1418,6 +1510,10 @@ private:
     bool is_async_;
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
+    uint32_t body_tok_first_ = 0;
+    uint32_t body_tok_last_ = 0;
+    mutable int8_t body_strict_state_ = -1;
+    mutable int8_t body_direct_eval_state_ = -1;
     // Built once on first evaluate(), reused by every instantiation -- same
     // idiom as FunctionExpression::cached_executable_. Only used by the
     // non-async branch (async arrows are a Function subclass, not yet
@@ -1452,6 +1548,25 @@ public:
         return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
     }
     bool has_source_range() const { return src_end_ > src_start_; }
+    // Where this literal's body sits in the owning unit's token stream, so the
+    // body can be parsed from there later instead of being kept as a tree.
+    void set_body_token_range(size_t first, size_t last) {
+        body_tok_first_ = static_cast<uint32_t>(first);
+        body_tok_last_ = static_cast<uint32_t>(last);
+    }
+    uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_token_last() const { return body_tok_last_; }
+    bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
+    // Facts about the body that instantiation needs. Cached on the literal
+    // because they have to outlive the body itself: the tree is what gets
+    // dropped, and asking the body again is exactly what is being avoided.
+    // -1 not computed yet, 0 no, 1 yes.
+    int8_t body_strict_state() const { return body_strict_state_; }
+    int8_t body_direct_eval_state() const { return body_direct_eval_state_; }
+    void set_body_facts(bool strict, bool direct_eval) const {
+        body_strict_state_ = strict ? 1 : 0;
+        body_direct_eval_state_ = direct_eval ? 1 : 0;
+    }
     // A clone is built outside the parse that stamped the original, so it
     // carries the original's unit over explicitly or it has no source to
     // report.
@@ -1514,6 +1629,10 @@ private:
     bool is_arrow_ = false;
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
+    uint32_t body_tok_first_ = 0;
+    uint32_t body_tok_last_ = 0;
+    mutable int8_t body_strict_state_ = -1;
+    mutable int8_t body_direct_eval_state_ = -1;
     bool is_decl_form_ = false; // `export default async function fn(){}`: HoistableDeclaration, not NamedEvaluation
     // Same cache-on-node pattern as FunctionExpression/FunctionDeclaration/
     // ArrowFunctionExpression's own cached_executable_.
@@ -1552,6 +1671,25 @@ public:
         return owning_unit_ ? owning_unit_->source_range(src_start_, src_end_) : std::string();
     }
     bool has_source_range() const { return src_end_ > src_start_; }
+    // Where this literal's body sits in the owning unit's token stream, so the
+    // body can be parsed from there later instead of being kept as a tree.
+    void set_body_token_range(size_t first, size_t last) {
+        body_tok_first_ = static_cast<uint32_t>(first);
+        body_tok_last_ = static_cast<uint32_t>(last);
+    }
+    uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_token_last() const { return body_tok_last_; }
+    bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
+    // Facts about the body that instantiation needs. Cached on the literal
+    // because they have to outlive the body itself: the tree is what gets
+    // dropped, and asking the body again is exactly what is being avoided.
+    // -1 not computed yet, 0 no, 1 yes.
+    int8_t body_strict_state() const { return body_strict_state_; }
+    int8_t body_direct_eval_state() const { return body_direct_eval_state_; }
+    void set_body_facts(bool strict, bool direct_eval) const {
+        body_strict_state_ = strict ? 1 : 0;
+        body_direct_eval_state_ = direct_eval ? 1 : 0;
+    }
     // A clone is built outside the parse that stamped the original, so it
     // carries the original's unit over explicitly or it has no source to
     // report.
