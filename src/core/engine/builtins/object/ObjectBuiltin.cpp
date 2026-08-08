@@ -416,6 +416,9 @@ void register_object_builtins(Context& ctx) {
 
             return Value(result_array.release());
         }, 1);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    values_fn->mark_native_context_safe();
     object_constructor->set_property("values", Value(values_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto entries_fn = ObjectFactory::create_native_function("entries",
@@ -1543,6 +1546,9 @@ void register_object_builtins(Context& ctx) {
             }
             return Value(obj->has_own_property(prop_name));
         }, 2);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    hasOwn_fn->mark_native_context_safe();
     object_constructor->set_property("hasOwn", Value(hasOwn_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto groupBy_fn = ObjectFactory::create_native_function("groupBy",
@@ -1785,6 +1791,9 @@ void register_object_builtins(Context& ctx) {
             if (!this_obj) return Value();
             return Value(this_obj);
         }, 0);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    proto_valueOf_fn->mark_native_context_safe();
 
     object_prototype->set_property("toString", Value(proto_toString_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("valueOf", Value(proto_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);

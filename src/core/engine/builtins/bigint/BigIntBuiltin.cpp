@@ -239,6 +239,9 @@ void register_bigint_builtins(Context& ctx) {
                 ctx.throw_type_error("BigInt.prototype.valueOf requires a BigInt this");
                 return Value();
             }, 0);
+        // Reads and computes only: the context is used for the receiver,
+        // argument coercion and throwing, never stored.
+        bigint_valueOf->mark_native_context_safe();
         Value proto_val = bigint_constructor->get_property("prototype");
         if (proto_val.is_object()) proto_val.as_object()->set_property("valueOf", Value(bigint_valueOf.release()), PropertyAttributes::BuiltinFunction);
     }

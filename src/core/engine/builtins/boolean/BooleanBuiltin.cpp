@@ -59,6 +59,9 @@ void register_boolean_builtins(Context& ctx) {
                 return Value();
             }
         }, 0);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    boolean_valueOf->mark_native_context_safe();
 
     PropertyDescriptor boolean_valueOf_name_desc(Value(std::string("valueOf")), PropertyAttributes::None);
     boolean_valueOf_name_desc.set_configurable(true);

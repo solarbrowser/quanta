@@ -309,6 +309,9 @@ void register_arraybuffer_builtins(Context& ctx) {
             }
             return Value(new_ab);
         }, 2);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    ab_slice_fn->mark_native_context_safe();
 
     ab_slice_fn->set_property("name", Value(std::string("slice")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     arraybuffer_prototype->set_property("slice", Value(ab_slice_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -581,6 +584,9 @@ void register_arraybuffer_builtins(Context& ctx) {
                 }
                 return Value(new_ab);
             }, 2);
+        // Reads and computes only: the context is used for the receiver,
+        // argument coercion and throwing, never stored.
+        sab_slice->mark_native_context_safe();
         sab_prototype->set_property_descriptor("slice",
             PropertyDescriptor(Value(sab_slice.release()), PropertyAttributes::BuiltinFunction));
 

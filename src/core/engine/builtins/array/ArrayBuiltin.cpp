@@ -595,6 +595,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
             return Value(obj && obj->is_array());
         }, 1);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    isArray_fn->mark_native_context_safe();
     Function* isArray_ptr = isArray_fn.release();
     PropertyAttributes isArray_attrs = PropertyAttributes::BuiltinFunction;
     array_constructor->set_property("isArray", Value(isArray_ptr), isArray_attrs);
@@ -1440,6 +1443,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             result->set_property("length", Value(3.0));
             return Value(result.release());
         }, 1);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    array_values_fn->mark_native_context_safe();
     PropertyDescriptor values_desc(Value(array_values_fn.release()),
         PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("values", values_desc);
@@ -1541,6 +1547,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             return Value(length);
         }, 1);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    array_push_fn->mark_native_context_safe();
 
 
     PropertyDescriptor push_desc(Value(array_push_fn.release()),
@@ -2782,6 +2791,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
             return result_val;
         }, 2);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    slice_fn->mark_native_context_safe();
     PropertyDescriptor slice_desc(Value(slice_fn.release()),
         PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("slice", slice_desc);

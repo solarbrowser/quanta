@@ -1452,6 +1452,9 @@ void register_string_builtins(Context& ctx) {
             size_t byte_end = utf16_index_to_byte_pos(str, static_cast<size_t>(end));
             return Value(str.substr(byte_start, byte_end - byte_start));
         }, 2);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    str_slice_fn->mark_native_context_safe();
     PropertyDescriptor str_slice_desc(Value(str_slice_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("slice", str_slice_desc);
@@ -1550,6 +1553,9 @@ void register_string_builtins(Context& ctx) {
 
             return Value(str.substr(start, end - start));
         }, 2);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    str_substring_fn->mark_native_context_safe();
     PropertyDescriptor str_substring_desc(Value(str_substring_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("substring", str_substring_desc);
@@ -1877,6 +1883,9 @@ void register_string_builtins(Context& ctx) {
             for (int i = 0; i < count; i++) result += str;
             return Value(result);
         }, 1);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    repeat_fn->mark_native_context_safe();
     PropertyDescriptor repeat_desc(Value(repeat_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("repeat", repeat_desc);
@@ -2181,6 +2190,9 @@ void register_string_builtins(Context& ctx) {
                     ctx.throw_type_error("String.prototype.valueOf requires a string or String object");
                     return Value();
                 });
+            // Reads and computes only: the context is used for the receiver,
+            // argument coercion and throwing, never stored.
+            string_valueOf_fn->mark_native_context_safe();
 
             PropertyDescriptor string_valueOf_length_desc(Value(0.0), PropertyAttributes::Configurable);
             string_valueOf_length_desc.set_enumerable(false);

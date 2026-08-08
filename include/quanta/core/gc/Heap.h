@@ -103,6 +103,17 @@ public:
     // as soon as a major earns its keep.
     static void set_major_request_scale(uint32_t s) { major_request_scale_ = s ? s : 1; }
     static uint32_t major_request_scale() { return major_request_scale_; }
+    // Bytes allocated since the last major finished, and the live set it left
+    // behind. A major is due once the heap has grown by a share of what was
+    // live: that is the signal that old-generation garbage is piling up, and
+    // it does not depend on how many contexts happened to survive.
+    static size_t bytes_since_major() { return bytes_since_major_; }
+    static void note_bytes_since_major(size_t bytes);
+    static void note_major_done(size_t live_bytes) {
+        bytes_since_major_ = 0;
+        live_after_major_ = live_bytes;
+    }
+    static size_t live_after_major() { return live_after_major_; }
     static void clear_major_gc_request() { major_gc_requested_ = false; }
     // Charges `bytes` toward gc_requested()'s budget for memory the cell
     // heap doesn't see directly (pinned survivor Contexts). Requests a
@@ -152,6 +163,8 @@ private:
     static thread_local bool gc_requested_;
     static thread_local bool major_gc_requested_;
     static thread_local uint32_t major_request_scale_;
+    static thread_local size_t bytes_since_major_;
+    static thread_local size_t live_after_major_;
 
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into

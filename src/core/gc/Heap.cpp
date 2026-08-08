@@ -20,6 +20,8 @@ thread_local Heap* Heap::active_ = nullptr;
 thread_local bool Heap::gc_requested_ = false;
 thread_local bool Heap::major_gc_requested_ = false;
 thread_local uint32_t Heap::major_request_scale_ = 1;
+thread_local size_t Heap::bytes_since_major_ = 0;
+thread_local size_t Heap::live_after_major_ = 0;
 
 Heap& Heap::active() {
     assert(active_ && "no active Heap -- Engine init must install a HeapScope "
@@ -156,6 +158,7 @@ size_t gc_budget() { return g_gc_budget; }
 
 void account_bytes(size_t size, bool needs_major) {
     g_bytes_since_gc += size;
+    Heap::note_bytes_since_major(size);
     if (needs_major) g_survivor_bytes += size;
     if (g_bytes_since_gc >= gc_budget()) {
         g_bytes_since_gc = 0;
@@ -181,6 +184,8 @@ void Heap::retune_budget(size_t live_bytes, size_t root_scan_bytes) {
     if (want > kGcBudgetCap) want = kGcBudgetCap;
     g_gc_budget = want;
 }
+
+void Heap::note_bytes_since_major(size_t bytes) { bytes_since_major_ += bytes; }
 
 void Heap::note_extra_bytes(size_t bytes) {
     account_bytes(bytes, /*needs_major=*/true);

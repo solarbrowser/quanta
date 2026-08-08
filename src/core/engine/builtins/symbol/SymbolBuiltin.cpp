@@ -192,6 +192,9 @@ void register_symbol_builtins(Context& ctx) {
                 ctx.throw_type_error("Symbol.prototype.valueOf requires a symbol");
                 return Value();
             });
+        // Reads and computes only: the context is used for the receiver,
+        // argument coercion and throwing, never stored.
+        valueOf_fn->mark_native_context_safe();
         sym_proto->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto toString_fn = ObjectFactory::create_native_function("toString",

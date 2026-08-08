@@ -180,6 +180,9 @@ void register_number_builtins(Context& ctx) {
                 return Value();
             }
         }, 0);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    number_valueOf->mark_native_context_safe();
 
     PropertyDescriptor number_valueOf_name_desc(Value(std::string("valueOf")), PropertyAttributes::None);
     number_valueOf_name_desc.set_configurable(true);

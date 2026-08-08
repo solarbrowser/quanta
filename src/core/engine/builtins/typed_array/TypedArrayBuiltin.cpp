@@ -1283,6 +1283,9 @@ void register_typed_array_builtins(Context& ctx) {
             }
             return Value(r);
         }, 2);
+    // Reads and computes only: the context is used for the receiver,
+    // argument coercion and throwing, never stored.
+    ta_slice_fn->mark_native_context_safe();
     typedarray_proto_ptr->set_property_descriptor("slice", PropertyDescriptor(Value(ta_slice_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_fill_fn = ObjectFactory::create_native_function("fill",

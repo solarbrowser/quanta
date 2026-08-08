@@ -945,6 +945,7 @@ void finish_major_cycle(MarkVisitor& v) {
             Heap::Stats st = Heap::active().stats();
             Heap::retune_budget(st.live_bytes + st.large_bytes,
                                 g_scanned_words * sizeof(uint64_t));
+            Heap::note_major_done(st.live_bytes + st.large_bytes);
         }
         note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);
         Heap::rebuild_allocation_candidates();
@@ -1205,7 +1206,14 @@ void Collector::safepoint_slow() {
         // and snaps back the moment a major earns its keep. Survivor growth
         // asks for majors through its own budget (Heap::note_extra_bytes), so
         // backing off here cannot starve the survivor pool.
-        if (!barriers_disabled() && ++cycle_count % major_interval() != 0) {
+        // The interval above backs off when majors come back empty-handed,
+        // which is right until the heap starts growing on top of what the last
+        // major left live: that growth is old-generation garbage no minor can
+        // reclaim, and no amount of poor yield makes it collectable any other
+        // way. Ask for one once the heap has added half of the live set again.
+        const size_t live = Heap::live_after_major();
+        const bool grown_enough = live > 0 && Heap::bytes_since_major() >= live / 2;
+        if (!barriers_disabled() && !grown_enough && ++cycle_count % major_interval() != 0) {
             run_minor_collection();
         } else {
             run_major_slice(next_slice_budget());
