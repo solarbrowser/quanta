@@ -19,7 +19,6 @@ namespace Quanta {
 thread_local Heap* Heap::active_ = nullptr;
 thread_local bool Heap::gc_requested_ = false;
 thread_local bool Heap::major_gc_requested_ = false;
-thread_local uint32_t Heap::major_request_scale_ = 1;
 thread_local size_t Heap::bytes_since_major_ = 0;
 thread_local size_t Heap::live_after_major_ = 0;
 
@@ -163,7 +162,7 @@ void account_bytes(size_t size, bool needs_major) {
     if (g_bytes_since_gc >= gc_budget()) {
         g_bytes_since_gc = 0;
         Heap::request_gc();
-        if (g_survivor_bytes >= gc_budget() * Heap::major_request_scale()) {
+        if (g_survivor_bytes >= gc_budget()) {
             g_survivor_bytes = 0;
             Heap::request_major_gc();
         }

@@ -96,13 +96,6 @@ public:
     // A request that specifically needs a major collection (see note_extra_bytes).
     static bool major_gc_requested() { return major_gc_requested_; }
     static void request_major_gc() { major_gc_requested_ = true; }
-    // How much survivor growth it takes to force a major, as a multiple of the
-    // ordinary budget. Raised by the collector when a major marks a large live
-    // set to reclaim almost nothing, so a call-heavy program stops paying for
-    // a full mark it has already been told will not pay for itself. Back to 1
-    // as soon as a major earns its keep.
-    static void set_major_request_scale(uint32_t s) { major_request_scale_ = s ? s : 1; }
-    static uint32_t major_request_scale() { return major_request_scale_; }
     // Bytes allocated since the last major finished, and the live set it left
     // behind. A major is due once the heap has grown by a share of what was
     // live: that is the signal that old-generation garbage is piling up, and
@@ -162,7 +155,6 @@ private:
     static thread_local Heap* active_;
     static thread_local bool gc_requested_;
     static thread_local bool major_gc_requested_;
-    static thread_local uint32_t major_request_scale_;
     static thread_local size_t bytes_since_major_;
     static thread_local size_t live_after_major_;
 

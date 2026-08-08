@@ -507,12 +507,6 @@ void note_major_yield(size_t marked, size_t swept) {
     uint32_t& interval = major_interval_ref();
     if (swept * kMajorYieldDivisor >= marked) interval = kMajorIntervalFloor;
     else if (interval < kMajorIntervalCap) interval *= 2;
-    // The survivor pool's own request bypasses the interval above, so on a
-    // call-heavy program that alone decided how often a full mark ran, and the
-    // backing-off measured here never took effect. Let it scale that request
-    // too: same signal, same direction, and survivors still force a major --
-    // just after proportionally more of them have accumulated.
-    Heap::set_major_request_scale(interval / kMajorIntervalFloor);
 }
 
 
