@@ -287,7 +287,11 @@ void register_math_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             if (args.empty()) return Value(32.0);
-            uint32_t n = static_cast<uint32_t>(args[0].to_number());
+            // ToUint32, not a C++ cast: the operand is a double, and casting
+            // one that does not fit -- Math.clz32(-1), Math.clz32(2**32) --
+            // is undefined behaviour rather than the modular wrap the spec
+            // asks for.
+            uint32_t n = js_to_uint32(args[0].to_number());
             if (n == 0) return Value(32.0);
             int count = 0;
             for (int i = 31; i >= 0; i--) {

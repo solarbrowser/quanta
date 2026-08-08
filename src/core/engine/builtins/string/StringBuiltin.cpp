@@ -48,6 +48,20 @@ static std::string apply_substitution(const std::string& replacement, const std:
 }
 
 // Returns UTF-8 byte length of a Unicode WhiteSpace/LineTerminator at str[i], 0 if not whitespace.
+// ToIntegerOrInfinity for a character index, as a position that can be handed
+// straight to a code-unit read. Anything the spec would reject on the range
+// check that follows -- a negative, an infinity, a magnitude past what can
+// address a code unit -- comes back as "past the end" rather than wrapping.
+// Casting the double to an integer type instead is undefined behaviour for
+// exactly those inputs, and it produced position 0, so charAt(Infinity)
+// answered with the FIRST character.
+static size_t char_index_arg(double pos) {
+    double i = std::trunc(pos);
+    if (std::isnan(i) || i == 0.0) return 0;
+    if (i < 0 || i > 4294967295.0) return SIZE_MAX;
+    return static_cast<size_t>(i);
+}
+
 static size_t is_unicode_whitespace(const std::string& str, size_t i) {
     unsigned char c = static_cast<unsigned char>(str[i]);
     if (c == 0x09||c == 0x0A||c == 0x0B||c == 0x0C||c == 0x0D||c == 0x20) return 1;
@@ -951,12 +965,12 @@ void register_string_builtins(Context& ctx) {
             if (args[0].is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
             double dpos = args[0].to_number();
             if (ctx.has_exception()) return Value();
-            int32_t pos = std::isnan(dpos) ? 0 : static_cast<int32_t>(dpos);
-            if (pos < 0 || static_cast<size_t>(pos) >= utf16_length(str)) {
+            size_t pos = char_index_arg(dpos);
+            if (pos >= utf16_length(str)) {
                 return Value();
             }
 
-            int32_t cp = utf16_code_point_at(str, static_cast<size_t>(pos));
+            int32_t cp = utf16_code_point_at(str, pos);
             if (cp < 0) return Value();
             return Value(static_cast<double>(cp));
         }, 1);
@@ -992,11 +1006,12 @@ void register_string_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
             }
 
-            uint32_t index = 0;
+            size_t index = 0;
             if (args.size() > 0) {
                 if (args[0].is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
-                index = static_cast<uint32_t>(args[0].to_number());
+                double pos = args[0].to_number();
                 if (ctx.has_exception()) return Value();
+                index = char_index_arg(pos);
             }
 
             int32_t unit = self ? self->code_unit_at(index) : utf16_code_unit_at(owned, index);
@@ -1058,11 +1073,12 @@ void register_string_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
             }
 
-            uint32_t index = 0;
+            size_t index = 0;
             if (args.size() > 0) {
                 if (args[0].is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
-                index = static_cast<uint32_t>(args[0].to_number());
+                double pos = args[0].to_number();
                 if (ctx.has_exception()) return Value();
+                index = char_index_arg(pos);
             }
 
             int32_t unit = self ? self->code_unit_at(index) : utf16_code_unit_at(owned, index);
