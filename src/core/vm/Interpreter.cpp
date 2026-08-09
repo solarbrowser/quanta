@@ -416,10 +416,19 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // anywhere gaining a new override bumps the epoch, invalidating this
     // for every shape, not just the one that changed -- see
     // Object::descriptor_epoch_'s doc comment.
+    // An object with no descriptor map at all cannot hold an override for any
+    // key, so the entry is good for THIS receiver whatever the epoch says.
+    // That matters because the epoch is global: one defineProperty anywhere
+    // retires every entry, and nothing ever revives them -- measured on a real
+    // workload, this gate went stale and stayed stale, and the fast path then
+    // missed on the overwhelming majority of reads. Note the two facts are not
+    // interchangeable: the stamp says "no object had an override when this was
+    // learned", the map says "this object has none now", and only the second
+    // is safe to re-establish from a single receiver.
     if (fb && !fb->mega && ordinary && obj_shape) {
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == obj_shape) {
-                if (fb->entries[i].no_override_epoch == cur_epoch) {
+                if (fb->entries[i].no_override_epoch == cur_epoch || !obj->has_any_descriptor_override()) {
                     const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
                     if (slot) {
                         if (!fb->entries[i].is_accessor) return *slot;
@@ -4753,9 +4762,18 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
         } else if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
             const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
             const FeedbackSlot::Entry& e = fb.entries[0];
+            // The stamp and the receiver's own map answer the same question
+            // from different sides: the stamp says no object had an override
+            // when this entry was learned, the map says this object has none
+            // now. The stamp is global, so a single defineProperty anywhere
+            // retires every entry and nothing revives them -- which is what
+            // sent nearly every read here down the general path. The map is
+            // per-receiver and re-establishes itself on every read, and it is
+            // the one that can be trusted from a single object.
             if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&
                        e.shape == obj->get_shape() &&
-                       e.no_override_epoch == Object::descriptor_epoch())) {
+                       (e.no_override_epoch == Object::descriptor_epoch() ||
+                        !obj->has_any_descriptor_override()))) {
                 if (const Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
                     acc = *slot;
                     pc += 6;
