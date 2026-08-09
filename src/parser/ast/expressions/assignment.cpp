@@ -1759,12 +1759,15 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
             }
             return;
         }
-        if (ctx.has_binding(name)) {
-            // This path gates on has_binding rather than resolving the
-            // reference, so it has no environment to ask; resolving one just
-            // for the question would fire an object environment's HasBinding a
-            // second time. Left on the chain walk until the path resolves once.
-            if (ctx.is_in_tdz(name)) {
+        // Resolve once and ask that environment. This used to gate on
+        // has_binding and then walk again for the dead zone, which both cost a
+        // second HasBinding on any object environment along the way and got
+        // the answer wrong: a `with` object binding the name ends the search,
+        // so an outer `let` it shadows is not consulted.
+        Environment* ref_env = ctx.find_binding_env(name);
+        if (ctx.has_exception()) return;
+        if (ref_env) {
+            if (ref_env->binding_in_tdz(name)) {
                 ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                 return;
             }
