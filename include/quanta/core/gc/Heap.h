@@ -69,6 +69,13 @@ public:
     static void set_mark(const ProbeResult& p);
     // Exact, known-live cell (from a trace edge, not a guess).
     static ProbeResult exact_cell(const void* p);
+    // Marks a cell named by a trace edge, where the pointer is a cell base
+    // and the kind is known from the edge itself. Returns the cell when this
+    // call is the one that marked it, and nothing when it was already marked
+    // or does not belong to this thread. Unlike exact_cell it never resolves
+    // an interior pointer or reads the kind back out of the block, neither of
+    // which an edge needs.
+    static ProbeResult mark_exact(const void* p, CellKind kind);
 
     // Write-barrier dedup bit: previous state, set as a side effect.
     static bool test_and_set_remembered(const ProbeResult& p);

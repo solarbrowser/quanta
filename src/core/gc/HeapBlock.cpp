@@ -98,6 +98,17 @@ void* HeapBlock::cell_containing(const void* p) {
     return payload_start() + idx * h_.cell_size;
 }
 
+bool HeapBlock::mark_if_unmarked(const void* p) {
+    size_t idx = slot_index(p);
+    if (idx == SIZE_MAX) return false;
+    const size_t word = idx / 64;
+    const uint64_t bit = static_cast<uint64_t>(1) << (idx % 64);
+    if (!(h_.alloc_bitmap[word] & bit)) return false;
+    if (h_.mark_bitmap[word] & bit) return false;
+    h_.mark_bitmap[word] |= bit;
+    return true;
+}
+
 bool HeapBlock::test_mark(const void* p) const {
     size_t idx = slot_index(p);
     if (idx == SIZE_MAX) return false;

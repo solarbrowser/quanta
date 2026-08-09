@@ -73,10 +73,10 @@ public:
         }
     }
 
-    void visit_object(Object* o) override { if (o) mark(Heap::exact_cell(o)); }
-    void visit_string(String* s) override { if (s) mark(Heap::exact_cell(s)); }
-    void visit_symbol(Symbol* s) override { if (s) mark(Heap::exact_cell(s)); }
-    void visit_bigint(BigInt* b) override { if (b) mark(Heap::exact_cell(b)); }
+    void visit_object(Object* o) override { mark_edge(o, CellKind::Object); }
+    void visit_string(String* s) override { mark_edge(s, CellKind::String); }
+    void visit_symbol(Symbol* s) override { mark_edge(s, CellKind::Symbol); }
+    void visit_bigint(BigInt* b) override { mark_edge(b, CellKind::BigInt); }
 
     void visit_context(Context* ctx) override {
         if (ctx && seen_.insert(ctx).second) context_work_.push_back(ctx);
@@ -281,6 +281,17 @@ public:
     }
 
 private:
+    // Marking from a trace edge, where the kind comes from the edge and the
+    // pointer is a cell base -- see Heap::mark_exact.
+    void mark_edge(const void* p, CellKind kind) {
+        Heap::ProbeResult r = Heap::mark_exact(p, kind);
+        if (!r.cell) return;
+        marked_cells++;
+        if (r.kind == CellKind::Object || r.kind == CellKind::String) {
+            gray_.push_back(r);
+        }
+    }
+
     void mark(const Heap::ProbeResult& p) {
         if (!p.cell || Heap::test_mark(p)) return;
         Heap::set_mark(p);

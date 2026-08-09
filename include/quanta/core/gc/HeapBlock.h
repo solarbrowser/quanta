@@ -58,6 +58,12 @@ public:
     HeapBlock*  next() const           { return h_.next; }
     void        set_next(HeapBlock* n) { h_.next = n; }
 
+    // Test-and-set for a cell reached from a trace edge. The probe / test /
+    // set sequence resolved the same slot index three times over, once per
+    // call, and the index costs a division because the size classes are not
+    // powers of two; an edge already names a cell base, so one pass answers
+    // all three questions.
+    bool mark_if_unmarked(const void* p);
     bool test_mark(const void* p) const;
     void set_mark(const void* p);
     void clear_marks();

@@ -326,6 +326,24 @@ Heap::ProbeResult Heap::exact_cell(const void* p) {
     return probe_pointer(const_cast<void*>(p));
 }
 
+Heap::ProbeResult Heap::mark_exact(const void* p, CellKind kind) {
+    ProbeResult r;
+    if (!p) return r;
+    if (BlockAllocator::owns_address(p)) {
+        HeapBlock* block = HeapBlock::from_cell(p);
+        if (!owned_by_this_thread(block->heap())) return r;
+        if (!block->mark_if_unmarked(p)) return r;
+        r.cell = const_cast<void*>(p);
+        r.kind = kind;
+        return r;
+    }
+    // Large cells live outside the blocks and have to be found by range.
+    ProbeResult large = probe_pointer(const_cast<void*>(p));
+    if (!large.cell || test_mark(large)) return r;
+    set_mark(large);
+    return large;
+}
+
 bool Heap::test_mark(const ProbeResult& p) {
     if (!p.cell) return true;  // non-cell: nothing to mark
     if (p.is_large) {
