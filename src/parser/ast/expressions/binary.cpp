@@ -1164,19 +1164,26 @@ Value UnaryExpression::evaluate(Context& ctx) {
             return operand_value.bitwise_not();
         }
         case Operator::TYPEOF: {
-            if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
-                const std::string& id_name = static_cast<Identifier*>(operand_.get())->get_name();
-                if (ctx.is_in_tdz(id_name)) {
-                    ctx.throw_reference_error("Cannot access '" + id_name + "' before initialization");
-                    return Value();
-                }
-            }
             Value operand_value = operand_->evaluate(ctx);
 
             // typeof only suppresses ReferenceError when the operand itself is the unresolvable reference (`typeof x`), not a nested one (`typeof x.x`).
             if (ctx.has_exception()) {
                 if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                    // A name in its dead zone is not unresolvable -- it does
+                    // resolve, and reading it is what throws, so the two have
+                    // to be told apart before the error is swallowed. Asking
+                    // beforehand (which is what this did) walked the chain
+                    // past any object environment that had already ended the
+                    // search, so `typeof x` inside `with (o)` reported an
+                    // outer `let x` that o was shadowing.
+                    const std::string& id_name = static_cast<Identifier*>(operand_.get())->get_name();
                     ctx.clear_exception();
+                    Environment* ref_env = ctx.find_binding_env(id_name);
+                    if (ref_env && ref_env->binding_in_tdz(id_name)) {
+                        ctx.throw_reference_error("Cannot access '" + id_name + "' before initialization");
+                        return Value();
+                    }
+                    if (ctx.has_exception()) return Value();
                     return Value(std::string("undefined"));
                 }
                 return Value();
@@ -1283,7 +1290,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error(id->get_name() + " is not defined");
                     return Value();
                 }
-                if (ctx.is_in_tdz(id->get_name())) {
+                if (ref_env->binding_in_tdz(id->get_name())) {
                     ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
                     return Value();
                 }
@@ -1341,7 +1348,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error(id->get_name() + " is not defined");
                     return Value();
                 }
-                if (ctx.is_in_tdz(id->get_name())) {
+                if (ref_env->binding_in_tdz(id->get_name())) {
                     ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
                     return Value();
                 }
@@ -1399,7 +1406,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error(id->get_name() + " is not defined");
                     return Value();
                 }
-                if (ctx.is_in_tdz(id->get_name())) {
+                if (ref_env->binding_in_tdz(id->get_name())) {
                     ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
                     return Value();
                 }
@@ -1457,7 +1464,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error(id->get_name() + " is not defined");
                     return Value();
                 }
-                if (ctx.is_in_tdz(id->get_name())) {
+                if (ref_env->binding_in_tdz(id->get_name())) {
                     ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
                     return Value();
                 }

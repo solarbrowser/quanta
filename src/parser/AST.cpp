@@ -325,11 +325,6 @@ Value Identifier::evaluate(Context& ctx) {
         return Value();
     }
 
-    if (ctx.is_in_tdz(name_)) {
-        ctx.throw_reference_error("Cannot access '" + name_ + "' before initialization");
-        return Value();
-    }
-
     // `this` is frame state, not a scope-chain binding -- no environment owns
     // it, so the walk below would report it undefined.
     if (name_ == "this") return ctx.get_this_value();
@@ -340,6 +335,17 @@ Value Identifier::evaluate(Context& ctx) {
     // A Proxy `has` trap consulted while walking the scope chain may have thrown (e.g. a with-statement binding object backed by a Proxy).
     // Don't clobber that pending exception with a synthesized ReferenceError below.
     if (ctx.has_exception()) return Value();
+    // The dead zone is a property of the binding the reference RESOLVED to,
+    // so it is asked here rather than on the way in. Asking first walked the
+    // chain past any object environment, which meant `with (o) { x }` reported
+    // an outer `let x` as unreachable even though o already bound the name and
+    // ended the search. Re-asking the chain instead is not an option: an
+    // object environment's HasBinding is observable through Proxy traps and
+    // @@unscopables, and must fire exactly once.
+    if (ref_env && ref_env->binding_in_tdz(name_)) {
+        ctx.throw_reference_error("Cannot access '" + name_ + "' before initialization");
+        return Value();
+    }
     if (!ref_env) {
         static const std::set<std::string> known_globals = {
             "console", "Math", "JSON", "Date", "Array", "Object", "String", "Number",

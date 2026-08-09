@@ -92,7 +92,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             // a binding still in its temporal dead zone throws here. put_value
             // repeats the check for the write, but by then the right side has
             // already run and its side effects have happened.
-            if (ctx.is_in_tdz(name)) {
+            if (ref_env && ref_env->binding_in_tdz(name)) {
                 ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                 return Value();
             }
@@ -146,7 +146,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // binding object that was captured before GetValue - even if the property was
         // deleted by the getter.  Strict mode + deleted property -> ReferenceError.
         auto put_value = [&](const Value& val) {
-            if (ctx.is_in_tdz(name)) {
+            if (ref_env && ref_env->binding_in_tdz(name)) {
                 ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                 return;
             }
@@ -216,7 +216,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
 
         switch (operator_) {
             case Operator::ASSIGN: {
-                if (ctx.is_in_tdz(name)) {
+                if (ref_env && ref_env->binding_in_tdz(name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     return Value();
                 }
@@ -1760,6 +1760,10 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
             return;
         }
         if (ctx.has_binding(name)) {
+            // This path gates on has_binding rather than resolving the
+            // reference, so it has no environment to ask; resolving one just
+            // for the question would fire an object environment's HasBinding a
+            // second time. Left on the chain walk until the path resolves once.
             if (ctx.is_in_tdz(name)) {
                 ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                 return;

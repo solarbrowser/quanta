@@ -617,6 +617,16 @@ public:
     // Returns false when the environment does not own `name`; the caller must
     // then keep walking outward, since the answer belongs to the NEAREST
     // owner and nothing further in.
+    // Whether the binding this environment holds for `name` is a declarative
+    // one that cannot be read yet. The dead zone belongs to the binding a
+    // reference RESOLVED to, so it is asked of that environment -- asking the
+    // chain instead walks past object environments that already ended the
+    // search, and re-walking is not an option either, since an object
+    // environment's HasBinding is observable and must fire exactly once.
+    bool binding_in_tdz(const std::string& name) const {
+        bool in_tdz = false;
+        return declarative_binding_tdz(name, in_tdz) && in_tdz;
+    }
     bool declarative_binding_tdz(const std::string& name, bool& in_tdz) const {
         if (type_ == Type::Object) return false;
         const BindingSlot* slot = slots_.find(name);
