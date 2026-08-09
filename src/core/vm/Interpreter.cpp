@@ -560,6 +560,15 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                                         Object::descriptor_epoch());
                         }
                     }
+                    // The walk already has the value. Falling through to
+                    // get_property below would start the same walk over from
+                    // the receiver and arrive at this descriptor again.
+                    // Ordinary only: an exotic receiver reaches its prototype
+                    // through logic of its own, and this shortcut must not
+                    // stand in for it.
+                    if (obj->get_type() == Object::ObjectType::Ordinary) {
+                        return proto_desc.get_value();
+                    }
                     break;
                 }
             }
@@ -595,8 +604,11 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == shape) {
+                // See get_named's own guard: a receiver with no descriptor map
+                // cannot shadow the slot, whatever the global stamp says.
                 if (!fb->entries[i].is_accessor &&
-                    fb->entries[i].no_override_epoch == Object::descriptor_epoch()) {
+                    (fb->entries[i].no_override_epoch == Object::descriptor_epoch() ||
+                     !obj->has_any_descriptor_override())) {
                     Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
                     if (slot) { *slot = value; return; }
                 }
@@ -4821,9 +4833,12 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
         if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
             const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
             const FeedbackSlot::Entry& e = fb.entries[0];
+            // Same pair of facts as the read side: the stamp is global and
+            // never revived, the receiver's own map answers for itself.
             if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&
                        e.shape == obj->get_shape() &&
-                       e.no_override_epoch == Object::descriptor_epoch())) {
+                       (e.no_override_epoch == Object::descriptor_epoch() ||
+                        !obj->has_any_descriptor_override()))) {
                 if (Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
                     write_barrier_for(obj, acc);
                     *slot = acc;
