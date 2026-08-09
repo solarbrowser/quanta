@@ -8,6 +8,7 @@
 #include "quanta/core/runtime/Value.h"
 #include <cassert>
 #include <cstdio>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #ifdef __GLIBC__
@@ -217,7 +218,17 @@ void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
     return p;
 }
 
+// Whether any cell has ever been placed outside the blocks. Marking uses it
+// to decide whether a traced edge can be resolved from its block alone; see
+// mark_exact. Every cell kind that participates in tracing has a fixed and
+// small size today, so this stays false and the question never has to be
+// asked per edge -- but it is the allocator that says so, not an assumption.
+// Engine-wide, not per thread: a thread must not take the shortcut because
+// its own allocations happen to all be small.
+std::atomic<bool> g_any_large_cell{false};
+
 void* Heap::allocate_large(size_t size, CellKind kind) {
+    g_any_large_cell.store(true, std::memory_order_relaxed);
     size_t total = kLargeHeaderSize + ((size + 15) & ~size_t(15));
     auto* lc = static_cast<LargeCell*>(std::malloc(total));
     if (!lc) std::abort();
@@ -329,6 +340,17 @@ Heap::ProbeResult Heap::exact_cell(const void* p) {
 Heap::ProbeResult Heap::mark_exact(const void* p, CellKind kind) {
     ProbeResult r;
     if (!p) return r;
+    // With every cell in a block, the block is wherever the pointer's own
+    // alignment says it is, so asking the allocator which region owns the
+    // address answers a question that only has one answer.
+    if (!g_any_large_cell.load(std::memory_order_relaxed)) {
+        HeapBlock* block = HeapBlock::from_cell(p);
+        if (!owned_by_this_thread(block->heap())) return r;
+        if (!block->mark_if_unmarked(p)) return r;
+        r.cell = const_cast<void*>(p);
+        r.kind = kind;
+        return r;
+    }
     if (BlockAllocator::owns_address(p)) {
         HeapBlock* block = HeapBlock::from_cell(p);
         if (!owned_by_this_thread(block->heap())) return r;
