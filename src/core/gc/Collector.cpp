@@ -78,21 +78,26 @@ public:
     void visit_symbol(Symbol* s) override { mark_edge(s, CellKind::Symbol); }
     void visit_bigint(BigInt* b) override { mark_edge(b, CellKind::BigInt); }
 
+    // Contexts keep the set: there are few of them, and Context has no room
+    // for a stamp without growing (its size is asserted).
     void visit_context(Context* ctx) override {
-        if (ctx && seen_.insert(ctx).second) context_work_.push_back(ctx);
+        if (ctx && seen_contexts_.insert(ctx).second) context_work_.push_back(ctx);
     }
     void visit_environment(Environment* env) override {
-        if (env && seen_.insert(env).second) environment_work_.push_back(env);
+        if (env && env->gc_seen_cycle_ != cycle_) {
+            env->gc_seen_cycle_ = cycle_;
+            environment_work_.push_back(env);
+        }
     }
 
     // True once `ctx` has been visited this cycle, as a root or via tracing
     // (e.g. a live Function's closure_context_) -- see finish_major_cycle's
     // survivor-pruning step.
-    bool context_seen(Context* ctx) const { return seen_.count(ctx) > 0; }
+    bool context_seen(Context* ctx) const { return seen_contexts_.count(ctx) > 0; }
 
     // Same as context_seen, but for Environment survivors (see
     // finish_major_cycle's environment-survivor prune loop).
-    bool environment_seen(Environment* env) const { return seen_.count(env) > 0; }
+    bool environment_seen(Environment* env) const { return env && env->gc_seen_cycle_ == cycle_; }
 
     // Contexts are not cells: no mark bit, and most of their mutable state
     // (pending exception, return value, microtask keep-alives) has no write
@@ -101,7 +106,7 @@ public:
     // into them since the previous slice.
     void revisit_context(Context* ctx) {
         if (!ctx) return;
-        seen_.erase(ctx);
+        seen_contexts_.erase(ctx);
         visit_context(ctx);
     }
 
@@ -111,7 +116,7 @@ public:
     // unmarked and be swept while reachable.
     void repush_environment(Environment* env) {
         if (!env) return;
-        seen_.erase(env);
+        env->gc_seen_cycle_ = 0;
         visit_environment(env);
     }
 
@@ -178,11 +183,13 @@ public:
     // Cycle boundary: called at the start of every collection (minor or
     // major) -- every worklist must start empty.
     void reset_for_new_cycle() {
+        // Zero means "never queued", so it is skipped on wrap.
+        if (++cycle_ == 0) ++cycle_;
+        seen_contexts_.clear();
         marked_cells = 0;
         gray_.clear();
         context_work_.clear();
         environment_work_.clear();
-        seen_.clear();
         pending_weak_maps_.clear();
         pending_weak_sets_.clear();
         pending_weak_refs_.clear();
@@ -316,12 +323,13 @@ private:
     std::vector<Heap::ProbeResult> gray_;
     std::vector<Context*> context_work_;
     std::vector<Environment*> environment_work_;
-    // Pooled: cleared (not reallocated) at the start of every cycle, but a
-    // cycle whose working set outgrows the current bucket count still
-    // triggers a real rehash/growth allocation -- a real, measured cost
-    // for a set repopulated on every minor/major cycle.
+    // Which collection this is. An environment queued during it carries the
+    // same number, which is what tells a repeat visit from a first one -- the
+    // set that used to answer it cost an insert per environment per cycle,
+    // plus a rehash whenever a cycle's working set outgrew it.
+    uint32_t cycle_ = 0;
     std::unordered_set<const void*, std::hash<const void*>, std::equal_to<const void*>,
-                        SmallMapAllocator<const void*>> seen_;
+                       SmallMapAllocator<const void*>> seen_contexts_;
 
     std::vector<WeakMap*> pending_weak_maps_;
     std::vector<WeakSet*> pending_weak_sets_;

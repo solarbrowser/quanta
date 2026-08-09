@@ -594,6 +594,14 @@ public:
     // Write-barrier dedup flag, owned by the Collector (set on first binding
     // write per GC cycle, cleared after the cycle).
     bool gc_remembered_ = false;
+    // Which collection last queued this environment, owned by the Collector.
+    // Environments are not cells and have no mark bit, so the marker used to
+    // keep a hash set of the ones it had seen -- one insert per environment
+    // per collection, which showed up as one of the larger single costs in
+    // the whole run. A stamp answers the same question by comparison. Zero on
+    // construction, so a fresh environment at a recycled address is never
+    // mistaken for one already queued.
+    uint32_t gc_seen_cycle_ = 0;
 
     void gc_trace(Visitor& v) const;
 

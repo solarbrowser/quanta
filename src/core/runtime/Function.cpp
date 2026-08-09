@@ -111,8 +111,12 @@ Function::Function(const std::string& name,
 
     // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
     // ObjectFactory::create_js_function would otherwise leave this null.
+    // This function is still being constructed, so no site can have cached a
+    // lookup through its chain -- see initialize_prototype. Going through
+    // set_prototype here retired every prototype cache entry in the engine
+    // once per function created.
     if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-        set_prototype(func_proto);
+        initialize_prototype(func_proto);
     }
 }
 
@@ -151,8 +155,12 @@ Function::Function(const std::string& name,
 
     // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
     // ObjectFactory::create_js_function would otherwise leave this null.
+    // This function is still being constructed, so no site can have cached a
+    // lookup through its chain -- see initialize_prototype. Going through
+    // set_prototype here retired every prototype cache entry in the engine
+    // once per function created.
     if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-        set_prototype(func_proto);
+        initialize_prototype(func_proto);
     }
 }
 
@@ -188,8 +196,12 @@ Function::Function(const std::string& name,
     // which parameter came from the shared executable's cached spec length,
     // not derivable generically here.
 
+    // This function is still being constructed, so no site can have cached a
+    // lookup through its chain -- see initialize_prototype. Going through
+    // set_prototype here retired every prototype cache entry in the engine
+    // once per function created.
     if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-        set_prototype(func_proto);
+        initialize_prototype(func_proto);
     }
 }
 
@@ -1700,7 +1712,8 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
     func->mark_closure_environment_escaped();
     Object* func_proto = get_function_prototype();
     if (func_proto) {
-        func->set_prototype(func_proto);
+        // Freshly made here and not handed to JS yet.
+        func->initialize_prototype(func_proto);
     } else {
         // If function_prototype not set yet, delay prototype assignment
         // It will be set when the function is accessed
@@ -1719,7 +1732,8 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
     func->mark_closure_environment_escaped();
     Object* func_proto = get_function_prototype();
     if (func_proto) {
-        func->set_prototype(func_proto);
+        // Freshly made here and not handed to JS yet.
+        func->initialize_prototype(func_proto);
     }
     return func;
 }
@@ -1729,7 +1743,8 @@ std::unique_ptr<Function> create_native_function(const std::string& name,
     auto func = std::make_unique<Function>(name, fn, false);
     Object* func_proto = get_function_prototype();
     if (func_proto) {
-        func->set_prototype(func_proto);
+        // Freshly made here and not handed to JS yet.
+        func->initialize_prototype(func_proto);
     }
     return func;
 }
@@ -1740,7 +1755,8 @@ std::unique_ptr<Function> create_native_function(const std::string& name,
     auto func = std::make_unique<Function>(name, fn, arity, false);
     Object* func_proto = get_function_prototype();
     if (func_proto) {
-        func->set_prototype(func_proto);
+        // Freshly made here and not handed to JS yet.
+        func->initialize_prototype(func_proto);
     }
     return func;
 }
@@ -1751,7 +1767,8 @@ std::unique_ptr<Function> create_native_constructor(const std::string& name,
     auto func = std::make_unique<Function>(name, fn, arity, true);
     Object* func_proto = get_function_prototype();
     if (func_proto) {
-        func->set_prototype(func_proto);
+        // Freshly made here and not handed to JS yet.
+        func->initialize_prototype(func_proto);
     }
     return func;
 }
