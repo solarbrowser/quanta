@@ -624,6 +624,27 @@ public:
         in_tdz = !slot->initialized;
         return true;
     }
+    // What a read needs from one environment, in a single lookup: the two
+    // chain walks it replaces asked for the binding's value and its TDZ state
+    // separately, and landed on the same slot both times.
+    //
+    // The two walks did NOT stop in the same place, and this keeps that
+    // difference: an object environment answers only the value question,
+    // because a declarative binding further out still decides whether the
+    // name is readable at all. Callers therefore keep walking past a 3.
+    enum EnvRead { kNotBound = 0, kValue = 1, kTdz = 2, kObjectValue = 3 };
+    int env_read_step(const std::string& name, Value& out, Context* ctx) const {
+        if (type_ != Type::Object) {
+            const BindingSlot* s = slots_.find(name);
+            if (!s) return kNotBound;
+            if (!s->initialized) return kTdz;
+            out = s->value;
+            return kValue;
+        }
+        if (!has_own_binding(name)) return kNotBound;
+        out = get_binding_direct(name, ctx);
+        return kObjectValue;
+    }
     void set_with_environment(bool value) { is_with_environment_ = value; }
     bool is_closure_boundary() const { return is_closure_boundary_; }
     void mark_closure_boundary() { is_closure_boundary_ = true; }

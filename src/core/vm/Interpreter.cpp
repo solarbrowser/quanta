@@ -1765,6 +1765,37 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             case Op::LdaEnv: {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
+                // `this` is not in any environment; it is answered from the
+                // frame, so it keeps the general path.
+                if (name != "this") {
+                    // One walk for both questions. The value comes from the
+                    // first environment that binds the name; whether it can be
+                    // read at all comes from the first DECLARATIVE one, which
+                    // may be further out -- so an object environment's answer
+                    // is held and the walk goes on.
+                    Value object_value;
+                    bool from_object = false;
+                    int r = Environment::kNotBound;
+                    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+                        r = e->env_read_step(name, acc, &ctx);
+                        CHECK_EXC();
+                        if (r == Environment::kObjectValue) {
+                            if (!from_object) { from_object = true; object_value = acc; }
+                            r = Environment::kNotBound;
+                            continue;
+                        }
+                        if (r != Environment::kNotBound) break;
+                    }
+                    if (r == Environment::kTdz) {
+                        ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    } else if (from_object) {
+                        acc = object_value;
+                    } else if (r == Environment::kNotBound) {
+                        ctx.throw_reference_error("'" + name + "' is not defined");
+                    }
+                    CHECK_EXC();
+                    break;
+                }
                 if (ctx.is_in_tdz(name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
@@ -3558,6 +3589,37 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
                 {
                 const std::string& name = chunk.names[read_u16(code, pc)];
                 pc += 2;
+                // `this` is not in any environment; it is answered from the
+                // frame, so it keeps the general path.
+                if (name != "this") {
+                    // One walk for both questions. The value comes from the
+                    // first environment that binds the name; whether it can be
+                    // read at all comes from the first DECLARATIVE one, which
+                    // may be further out -- so an object environment's answer
+                    // is held and the walk goes on.
+                    Value object_value;
+                    bool from_object = false;
+                    int r = Environment::kNotBound;
+                    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+                        r = e->env_read_step(name, acc, &ctx);
+                        CHECK_EXC();
+                        if (r == Environment::kObjectValue) {
+                            if (!from_object) { from_object = true; object_value = acc; }
+                            r = Environment::kNotBound;
+                            continue;
+                        }
+                        if (r != Environment::kNotBound) break;
+                    }
+                    if (r == Environment::kTdz) {
+                        ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    } else if (from_object) {
+                        acc = object_value;
+                    } else if (r == Environment::kNotBound) {
+                        ctx.throw_reference_error("'" + name + "' is not defined");
+                    }
+                    CHECK_EXC();
+                    break;
+                }
                 if (ctx.is_in_tdz(name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
