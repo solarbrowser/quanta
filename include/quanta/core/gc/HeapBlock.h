@@ -114,6 +114,12 @@ private:
         uint32_t   capacity;
         uint32_t   bump_cursor;
         uint32_t   free_count;
+        // ceil(2^32 / cell_size), so the slot index of a cell is a multiply
+        // and a shift instead of a divide. The size classes are not powers of
+        // two, so the divide was a real one, and it sits on the path every
+        // traced edge and every mark bit takes. Fits the padding cell_kind
+        // and segment already leave, so the header does not grow.
+        uint32_t   cell_size_magic;
         CellKind   cell_kind;
         HeapSegment segment;
         uint64_t   alloc_bitmap[kBitmapWords];

@@ -25,6 +25,8 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
     h.capacity    = static_cast<uint32_t>(kPayloadSize / cell_size);
     h.bump_cursor = 0;
     h.free_count  = 0;
+    h.cell_size_magic = static_cast<uint32_t>(
+        ((static_cast<uint64_t>(1) << 32) + cell_size - 1) / cell_size);
     h.cell_kind   = kind;
     h.segment     = segment;
     std::memset(h.alloc_bitmap, 0, sizeof(h.alloc_bitmap));
@@ -81,7 +83,8 @@ size_t HeapBlock::slot_index(const void* p) const {
     const char* cp = static_cast<const char*>(p);
     if (cp < base) return SIZE_MAX;
     size_t offset = static_cast<size_t>(cp - base);
-    size_t idx = offset / h_.cell_size;
+    size_t idx = static_cast<size_t>(
+        (static_cast<uint64_t>(offset) * h_.cell_size_magic) >> 32);
     return idx < h_.capacity ? idx : SIZE_MAX;
 }
 
