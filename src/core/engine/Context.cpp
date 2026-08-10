@@ -1033,7 +1033,7 @@ Value Environment::get_binding_with_depth(const std::string& name, int depth) co
 }
 
 bool Environment::set_binding(const std::string& name, const Value& value) {
-    Collector::write_barrier_env(this);
+    Collector::write_barrier_env_for(this, value);
     if (has_own_binding(name)) {
         if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
             return binding_object_->set_property(name, value);
@@ -1089,7 +1089,7 @@ Value* Environment::stable_binding_slot(const std::string& name, bool* writable)
 }
 
 bool Environment::set_binding_direct(const std::string& name, const Value& value, Context* ctx) {
-    Collector::write_barrier_env(this);
+    Collector::write_barrier_env_for(this, value);
     if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         // SetMutableBinding step 2-3: strict mode throws if the binding vanished (e.g. a `with` getter deleted it mid-update).
         bool still_exists = binding_object_->has_property(name);
@@ -1107,7 +1107,7 @@ bool Environment::set_binding_direct(const std::string& name, const Value& value
 }
 
 void Environment::force_set_binding(const std::string& name, const Value& value) {
-    Collector::write_barrier_env(this);
+    Collector::write_barrier_env_for(this, value);
     if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         binding_object_->set_property(name, value);
     } else {
@@ -1125,7 +1125,7 @@ void Environment::create_uninitialized_binding(const std::string& name, bool is_
 }
 
 void Environment::create_global_function_binding(const std::string& name, const Value& value, bool configurable) {
-    Collector::write_barrier_env(this);
+    Collector::write_barrier_env_for(this, value);
     if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
         PropertyDescriptor existing = binding_object_->get_property_descriptor(name);
         PropertyDescriptor desc;
@@ -1143,7 +1143,7 @@ void Environment::create_global_function_binding(const std::string& name, const 
 }
 
 bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable, bool enumerable) {
-    Collector::write_barrier_env(this);
+    Collector::write_barrier_env_for(this, value);
     // has_own_binding branches on exactly this condition, so asking it up
     // front cost a second lookup of the same name on the declarative side,
     // where one already tells create_if_absent whether to insert.
@@ -1201,7 +1201,7 @@ bool Environment::is_initialized_binding(const std::string& name) const {
 }
 
 void Environment::initialize_binding(const std::string& name, const Value& value) {
-    Collector::write_barrier_env(this);
+    Collector::write_barrier_env_for(this, value);
     auto& slot = slots_.get_or_create(name);
     slot.value = value;
     slot.initialized = true;

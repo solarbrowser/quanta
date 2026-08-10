@@ -1148,6 +1148,13 @@ void Collector::write_barrier(const void* cell) {
     if (Collector::major_in_progress_) mark_visitor().push_remembered(p);
 }
 
+void Collector::write_barrier_env_for(Environment* env, const Value& value) {
+    if (value.is_object() || value.is_function() || value.is_string() ||
+        value.is_symbol() || value.is_bigint()) {
+        write_barrier_env(env);
+    }
+}
+
 void Collector::write_barrier_env(Environment* env) {
     if (barriers_disabled() || !env || env->gc_remembered_) return;
     env->gc_remembered_ = true;

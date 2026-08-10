@@ -1909,7 +1909,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                         }
                         break;
                     }
-                    Collector::write_barrier_env(ctx.get_lexical_environment());
+                    Collector::write_barrier_env_for(ctx.get_lexical_environment(), acc);
                     e->slot.value = acc;
                     break;
                 }
@@ -1943,7 +1943,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     // is never revisited on its own, so a declaration storing
                     // a fresh cell here would leave it unmarked and swept
                     // while the binding still points at it.
-                    Collector::write_barrier_env(ctx.get_lexical_environment());
+                    Collector::write_barrier_env_for(ctx.get_lexical_environment(), acc);
                     e->slot.value = acc;
                     e->slot.initialized = true;
                     break;
@@ -3785,7 +3785,7 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                         }
                         break;
                     }
-                    Collector::write_barrier_env(ctx.get_lexical_environment());
+                    Collector::write_barrier_env_for(ctx.get_lexical_environment(), acc);
                     e->slot.value = acc;
                     break;
                 }
@@ -3832,7 +3832,7 @@ Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
                     // is never revisited on its own, so a declaration storing
                     // a fresh cell here would leave it unmarked and swept
                     // while the binding still points at it.
-                    Collector::write_barrier_env(ctx.get_lexical_environment());
+                    Collector::write_barrier_env_for(ctx.get_lexical_environment(), acc);
                     e->slot.value = acc;
                     e->slot.initialized = true;
                     break;

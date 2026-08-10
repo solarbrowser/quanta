@@ -90,6 +90,12 @@ public:
     static void write_barrier(const void* cell);
     // Same for environments (not cells; flag-deduped per cycle).
     static void write_barrier_env(Environment* env);
+    // The barrier for a slot store, where the value decides whether there is
+    // an edge at all: only a heap value can be one end of it, so a number or
+    // a boolean has nothing for the remembered set to hold. Stated as a
+    // whitelist -- a tag not named in it, including any added later, still
+    // takes the barrier.
+    static void write_barrier_env_for(Environment* env, const Value& value);
     // Frees a popped, unescaped block environment. Deferred, not immediate:
     // the remembered set may still reference it until the cycle's cleanup;
     // a size threshold flushes even on GC-quiet workloads.
