@@ -334,8 +334,14 @@ Context* Engine::get_current_context() const {
 
 void Engine::add_survivor_context(Context* ctx) {
     if (!ctx) return;
-    // The context keeps its lexical chain alive past the scope that made it.
-    bump_capture_epoch();
+    // The context keeps its lexical chain alive past the scope that made it,
+    // so every environment it points at stops being provably unreachable.
+    // All three, not just the lexical one: variable_environment_ can sit on a
+    // different chain (a function's var env vs. a block's lexical env), and
+    // owned_env_ is the one ~Context will hand back.
+    if (ctx->get_lexical_environment()) ctx->get_lexical_environment()->mark_referenced();
+    if (ctx->get_variable_environment()) ctx->get_variable_environment()->mark_referenced();
+    if (ctx->get_owned_env()) ctx->get_owned_env()->mark_referenced();
     survivor_contexts_.push_back(ctx);
     // Real memory the cell-based heap doesn't see -- charge it toward the
     // same GC budget as ordinary cells (see Heap::note_extra_bytes).
@@ -344,7 +350,7 @@ void Engine::add_survivor_context(Context* ctx) {
 
 void Engine::add_survivor_environment(Environment* env) {
     if (!env) return;
-    bump_capture_epoch();
+    env->mark_referenced();
     survivor_environments_.push_back(env);
     Heap::note_extra_bytes(sizeof(Environment));
 }

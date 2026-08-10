@@ -423,20 +423,6 @@ private:
 /**
  * Environment for variable bindings
  */
-// Counts the events that can put an Environment* somewhere it will outlive the
-// scope that made it: a closure capturing one, and either survivor pool taking
-// one. An Environment can only be captured by something created during its own
-// lifetime -- anything older never saw it, anything newer comes after it is
-// gone -- so if this has not moved between an environment's construction and
-// its release, nothing can be holding it and it is provably dead.
-//
-// The direction matters: this is only ever used to take a faster path when it
-// proves nothing happened. Missing a bump would free a live environment, so
-// every site that stores one beyond its scope has to be here. They are listed
-// at bump_capture_epoch's definition.
-uint32_t capture_epoch();
-void bump_capture_epoch();
-
 class Environment {
 public:
     enum class Type {
@@ -605,13 +591,47 @@ private:
     bool is_with_environment_ = false; // ES6 8.1.1.2.1 HasBinding: only `with` object environments consult @@unscopables
     bool is_closure_boundary_ = false; // marks script-level env: stop snapshot loops here
     bool escaped_ = false;  // see is_escaped()
-    // capture_epoch() as of construction -- see its comment above.
-    uint32_t birth_epoch_ = 0;
+    bool referenced_ = false;  // see mark_referenced()
+    // How many live environments name this one as their outer_environment_.
+    // An environment must outlive every one of them: the marker follows that
+    // link (Environment::gc_trace) and so does every scope-chain walk, and the
+    // scope-exit paths do NOT guarantee inner-before-outer -- ~Context releases
+    // owned_env_ even when block scopes opened inside the call were abandoned
+    // rather than popped (an abrupt return/throw), and those keep pointing at
+    // it. Counting them is what makes the abandoned ones a leak, which is what
+    // they already were, instead of a dangling read.
+    //
+    // Saturates at 255 instead of widening: the count only ever gates "may
+    // this be freed without asking the collector", so a stuck-high count
+    // costs an environment that is kept, never one that is freed early. One
+    // byte is also what keeps sizeof(Environment) in its allocator bin.
+    static constexpr uint8_t kInnerCountMax = 255;
+    uint8_t inner_count_ = 0;
+    void add_inner() { if (inner_count_ != kInnerCountMax) inner_count_++; }
+    void remove_inner() { if (inner_count_ != kInnerCountMax) inner_count_--; }
 
 public:
     // Write-barrier dedup flag, owned by the Collector (set on first binding
     // write per GC cycle, cleared after the cycle).
     bool gc_remembered_ = false;
+    // Whether the collector's remembered-envs vector currently holds a raw
+    // pointer to this environment, and at which index. That vector is not a GC
+    // root, so it does not keep the environment alive, yet the next collection
+    // walks it -- an environment freed before then drops its own entry
+    // (Collector::release_env) rather than leaving the walk a pointer into a
+    // destroyed binding map. The marker's environment work list is fed from the
+    // same call and cannot be edited that way, so it marks instead (see
+    // MarkVisitor::repush_environment).
+    //
+    // Deliberately NOT gc_remembered_, which answers a different question:
+    // that one is cleared at trace time to re-arm the barrier mid-major, while
+    // the vector entry it was set for stays put until the cycle ends -- so a
+    // gc_remembered_-driven cleanup would skip exactly the entries it has to
+    // remove. The barrier keeps at most one live entry per environment (it
+    // blanks the previous one before pushing again), which is what makes a
+    // single index enough to find and drop it.
+    bool gc_in_remembered_ = false;
+    uint32_t gc_remembered_index_ = 0;
     // Which collection last queued this environment, owned by the Collector.
     // Environments are not cells and have no mark bit, so the marker used to
     // keep a hash set of the ones it had seen -- one insert per environment
@@ -625,7 +645,7 @@ public:
 
     Environment(Type type, Environment* outer = nullptr);
     Environment(Object* binding_object, Environment* outer = nullptr);
-    ~Environment() = default;
+    ~Environment();
 
     // Pooled: reuses freed blocks instead of round-tripping the allocator
     // on every call (see Context's identical pattern in Context.cpp).
@@ -690,17 +710,38 @@ public:
     // deleted on pop instead of leaking. Marking walks the outer chain so every
     // env reachable from a captured one is pinned too.
     bool is_escaped() const { return escaped_; }
-    // True when nothing that could have captured this environment was created
-    // during its lifetime, which makes it unreachable without asking the
-    // collector.
-    bool provably_unreachable() const {
-        const uint32_t now = capture_epoch();
-        return now != UINT32_MAX && birth_epoch_ == now;
+    // True when no pointer to this environment was ever stored anywhere that
+    // outlives the scope that made it, which makes it unreachable without
+    // asking the collector.
+    //
+    // The direction matters: this is only ever used to take a faster path when
+    // it proves nothing happened. A missing mark_referenced() would free a live
+    // environment, so EVERY site that stores an Environment* beyond its scope
+    // has to call one of the two marks below. Today that is: a closure taking
+    // closure_environment_ (Function.cpp's capture_closure_environment, which
+    // covers all three Function constructors and therefore every generator/
+    // async/class-method form that delegates to them), either survivor pool
+    // (Engine::add_survivor_environment/add_survivor_context), a context's
+    // outer chain (ContextFactory), the VM's per-name outer-variable cache
+    // (BytecodeChunk::LookupCacheEntry::env). The collector's own two holders
+    // answer separately, through gc_in_remembered_ -- theirs expire at the next
+    // collection rather than lasting the environment's life.
+    bool provably_unreachable() const { return !referenced_ && inner_count_ == 0; }
+    bool has_inner_environments() const { return inner_count_ != 0; }
+    // A pointer to this environment is being stored somewhere that outlives the
+    // scope holding it. Anything reachable OUTWARD from here is reachable
+    // through it too, so the whole outer chain is marked; stopping at the first
+    // already-marked environment keeps the walk amortized O(1).
+    void mark_referenced() {
+        for (Environment* e = this; e && !e->referenced_; e = e->outer_environment_) {
+            e->referenced_ = true;
+        }
     }
+    // Stronger than mark_referenced: the holder is one the scope-exit paths
+    // must not even queue for the collector to adjudicate (see
+    // Context::pop_block_scope), so the chain is pinned outright.
     void mark_escaped() {
-        // Something is taking a reference that outlives this scope, which is
-        // exactly what the capture epoch counts.
-        bump_capture_epoch();
+        mark_referenced();
         for (Environment* e = this; e && !e->escaped_; e = e->outer_environment_) {
             e->escaped_ = true;
         }

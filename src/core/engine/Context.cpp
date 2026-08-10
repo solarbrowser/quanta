@@ -43,6 +43,7 @@
 #include <iomanip>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 namespace Quanta {
@@ -111,6 +112,20 @@ thread_local std::vector<void*> g_context_pool;
 // so pooling adds no new hazard beyond what Context's own pool already has.
 constexpr size_t kEnvironmentPoolCap = 16384;
 thread_local std::vector<void*> g_environment_pool;
+
+// QUANTA_GC_POISON covers heap CELLS (Collector.cpp's sweep), and an
+// Environment is not one -- it is a pooled plain C++ object, so a freed one
+// keeps its bytes and a use-after-free reads plausible data instead of
+// crashing. Under the same flag, stop pooling environments and stamp the block
+// before handing it back, so a stale Environment* fails loudly (and lands in
+// ASan's quarantine) rather than silently answering.
+bool environment_poison() {
+    static const bool on = [] {
+        const char* v = std::getenv("QUANTA_GC_POISON");
+        return v && *v && *v != '0';
+    }();
+    return on;
+}
 }
 
 void* Context::operator new(size_t size) {
@@ -142,6 +157,11 @@ void* Environment::operator new(size_t size) {
 
 void Environment::operator delete(void* ptr) {
     if (!ptr) return;
+    if (environment_poison()) {
+        std::memset(ptr, 0xE5, sizeof(Environment));
+        ::operator delete(ptr);
+        return;
+    }
     if (g_environment_pool.size() < kEnvironmentPoolCap) {
         g_environment_pool.push_back(ptr);
         return;
@@ -943,32 +963,22 @@ void Context::clear_break_continue() {
 }
 
 
-namespace {
-thread_local uint32_t g_capture_epoch = 1;
-}
-
-uint32_t capture_epoch() { return g_capture_epoch; }
-
-// Bumped by: Function's three AST/executable constructors and
-// set_closure_environment (a closure taking closure_environment_),
-// Engine::add_survivor_environment and Engine::add_survivor_context (either
-// pool taking one, directly or through a context's lexical chain).
-// Saturates instead of wrapping. A wrapped counter could land back on some
-// live environment's birth value and make it look provably dead, which would
-// free it underneath its holder; at the ceiling the fast path simply switches
-// off for the rest of the run and everything goes back through the collector.
-void bump_capture_epoch() {
-    if (g_capture_epoch != UINT32_MAX) g_capture_epoch++;
-}
-
 Environment::Environment(Type type, Environment* outer)
-    : type_(type), outer_environment_(outer), binding_object_(nullptr),
-      birth_epoch_(g_capture_epoch) {
+    : type_(type), outer_environment_(outer), binding_object_(nullptr) {
+    if (outer) outer->add_inner();
 }
 
 Environment::Environment(Object* binding_object, Environment* outer)
-    : type_(Type::Object), outer_environment_(outer), binding_object_(binding_object),
-      birth_epoch_(g_capture_epoch) {
+    : type_(Type::Object), outer_environment_(outer), binding_object_(binding_object) {
+    if (outer) outer->add_inner();
+}
+
+// outer_environment_ is never reassigned after construction, so this pairs
+// exactly with the constructors above. Reading the outer here is safe for the
+// same reason it is safe anywhere else: nothing frees an environment that
+// still has inners (see inner_count_).
+Environment::~Environment() {
+    if (outer_environment_) outer_environment_->remove_inner();
 }
 
 bool Environment::has_binding(const std::string& name) const {

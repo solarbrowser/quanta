@@ -114,8 +114,16 @@ public:
     // Collector::write_barrier_env): once traced it would never be looked at
     // again this cycle, so a re-assigned binding's new target could stay
     // unmarked and be swept while reachable.
+    // Called from the mutator (Collector::write_barrier_env) while an
+    // incremental major is open, so unlike every other visit_environment the
+    // entry it queues has to survive until a LATER slice drains it -- with the
+    // mutator free to pop and release the environment in between. The work list
+    // is not a GC root and cannot be edited from the free path, so the
+    // environment is marked instead: release_env then queues it for the
+    // collector to adjudicate rather than freeing it underneath the marker.
     void repush_environment(Environment* env) {
         if (!env) return;
+        env->mark_referenced();
         env->gc_seen_cycle_ = 0;
         visit_environment(env);
     }
@@ -568,7 +576,6 @@ std::vector<Environment*>& pending_env_frees() {
     return envs;
 }
 
-
 // A pending environment may only be destroyed on the authority of a COMPLETED
 // MAJOR MARK. Entry into this list is decided by is_escaped() at scope-exit
 // time, which is a static guess about whether anything captured the
@@ -588,7 +595,11 @@ void resolve_pending_env_frees(const MarkVisitor& v) {
     if (pending.empty()) return;
     std::vector<Environment*> still_reachable;
     for (Environment* e : pending) {
-        if (v.environment_seen(e)) still_reachable.push_back(e);
+        // inner_count_: an environment abandoned rather than popped (see
+        // Environment::inner_count_) is invisible to the mark yet still names
+        // this one as its outer. Freeing on reachability alone would leave it
+        // reading freed memory on the next scope-chain walk or trace.
+        if (v.environment_seen(e) || e->has_inner_environments()) still_reachable.push_back(e);
         else delete e;
     }
     pending = std::move(still_reachable);
@@ -739,6 +750,9 @@ void run_minor_collection() {
         Heap::ProbeResult fresh = Heap::exact_cell(p.cell);
         if (fresh.cell == p.cell && fresh.kind == p.kind) v.push_remembered(fresh);
     }
+    // Null entries are environments freed since being remembered, plus ones
+    // whose earlier entry a later barrier superseded -- see
+    // Collector::release_env. visit_environment already ignores them.
     for (Environment* e : remembered_envs()) v.visit_environment(e);
     // See FiberRegistry::Record::owner_cell for why these are minor roots.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
@@ -794,7 +808,7 @@ void run_minor_collection() {
     // and traps (SIGFPE).
     for (const Heap::ProbeResult& p : remembered_cells()) Heap::clear_remembered(p);
     remembered_cells().clear();
-    for (Environment* e : remembered_envs()) e->gc_remembered_ = false;
+    for (Environment* e : remembered_envs()) if (e) { e->gc_remembered_ = false; e->gc_in_remembered_ = false; }
     remembered_envs().clear();
     // Deliberately NOT freeing pending envs here: a minor traces from the roots
     // only, so its seen_ set cannot tell a dead environment from one this cycle
@@ -912,7 +926,7 @@ void finish_major_cycle(MarkVisitor& v) {
     // slot_index's offset/cell_size divides by that and traps (SIGFPE).
     for (const Heap::ProbeResult& p : remembered_cells()) Heap::clear_remembered(p);
     remembered_cells().clear();
-    for (Environment* e : remembered_envs()) e->gc_remembered_ = false;
+    for (Environment* e : remembered_envs()) if (e) { e->gc_remembered_ = false; e->gc_in_remembered_ = false; }
     remembered_envs().clear();
     resolve_pending_env_frees(v);
 
@@ -939,7 +953,7 @@ void finish_major_cycle(MarkVisitor& v) {
         env_survivors.erase(
             std::remove_if(env_survivors.begin(), env_survivors.end(),
                 [&v](Environment* env) {
-                    if (v.environment_seen(env)) return false;
+                    if (v.environment_seen(env) || env->has_inner_environments()) return false;
                     delete env;
                     return true;
                 }),
@@ -1158,6 +1172,13 @@ void Collector::write_barrier_env_for(Environment* env, const Value& value) {
 void Collector::write_barrier_env(Environment* env) {
     if (barriers_disabled() || !env || env->gc_remembered_) return;
     env->gc_remembered_ = true;
+    // gc_remembered_ can have been cleared at trace time (below) while this
+    // environment's earlier entry is still sitting in the vector. Drop that one
+    // first, so there is never more than one live entry per environment and
+    // gc_remembered_index_ identifies it exactly -- see gc_in_remembered_.
+    if (env->gc_in_remembered_) remembered_envs()[env->gc_remembered_index_] = nullptr;
+    env->gc_in_remembered_ = true;
+    env->gc_remembered_index_ = static_cast<uint32_t>(remembered_envs().size());
     remembered_envs().push_back(env);
     // Same insertion-barrier logic as write_barrier above: an environment
     // already traced by the open major just gained/changed an edge, so it
@@ -1169,16 +1190,22 @@ void Collector::write_barrier_env(Environment* env) {
 
 void Collector::release_env(Environment* env) {
     if (!env) return;
-    // Nothing that could hold a reference to this environment was created
-    // during its lifetime, so it is unreachable and can go now -- no queue and
+    // No pointer to this environment was ever stored anywhere outliving the
+    // scope that made it, so it is unreachable and can go now -- no queue and
     // no collection. This is the common case: a scope that makes no closures.
     if (env->provably_unreachable()) {
+        // The remembered set is the one holder that can be edited from here
+        // rather than having to be waited out: its entry lives only until the
+        // next collection, and dropping it costs a single store.
+        if (env->gc_in_remembered_) remembered_envs()[env->gc_remembered_index_] = nullptr;
         delete env;
         return;
     }
     // Otherwise whether it is really dead is a question only a completed major
     // mark can answer -- see resolve_pending_env_frees, the one place entries
-    // leave this list.
+    // leave this list. Its outer chain needs no marking to survive the wait:
+    // this environment is an inner of the next one out, which is an inner of
+    // the one after that, and inner_count_ already stops any of them going.
     pending_env_frees().push_back(env);
 }
 

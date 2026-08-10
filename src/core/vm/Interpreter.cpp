@@ -1617,9 +1617,17 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     if (env != entry_env) {
                         uint32_t obj_slot = 0;
                         bool slot_writable = false;
+                        // The entry outlives this frame (it is the owning
+                        // Function's, or the single-instance script chunk's),
+                        // and both forms below dereference `env` again on a
+                        // later call -- so caching one is exactly the "a
+                        // pointer to this environment is stored somewhere
+                        // longer-lived" event mark_referenced exists for.
                         if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
+                            env->mark_referenced();
                             lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable};
                         } else if (env->cacheable_object_binding(name, obj_slot)) {
+                            env->mark_referenced();
                             lookup_cache_data[name_idx] = {env, nullptr,
                                 env->get_binding_object()->get_shape(),
                                 Object::descriptor_epoch(), obj_slot};
@@ -1719,6 +1727,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                         bool slot_writable = false;
                         Value* slot = env->stable_binding_slot(name, &slot_writable);
                         if (slot && slot_writable) {
+                            env->mark_referenced();  // see Op::LdaLookup's note
                             lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true};
                         }
                     }
@@ -3334,9 +3343,12 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                     if (env != entry_env) {
                         uint32_t obj_slot = 0;
                         bool slot_writable = false;
+                        // See the identical block in the main dispatch loop.
                         if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
+                            env->mark_referenced();
                             lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable};
                         } else if (env->cacheable_object_binding(name, obj_slot)) {
+                            env->mark_referenced();
                             lookup_cache_data[name_idx] = {env, nullptr,
                                 env->get_binding_object()->get_shape(),
                                 Object::descriptor_epoch(), obj_slot};
@@ -3462,6 +3474,7 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                         bool slot_writable = false;
                         Value* slot = env->stable_binding_slot(name, &slot_writable);
                         if (slot && slot_writable) {
+                            env->mark_referenced();  // see Op::LdaLookup's note
                             lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true};
                         }
                     }
