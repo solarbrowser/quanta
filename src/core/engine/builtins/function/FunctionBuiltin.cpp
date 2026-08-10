@@ -90,7 +90,9 @@ void register_function_builtins(Context& ctx) {
             try {
                 Lexer lexer(func_code);
                 TokenSequence tokens = lexer.tokenize();
-                Parser parser(tokens);
+                // Hand the tokens over rather than copying them: for a big
+                // source this vector is the largest thing in the process.
+                Parser parser(std::move(tokens));
                 parser.set_source(func_code);
                 // The tree outlives this call inside the function being built,
                 // so it is owned by a unit rather than by this frame. Parsing
