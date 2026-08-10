@@ -101,9 +101,9 @@ public:
 
     // Contexts are not cells: no mark bit, and most of their mutable state
     // (pending exception, return value, microtask keep-alives) has no write
-    // barrier. Root contexts are therefore re-visited on every slice --
+    // barrier. Root contexts are therefore re-visited on every root scan --
     // erase-and-revisit forces a fresh trace that picks up anything stored
-    // into them since the previous slice.
+    // into them since the previous one.
     void revisit_context(Context* ctx) {
         if (!ctx) return;
         seen_contexts_.erase(ctx);
@@ -993,16 +993,18 @@ constexpr uint32_t kMaxSlicesBeforeForceFinish = 3000;
 constexpr auto kMaxCycleWallClockBeforeForceFinish = std::chrono::seconds(5);
 
 // Starts a fresh major cycle if none is open, otherwise continues the one
-// already in progress. Re-scans every root each call rather than trying to
-// track what's newly reachable since the last slice: MarkVisitor's worklists
-// are cycle-lived (see mark_visitor()) and mark() is a no-op once a cell is
-// already marked, so a fresh scan costs almost nothing beyond the (rare)
-// newly reachable edges -- root+stack scanning measured at a small fraction
-// of a full major's time.
+// already in progress. The roots are scanned when the cycle opens and again
+// whenever marking has drained, not once per slice: the root set is the one
+// part of the graph with no write barrier on it, so what it needs is a scan
+// that no mutator step can follow, and that is exactly the scan taken at
+// termination. A per-slice scan gives the same guarantee and also repeats the
+// whole conservative stack walk, the context re-trace and the executable
+// table for every one of a cycle's hundreds of slices.
 Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
     static const bool prof = env_flag("QUANTA_GC_PROFILE");
 
     MarkVisitor& v = mark_visitor();
+    bool cycle_opened = false;
     if (!Collector::major_in_progress_) {
         Heap::clear_gc_request();
         Heap::clear_major_gc_request();
@@ -1011,6 +1013,7 @@ Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
         Collector::major_in_progress_ = true;
         g_major_cycle_start = std::chrono::steady_clock::now();
         g_major_slice_count = 0;
+        cycle_opened = true;
     }
     g_major_slice_count++;
     // Pacing valve: allocation has outpaced marking progress for too long --
@@ -1025,8 +1028,19 @@ Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
 
     auto slice_t0 = prof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     size_t marked_before = v.marked_cells;
-    scan_major_roots(v);
+    // Nothing has run between this scan and the drain below, so a cycle that
+    // both opens and drains inside this one call needs no second scan.
+    bool roots_scanned_here = cycle_opened;
+    if (cycle_opened) scan_major_roots(v);
     Collector::SliceResult result = Collector::mark_step(budget);
+    if (result == Collector::SliceResult::CycleComplete && !roots_scanned_here) {
+        // Marking has drained, but the mutator has run since the last root
+        // scan and the roots carry no barrier. Re-scan and drain again; only a
+        // drain that immediately follows a scan may end the cycle, and if this
+        // one runs out of budget the next slice tries again.
+        scan_major_roots(v);
+        result = Collector::mark_step(budget);
+    }
     if (prof) {
         auto took_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - slice_t0).count();
