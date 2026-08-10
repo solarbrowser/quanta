@@ -57,6 +57,12 @@ namespace {
 
 // Marking visitor: worklist-based, no C++ recursion, so arbitrarily deep
 // object graphs cannot overflow the stack.
+// Defined below, next to env_flag; declared here for MarkVisitor and
+// release_env, both of which sit above it.
+bool env_hunt();
+void hunt_note_free(const Environment* env);
+void hunt_check(const Environment* env, const char* who);
+
 class MarkVisitor final : public Visitor {
 public:
     size_t marked_cells = 0;
@@ -153,6 +159,10 @@ public:
                 // Re-arm Collector::write_barrier_env's mid-major re-trace
                 // path, same trace-time-clear discipline as trace_cell.
                 if (Collector::major_in_progress_) e->gc_remembered_ = false;
+                // Checked where the environment is actually read rather than
+                // at every edge that names it: same catch, once per cycle
+                // instead of once per reference.
+                if (env_hunt()) hunt_check(e, "mark");
                 e->gc_trace(*this);
             } else {
                 Context* c = context_work_.back();
@@ -600,6 +610,7 @@ void resolve_pending_env_frees(const MarkVisitor& v) {
         // this one as its outer. Freeing on reachability alone would leave it
         // reading freed memory on the next scope-chain walk or trace.
         if (v.environment_seen(e) || e->has_inner_environments()) still_reachable.push_back(e);
+        else if (env_hunt()) hunt_note_free(e);
         else delete e;
     }
     pending = std::move(still_reachable);
@@ -609,6 +620,35 @@ void resolve_pending_env_frees(const MarkVisitor& v) {
 bool env_flag(const char* name) {
     const char* val = std::getenv(name);
     return val && *val && *val != '0';
+}
+
+// QUANTA_GC_ENV_HUNT=1: leak every environment the fast path judged dead
+// instead of freeing it, and say so if anything reads one afterwards.
+//
+// QUANTA_GC_POISON does this for heap cells, but environments are not cells
+// and never went through it, so the one class of use-after-free this engine
+// has actually shipped -- a live pointer to a freed environment -- was the
+// one it could not see. Freeing early is decided by a predicate over what
+// points at an environment (Environment::provably_unreachable), and a
+// predicate is exactly the kind of thing that is wrong in a case nobody
+// thought of; this turns that from silent corruption into a line of output.
+// A plain flag read at startup, not a function-local static: this is tested
+// on the release path of every scope that ends, where the guard variable a
+// local static needs was itself measurable.
+const bool g_env_hunt = env_flag("QUANTA_GC_ENV_HUNT");
+bool env_hunt() { return g_env_hunt; }
+
+std::unordered_set<const Environment*>& hunted_frees() {
+    static std::unordered_set<const Environment*> set;
+    return set;
+}
+
+void hunt_note_free(const Environment* env) { hunted_frees().insert(env); }
+
+void hunt_check(const Environment* env, const char* who) {
+    if (!hunted_frees().count(env)) return;
+    std::fprintf(stderr, "[env-hunt] %s read environment %p after it was freed\n",
+                 who, static_cast<const void*>(env));
 }
 
 size_t run_sweep() {
@@ -1198,6 +1238,7 @@ void Collector::release_env(Environment* env) {
         // rather than having to be waited out: its entry lives only until the
         // next collection, and dropping it costs a single store.
         if (env->gc_in_remembered_) remembered_envs()[env->gc_remembered_index_] = nullptr;
+        if (env_hunt()) { hunt_note_free(env); return; }
         delete env;
         return;
     }
