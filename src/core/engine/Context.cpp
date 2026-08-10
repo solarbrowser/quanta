@@ -1144,11 +1144,13 @@ void Environment::create_global_function_binding(const std::string& name, const 
 
 bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable, bool enumerable) {
     Collector::write_barrier_env(this);
-    if (has_own_binding(name)) {
-        return false;
-    }
-
+    // has_own_binding branches on exactly this condition, so asking it up
+    // front cost a second lookup of the same name on the declarative side,
+    // where one already tells create_if_absent whether to insert.
     if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(name)) {
+        if (has_own_binding(name)) {
+            return false;
+        }
         int attrs_value = 0;
         if (enumerable) attrs_value |= PropertyAttributes::Enumerable;
         if (mutable_binding) attrs_value |= PropertyAttributes::Writable;
@@ -1156,10 +1158,11 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
         PropertyAttributes attrs = static_cast<PropertyAttributes>(attrs_value);
         PropertyDescriptor desc(value, attrs);
         return binding_object_->set_property_descriptor(name, desc);
-    } else {
-        slots_.get_or_create(name) = BindingSlot{value, mutable_binding, true, deletable};
-        return true;
     }
+    BindingSlot* slot = slots_.create_if_absent(name);
+    if (!slot) return false;
+    *slot = BindingSlot{value, mutable_binding, true, deletable};
+    return true;
 }
 
 bool Environment::delete_binding(const std::string& name) {

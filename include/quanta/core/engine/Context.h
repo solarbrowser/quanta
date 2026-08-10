@@ -521,6 +521,24 @@ public:
 
         // Insert-if-absent-then-return-reference, mirroring unordered_map::
         // operator[]'s semantics (the call sites all rely on this).
+        // get_or_create, except it reports whether the name was already
+        // bound instead of handing back the existing slot. Creating a binding
+        // asked that question first and then let get_or_create look the same
+        // name up a second time; one lookup answers both.
+        BindingSlot* create_if_absent(const std::string& name) {
+            if (find(name)) return nullptr;
+            for (auto& e : inline_entries) {
+                if (!e.in_use) {
+                    e.key = Shape::intern(name);
+                    e.slot = BindingSlot{};
+                    e.in_use = true;
+                    return &e.slot;
+                }
+            }
+            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            return &(*overflow)[name];
+        }
+
         BindingSlot& get_or_create(const std::string& name) {
             if (BindingSlot* existing = find(name)) return *existing;
             for (auto& e : inline_entries) {
