@@ -76,6 +76,11 @@ public:
     // an interior pointer or reads the kind back out of the block, neither of
     // which an edge needs.
     static ProbeResult mark_exact(const void* p, CellKind kind);
+    // The cell a pointer names, where the pointer is known to be a cell base
+    // -- the write barrier's container, not a guessed stack word. Skips the
+    // interior-pointer resolution the conservative probe has to do; the kind
+    // still comes from the block, since the barrier's callers do not carry it.
+    static ProbeResult exact_cell_base(const void* p);
 
     // Write-barrier dedup bit: previous state, set as a side effect.
     static bool test_and_set_remembered(const ProbeResult& p);

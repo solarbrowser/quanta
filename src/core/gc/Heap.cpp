@@ -337,6 +337,19 @@ Heap::ProbeResult Heap::exact_cell(const void* p) {
     return probe_pointer(const_cast<void*>(p));
 }
 
+Heap::ProbeResult Heap::exact_cell_base(const void* p) {
+    ProbeResult r;
+    if (!p) return r;
+    if (!g_any_large_cell.load(std::memory_order_relaxed)) {
+        HeapBlock* block = HeapBlock::from_cell(p);
+        if (!owned_by_this_thread(block->heap())) return r;
+        r.cell = const_cast<void*>(p);
+        r.kind = block->cell_kind();
+        return r;
+    }
+    return probe_pointer(const_cast<void*>(p));
+}
+
 Heap::ProbeResult Heap::mark_exact(const void* p, CellKind kind) {
     ProbeResult r;
     if (!p) return r;

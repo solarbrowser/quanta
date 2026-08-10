@@ -27,13 +27,34 @@ namespace {
 // snapshot under a mutex. Retired snapshots are kept, not freed: readers
 // may still hold them, and their total size is bounded by chunk churn.
 struct ChunkRegistry {
-    using Ranges = std::vector<std::pair<uintptr_t, uintptr_t>>;  // sorted [base, end)
+    // The sorted ranges plus the span they all fall inside. Conservative
+    // scanning asks about far more addresses than it owns -- stack words,
+    // immediates, pointers into malloc'd memory -- and on a real workload
+    // over nine in ten of the non-zero ones land outside the span entirely,
+    // where two comparisons answer what a binary search was answering. The
+    // span travels WITH the ranges rather than beside them: a reader that
+    // saw a fresh snapshot through a stale span could reject an address in a
+    // chunk that snapshot contains, and drop a live cell.
+    struct Ranges {
+        std::vector<std::pair<uintptr_t, uintptr_t>> v;  // sorted [base, end)
+        uintptr_t lo = UINTPTR_MAX;
+        uintptr_t hi = 0;
+
+        void rebuild_span() {
+            lo = UINTPTR_MAX; hi = 0;
+            for (const auto& r : v) {
+                if (r.first < lo) lo = r.first;
+                if (r.second > hi) hi = r.second;
+            }
+        }
+    };
 
     std::mutex write_mutex;
     std::atomic<const Ranges*> snapshot{new Ranges()};
     std::vector<const Ranges*> retired;
 
     void publish(Ranges next) {
+        next.rebuild_span();
         const Ranges* fresh = new Ranges(std::move(next));
         retired.push_back(snapshot.exchange(fresh, std::memory_order_acq_rel));
     }
@@ -43,7 +64,7 @@ struct ChunkRegistry {
         uintptr_t b = reinterpret_cast<uintptr_t>(base);
         Ranges next = *snapshot.load(std::memory_order_relaxed);
         auto entry = std::make_pair(b, b + BlockAllocator::kChunkSize);
-        next.insert(std::lower_bound(next.begin(), next.end(), entry), entry);
+        next.v.insert(std::lower_bound(next.v.begin(), next.v.end(), entry), entry);
         publish(std::move(next));
     }
 
@@ -51,8 +72,8 @@ struct ChunkRegistry {
         std::lock_guard<std::mutex> lock(write_mutex);
         uintptr_t b = reinterpret_cast<uintptr_t>(base);
         Ranges next = *snapshot.load(std::memory_order_relaxed);
-        for (auto it = next.begin(); it != next.end(); ++it) {
-            if (it->first == b) { next.erase(it); break; }
+        for (auto it = next.v.begin(); it != next.v.end(); ++it) {
+            if (it->first == b) { next.v.erase(it); break; }
         }
         publish(std::move(next));
     }
@@ -67,9 +88,10 @@ struct ChunkRegistry {
         if (a >= mru.first && a < mru.second) return true;
 
         const Ranges& ranges = *snapshot.load(std::memory_order_acquire);
-        auto it = std::upper_bound(ranges.begin(), ranges.end(),
+        if (a < ranges.lo || a >= ranges.hi) return false;
+        auto it = std::upper_bound(ranges.v.begin(), ranges.v.end(),
                                    std::make_pair(a, UINTPTR_MAX));
-        if (it == ranges.begin()) return false;
+        if (it == ranges.v.begin()) return false;
         --it;
         if (a >= it->first && a < it->second) {
             mru = *it;

@@ -1131,7 +1131,8 @@ Collector::SliceResult Collector::mark_step(std::chrono::microseconds budget) {
 
 void Collector::write_barrier(const void* cell) {
     if (barriers_disabled() || !cell) return;
-    Heap::ProbeResult p = Heap::exact_cell(cell);
+    // Every caller hands its own `this` -- a cell base, never a guessed word.
+    Heap::ProbeResult p = Heap::exact_cell_base(cell);
     // Young (or non-cell) targets need no record: a minor trace reaches every
     // live young cell from the roots; only marked-old cells go dark.
     if (!p.cell || !Heap::test_mark(p)) return;
