@@ -7,6 +7,7 @@
 #ifndef QUANTA_TOKEN_H
 #define QUANTA_TOKEN_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -157,11 +158,15 @@ enum class TokenType {
  * Token position information
  */
 struct Position {
-    size_t line;
-    size_t column;
-    size_t offset;
-    
-    Position(size_t l = 1, size_t c = 1, size_t o = 0) 
+    // 32-bit, not size_t: a token carries two of these, and a large script
+    // turns into over a million tokens, so the eight bytes each field does
+    // not need are paid a few million times over. The widths bound the
+    // source at 4GB, which is not a source.
+    uint32_t line;
+    uint32_t column;
+    uint32_t offset;
+
+    Position(uint32_t l = 1, uint32_t c = 1, uint32_t o = 0)
         : line(l), column(c), offset(o) {}
     
     std::string to_string() const;

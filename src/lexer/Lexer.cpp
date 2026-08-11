@@ -85,6 +85,14 @@ Lexer::Lexer(const std::string& source)
     options_.allow_reserved_words = false;
     options_.strict_mode = false;
     
+    // A Position addresses the source with 32 bits (see Position), so a source
+    // this long would wrap an offset and silently mis-locate every token past
+    // the boundary. Say so instead: nothing that reaches a lexer is this big,
+    // and the check is once per lexer rather than once per token.
+    if (source_.size() > 0xFFFFFFFFull) {
+        add_error("SyntaxError: source exceeds the maximum supported length");
+    }
+
     if (source_.size() >= 3 && 
         static_cast<unsigned char>(source_[0]) == 0xEF &&
         static_cast<unsigned char>(source_[1]) == 0xBB &&
