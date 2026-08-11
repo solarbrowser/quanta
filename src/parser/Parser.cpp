@@ -18,6 +18,17 @@
 
 namespace Quanta {
 
+namespace {
+
+// A token's text is a view into the source, so the fixed name tables the
+// parser probes are keyed transparently: looking one up copies nothing.
+struct NameHash {
+    using is_transparent = void;
+    size_t operator()(std::string_view name) const { return std::hash<std::string_view>{}(name); }
+};
+using NameSet = std::unordered_set<std::string, NameHash, std::equal_to<>>;
+
+}
 
 Parser::Parser(TokenSequence tokens)
     : tokens_(std::move(tokens)), current_token_index_(0) {
@@ -479,7 +490,7 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
         case TokenType::IDENTIFIER: {
             // Contextual keyword 'using': 'using id = expr' is a UsingDeclaration
             // when followed by an identifier (not '(' or '[' which would be a call/subscript)
-            const std::string& val = current_token().get_value();
+            std::string_view val = token_text(current_token());
             if (val == "using") {
                 // 'using [no LineTerminator here] BindingIdentifier' -- do not skip newlines.
                 // Since whitespace is not in the token stream, just peek at the next token.
@@ -525,7 +536,7 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             }
             if (aw_peek_idx < tokens_.size() &&
                 tokens_[aw_peek_idx].get_type() == TokenType::IDENTIFIER &&
-                tokens_[aw_peek_idx].get_value() == "using") {
+                token_text(tokens_[aw_peek_idx]) == "using") {
                 // No newline between await and using -- check what follows 'using'
                 size_t aw_peek_idx2 = aw_peek_idx + 1;
                 while (aw_peek_idx2 < tokens_.size() &&
@@ -1245,7 +1256,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             advance();  // past DOT
 
             if (current_token().get_type() == TokenType::IDENTIFIER &&
-                current_token().get_value() == "target") {
+                token_text(current_token()) == "target") {
                 if (current_token().has_escaped_keyword()) {
                     add_error("SyntaxError: 'target' in new.target cannot contain unicode escape sequences");
                     return nullptr;
@@ -1289,7 +1300,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                     after_dot++;
                 is_import_meta = (after_dot < tokens_.size() &&
                                   tokens_[after_dot].get_type() == TokenType::IDENTIFIER &&
-                                  tokens_[after_dot].get_value() == "meta");
+                                  token_text(tokens_[after_dot]) == "meta");
             }
             if (!is_import_meta) {
                 add_error("SyntaxError: 'import' cannot be used with 'new'");
@@ -1329,7 +1340,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                         return nullptr;
                     }
 
-                    name = "#" + current_token().get_value();
+                    name = "#" + token_string(current_token());
                     prop_end = current_token().get_end();
                     advance();
 
@@ -1346,7 +1357,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                     }
                 } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
                     const Token& token = current_token();
-                    name = token.get_value();
+                    name = token_text(token);
                     prop_start = token.get_start();
                     prop_end = token.get_end();
                     advance();
@@ -1459,7 +1470,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                     return nullptr;
                 }
 
-                name = "#" + current_token().get_value();
+                name = "#" + token_string(current_token());
                 prop_end = current_token().get_end();
                 advance();
 
@@ -1476,7 +1487,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 }
             } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
                 const Token& token = current_token();
-                name = token.get_value();
+                name = token_text(token);
                 prop_start = token.get_start();
                 prop_end = token.get_end();
                 advance();
@@ -1585,7 +1596,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 }
 
                 const Token& token = current_token();
-                std::string name = token.get_value();
+                std::string name = token_string(token);
                 Position prop_start = token.get_start();
                 Position prop_end = token.get_end();
                 advance();
@@ -1695,7 +1706,7 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
                 property = std::unique_ptr<Identifier>(static_cast<Identifier*>(private_field.release()));
             } else {
                 const Token& token = current_token();
-                std::string name = token.get_value();
+                std::string name = token_string(token);
                 Position prop_start = token.get_start();
                 Position prop_end = token.get_end();
                 advance();
@@ -1729,7 +1740,7 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
                 );
             } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
                 const Token& token = current_token();
-                std::string name = token.get_value();
+                std::string name = token_string(token);
                 Position prop_start = token.get_start();
                 Position prop_end = token.get_end();
                 advance();
@@ -1791,11 +1802,11 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             }
         case TokenType::IDENTIFIER:
             if (options_.strict_mode) {
-                static const std::unordered_set<std::string> strict_future = {
+                static const NameSet strict_future = {
                     "implements","interface","package","private","protected","public"
                 };
-                if (strict_future.count(current_token().get_value())) {
-                    add_error("SyntaxError: '" + current_token().get_value() + "' is a reserved word in strict mode");
+                if (strict_future.count(token_string(current_token()))) {
+                    add_error("SyntaxError: '" + token_string(current_token()) + "' is a reserved word in strict mode");
                     return nullptr;
                 }
             }
@@ -1875,7 +1886,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_array_literal();
         case TokenType::TEMPLATE_LITERAL: {
             // Untagged: invalid escape (\x01 sentinel in cooked) -> SyntaxError
-            const std::string& tv = current_token().get_value();
+            std::string_view tv = token_text(current_token());
             if (tv.size() >= 4) {
                 uint32_t cooked_len = (static_cast<unsigned char>(tv[0]) << 24) |
                                       (static_cast<unsigned char>(tv[1]) << 16) |
@@ -1906,9 +1917,9 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             // Fall through to error
             [[fallthrough]];
         default: {
-            std::string tok_val = token.get_value().empty()
+            std::string tok_val = token_string(token).empty()
                 ? Token::token_type_name(token.get_type())
-                : "'" + token.get_value() + "'";
+                : "'" + token_string(token) + "'";
             std::string error_msg = "SyntaxError: Unexpected token " + tok_val;
             add_error(error_msg, token.get_start());
             advance();
@@ -1930,7 +1941,7 @@ std::unique_ptr<ASTNode> Parser::parse_number_literal() {
 
 std::unique_ptr<ASTNode> Parser::parse_string_literal() {
     const Token& token = current_token();
-    std::string value = token.get_value();
+    std::string value = token_string(token);
     bool has_escapes = token.string_has_escapes();
 
     Position start = token.get_start();
@@ -2007,7 +2018,7 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
     const Token& token = current_token();
     Position start = token.get_start();
     Position end = token.get_end();
-    std::string template_str = token.get_value();
+    std::string template_str = token_string(token);
 
     if (!match(TokenType::TEMPLATE_LITERAL)) {
         add_error("Expected template literal");
@@ -2244,7 +2255,7 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
     const Token& token = current_token();
     Position start = token.get_start();
     Position end = token.get_end();
-    std::string regex_str = token.get_value();
+    std::string regex_str = token_string(token);
     
     if (!match(TokenType::REGEX)) {
         add_error("Expected regex literal");
@@ -2416,11 +2427,11 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
 
             // Properties of strings (Unicode "binary string" properties): can only appear as
             // \p{Name} under /v, never \P{Name} and never inside a negated character class.
-            static const std::unordered_set<std::string> string_properties = {
+            static const NameSet string_properties = {
                 "Basic_Emoji", "Emoji_Keycap_Sequence", "RGI_Emoji", "RGI_Emoji_Flag_Sequence",
                 "RGI_Emoji_Modifier_Sequence", "RGI_Emoji_Tag_Sequence", "RGI_Emoji_ZWJ_Sequence"
             };
-            static const std::unordered_set<std::string> unsupported_properties = {
+            static const NameSet unsupported_properties = {
                 "Grapheme_Link", "Prepended_Concatenation_Mark"
             };
             int class_depth = 0;
@@ -2675,7 +2686,7 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
 
 std::unique_ptr<ASTNode> Parser::parse_boolean_literal() {
     const Token& token = current_token();
-    bool value = (token.get_value() == "true");
+    bool value = (token_text(token) == "true");
     
     Position start = token.get_start();
     Position end = token.get_end();
@@ -2695,7 +2706,7 @@ std::unique_ptr<ASTNode> Parser::parse_null_literal() {
 std::unique_ptr<ASTNode> Parser::parse_bigint_literal() {
     Position start = current_token().get_start();
     Position end = current_token().get_end();
-    std::string value = current_token().get_value();
+    std::string value = token_string(current_token());
     advance();
     
     return std::make_unique<BigIntLiteral>(value, start, end);
@@ -2711,14 +2722,14 @@ std::unique_ptr<ASTNode> Parser::parse_undefined_literal() {
 
 std::unique_ptr<ASTNode> Parser::parse_identifier() {
     const Token& token = current_token();
-    std::string name = token.get_value();
+    std::string name = token_string(token);
     bool escaped_kw = token.has_escaped_keyword();
     Position start = token.get_start();
     Position end = token.get_end();
 
     if (escaped_kw) {
         // Always-reserved words can never appear as identifier references, even with escapes
-        static const std::unordered_set<std::string> always_reserved_ids = {
+        static const NameSet always_reserved_ids = {
             "false","true","null","this","super",
             "break","case","catch","class","const","continue","debugger",
             "default","delete","do","else","export","extends","finally",
@@ -2735,7 +2746,7 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
             return nullptr;
         }
         if (options_.strict_mode) {
-            static const std::unordered_set<std::string> strict_future = {
+            static const NameSet strict_future = {
                 "implements","interface","let","package","private","protected","public","static","yield"
             };
             if (strict_future.count(name)) {
@@ -2796,7 +2807,7 @@ std::unique_ptr<ASTNode> Parser::parse_private_field() {
     }
 
     const Token& token = current_token();
-    std::string name = "#" + token.get_value();
+    std::string name = "#" + token_string(token);
     Position end = token.get_end();
     advance();
 
@@ -3290,7 +3301,7 @@ std::unique_ptr<ASTNode> Parser::parse_using_declaration(bool is_await, bool con
             return nullptr;
         }
 
-        std::string name = current_token().get_value();
+        std::string name = token_string(current_token());
         advance();
 
         if (current_token().get_type() != TokenType::ASSIGN) {
@@ -3399,17 +3410,17 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
         }
 
         if (current_token().has_escaped_keyword()) {
-            static const std::unordered_set<std::string> always_reserved_binding = {
+            static const NameSet always_reserved_binding = {
                 "false","true","null","this","super",
                 "break","case","catch","class","const","continue","debugger",
                 "default","delete","do","else","export","extends","finally",
                 "for","function","if","import","in","instanceof","new",
                 "return","switch","throw","try","typeof","var","void","while","with","enum"
             };
-            static const std::unordered_set<std::string> strict_reserved_binding = {
+            static const NameSet strict_reserved_binding = {
                 "implements","interface","let","package","private","protected","public","static","yield"
             };
-            const std::string& ek_name = current_token().get_value();
+            std::string_view ek_name = token_text(current_token());
             if (always_reserved_binding.count(ek_name) ||
                 (options_.strict_mode && strict_reserved_binding.count(ek_name))) {
                 add_error("Keywords cannot be used as identifiers via unicode escape sequences");
@@ -3417,7 +3428,7 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             }
         }
 
-        const std::string& var_name_check = current_token().get_value();
+        std::string_view var_name_check = token_text(current_token());
 
         // 'let' cannot be a binding name in let/const declarations.
         if ((kind == VariableDeclarator::Kind::LET || kind == VariableDeclarator::Kind::CONST) &&
@@ -3442,19 +3453,19 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
         // ES5: eval and arguments cannot be used as variable names in strict mode
         if (options_.strict_mode) {
             if (var_name_check == "eval" || var_name_check == "arguments") {
-                add_error("'" + var_name_check + "' cannot be used as a variable name in strict mode");
+                add_error("'" + std::string(var_name_check) + "' cannot be used as a variable name in strict mode");
                 return nullptr;
             }
-            static const std::unordered_set<std::string> strict_future_reserved = {
+            static const NameSet strict_future_reserved = {
                 "implements","interface","package","private","protected","public"
             };
             if (strict_future_reserved.count(var_name_check)) {
-                add_error("SyntaxError: '" + var_name_check + "' is a reserved word in strict mode");
+                add_error("SyntaxError: '" + std::string(var_name_check) + "' is a reserved word in strict mode");
                 return nullptr;
             }
         }
 
-        auto id = std::make_unique<Identifier>(current_token().get_value(),
+        auto id = std::make_unique<Identifier>(token_string(current_token()),
                                              current_token().get_start(), current_token().get_end());
         advance();
         
@@ -3706,7 +3717,7 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         bool found_use_strict = false;
         bool preceding_has_legacy_octal = false;
         while (scan < tokens_.size() && tokens_[scan].get_type() == TokenType::STRING) {
-            if (tokens_[scan].get_value() == "use strict") {
+            if (token_text(tokens_[scan]) == "use strict") {
                 found_use_strict = true;
                 options_.strict_mode = true;
                 break;
@@ -3910,7 +3921,7 @@ bool Parser::validate_object_destructuring(ObjectLiteral* obj) {
                 }
                 // strict mode future reserved words
                 if (options_.strict_mode) {
-                    static const std::unordered_set<std::string> strict_future = {
+                    static const NameSet strict_future = {
                         "implements","interface","let","package","private",
                         "protected","public","static"
                     };
@@ -4127,7 +4138,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
         if (match(TokenType::AWAIT) && (options_.in_async_body || options_.source_type_module)) {
             size_t saved_idx = current_token_index_;
             advance(); // consume 'await'
-            if (match(TokenType::IDENTIFIER) && current_token().get_value() == "using") {
+            if (match(TokenType::IDENTIFIER) && token_text(current_token()) == "using") {
                 size_t after_using_idx = current_token_index_ + 1;
                 // Skip NEWLINE tokens
                 while (after_using_idx < tokens_.size() &&
@@ -4146,7 +4157,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 if ((next2 == TokenType::IDENTIFIER || next2 == TokenType::STATIC || next2 == TokenType::OF) && next3 == TokenType::OF) {
                     // for (await using id of iterable) -- await-using for-of
                     advance(); // consume 'using'
-                    std::string binding_name = current_token().get_value();
+                    std::string binding_name = token_string(current_token());
                     Position binding_pos = get_current_position();
                     advance(); // consume id
                     std::vector<UsingBinding> bindings;
@@ -4167,7 +4178,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             current_token_index_ = saved_idx;
         }
         // Check for 'using' declaration in for init: for (using x = expr; ...)
-        if (match(TokenType::IDENTIFIER) && current_token().get_value() == "using") {
+        if (match(TokenType::IDENTIFIER) && token_text(current_token()) == "using") {
             TokenType next = peek_token().get_type();
             TokenType next2 = (current_token_index_ + 2 < tokens_.size())
                               ? tokens_[current_token_index_ + 2].get_type()
@@ -4182,7 +4193,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 if (next2 == TokenType::OF) {
                     // for (using ID of iterable) — using-for-of: parse binding name only
                     advance(); // consume 'using'
-                    std::string binding_name = current_token().get_value();
+                    std::string binding_name = token_string(current_token());
                     Position binding_pos = get_current_position();
                     // Early error: 'let' cannot be a binding name in using declaration
                     if (current_token().get_type() == TokenType::LET) {
@@ -4286,7 +4297,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 }
             }
 
-            std::string var_name = current_token().get_value();
+            std::string var_name = token_string(current_token());
             Position var_start = current_token().get_start();
             Position var_end = current_token().get_end();
             advance();
@@ -4883,7 +4894,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     // escaped `async` + function on same line = SyntaxError
     if (current_token().get_type() == TokenType::IDENTIFIER &&
         current_token().has_escaped_keyword() &&
-        current_token().get_value() == "async") {
+        token_text(current_token()) == "async") {
         size_t async_end_line = current_token().get_end().line;
         if (peek_token().get_type() == TokenType::FUNCTION &&
             peek_token().get_start().line == async_end_line) {
@@ -4905,11 +4916,11 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     }
 
     if ((current_token().get_type() == TokenType::IDENTIFIER || cur_is_label_kw) && peek_token().get_type() == TokenType::COLON) {
-        std::string label = current_token().get_value();
+        std::string label = token_string(current_token());
         // Escaped reserved words as label identifiers are SyntaxErrors
         if (current_token().has_escaped_keyword()) {
             // yield and await have context-dependent rules; all other reserved words are always invalid
-            static const std::unordered_set<std::string> always_reserved_labels = {
+            static const NameSet always_reserved_labels = {
                 "false","true","null","this","super",
                 "break","case","catch","class","const","continue","debugger",
                 "default","delete","do","else","export","extends","finally",
@@ -5109,7 +5120,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         }
     }
 
-    std::string fn_name = current_token().get_value();
+    std::string fn_name = token_string(current_token());
     auto id = std::make_unique<Identifier>(fn_name,
                                          current_token().get_start(), current_token().get_end());
     advance();
@@ -5197,14 +5208,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             // ES5: eval and arguments cannot be used as parameter names in strict mode
             if (options_.strict_mode) {
-                const std::string& pname = current_token().get_value();
+                std::string_view pname = token_text(current_token());
                 if (pname == "eval" || pname == "arguments") {
-                    add_error("'" + pname + "' cannot be used as a parameter name in strict mode");
+                    add_error("'" + std::string(pname) + "' cannot be used as a parameter name in strict mode");
                     options_.in_generator_body = saved_gen_for_params_fd;
                     return nullptr;
                 }
             }
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+            param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else if ((current_token().get_type() == TokenType::AWAIT &&
@@ -5215,7 +5226,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                      current_token().get_type() == TokenType::STATIC ||
                      current_token().get_type() == TokenType::UNDEFINED) &&
                     !options_.strict_mode)) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+            param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -5446,9 +5457,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
         return nullptr;
     }
     if (current_token().has_escaped_keyword()) {
-        const std::string& cn = current_token().get_value();
+        std::string_view cn = token_text(current_token());
         // Class context is always strict -- reject strict-mode reserved words with escapes
-        static const std::unordered_set<std::string> class_name_forbidden = {
+        static const NameSet class_name_forbidden = {
             "false","true","null","this","super",
             "break","case","catch","class","const","continue","debugger",
             "default","delete","do","else","export","extends","finally",
@@ -5458,14 +5469,14 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
         };
         if (class_name_forbidden.count(cn) ||
             (cn == "await" && options_.source_type_module)) {
-            add_error("SyntaxError: '" + cn + "' cannot be used as class name via unicode escape sequences");
+            add_error("SyntaxError: '" + std::string(cn) + "' cannot be used as class name via unicode escape sequences");
             return nullptr;
         }
     }
 
     std::unique_ptr<ASTNode> id;
     if (is_await_name) {
-        std::string name = current_token().get_value();
+        std::string name = token_string(current_token());
         Position cs = current_token().get_start(), ce = current_token().get_end();
         advance();
         id = std::make_unique<Identifier>(name, cs, ce);
@@ -5535,7 +5546,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
                      i + 1 < tokens_.size() &&
                      (tokens_[i+1].get_type() == TokenType::IDENTIFIER || is_keyword_token(tokens_[i+1].get_type())) &&
                      tokens_[i+1].get_start().offset == tokens_[i].get_start().offset + 1) {
-                pre_declared.insert("#" + tokens_[i+1].get_value());
+                pre_declared.insert("#" + token_string(tokens_[i+1]));
             }
             prev_tt = tt;
         }
@@ -5602,7 +5613,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             advance();
             if (current_token().get_type() == TokenType::IDENTIFIER &&
                 current_token().get_start().offset == h_start + 1 &&
-                current_token().get_value() == "constructor") {
+                token_text(current_token()) == "constructor") {
                 add_error("SyntaxError: '#constructor' is a reserved private name");
                 return nullptr;
             }
@@ -5847,8 +5858,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
         bool yield_name_ok = false; // yield is never valid as class name (class body is always strict)
         if (current_token().get_type() == TokenType::IDENTIFIER || await_name_ok || yield_name_ok) {
             if (current_token().has_escaped_keyword()) {
-                const std::string& cn = current_token().get_value();
-                static const std::unordered_set<std::string> class_expr_name_forbidden = {
+                std::string_view cn = token_text(current_token());
+                static const NameSet class_expr_name_forbidden = {
                     "false","true","null","this","super",
                     "break","case","catch","class","const","continue","debugger",
                     "default","delete","do","else","export","extends","finally",
@@ -5858,12 +5869,12 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
                 };
                 if (class_expr_name_forbidden.count(cn) ||
                     (cn == "await" && options_.source_type_module)) {
-                    add_error("SyntaxError: '" + cn + "' cannot be used as class name via unicode escape sequences");
+                    add_error("SyntaxError: '" + std::string(cn) + "' cannot be used as class name via unicode escape sequences");
                     return nullptr;
                 }
             }
             if (await_name_ok || yield_name_ok) {
-                std::string name = current_token().get_value();
+                std::string name = token_string(current_token());
                 Position cs = current_token().get_start(), ce = current_token().get_end();
                 advance();
                 id = std::make_unique<Identifier>(name, cs, ce);
@@ -5933,7 +5944,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
                      i + 1 < tokens_.size() &&
                      (tokens_[i+1].get_type() == TokenType::IDENTIFIER || is_keyword_token(tokens_[i+1].get_type())) &&
                      tokens_[i+1].get_start().offset == tokens_[i].get_start().offset + 1) {
-                pre_declared.insert("#" + tokens_[i+1].get_value());
+                pre_declared.insert("#" + token_string(tokens_[i+1]));
             }
             prev_tt = tt;
         }
@@ -6000,7 +6011,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             advance();
             if (current_token().get_type() == TokenType::IDENTIFIER &&
                 current_token().get_start().offset == h2 + 1 &&
-                current_token().get_value() == "constructor") {
+                token_text(current_token()) == "constructor") {
                 add_error("SyntaxError: '#constructor' is a reserved private name");
                 return nullptr;
             }
@@ -6211,7 +6222,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     Position src_start = start;
 
     bool is_static = false;
-    if (current_token().get_value() == "static" && current_token().get_type() != TokenType::STATIC &&
+    if (token_text(current_token()) == "static" && current_token().get_type() != TokenType::STATIC &&
         !current_token().has_escaped_keyword()) {
         is_static = true;
         advance();
@@ -6241,7 +6252,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         is_async = true;
         advance();
     } else if (current_token().get_type() == TokenType::IDENTIFIER &&
-               current_token().get_value() == "async" &&
+               token_text(current_token()) == "async" &&
                current_token().has_escaped_keyword()) {
         size_t async_end_line = current_token().get_end().line;
         TokenType next = peek_token().get_type();
@@ -6261,7 +6272,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
     MethodDefinition::Kind method_kind = MethodDefinition::METHOD;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
-        std::string token_value = current_token().get_value();
+        std::string token_value = token_string(current_token());
         if (token_value == "get" || token_value == "set") {
             // Only treat as getter/setter if next token is a valid property name (not '(' or '=' or ';')
             TokenType next = peek_token().get_type();
@@ -6294,7 +6305,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             return nullptr;
         }
 
-        std::string private_name = "#" + current_token().get_value();
+        std::string private_name = "#" + token_string(current_token());
         if (private_name == "#constructor") {
             add_error("SyntaxError: '#constructor' is a reserved private name");
             return nullptr;
@@ -6305,7 +6316,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         key = std::make_unique<Identifier>(private_name, start, end);
     } else if (current_token().get_type() == TokenType::IDENTIFIER) {
         if (current_token().has_escaped_keyword()) {
-            std::string name = current_token().get_value();
+            std::string name = token_string(current_token());
             Position s = current_token().get_start();
             Position e = current_token().get_end();
             advance();
@@ -6314,7 +6325,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             key = parse_identifier();
         }
     } else if (is_reserved_word_as_property_name()) {
-        std::string name = current_token().get_value();
+        std::string name = token_string(current_token());
         Position start = current_token().get_start();
         Position end = current_token().get_end();
         advance();
@@ -6371,7 +6382,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
                 if (current_token().get_start().offset != hash_start + 1) {
                     add_error("SyntaxError: Whitespace not allowed between '#' and identifier"); return nullptr;
                 }
-                key = std::make_unique<Identifier>("#" + current_token().get_value(), current_token().get_start(), current_token().get_end());
+                key = std::make_unique<Identifier>("#" + token_string(current_token()), current_token().get_start(), current_token().get_end());
                 advance();
             } else if (nxt == TokenType::LEFT_BRACKET) {
                 computed = true; advance();
@@ -6380,7 +6391,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             } else if (nxt == TokenType::IDENTIFIER) {
                 key = parse_identifier();
             } else {
-                key = std::make_unique<Identifier>(current_token().get_value(), current_token().get_start(), current_token().get_end());
+                key = std::make_unique<Identifier>(token_string(current_token()), current_token().get_start(), current_token().get_end());
                 advance();
             }
         }
@@ -6555,12 +6566,12 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             }
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-            const std::string& apname = current_token().get_value();
+            std::string_view apname = token_text(current_token());
             if (options_.strict_mode && (apname == "eval" || apname == "arguments")) {
-                add_error("SyntaxError: '" + apname + "' cannot be a parameter name in strict mode");
+                add_error("SyntaxError: '" + std::string(apname) + "' cannot be a parameter name in strict mode");
                 return nullptr;
             }
-            param_name = std::make_unique<Identifier>(apname,
+            param_name = std::make_unique<Identifier>(std::string(apname),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else if ((!is_async && !options_.source_type_module &&
@@ -6570,7 +6581,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
                    ((current_token().get_type() == TokenType::LET ||
                      current_token().get_type() == TokenType::STATIC) &&
                     !options_.strict_mode)) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+            param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -6748,12 +6759,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 
     std::unique_ptr<Identifier> id = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
-        const std::string& fe_name = current_token().get_value();
+        std::string_view fe_name = token_text(current_token());
         if (options_.strict_mode && (fe_name == "eval" || fe_name == "arguments")) {
-            add_error("SyntaxError: '" + fe_name + "' cannot be used as function name in strict mode");
+            add_error("SyntaxError: '" + std::string(fe_name) + "' cannot be used as function name in strict mode");
             return nullptr;
         }
-        id = std::make_unique<Identifier>(fe_name,
+        id = std::make_unique<Identifier>(std::string(fe_name),
                                         current_token().get_start(), current_token().get_end());
         advance();
     } else if (current_token().get_type() == TokenType::YIELD && !options_.strict_mode && !is_generator) {
@@ -6844,14 +6855,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             // ES5: eval and arguments cannot be used as parameter names in strict mode
             if (options_.strict_mode) {
-                const std::string& pname = current_token().get_value();
+                std::string_view pname = token_text(current_token());
                 if (pname == "eval" || pname == "arguments") {
-                    add_error("'" + pname + "' cannot be used as a parameter name in strict mode");
+                    add_error("'" + std::string(pname) + "' cannot be used as a parameter name in strict mode");
                     options_.in_generator_body = saved_gen_for_params_fe;
                     return nullptr;
                 }
             }
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+            param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else if ((current_token().get_type() == TokenType::AWAIT &&
@@ -6862,7 +6873,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                      current_token().get_type() == TokenType::STATIC ||
                      current_token().get_type() == TokenType::UNDEFINED) &&
                     !options_.strict_mode)) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+            param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -7120,12 +7131,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 
     std::unique_ptr<Identifier> id = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
-        const std::string& aname = current_token().get_value();
+        std::string_view aname = token_text(current_token());
         if (options_.strict_mode && (aname == "eval" || aname == "arguments")) {
-            add_error("SyntaxError: '" + aname + "' cannot be used as function name in strict mode");
+            add_error("SyntaxError: '" + std::string(aname) + "' cannot be used as function name in strict mode");
             return nullptr;
         }
-        id = std::make_unique<Identifier>(aname, current_token().get_start(), current_token().get_end());
+        id = std::make_unique<Identifier>(std::string(aname), current_token().get_start(), current_token().get_end());
         advance();
     }
 
@@ -7212,13 +7223,13 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             {
-                const std::string& pn2 = current_token().get_value();
+                std::string_view pn2 = token_text(current_token());
                 if (options_.strict_mode && (pn2 == "eval" || pn2 == "arguments")) {
-                    add_error("SyntaxError: '" + pn2 + "' cannot be a parameter name in strict mode");
+                    add_error("SyntaxError: '" + std::string(pn2) + "' cannot be a parameter name in strict mode");
                     options_.in_generator_body = saved_gen_for_params_afe;
                     return nullptr;
                 }
-                param_name = std::make_unique<Identifier>(pn2,
+                param_name = std::make_unique<Identifier>(std::string(pn2),
                                                           current_token().get_start(), current_token().get_end());
             }
             advance();
@@ -7227,7 +7238,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
                    ((current_token().get_type() == TokenType::LET ||
                      current_token().get_type() == TokenType::STATIC) &&
                     !options_.strict_mode)) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+            param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -7423,7 +7434,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         }
     }
 
-    std::string af_name = current_token().get_value();
+    std::string af_name = token_string(current_token());
     auto id = std::make_unique<Identifier>(af_name,
                                         current_token().get_start(), current_token().get_end());
     advance();
@@ -7512,13 +7523,13 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             {
-                const std::string& pn2 = current_token().get_value();
+                std::string_view pn2 = token_text(current_token());
                 if (options_.strict_mode && (pn2 == "eval" || pn2 == "arguments")) {
-                    add_error("SyntaxError: '" + pn2 + "' cannot be a parameter name in strict mode");
+                    add_error("SyntaxError: '" + std::string(pn2) + "' cannot be a parameter name in strict mode");
                     options_.in_generator_body = saved_gen_for_params_afd;
                     return nullptr;
                 }
-                param_name = std::make_unique<Identifier>(pn2,
+                param_name = std::make_unique<Identifier>(std::string(pn2),
                                                           current_token().get_start(), current_token().get_end());
             }
             advance();
@@ -7527,7 +7538,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                    ((current_token().get_type() == TokenType::LET ||
                      current_token().get_type() == TokenType::STATIC) &&
                     !options_.strict_mode)) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+            param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -7675,7 +7686,8 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         // Non-strict, non-generator: yield/await usable as plain identifier param
         (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode)) {
         Position param_start = get_current_position();
-        std::string pname = (current_token().get_type() == TokenType::YIELD) ? "yield" : current_token().get_value();
+        std::string pname = (current_token().get_type() == TokenType::YIELD)
+                            ? std::string("yield") : token_string(current_token());
         if (options_.strict_mode && (pname == "eval" || pname == "arguments")) {
             add_error("SyntaxError: '" + pname + "' cannot be a parameter name in strict mode");
             return nullptr;
@@ -7729,7 +7741,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                 // rest param name follows
                 if (current_token().get_type() == TokenType::IDENTIFIER) {
                     Position rp_start = get_current_position();
-                    auto rp_name = std::make_unique<Identifier>(current_token().get_value(),
+                    auto rp_name = std::make_unique<Identifier>(token_string(current_token()),
                         current_token().get_start(), current_token().get_end());
                     advance();
                     auto rp = std::make_unique<Parameter>(std::move(rp_name), nullptr, true, rp_start, get_current_position());
@@ -7752,9 +7764,9 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                 break;
             } else if (current_token().get_type() == TokenType::IDENTIFIER) {
                 if (options_.strict_mode) {
-                    const std::string& pn = current_token().get_value();
+                    std::string_view pn = token_text(current_token());
                     if (pn == "eval" || pn == "arguments") {
-                        add_error("SyntaxError: '" + pn + "' cannot be used as parameter name in strict mode");
+                        add_error("SyntaxError: '" + std::string(pn) + "' cannot be used as parameter name in strict mode");
                         return nullptr;
                     }
                     if (pn == "yield") {
@@ -7777,7 +7789,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             }
 
             Position param_start = get_current_position();
-            auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+            auto param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                           current_token().get_start(), current_token().get_end());
             advance();
 
@@ -7994,7 +8006,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
     if (match(TokenType::DOT)) {
         advance(); // consume .
         if (current_token().get_type() == TokenType::IDENTIFIER) {
-            const std::string& prop = current_token().get_value();
+            std::string_view prop = token_text(current_token());
             if (prop == "meta") {
                 if (current_token().has_escaped_keyword()) {
                     add_error("SyntaxError: 'meta' in import.meta cannot use escape sequences");
@@ -8071,7 +8083,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
                 return std::make_unique<CallExpression>(std::move(import_id), std::move(args), start, end);
             }
             // import.UNKNOWN etc. are SyntaxErrors
-            add_error("SyntaxError: Unknown import meta-property '" + prop + "'");
+            add_error("SyntaxError: Unknown import meta-property '" + std::string(prop) + "'");
             return nullptr;
         }
         add_error("SyntaxError: Invalid import meta-property");
@@ -8174,7 +8186,7 @@ std::unique_ptr<ASTNode> Parser::parse_break_statement() {
     std::string label;
     if (current_token().get_type() == TokenType::IDENTIFIER &&
         current_token().get_start().line == start.line) {
-        label = current_token().get_value();
+        label = token_text(current_token());
         advance();
     }
 
@@ -8207,7 +8219,7 @@ std::unique_ptr<ASTNode> Parser::parse_continue_statement() {
     std::string label;
     if (current_token().get_type() == TokenType::IDENTIFIER &&
         current_token().get_start().line == start.line) {
-        label = current_token().get_value();
+        label = token_text(current_token());
         advance();
     }
 
@@ -8301,7 +8313,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
         bool is_async = false;
 
         if (match(TokenType::IDENTIFIER)) {
-            if (current_token().get_value() == "get") {
+            if (token_text(current_token()) == "get") {
                 if (current_token().has_escaped_keyword()) {
                     // get etc. -- escaped get keyword is SyntaxError
                     size_t saved_pos = current_token_index_;
@@ -8329,7 +8341,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     property_type = ObjectLiteral::PropertyType::Getter;
                     advance();
                 }
-            } else if (current_token().get_value() == "set") {
+            } else if (token_text(current_token()) == "set") {
                 if (current_token().has_escaped_keyword()) {
                     size_t saved_pos = current_token_index_;
                     advance();
@@ -8356,7 +8368,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     property_type = ObjectLiteral::PropertyType::Setter;
                     advance();
                 }
-            } else if (current_token().get_value() == "async") {
+            } else if (token_text(current_token()) == "async") {
                 if (current_token().has_escaped_keyword()) {
                     add_error("SyntaxError: `async` cannot contain unicode escape sequences");
                     return nullptr;
@@ -8443,7 +8455,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             }
         } else if (match(TokenType::IDENTIFIER)) {
             if (current_token().has_escaped_keyword()) {
-                std::string kname = current_token().get_value();
+                std::string kname = token_string(current_token());
                 Position ks = current_token().get_start();
                 Position ke = current_token().get_end();
                 advance();
@@ -8458,7 +8470,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
         } else if (match(TokenType::BIGINT_LITERAL)) {
             key = parse_bigint_literal();
         } else if (is_keyword_token(current_token().get_type())) {
-            key = std::make_unique<Identifier>(current_token().get_value(),
+            key = std::make_unique<Identifier>(token_string(current_token()),
                                                current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -8548,7 +8560,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                         continue;
                     } else if (current_token().get_type() == TokenType::IDENTIFIER) {
                         param_name = std::make_unique<Identifier>(
-                            current_token().get_value(),
+                            token_string(current_token()),
                             current_token().get_start(),
                             current_token().get_end()
                         );
@@ -8560,7 +8572,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                                ((current_token().get_type() == TokenType::LET ||
                                  current_token().get_type() == TokenType::STATIC) &&
                                 !options_.strict_mode)) {
-                        param_name = std::make_unique<Identifier>(current_token().get_value(),
+                        param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                                   current_token().get_start(), current_token().get_end());
                         advance();
                     } else {
@@ -8809,7 +8821,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 if (auto* identifier_key = dynamic_cast<Identifier*>(key.get())) {
                     const std::string& shn = identifier_key->get_name();
                     // Reserved words are never valid as shorthand identifier references
-                    static const std::unordered_set<std::string> always_reserved = {
+                    static const NameSet always_reserved = {
                         "false","true","null","this","super","enum",
                         "break","case","catch","class","const","continue","debugger",
                         "default","delete","do","else","export","extends","finally",
@@ -8835,7 +8847,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                         return nullptr;
                     }
                     if (options_.strict_mode) {
-                        static const std::unordered_set<std::string> strict_future = {
+                        static const NameSet strict_future = {
                             "implements","interface","let","package","private",
                             "protected","public","static","yield"
                         };
@@ -9107,7 +9119,7 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
         } else if (match(TokenType::IDENTIFIER) ||
                    (match(TokenType::AWAIT) && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) ||
                    (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode)) {
-            parameter_name = current_token().get_value();
+            parameter_name = token_text(current_token());
 
             // ES5: eval and arguments cannot be used as catch parameter in strict mode
             if (options_.strict_mode && (parameter_name == "eval" || parameter_name == "arguments")) {
@@ -9340,10 +9352,10 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             // key is identifier or string literal
             std::string key;
             if (match(TokenType::IDENTIFIER) || is_reserved_word_as_property_name()) {
-                key = current_token().get_value();
+                key = token_text(current_token());
                 advance();
             } else if (match(TokenType::STRING)) {
-                key = current_token().get_value();
+                key = token_text(current_token());
                 advance();
             } else {
                 advance();
@@ -9366,7 +9378,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
 
     // Side-effect import: import "module"
     if (match(TokenType::STRING)) {
-        std::string module_source = current_token().get_value();
+        std::string module_source = token_string(current_token());
         advance();
         skip_import_with();
         Position end = get_current_position();
@@ -9377,7 +9389,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
     if (match(TokenType::MULTIPLY)) {
         advance();
         
-        if (current_token().get_type() != TokenType::IDENTIFIER || current_token().get_value() != "as") {
+        if (current_token().get_type() != TokenType::IDENTIFIER || token_text(current_token()) != "as") {
             add_error("Expected 'as' after '*' in import statement");
             return nullptr;
         }
@@ -9391,7 +9403,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             add_error("Expected identifier after 'as'");
             return nullptr;
         }
-        std::string namespace_alias = current_token().get_value();
+        std::string namespace_alias = token_string(current_token());
         advance();
         
         if (current_token().get_type() != TokenType::FROM) {
@@ -9404,7 +9416,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             add_error("Expected string literal after 'from'");
             return nullptr;
         }
-        std::string module_source = current_token().get_value();
+        std::string module_source = token_string(current_token());
         advance(); skip_import_with();
         Position end = get_current_position();
         return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end);
@@ -9453,7 +9465,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             add_error("Expected string literal after 'from'");
             return nullptr;
         }
-        std::string module_source = current_token().get_value();
+        std::string module_source = token_string(current_token());
         advance(); skip_import_with();
         Position end = get_current_position();
         return std::make_unique<ImportStatement>(std::move(specifiers), module_source, start, end);
@@ -9461,12 +9473,12 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
 
     if (match(TokenType::IDENTIFIER)) {
         // import defer * as ns from "module"
-        if (current_token().get_value() == "defer") {
+        if (token_text(current_token()) == "defer") {
             size_t saved_idx = current_token_index_;
             advance(); // try consuming 'defer'
             if (match(TokenType::MULTIPLY)) {
                 advance();
-                if (current_token().get_type() != TokenType::IDENTIFIER || current_token().get_value() != "as") {
+                if (current_token().get_type() != TokenType::IDENTIFIER || token_text(current_token()) != "as") {
                     add_error("Expected 'as' after '*' in import defer statement");
                     return nullptr;
                 }
@@ -9475,7 +9487,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                     add_error("Expected identifier after 'as' in import defer statement");
                     return nullptr;
                 }
-                std::string namespace_alias = current_token().get_value();
+                std::string namespace_alias = token_string(current_token());
                 advance();
                 if (current_token().get_type() != TokenType::FROM) {
                     add_error("Expected 'from' in import defer statement");
@@ -9486,7 +9498,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                     add_error("Expected string literal after 'from' in import defer statement");
                     return nullptr;
                 }
-                std::string module_source = current_token().get_value();
+                std::string module_source = token_string(current_token());
                 advance(); skip_import_with();
                 Position end = get_current_position();
                 return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end, true);
@@ -9495,7 +9507,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             current_token_index_ = saved_idx;
         }
 
-        std::string default_alias = current_token().get_value();
+        std::string default_alias = token_string(current_token());
         advance();
 
         if (match(TokenType::COMMA)) {
@@ -9504,7 +9516,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             // ImportedDefaultBinding , NameSpaceImport
             if (match(TokenType::MULTIPLY)) {
                 advance();
-                if (current_token().get_type() != TokenType::IDENTIFIER || current_token().get_value() != "as") {
+                if (current_token().get_type() != TokenType::IDENTIFIER || token_text(current_token()) != "as") {
                     add_error("Expected 'as' after '*' in namespace import");
                     return nullptr;
                 }
@@ -9513,7 +9525,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                     add_error("Expected identifier after '* as' in namespace import");
                     return nullptr;
                 }
-                std::string namespace_alias = current_token().get_value();
+                std::string namespace_alias = token_string(current_token());
                 advance();
                 if (current_token().get_type() != TokenType::FROM) {
                     add_error("Expected 'from' after namespace import");
@@ -9524,7 +9536,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                     add_error("Expected string literal after 'from'");
                     return nullptr;
                 }
-                std::string module_source = current_token().get_value();
+                std::string module_source = token_string(current_token());
                 advance(); skip_import_with();
                 Position end = get_current_position();
                 // ImportStatement with both default alias and namespace alias
@@ -9569,7 +9581,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                 add_error("Expected string literal after 'from'");
                 return nullptr;
             }
-            std::string module_source = current_token().get_value();
+            std::string module_source = token_string(current_token());
             advance(); skip_import_with();
             Position end = get_current_position();
             return std::make_unique<ImportStatement>(default_alias, std::move(specifiers), module_source, start, end);
@@ -9585,7 +9597,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             add_error("Expected string literal after 'from'");
             return nullptr;
         }
-        std::string module_source = current_token().get_value();
+        std::string module_source = token_string(current_token());
         advance(); skip_import_with();
         Position end = get_current_position();
         return std::make_unique<ImportStatement>(default_alias, module_source, true, start, end);
@@ -9613,9 +9625,9 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
         while (!at_end() && !match(TokenType::RIGHT_BRACE)) {
             std::string key;
             if (match(TokenType::IDENTIFIER) || is_reserved_word_as_property_name()) {
-                key = current_token().get_value(); advance();
+                key = token_text(current_token()); advance();
             } else if (match(TokenType::STRING)) {
-                key = current_token().get_value(); advance();
+                key = token_text(current_token()); advance();
             } else { advance(); continue; }
             if (!seen_keys.insert(key).second) {
                 add_error("SyntaxError: Duplicate import attribute key '" + key + "'");
@@ -9639,7 +9651,7 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
         // Per spec: only AssignmentExpression is allowed when lookahead is NOT {function, async [no LT] function, class}.
         // After a decl body, any `(` is a SyntaxError (can't invoke a declaration).
         bool is_decl_form = match(TokenType::FUNCTION) || match(TokenType::CLASS);
-        if (!is_decl_form && match(TokenType::IDENTIFIER) && current_token().get_value() == "async") {
+        if (!is_decl_form && match(TokenType::IDENTIFIER) && token_text(current_token()) == "async") {
             size_t saved_idx = current_token_index_;
             size_t async_line = current_token().get_end().line;
             advance();
@@ -9712,7 +9724,7 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
     if (match(TokenType::MULTIPLY)) {
         advance();
         std::string exported_name = "*";
-        if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
+        if (match(TokenType::IDENTIFIER) && token_text(current_token()) == "as") {
             advance();
             // ES2022: export name can be a StringLiteral or IdentifierName
             bool star_as_is_string = match(TokenType::STRING);
@@ -9720,7 +9732,7 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
                 add_error("Expected identifier after 'as' in export * as");
                 return nullptr;
             }
-            exported_name = current_token().get_value();
+            exported_name = token_text(current_token());
             if (star_as_is_string) {
                 for (size_t i = 0; i + 2 < exported_name.size(); i++) {
                     unsigned char b0 = exported_name[i], b1 = exported_name[i+1], b2 = exported_name[i+2];
@@ -9741,7 +9753,7 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
             add_error("Expected string literal after 'from' in export *");
             return nullptr;
         }
-        std::string source_module = current_token().get_value();
+        std::string source_module = token_string(current_token());
         advance(); skip_export_with();
         if (!consume_if_match(TokenType::SEMICOLON)) {
             TokenType cur = current_token().get_type();
@@ -9801,7 +9813,7 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
                 add_error("Expected string literal after 'from'");
                 return nullptr;
             }
-            std::string source_module = current_token().get_value();
+            std::string source_module = token_string(current_token());
             advance(); skip_export_with();
             if (!consume_if_match(TokenType::SEMICOLON)) {
                 TokenType cur = current_token().get_type();
@@ -9877,7 +9889,7 @@ std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
         return nullptr;
     }
 
-    std::string imported_name = current_token().get_value();
+    std::string imported_name = token_string(current_token());
     std::string local_name = imported_name;
     advance();
 
@@ -9893,12 +9905,12 @@ std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
     }
 
     // String import names MUST have "as localName"
-    if (imported_is_string && !(match(TokenType::IDENTIFIER) && current_token().get_value() == "as")) {
+    if (imported_is_string && !(match(TokenType::IDENTIFIER) && token_text(current_token()) == "as")) {
         add_error("SyntaxError: String import name requires 'as' binding");
         return nullptr;
     }
 
-    if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
+    if (match(TokenType::IDENTIFIER) && token_text(current_token()) == "as") {
         if (current_token().has_escaped_keyword()) {
             add_error("SyntaxError: 'as' cannot use unicode escape sequences in import specifier");
             return nullptr;
@@ -9909,7 +9921,7 @@ std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
             add_error("Expected identifier after 'as'");
             return nullptr;
         }
-        local_name = current_token().get_value();
+        local_name = token_text(current_token());
         advance();
     }
 
@@ -9946,12 +9958,12 @@ std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
         return nullptr;
     }
 
-    std::string local_name = current_token().get_value();
+    std::string local_name = token_string(current_token());
     if (local_is_string && !check_module_export_name(local_name)) return nullptr;
     std::string exported_name = local_name;
     advance();
 
-    if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
+    if (match(TokenType::IDENTIFIER) && token_text(current_token()) == "as") {
         if (current_token().has_escaped_keyword()) {
             add_error("SyntaxError: 'as' cannot use unicode escape sequences in export specifier");
             return nullptr;
@@ -9964,7 +9976,7 @@ std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
             add_error("Expected identifier after 'as' in export specifier");
             return nullptr;
         }
-        exported_name = current_token().get_value();
+        exported_name = token_text(current_token());
         if (exp_is_string && !check_module_export_name(exported_name)) return nullptr;
         advance();
     }
@@ -10100,7 +10112,7 @@ std::unique_ptr<ASTNode> Parser::parse_jsx_element() {
         return nullptr;
     }
     
-    std::string tag_name = current_token().get_value();
+    std::string tag_name = token_string(current_token());
     advance();
     
     std::vector<std::unique_ptr<ASTNode>> attributes;
@@ -10165,8 +10177,8 @@ std::unique_ptr<ASTNode> Parser::parse_jsx_element() {
     }
     
     if (current_token().get_type() != TokenType::IDENTIFIER ||
-        current_token().get_value() != tag_name) {
-        add_error("JSX closing tag '" + current_token().get_value() + 
+        token_text(current_token()) != tag_name) {
+        add_error("JSX closing tag '" + token_string(current_token()) + 
                   "' does not match opening tag '" + tag_name + "'");
         return nullptr;
     }
@@ -10189,7 +10201,7 @@ std::unique_ptr<ASTNode> Parser::parse_jsx_text() {
     while (current_token().get_type() != TokenType::LESS_THAN &&
            current_token().get_type() != TokenType::LEFT_BRACE &&
            current_token().get_type() != TokenType::EOF_TOKEN) {
-        text += current_token().get_value();
+        text += token_text(current_token());
         if (current_token().get_type() == TokenType::WHITESPACE ||
             current_token().get_type() == TokenType::NEWLINE) {
             text += " ";
@@ -10235,7 +10247,7 @@ std::unique_ptr<ASTNode> Parser::parse_jsx_attribute() {
         return nullptr;
     }
     
-    std::string attr_name = current_token().get_value();
+    std::string attr_name = token_string(current_token());
     advance();
     
     std::unique_ptr<ASTNode> value = nullptr;
@@ -10270,7 +10282,7 @@ void Parser::check_for_use_strict_directive() {
     };
     size_t idx = skip_trivia(current_token_index_);
     while (idx < tokens_.size() && tokens_[idx].get_type() == TokenType::STRING) {
-        std::string str_value = tokens_[idx].get_value();
+        std::string str_value = token_string(tokens_[idx]);
         idx = skip_trivia(idx + 1);
         if (idx < tokens_.size() && tokens_[idx].get_type() == TokenType::SEMICOLON) {
             idx = skip_trivia(idx + 1);
@@ -10341,12 +10353,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
             }
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-            const std::string& pn = current_token().get_value();
+            std::string_view pn = token_text(current_token());
             if (options_.strict_mode && (pn == "eval" || pn == "arguments")) {
-                add_error("SyntaxError: '" + pn + "' cannot be used as parameter name in strict mode");
+                add_error("SyntaxError: '" + std::string(pn) + "' cannot be used as parameter name in strict mode");
                 return nullptr;
             }
-            param_name = std::make_unique<Identifier>(pn,
+            param_name = std::make_unique<Identifier>(std::string(pn),
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -10497,7 +10509,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
         return nullptr;
     }
 
-    auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+    auto param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                    current_token().get_start(), current_token().get_end());
     Position param_end = current_token().get_end();
     advance();

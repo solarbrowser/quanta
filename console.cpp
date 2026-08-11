@@ -160,7 +160,7 @@ public:
                 if (token.get_type() == TokenType::EOF_TOKEN) break;
                 
                 std::cout << "  " << i << ": " << YELLOW << token.type_name() << RESET 
-                         << " '" << token.get_value() << "'\n";
+                         << " '" << tokens.text_of(token) << "'\n";
             }
         } catch (const std::exception& e) {
             std::cout << RED << "Lexer error: " << e.what() << RESET << "\n";

@@ -78,7 +78,8 @@ const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
 
 
 Lexer::Lexer(const std::string& source)
-    : source_(source), position_(0), current_position_(1, 1, 0), last_token_type_(TokenType::EOF_TOKEN) {
+    : source_ref_(std::make_shared<const std::string>(source)), position_(0),
+      current_position_(1, 1, 0), last_token_type_(TokenType::EOF_TOKEN) {
     options_.skip_whitespace = true;
     options_.skip_comments = true;
     options_.track_positions = true;
@@ -89,25 +90,26 @@ Lexer::Lexer(const std::string& source)
     // this long would wrap an offset and silently mis-locate every token past
     // the boundary. Say so instead: nothing that reaches a lexer is this big,
     // and the check is once per lexer rather than once per token.
-    if (source_.size() > 0xFFFFFFFFull) {
+    if (source.size() > 0xFFFFFFFFull) {
         add_error("SyntaxError: source exceeds the maximum supported length");
     }
 
-    if (source_.size() >= 3 && 
-        static_cast<unsigned char>(source_[0]) == 0xEF &&
-        static_cast<unsigned char>(source_[1]) == 0xBB &&
-        static_cast<unsigned char>(source_[2]) == 0xBF) {
+    if (source.size() >= 3 &&
+        static_cast<unsigned char>(source[0]) == 0xEF &&
+        static_cast<unsigned char>(source[1]) == 0xBB &&
+        static_cast<unsigned char>(source[2]) == 0xBF) {
         position_ = 3;
         current_position_.offset = 3;
     }
 }
 
 Lexer::Lexer(const std::string& source, const LexerOptions& options)
-    : source_(source), position_(0), current_position_(1, 1, 0), options_(options), last_token_type_(TokenType::EOF_TOKEN) {
-    if (source_.size() >= 3 && 
-        static_cast<unsigned char>(source_[0]) == 0xEF &&
-        static_cast<unsigned char>(source_[1]) == 0xBB &&
-        static_cast<unsigned char>(source_[2]) == 0xBF) {
+    : source_ref_(std::make_shared<const std::string>(source)), position_(0),
+      current_position_(1, 1, 0), options_(options), last_token_type_(TokenType::EOF_TOKEN) {
+    if (source.size() >= 3 &&
+        static_cast<unsigned char>(source[0]) == 0xEF &&
+        static_cast<unsigned char>(source[1]) == 0xBB &&
+        static_cast<unsigned char>(source[2]) == 0xBF) {
         position_ = 3;
         current_position_.offset = 3;
     }
@@ -127,9 +129,9 @@ TokenSequence Lexer::tokenize() {
             last_token_type_ = token.get_type();
         }
 
-        if (!strict_mode_detected && tokens.empty() && 
-            token.get_type() == TokenType::STRING && 
-            token.get_value() == "use strict") {
+        if (!strict_mode_detected && tokens.empty() &&
+            token.get_type() == TokenType::STRING &&
+            text_of(token) == "use strict") {
             options_.strict_mode = true;
             strict_mode_detected = true;
         }
@@ -150,7 +152,7 @@ TokenSequence Lexer::tokenize() {
         tokens.emplace_back(TokenType::EOF_TOKEN, current_position_);
     }
     
-    return TokenSequence(std::move(tokens));
+    return TokenSequence(std::move(tokens), source_ref_, std::move(owned_values_));
 }
 
 Token Lexer::next_token() {
@@ -162,7 +164,7 @@ Token Lexer::next_token() {
     char ch = current_char();
 
     // Hashbang comment: #! at the very beginning of the source (offset 0)
-    if (ch == '#' && position_ == 0 && position_ + 1 < source_.size() && source_[1] == '!') {
+    if (ch == '#' && position_ == 0 && position_ + 1 < source().size() && source()[1] == '!') {
         while (!at_end() && !is_line_terminator(current_char())) advance();
         return create_token(TokenType::COMMENT, start);
     }
@@ -245,15 +247,15 @@ Token Lexer::next_token() {
 }
 
 void Lexer::reset(size_t position) {
-    position_ = std::min(position, source_.length());
+    position_ = std::min(position, source().length());
     current_position_ = Position(1, 1, position_);
     
     for (size_t i = 0; i < position_; ++i) {
-        if (source_[i] == '\n') {
+        if (source()[i] == '\n') {
             current_position_.line++;
             current_position_.column = 1;
-        } else if (source_[i] == '\r') {
-            if (i + 1 < source_.length() && source_[i + 1] == '\n') {
+        } else if (source()[i] == '\r') {
+            if (i + 1 < source().length() && source()[i + 1] == '\n') {
                 continue;
             } else {
                 current_position_.line++;
@@ -267,19 +269,19 @@ void Lexer::reset(size_t position) {
 
 char Lexer::current_char() const {
     if (at_end()) return '\0';
-    return source_[position_];
+    return source()[position_];
 }
 
 char Lexer::peek_char(size_t offset) const {
     size_t peek_pos = position_ + offset;
-    if (peek_pos >= source_.length()) return '\0';
-    return source_[peek_pos];
+    if (peek_pos >= source().length()) return '\0';
+    return source()[peek_pos];
 }
 
 char Lexer::advance() {
     if (at_end()) return '\0';
     
-    char ch = source_[position_++];
+    char ch = source()[position_++];
     advance_position(ch);
     return ch;
 }
@@ -307,7 +309,7 @@ void Lexer::advance_position(char ch) {
         current_position_.line++;
         current_position_.column = 1;
     } else if (ch == '\r') {
-        if (position_ < source_.length() && source_[position_] == '\n') {
+        if (position_ < source().length() && source()[position_] == '\n') {
             current_position_.column++;
         } else {
             current_position_.line++;
@@ -319,15 +321,55 @@ void Lexer::advance_position(char ch) {
 }
 
 Token Lexer::create_token(TokenType type, const Position& start) const {
-    return Token(type, start);
+    return Token(type, start, current_position_);
 }
 
-Token Lexer::create_token(TokenType type, const std::string& value, const Position& start) const {
-    return Token(type, value, start, current_position_);
+// The slack a token's own delimiters can put between its span and its text:
+// two quotes around a string, `/*` and `*/` around a block comment, the `n`
+// after a BigInt. Bounding the search this way keeps it a fixed number of
+// comparisons per token, and anything outside the bound simply takes the side
+// table -- a memory choice, never a correctness one, because the span is only
+// used when its bytes are equal to the value the lexer computed.
+static constexpr size_t kMaxDelimiterSlack = 4;
+
+Token Lexer::create_token(TokenType type, const std::string& value, const Position& start) {
+    Token token(type, start, current_position_);
+    if (value.empty()) return token;
+
+    const std::string& src = source();
+    uint32_t span_start = start.offset;
+    uint32_t span_end = current_position_.offset;
+    if (span_end > span_start && span_end <= src.size()) {
+        size_t span_length = span_end - span_start;
+        if (value.size() <= span_length && span_length - value.size() <= kMaxDelimiterSlack) {
+            std::string_view span(src.data() + span_start, span_length);
+            size_t at = span.find(value);
+            if (at != std::string_view::npos) {
+                token.set_source_value(span_start + static_cast<uint32_t>(at),
+                                       static_cast<uint32_t>(value.size()));
+                return token;
+            }
+        }
+    }
+
+    owned_values_.push_back(value);
+    token.set_owned_value(static_cast<uint32_t>(owned_values_.size() - 1));
+    return token;
 }
 
 Token Lexer::create_token(TokenType type, double numeric_value, const Position& start) const {
-    return Token(type, numeric_value, start, current_position_);
+    Token token(type, start, current_position_);
+    token.set_numeric_value(numeric_value);
+    // A numeric literal's text is the literal as written. It used to be the
+    // double formatted back out, which is a different string for anything but
+    // a plain decimal, and nothing reads it except the "unexpected token"
+    // message -- which is better off quoting what the program actually says.
+    token.set_source_value(start.offset, current_position_.offset - start.offset);
+    return token;
+}
+
+std::string_view Lexer::text_of(const Token& token) const {
+    return token_value_text(token, source(), owned_values_);
 }
 
 static uint32_t decode_utf8_at(const std::string& src, size_t pos);
@@ -522,7 +564,7 @@ Token Lexer::read_identifier() {
         } else {
             unsigned char uch = static_cast<unsigned char>(current_char());
             if (uch >= 0xC0) {
-                uint32_t cp = decode_utf8_at(source_, position_);
+                uint32_t cp = decode_utf8_at(source(), position_);
                 if (is_invalid_id_continue_cp(cp)) {
                     add_error("Invalid character in identifier");
                     return create_token(TokenType::INVALID, value, start);
@@ -633,7 +675,7 @@ Token Lexer::read_number() {
     if (!at_end() && current_char() == 'n') {
         advance();
         size_t length = position_ - start_pos - 1;
-        std::string bigint_str = source_.substr(start_pos, length);
+        std::string bigint_str = source().substr(start_pos, length);
         // BigInt cannot have exponent or decimal point (only for decimal BigInts; hex/bin/oct allow A-F)
         bool is_hex_bigint = bigint_str.size() >= 2 && bigint_str[0] == '0' &&
                              (bigint_str[1] == 'x' || bigint_str[1] == 'X');
@@ -671,9 +713,9 @@ Token Lexer::read_string(char quote) {
     // Needed to reject 'use strict' as a directive prologue.
     size_t scan_pos = position_;
     bool has_escapes = false;
-    while (scan_pos < source_.size() && source_[scan_pos] != quote) {
-        if (source_[scan_pos] == '\n' || source_[scan_pos] == '\r') break;
-        if (source_[scan_pos] == '\\') { has_escapes = true; break; }
+    while (scan_pos < source().size() && source()[scan_pos] != quote) {
+        if (source()[scan_pos] == '\n' || source()[scan_pos] == '\r') break;
+        if (source()[scan_pos] == '\\') { has_escapes = true; break; }
         scan_pos++;
     }
 
@@ -731,7 +773,7 @@ Token Lexer::read_template_literal() {
             size_t raw_start = position_;
             size_t error_count_before = errors_.size();
             std::string cooked_char = parse_escape_sequence(true);
-            std::string raw_piece = source_.substr(raw_start, position_ - raw_start);
+            std::string raw_piece = source().substr(raw_start, position_ - raw_start);
             // TRV normalizes CR/CRLF to LF even inside a LineContinuation escape's raw text.
             std::string normalized_piece;
             for (size_t i = 0; i < raw_piece.size(); i++) {
@@ -826,10 +868,10 @@ Token Lexer::read_multi_line_comment() {
         // U+2028 LINE SEPARATOR (E2 80 A8) and U+2029 PARAGRAPH SEPARATOR (E2 80 A9)
         // must be treated as line terminators
         if ((unsigned char)current_char() == 0xE2 &&
-            position_ + 2 < source_.length() &&
-            (unsigned char)source_[position_ + 1] == 0x80 &&
-            ((unsigned char)source_[position_ + 2] == 0xA8 ||
-             (unsigned char)source_[position_ + 2] == 0xA9)) {
+            position_ + 2 < source().length() &&
+            (unsigned char)source()[position_ + 1] == 0x80 &&
+            ((unsigned char)source()[position_ + 2] == 0xA8 ||
+             (unsigned char)source()[position_ + 2] == 0xA9)) {
             value += advance(); value += advance(); value += advance();
             current_position_.line++;
             current_position_.column = 1;
@@ -1017,7 +1059,7 @@ Token Lexer::read_operator() {
             
         case '?':
             advance();
-            if (current_char() == '.' && (position_ + 1 >= source_.size() || !std::isdigit((unsigned char)source_[position_ + 1]))) {
+            if (current_char() == '.' && (position_ + 1 >= source().size() || !std::isdigit((unsigned char)source()[position_ + 1]))) {
                 advance();
                 return create_token(TokenType::OPTIONAL_CHAINING, start);
             } else if (current_char() == '?') {
@@ -1112,7 +1154,7 @@ bool Lexer::is_identifier_start(char ch) const {
     if (uch >= 0x80) {
         if (utf8_whitespace_bytes() > 0) return false;
         if (utf8_line_terminator_bytes() > 0) return false;
-        uint32_t cp = decode_utf8_at(source_, position_);
+        uint32_t cp = decode_utf8_at(source(), position_);
         return is_unicode_id_start(cp);
     }
     return false;
@@ -1284,43 +1326,43 @@ bool Lexer::is_regex_context() const {
 }
 
 int Lexer::utf8_whitespace_bytes() const {
-    if (position_ >= source_.length()) return 0;
-    unsigned char b1 = static_cast<unsigned char>(source_[position_]);
-    if (b1 == 0xC2 && position_ + 1 < source_.length()) {
-        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
+    if (position_ >= source().length()) return 0;
+    unsigned char b1 = static_cast<unsigned char>(source()[position_]);
+    if (b1 == 0xC2 && position_ + 1 < source().length()) {
+        unsigned char b2 = static_cast<unsigned char>(source()[position_ + 1]);
         if (b2 == 0xA0) return 2;
     }
-    if (b1 == 0xE2 && position_ + 2 < source_.length()) {
-        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
-        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+    if (b1 == 0xE2 && position_ + 2 < source().length()) {
+        unsigned char b2 = static_cast<unsigned char>(source()[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source()[position_ + 2]);
         if (b2 == 0x80 && b3 >= 0x80 && b3 <= 0x8B) return 3;
         if (b2 == 0x80 && b3 == 0xAF) return 3;
         if (b2 == 0x81 && b3 == 0x9F) return 3;
     }
-    if (b1 == 0xE1 && position_ + 2 < source_.length()) {
-        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
-        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+    if (b1 == 0xE1 && position_ + 2 < source().length()) {
+        unsigned char b2 = static_cast<unsigned char>(source()[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source()[position_ + 2]);
         if (b2 == 0x9A && b3 == 0x80) return 3; // U+1680 OGHAM SPACE MARK
     }
-    if (b1 == 0xE3 && position_ + 2 < source_.length()) {
-        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
-        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+    if (b1 == 0xE3 && position_ + 2 < source().length()) {
+        unsigned char b2 = static_cast<unsigned char>(source()[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source()[position_ + 2]);
         if (b2 == 0x80 && b3 == 0x80) return 3;
     }
-    if (b1 == 0xEF && position_ + 2 < source_.length()) {
-        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
-        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+    if (b1 == 0xEF && position_ + 2 < source().length()) {
+        unsigned char b2 = static_cast<unsigned char>(source()[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source()[position_ + 2]);
         if (b2 == 0xBB && b3 == 0xBF) return 3;
     }
     return 0;
 }
 
 int Lexer::utf8_line_terminator_bytes() const {
-    if (position_ >= source_.length()) return 0;
-    unsigned char b1 = static_cast<unsigned char>(source_[position_]);
-    if (b1 == 0xE2 && position_ + 2 < source_.length()) {
-        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
-        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+    if (position_ >= source().length()) return 0;
+    unsigned char b1 = static_cast<unsigned char>(source()[position_]);
+    if (b1 == 0xE2 && position_ + 2 < source().length()) {
+        unsigned char b2 = static_cast<unsigned char>(source()[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source()[position_ + 2]);
         if (b2 == 0x80 && (b3 == 0xA8 || b3 == 0xA9)) return 3;
     }
     return 0;
@@ -1521,8 +1563,8 @@ std::string Lexer::parse_escape_sequence(bool in_template) {
     }
     // U+2028 LINE SEPARATOR (E2 80 A8) and U+2029 PARAGRAPH SEPARATOR (E2 80 A9)
     if ((unsigned char)ch == 0xE2 && remaining() >= 3) {
-        unsigned char b2 = (unsigned char)source_[position_ + 1];
-        unsigned char b3 = (unsigned char)source_[position_ + 2];
+        unsigned char b2 = (unsigned char)source()[position_ + 1];
+        unsigned char b3 = (unsigned char)source()[position_ + 2];
         if (b2 == 0x80 && (b3 == 0xA8 || b3 == 0xA9)) {
             advance(); advance(); advance();
             current_position_.line++;
@@ -1809,11 +1851,11 @@ bool Lexer::can_be_regex_literal() const {
     if (position_ == 0) return true;
 
     size_t pos = position_ - 1;
-    while (pos > 0 && (is_whitespace(source_[pos]) || is_line_terminator(source_[pos]))) {
+    while (pos > 0 && (is_whitespace(source()[pos]) || is_line_terminator(source()[pos]))) {
         pos--;
     }
 
-    char prev_char = source_[pos];
+    char prev_char = source()[pos];
 
     // All preceding characters were whitespace -- start of source, regex is valid
     if (is_whitespace(prev_char) || is_line_terminator(prev_char)) {
@@ -1858,9 +1900,9 @@ Token Lexer::read_regex() {
                     return create_token(TokenType::INVALID, start);
                 }
                 // Check for U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR (UTF-8: E2 80 A8/A9)
-                if ((unsigned char)next == 0xE2 && position_ + 2 < source_.size()) {
-                    unsigned char b1 = (unsigned char)source_[position_ + 1];
-                    unsigned char b2 = (unsigned char)source_[position_ + 2];
+                if ((unsigned char)next == 0xE2 && position_ + 2 < source().size()) {
+                    unsigned char b1 = (unsigned char)source()[position_ + 1];
+                    unsigned char b2 = (unsigned char)source()[position_ + 2];
                     if (b1 == 0x80 && (b2 == 0xA8 || b2 == 0xA9)) {
                         add_error("SyntaxError: Invalid regular expression: line terminator in backslash sequence");
                         return create_token(TokenType::INVALID, start);
@@ -1872,9 +1914,9 @@ Token Lexer::read_regex() {
         } else if (ch == '\n' || ch == '\r') {
             add_error("Unterminated regex literal");
             return create_token(TokenType::INVALID, start);
-        } else if ((unsigned char)ch == 0xE2 && position_ + 2 < source_.size()) {
-            unsigned char b1 = (unsigned char)source_[position_ + 1];
-            unsigned char b2 = (unsigned char)source_[position_ + 2];
+        } else if ((unsigned char)ch == 0xE2 && position_ + 2 < source().size()) {
+            unsigned char b1 = (unsigned char)source()[position_ + 1];
+            unsigned char b2 = (unsigned char)source()[position_ + 2];
             if (b1 == 0x80 && (b2 == 0xA8 || b2 == 0xA9)) {
                 add_error("SyntaxError: Invalid regular expression: line terminator in pattern");
                 return create_token(TokenType::INVALID, start);
@@ -1927,7 +1969,7 @@ bool Lexer::is_at_line_start() const {
     size_t check_pos = position_;
     while (check_pos > 0) {
         check_pos--;
-        char ch = source_[check_pos];
+        char ch = source()[check_pos];
         if (ch == '\n' || ch == '\r') {
             return true;  
         }

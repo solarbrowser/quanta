@@ -184,6 +184,14 @@ public:
     std::unique_ptr<ASTNode> parse_undefined_literal();
     std::unique_ptr<ASTNode> parse_identifier();
     
+    // A token records where its text is, not the text itself, so reading it
+    // goes through the sequence that owns the source. The result borrows from
+    // that source and stays valid for as long as this parser does.
+    std::string_view token_text(const Token& token) const { return tokens_.text_of(token); }
+    // Same text, copied, for the callers that have to own it -- a name that
+    // goes into an AST node, a key that outlives the parse.
+    std::string token_string(const Token& token) const { return std::string(token_text(token)); }
+
     const Token& current_token() const;
     const Token& peek_token(size_t offset = 1) const;
     const Token& previous_token() const;

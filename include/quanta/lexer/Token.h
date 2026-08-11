@@ -8,7 +8,9 @@
 #define QUANTA_TOKEN_H
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Quanta {
@@ -172,37 +174,68 @@ struct Position {
     std::string to_string() const;
 };
 
+// A token does not carry its own text. Almost every token's text is bytes that
+// are already in the source -- an identifier is its span, a string literal is
+// its span minus the quotes -- so a token records where its text is instead of
+// holding a private copy of it. The few tokens whose text is not in the source
+// (a cooked string literal with escapes, a template's cooked/raw pair) keep it
+// in a side table owned by the TokenSequence, and the same two fields address
+// that table instead. Reading the text therefore needs the sequence the token
+// came from: see TokenSequence::text_of.
 class Token {
 private:
-    TokenType type_;
-    std::string value_;
+    double numeric_value_;
     Position start_;
     Position end_;
-    double numeric_value_;
-    bool has_numeric_value_;
-    bool has_escaped_keyword_;
-    bool string_has_escapes_ = false;
-    bool string_has_legacy_octal_ = false;
+    // Byte range in the source, or (index, 0) into the sequence's side table
+    // when kValueIsOwned is set.
+    uint32_t value_off_;
+    uint32_t value_len_;
+    TokenType type_;
+    uint8_t flags_;
+
+    enum Flag : uint8_t {
+        kHasNumericValue     = 1u << 0,
+        kEscapedKeyword      = 1u << 1,
+        kStringHasEscapes    = 1u << 2,
+        kStringHasLegacyOctal = 1u << 3,
+        kValueIsOwned        = 1u << 4
+    };
+
+    void set_flag(Flag f, bool on) { flags_ = static_cast<uint8_t>(on ? (flags_ | f) : (flags_ & ~f)); }
 
 public:
     Token();
     Token(TokenType type, const Position& pos);
-    Token(TokenType type, const std::string& value, const Position& start, const Position& end);
-    Token(TokenType type, double numeric_value, const Position& start, const Position& end);
-    
+    Token(TokenType type, const Position& start, const Position& end);
+
     TokenType get_type() const { return type_; }
-    const std::string& get_value() const { return value_; }
     const Position& get_start() const { return start_; }
     const Position& get_end() const { return end_; }
-    
+
+    uint32_t value_offset() const { return value_off_; }
+    uint32_t value_length() const { return value_len_; }
+    bool value_is_owned() const { return (flags_ & kValueIsOwned) != 0; }
+    void set_source_value(uint32_t offset, uint32_t length) {
+        value_off_ = offset;
+        value_len_ = length;
+        set_flag(kValueIsOwned, false);
+    }
+    void set_owned_value(uint32_t index) {
+        value_off_ = index;
+        value_len_ = 0;
+        set_flag(kValueIsOwned, true);
+    }
+
     double get_numeric_value() const { return numeric_value_; }
-    bool has_numeric_value() const { return has_numeric_value_; }
-    bool has_escaped_keyword() const { return has_escaped_keyword_; }
-    void set_escaped_keyword(bool v) { has_escaped_keyword_ = v; }
-    bool string_has_escapes() const { return string_has_escapes_; }
-    void set_string_has_escapes(bool v) { string_has_escapes_ = v; }
-    bool string_has_legacy_octal() const { return string_has_legacy_octal_; }
-    void set_string_has_legacy_octal(bool v) { string_has_legacy_octal_ = v; }
+    bool has_numeric_value() const { return (flags_ & kHasNumericValue) != 0; }
+    void set_numeric_value(double v) { numeric_value_ = v; set_flag(kHasNumericValue, true); }
+    bool has_escaped_keyword() const { return (flags_ & kEscapedKeyword) != 0; }
+    void set_escaped_keyword(bool v) { set_flag(kEscapedKeyword, v); }
+    bool string_has_escapes() const { return (flags_ & kStringHasEscapes) != 0; }
+    void set_string_has_escapes(bool v) { set_flag(kStringHasEscapes, v); }
+    bool string_has_legacy_octal() const { return (flags_ & kStringHasLegacyOctal) != 0; }
+    void set_string_has_legacy_octal(bool v) { set_flag(kStringHasLegacyOctal, v); }
 
     bool is_keyword() const;
     bool is_operator() const;
@@ -225,15 +258,38 @@ public:
 };
 
 
+// The one place that knows how a token's two fields turn back into text. The
+// lexer needs it while it is still building the sequence; TokenSequence needs
+// it afterwards.
+std::string_view token_value_text(const Token& token, const std::string& source,
+                                  const std::vector<std::string>& owned_values);
+
+// Owns the tokens together with the text they address: the source they were
+// lexed from, and the side table of the few values that had to be rewritten.
+// Holding the source here rather than beside the sequence is what makes an
+// offset safe to store in a token -- a token cannot outlive its text, because
+// the thing that holds the token holds the text as well.
 class TokenSequence {
 private:
     std::vector<Token> tokens_;
+    std::shared_ptr<const std::string> source_;
+    std::vector<std::string> owned_values_;
     size_t position_;
 
 public:
     TokenSequence();
-    explicit TokenSequence(std::vector<Token> tokens);
-    
+    // Only the lexer builds a populated sequence, and it always has all three
+    // parts: there is deliberately no way to construct tokens without the text
+    // they address.
+    TokenSequence(std::vector<Token> tokens,
+                  std::shared_ptr<const std::string> source,
+                  std::vector<std::string> owned_values);
+
+    // The text of a token, which is either a slice of the source or, for the
+    // handful the lexer had to rewrite, an entry in the side table.
+    std::string_view text_of(const Token& token) const;
+    const std::string& source() const;
+
     const Token& current() const;
     const Token& peek(size_t offset = 1) const;
     const Token& previous() const;

@@ -26,14 +26,22 @@ public:
     };
 
 private:
-    std::string source_;
+    // Held by shared pointer so the token sequence this lexer produces can keep
+    // the same bytes alive: its tokens address the source by offset, so they
+    // are only readable for as long as it exists.
+    std::shared_ptr<const std::string> source_ref_;
     size_t position_;
     Position current_position_;
     LexerOptions options_;
     std::vector<std::string> errors_;
+    // Values that are not a slice of the source -- cooked string literals with
+    // escapes, template literals, identifiers written with unicode escapes.
+    std::vector<std::string> owned_values_;
     TokenType last_token_type_;
     const std::vector<Token>* tokens_so_far_ = nullptr;
     bool current_string_has_legacy_octal_ = false;
+
+    const std::string& source() const { return *source_ref_; }
 
     static const std::unordered_map<std::string, TokenType> keywords_;
     
@@ -52,8 +60,12 @@ public:
     const std::vector<std::string>& get_errors() const { return errors_; }
     bool has_errors() const { return !errors_.empty(); }
     
-    bool at_end() const { return position_ >= source_.length(); }
-    size_t remaining() const { return source_.length() - position_; }
+    bool at_end() const { return position_ >= source().length(); }
+    size_t remaining() const { return source().length() - position_; }
+
+    // The text of a token this lexer produced, resolved the same way
+    // TokenSequence::text_of resolves it once the sequence is built.
+    std::string_view text_of(const Token& token) const;
 
 private:
     char current_char() const;
@@ -63,7 +75,7 @@ private:
     void advance_position(char ch);
     
     Token create_token(TokenType type, const Position& start) const;
-    Token create_token(TokenType type, const std::string& value, const Position& start) const;
+    Token create_token(TokenType type, const std::string& value, const Position& start);
     Token create_token(TokenType type, double numeric_value, const Position& start) const;
     
     Token read_identifier();

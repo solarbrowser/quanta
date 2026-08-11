@@ -20,22 +20,16 @@ std::string Position::to_string() const {
 }
 
 
-Token::Token() : type_(TokenType::EOF_TOKEN), numeric_value_(0), has_numeric_value_(false), has_escaped_keyword_(false) {
+Token::Token()
+    : numeric_value_(0), value_off_(0), value_len_(0), type_(TokenType::EOF_TOKEN), flags_(0) {
 }
 
 Token::Token(TokenType type, const Position& pos)
-    : type_(type), start_(pos), end_(pos), numeric_value_(0), has_numeric_value_(false), has_escaped_keyword_(false) {
+    : numeric_value_(0), start_(pos), end_(pos), value_off_(0), value_len_(0), type_(type), flags_(0) {
 }
 
-Token::Token(TokenType type, const std::string& value, const Position& start, const Position& end)
-    : type_(type), value_(value), start_(start), end_(end), numeric_value_(0), has_numeric_value_(false), has_escaped_keyword_(false) {
-}
-
-Token::Token(TokenType type, double numeric_value, const Position& start, const Position& end)
-    : type_(type), start_(start), end_(end), numeric_value_(numeric_value), has_numeric_value_(true), has_escaped_keyword_(false) {
-    std::ostringstream oss;
-    oss << numeric_value;
-    value_ = oss.str();
+Token::Token(TokenType type, const Position& start, const Position& end)
+    : numeric_value_(0), start_(start), end_(end), value_off_(0), value_len_(0), type_(type), flags_(0) {
 }
 
 bool Token::is_keyword() const {
@@ -62,7 +56,7 @@ bool Token::is_punctuation() const {
 
 std::string Token::to_string() const {
     std::ostringstream oss;
-    oss << type_name() << "('" << value_ << "' at " << start_.to_string() << ")";
+    oss << type_name() << "(at " << start_.to_string() << ")";
     return oss.str();
 }
 
@@ -301,8 +295,34 @@ bool Token::is_right_associative(TokenType type) {
 TokenSequence::TokenSequence() : position_(0) {
 }
 
-TokenSequence::TokenSequence(std::vector<Token> tokens) 
-    : tokens_(std::move(tokens)), position_(0) {
+TokenSequence::TokenSequence(std::vector<Token> tokens,
+                             std::shared_ptr<const std::string> source,
+                             std::vector<std::string> owned_values)
+    : tokens_(std::move(tokens)), source_(std::move(source)),
+      owned_values_(std::move(owned_values)), position_(0) {
+}
+
+const std::string& TokenSequence::source() const {
+    static const std::string empty;
+    return source_ ? *source_ : empty;
+}
+
+std::string_view token_value_text(const Token& token, const std::string& source,
+                                  const std::vector<std::string>& owned_values) {
+    if (token.value_is_owned()) {
+        size_t index = token.value_offset();
+        if (index >= owned_values.size()) return std::string_view();
+        return std::string_view(owned_values[index]);
+    }
+    if (token.value_length() == 0) return std::string_view();
+    size_t offset = token.value_offset();
+    size_t length = token.value_length();
+    if (offset + length > source.size()) return std::string_view();
+    return std::string_view(source.data() + offset, length);
+}
+
+std::string_view TokenSequence::text_of(const Token& token) const {
+    return token_value_text(token, source(), owned_values_);
 }
 
 const Token& TokenSequence::current() const {
