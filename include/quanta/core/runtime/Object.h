@@ -303,6 +303,16 @@ public:
     // discipline).
     void trace(Visitor& v);
 
+    // Where this object's traced storage lives, for the collector's mark
+    // pipeline to request the cache line ahead of time (Collector.cpp,
+    // MarkVisitor::step). Everything trace() walks -- elements, shape slots,
+    // the butterfly header -- sits in that block, reached by a load out of
+    // this cell, so the miss on it is dependent on the miss on the cell and
+    // cannot be hidden by prefetching the cell alone. Returned as an opaque
+    // address on purpose: it is a prefetch hint and is never dereferenced
+    // through this accessor.
+    const void* gc_storage_hint() const { return butterfly_; }
+
     friend class Function;
     Object(const Object& other) = delete;
     Object& operator=(const Object& other) = delete;

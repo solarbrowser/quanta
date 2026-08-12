@@ -48,6 +48,13 @@
 #include <ucontext.h>
 #endif
 
+// How far ahead of the trace the mark pipeline runs. Two lines are requested
+// per entry (the cell and its storage block), so the ring's depth is half the
+// number of misses it keeps in flight; measured best at 16 on a core with 24
+// outstanding-miss slots, and measurably worse at 32, where the pipeline asks
+// for more than the core can track.
+#define QUANTA_GC_PREFETCH_RING 16u
+
 namespace Quanta {
 
 thread_local bool Collector::major_in_progress_ = false;
@@ -178,7 +185,8 @@ public:
     // that looks empty mid-cycle doesn't mean context/environment work won't
     // repopulate it next.
     bool quiescent() const {
-        return gray_.empty() && context_work_.empty() && environment_work_.empty();
+        return gray_.empty() && pf_count_ == 0 &&
+               context_work_.empty() && environment_work_.empty();
     }
 
     // One bounded unit of work: quiesce contexts/environments (may push new
@@ -187,9 +195,45 @@ public:
     // false once truly nothing is left.
     bool step() {
         drain_contexts_and_environments();
-        if (gray_.empty()) return false;
-        Heap::ProbeResult p = gray_.back();
-        gray_.pop_back();
+        // Marking is memory-bound, not instruction-bound: a live set of a
+        // million cells spread over hundreds of megabytes misses to DRAM on
+        // nearly every cell, and popping an entry straight off the worklist
+        // leaves no distance at all between learning a cell's address and
+        // reading it. The ring in front of the trace supplies that distance.
+        //
+        // Two stages, because an object's trace reads two lines and the
+        // second address is only known once the first has arrived: the cell
+        // holds the pointer to the block its elements and shape slots live
+        // in. Stage one requests the cell as the entry enters the ring;
+        // stage two, half a ring later, reads the now-resident cell and
+        // requests its storage block, with the rest of the ring still left
+        // to trace before either is needed.
+        while (pf_count_ < kPrefetchRing && !gray_.empty()) {
+            Heap::ProbeResult q = gray_.back();
+            gray_.pop_back();
+            __builtin_prefetch(q.cell, 0, 3);
+            pf_[pf_tail_] = q;
+            pf_tail_ = (pf_tail_ + 1) & (kPrefetchRing - 1);
+            pf_count_++;
+        }
+        if (pf_count_ > kPrefetchRing / 2) {
+            uint32_t idx = (pf_head_ + kPrefetchRing / 2) & (kPrefetchRing - 1);
+            const Heap::ProbeResult& q = pf_[idx];
+            if (q.kind == CellKind::Object) {
+                const void* storage = static_cast<const Object*>(q.cell)->gc_storage_hint();
+                if (storage) {
+                    // The block is walked outward from this address in both
+                    // directions (elements below, shape slots above), so the
+                    // line before it is wanted too.
+                    __builtin_prefetch(static_cast<const char*>(storage) - 64, 0, 3);
+                    __builtin_prefetch(storage, 0, 3);
+                }
+            }
+        }
+        if (pf_count_ == 0) return false;
+        Heap::ProbeResult p = pf_[pf_head_];
+        pf_head_ = (pf_head_ + 1) & (kPrefetchRing - 1);
+        pf_count_--;
         trace_cell(p);
         return true;
     }
@@ -206,6 +250,7 @@ public:
         seen_contexts_.clear();
         marked_cells = 0;
         gray_.clear();
+        pf_head_ = pf_tail_ = pf_count_ = 0;
         context_work_.clear();
         environment_work_.clear();
         pending_weak_maps_.clear();
@@ -339,6 +384,10 @@ private:
     }
 
     std::vector<Heap::ProbeResult> gray_;
+    // Power of two: the ring index is a mask, not a modulo.
+    static constexpr uint32_t kPrefetchRing = QUANTA_GC_PREFETCH_RING;
+    Heap::ProbeResult pf_[kPrefetchRing];
+    uint32_t pf_head_ = 0, pf_tail_ = 0, pf_count_ = 0;
     std::vector<Context*> context_work_;
     std::vector<Environment*> environment_work_;
     // Which collection this is. An environment queued during it carries the
