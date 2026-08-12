@@ -378,7 +378,18 @@ struct BytecodeChunk {
     // BytecodeChunk&, so (unlike the old std::vector) no `mutable` is needed.
     FixedArray<uint8_t> code;
     FixedArray<Value> constants;   // GC-visible via Function::trace()
-    FixedArray<std::string> names; // identifier names for LdaLookup/Call diagnostics
+    // Identifier names carried by name-bearing opcodes. Interned once at
+    // compile end (Shape::intern, the same pool Shape's slot tables and
+    // Environment::SlotMap::InlineEntry::key use), so an entry is one 8-byte
+    // pointer instead of a 32-byte std::string -- and, more importantly, an
+    // opcode holding one already has the interned key every binding lookup
+    // wants: two interned keys are equal exactly when they are the same
+    // pointer, which turns a scope-chain walk's per-entry string compare into
+    // a pointer compare (see Environment::SlotMap::find_interned).
+    // name_at(i) recovers the string itself for the paths that need it
+    // (diagnostics, object environments, property access).
+    FixedArray<const std::string*> names;
+    const std::string& name_at(size_t i) const { return *names[i]; }
     FixedArray<FeedbackSlot> feedback; // written as call sites warm up
 
     // GetPrivate/SetPrivate and GetKeyed/SetKeyed sites are rare relative to

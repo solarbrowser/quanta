@@ -165,7 +165,7 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
             case 'n': {
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
                                (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
-                out << " '" << chunk.names[idx] << "'";
+                out << " '" << chunk.name_at(idx) << "'";
                 break;
             }
             case 'E':
@@ -178,7 +178,7 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
                     << " args=r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " argc=" << static_cast<int>(chunk.code[operand_pc + 2])
-                    << " '" << chunk.names[idx] << "'";
+                    << " '" << chunk.name_at(idx) << "'";
                 break;
             }
             case 'v': {
@@ -188,7 +188,7 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " this=r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " args=r" << static_cast<int>(chunk.code[operand_pc + 2])
                     << " argc=" << static_cast<int>(chunk.code[operand_pc + 3])
-                    << " '" << chunk.names[name_idx] << "'";
+                    << " '" << chunk.name_at(name_idx) << "'";
                 break;
             }
             case 'w': {
@@ -197,7 +197,7 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 out << " func=r" << static_cast<int>(chunk.code[operand_pc])
                     << " this=r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " args[]=r" << static_cast<int>(chunk.code[operand_pc + 2])
-                    << " '" << chunk.names[name_idx] << "'";
+                    << " '" << chunk.name_at(name_idx) << "'";
                 break;
             }
             case 'W': {
@@ -205,7 +205,7 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                                     (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
                     << " args[]=r" << static_cast<int>(chunk.code[operand_pc + 1])
-                    << " '" << chunk.names[name_idx] << "'";
+                    << " '" << chunk.name_at(name_idx) << "'";
                 break;
             }
             case 'g': {
@@ -214,7 +214,7 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
                                   (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
-                    << " '" << chunk.names[name_idx] << "'"
+                    << " '" << chunk.name_at(name_idx) << "'"
                     << " fb=" << fb_idx;
                 break;
             }
@@ -244,21 +244,21 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                                  (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
                 uint16_t f_idx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
                                  (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
-                out << " /" << chunk.names[p_idx] << "/" << chunk.names[f_idx];
+                out << " /" << chunk.name_at(p_idx) << "/" << chunk.name_at(f_idx);
                 break;
             }
             case 'l': {
                 uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
                                     (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
-                    << " '" << chunk.names[name_idx] << "'";
+                    << " '" << chunk.name_at(name_idx) << "'";
                 break;
             }
             case 'e': {
                 uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
                                     (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
                 out << " slot" << static_cast<int>(chunk.code[operand_pc])
-                    << " '" << chunk.names[name_idx] << "'";
+                    << " '" << chunk.name_at(name_idx) << "'";
                 break;
             }
             case 'z': {
@@ -273,8 +273,8 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t disp_idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
                                      (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
-                    << " '" << chunk.names[key_idx] << "'"
-                    << " '" << chunk.names[disp_idx] << "'"
+                    << " '" << chunk.name_at(key_idx) << "'"
+                    << " '" << chunk.name_at(disp_idx) << "'"
                     << " kind=" << static_cast<int>(chunk.code[operand_pc + 5]);
                 break;
             }
@@ -286,8 +286,8 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 6]) |
                                    (static_cast<uint16_t>(chunk.code[operand_pc + 7]) << 8);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
-                    << " '" << chunk.names[key_idx] << "'"
-                    << " '" << chunk.names[disp_idx] << "'"
+                    << " '" << chunk.name_at(key_idx) << "'"
+                    << " '" << chunk.name_at(disp_idx) << "'"
                     << " kind=" << static_cast<int>(chunk.code[operand_pc + 5])
                     << " fb=" << fb_idx;
                 break;

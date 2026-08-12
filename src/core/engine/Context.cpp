@@ -352,6 +352,16 @@ Environment* Context::find_binding_env(const std::string& name) const {
     return nullptr;
 }
 
+Environment* Context::find_binding_env_interned(const std::string* key) const {
+    if (*key == "this") return nullptr;  // see find_binding_env
+    Environment* env = lexical_environment_;
+    while (env) {
+        if (env->has_own_binding_interned(key)) return env;
+        env = env->get_outer();
+    }
+    return nullptr;
+}
+
 Environment* Environment::find_binding_env(const std::string& name) {
     if (has_own_binding(name)) return this;
     if (outer_environment_) return outer_environment_->find_binding_env(name);
@@ -465,6 +475,16 @@ bool Context::is_in_tdz(const std::string& name) const {
     while (env) {
         bool in_tdz = false;
         if (env->declarative_binding_tdz(name, in_tdz)) return in_tdz;
+        env = env->get_outer();
+    }
+    return false;
+}
+
+bool Context::is_in_tdz_interned(const std::string* key) const {
+    Environment* env = lexical_environment_;
+    while (env) {
+        bool in_tdz = false;
+        if (env->declarative_binding_tdz_interned(key, in_tdz)) return in_tdz;
         env = env->get_outer();
     }
     return false;
@@ -1080,6 +1100,12 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
     return Value();
 }
 
+Value Environment::get_binding_direct_interned(const std::string* key, Context* ctx) const {
+    if (type_ == Type::Object && binding_object_) return get_binding_direct(*key, ctx);
+    if (const BindingSlot* slot = slots_.find_interned(key)) return slot->value;
+    return Value();
+}
+
 bool Environment::cacheable_object_binding(const std::string& name, uint32_t& slot_index) const {
     if (type_ != Type::Object || !binding_object_ || is_with_environment_) return false;
     return binding_object_->cacheable_data_slot(name, slot_index);
@@ -1114,6 +1140,32 @@ bool Environment::set_binding_direct(const std::string& name, const Value& value
         return true;
     }
     return false;
+}
+
+bool Environment::set_binding_direct_interned(const std::string* key, const Value& value, Context* ctx) {
+    // An object environment defines a property, which needs the text; the
+    // string version re-tests the same condition (including the internal-slot
+    // escape) and behaves identically.
+    if (type_ == Type::Object && binding_object_) return set_binding_direct(*key, value, ctx);
+    Collector::write_barrier_env_for(this, value);
+    if (BindingSlot* slot = slots_.find_interned(key)) {
+        if (!slot->mutable_flag) return false;
+        slot->value = value;
+        return true;
+    }
+    // A name this environment does not hold is reported mutable by
+    // is_mutable_binding, and the string version then creates it. Keeping that
+    // branch matters: dropping it would turn a first write into a silent
+    // refusal instead of a binding.
+    slots_.get_or_create_interned(key).value = value;
+    return true;
+}
+
+void Environment::initialize_binding_interned(const std::string* key, const Value& value) {
+    Collector::write_barrier_env_for(this, value);
+    auto& slot = slots_.get_or_create_interned(key);
+    slot.value = value;
+    slot.initialized = true;
 }
 
 void Environment::force_set_binding(const std::string& name, const Value& value) {
@@ -1287,6 +1339,21 @@ bool Environment::try_get_binding(const std::string& name, Value& out, Context* 
     if (!binding_object_->has_property(name)) return false;
     out = binding_object_->get_property(name);
     return true;
+}
+
+bool Environment::try_get_binding_interned(const std::string* key, Value& out, Context* ctx) const {
+    if (type_ != Type::Object || !binding_object_) {
+        const BindingSlot* slot = slots_.find_interned(key);
+        if (!slot) return false;
+        out = slot->value;
+        return true;
+    }
+    return try_get_binding(*key, out, ctx);
+}
+
+bool Environment::has_own_binding_interned(const std::string* key) const {
+    if (type_ == Type::Object && binding_object_) return has_own_binding(*key);
+    return slots_.find_interned(key) != nullptr;
 }
 
 bool Environment::has_own_binding(const std::string& name) const {

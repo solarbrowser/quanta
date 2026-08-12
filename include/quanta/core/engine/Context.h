@@ -272,6 +272,11 @@ public:
     void push_with_scope(class Object* obj);
     void pop_with_scope();
     Environment* find_binding_env(const std::string& name) const;
+    // Interned counterparts, for a caller holding the canonical key (see
+    // Environment::env_read_step_interned). Both walk the same chain and stop
+    // in the same place; only the per-environment probe gets cheaper.
+    Environment* find_binding_env_interned(const std::string* key) const;
+    bool is_in_tdz_interned(const std::string* key) const;
 
     // Explicit Resource Management ('using' declaration support)
     void push_dispose_scope();
@@ -540,6 +545,10 @@ public:
             return nullptr;
         }
 
+        const BindingSlot* find_interned(const std::string* key) const {
+            return const_cast<SlotMap*>(this)->find_interned(key);
+        }
+
         BindingSlot& get_or_create_interned(const std::string* key) {
             if (BindingSlot* existing = find_interned(key)) return *existing;
             for (auto& e : inline_entries) {
@@ -709,6 +718,18 @@ public:
         in_tdz = !slot->initialized;
         return true;
     }
+    // Interned counterpart, for a caller holding the canonical key already
+    // (BytecodeChunk::names). Only the declarative branch differs: matching an
+    // inline entry is a pointer compare rather than a byte compare, which is
+    // what most of a chain walk spends its time on -- more than half of these
+    // answer "not here" and exist only to move one level out.
+    bool declarative_binding_tdz_interned(const std::string* key, bool& in_tdz) const {
+        if (type_ == Type::Object) return false;
+        const BindingSlot* slot = slots_.find_interned(key);
+        if (!slot) return false;
+        in_tdz = !slot->initialized;
+        return true;
+    }
     // What a read needs from one environment, in a single lookup: the two
     // chain walks it replaces asked for the binding's value and its TDZ state
     // separately, and landed on the same slot both times.
@@ -728,6 +749,21 @@ public:
         }
         if (!has_own_binding(name)) return kNotBound;
         out = get_binding_direct(name, ctx);
+        return kObjectValue;
+    }
+    // Interned counterpart of the above. An object environment has no interned
+    // form -- it questions a real object, which needs the text -- so that
+    // branch hands *key to the same string path and answers identically.
+    int env_read_step_interned(const std::string* key, Value& out, Context* ctx) const {
+        if (type_ != Type::Object) {
+            const BindingSlot* s = slots_.find_interned(key);
+            if (!s) return kNotBound;
+            if (!s->initialized) return kTdz;
+            out = s->value;
+            return kValue;
+        }
+        if (!has_own_binding(*key)) return kNotBound;
+        out = get_binding_direct(*key, ctx);
         return kObjectValue;
     }
     void set_with_environment(bool value) { is_with_environment_ = value; }
@@ -804,6 +840,16 @@ public:
         if (e.in_use && *e.key == name) return &e;
         return nullptr;
     }
+    // Interned counterpart. An inline entry's key is always interned (every
+    // insert path runs it through Shape::intern), so re-validating a predicted
+    // index against an already-interned key is one pointer compare and means
+    // exactly what the byte compare above means.
+    SlotMap::InlineEntry* inline_slot_interned(size_t index, const std::string* key) {
+        if (index >= SlotMap::kInlineCapacity) return nullptr;
+        SlotMap::InlineEntry& e = slots_.inline_entries[index];
+        if (e.in_use && e.key == key) return &e;
+        return nullptr;
+    }
     bool set_binding_direct(const std::string& name, const Value& value, Context* ctx = nullptr);
     Environment* find_binding_env(const std::string& name);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);
@@ -853,6 +899,15 @@ public:
     // needs the name itself -- so those fall through to the string versions.
     bool create_binding_interned(const std::string* key, const Value& value, bool mutable_binding);
     void create_uninitialized_binding_interned(const std::string* key, bool is_mutable);
+
+    // Interned counterparts of the lookups/writes above, all following the same
+    // rule as env_read_step_interned: the declarative branch matches by
+    // pointer, the object branch hands *key to the string version unchanged.
+    Value get_binding_direct_interned(const std::string* key, Context* ctx = nullptr) const;
+    bool set_binding_direct_interned(const std::string* key, const Value& value, Context* ctx = nullptr);
+    void initialize_binding_interned(const std::string* key, const Value& value);
+    bool try_get_binding_interned(const std::string* key, Value& out, Context* ctx) const;
+    bool has_own_binding_interned(const std::string* key) const;
 };
 
 // Suspends the current async fiber until `value` settles (mirrors AwaitExpression::evaluate);

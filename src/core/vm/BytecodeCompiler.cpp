@@ -8,6 +8,7 @@
 #include "quanta/core/vm/BytecodeCompiler.h"
 #include <algorithm>
 #include "quanta/parser/AST.h"
+#include "quanta/core/runtime/Shape.h"
 #include <climits>
 #include <cmath>
 #include <sstream>
@@ -23,6 +24,17 @@ ClosureTemplate closure_template_for(const ASTNode* literal);
 namespace {
 
 constexpr int kMaxRegisters = 255;
+
+// Freezes the compiler's name pool into the chunk's interned form. This is the
+// one place a name's text is hashed; from here on every reader holds the
+// canonical pointer, which is what lets a binding lookup compare pointers
+// instead of bytes (see BytecodeChunk::names).
+FixedArray<const std::string*> intern_name_pool(std::vector<std::string> names) {
+    std::vector<const std::string*> keys;
+    keys.reserve(names.size());
+    for (const std::string& n : names) keys.push_back(Shape::intern(n));
+    return FixedArray<const std::string*>::from(std::move(keys));
+}
 
 struct DeclInfo {
     std::string name;
@@ -3434,7 +3446,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         }
         compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
         compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
-        compiler.chunk_->names = FixedArray<std::string>::from(std::move(compiler.names_));
+        compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
         compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
         return compiler.failed_ ? nullptr : std::move(compiler.chunk_);
     }
@@ -3476,7 +3488,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
-    compiler.chunk_->names = FixedArray<std::string>::from(std::move(compiler.names_));
+    compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
     compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
     return std::move(compiler.chunk_);
 }
@@ -3664,7 +3676,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     }
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
-    compiler.chunk_->names = FixedArray<std::string>::from(std::move(compiler.names_));
+    compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
     compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
     return std::move(compiler.chunk_);
 }

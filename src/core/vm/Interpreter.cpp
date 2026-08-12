@@ -1421,7 +1421,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 pc += 3;
                 if (regs[reg].is_vm_tdz_sentinel()) {
-                    ctx.throw_reference_error("Cannot access '" + chunk.names[name_idx] +
+                    ctx.throw_reference_error("Cannot access '" + chunk.name_at(name_idx) +
                                                "' before initialization");
                     CHECK_EXC();
                     break;
@@ -1434,7 +1434,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 pc += 3;
                 if (regs[reg].is_vm_tdz_sentinel()) {
-                    ctx.throw_reference_error("Cannot access '" + chunk.names[name_idx] +
+                    ctx.throw_reference_error("Cannot access '" + chunk.name_at(name_idx) +
                                                "' before initialization");
                     CHECK_EXC();
                     break;
@@ -1600,8 +1600,9 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     } else if (entry.slot) { acc = *entry.slot; break; }
                 }
                 // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
-                const std::string& name = chunk.names[name_idx];
-                if (ctx.is_in_tdz(name)) {
+                const std::string* key = chunk.names[name_idx];
+                const std::string& name = *key;
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -1609,7 +1610,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 Environment* env = ctx.get_lexical_environment();
                 bool found = false;
                 for (; env; env = env->get_outer()) {
-                    if (env->try_get_binding(name, acc, &ctx)) { found = true; break; }
+                    if (env->try_get_binding_interned(key, acc, &ctx)) { found = true; break; }
                     CHECK_EXC();
                 }
                 CHECK_EXC();
@@ -1645,7 +1646,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
 
             case Op::LdaLookupTypeof: {
                 // `typeof x` suppresses only the unresolved-binding case, not TDZ.
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string& name = chunk.name_at(read_u16(code, pc));
                 pc += 2;
                 if (ctx.is_in_tdz(name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
@@ -1689,13 +1690,14 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 // Mirrors AssignmentExpression's identifier PutValue. `with` and
                 // direct eval bail out of the VM, so resolving the reference at
                 // write time matches the tree-walker's captured-env behavior.
-                const std::string& name = chunk.names[sta_name_idx];
-                if (ctx.is_in_tdz(name)) {
+                const std::string* key = chunk.names[sta_name_idx];
+                const std::string& name = *key;
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = ctx.find_binding_env_interned(key);
                 CHECK_EXC();
                 if (!env) {
                     if (ctx.is_strict_mode()) {
@@ -1737,7 +1739,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             }
 
             case Op::CheckLookupResolvable: {
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string& name = chunk.name_at(read_u16(code, pc));
                 pc += 2;
                 acc = Value(ctx.find_binding_env(name) != nullptr || ctx.has_binding(name));
                 break;
@@ -1745,7 +1747,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
 
             case Op::StaLookupChecked: {
                 uint8_t resolved_reg = code[pc];
-                const std::string& name = chunk.names[read_u16(code, pc + 1)];
+                const std::string& name = chunk.name_at(read_u16(code, pc + 1));
                 pc += 3;
                 if (!regs[resolved_reg].to_boolean()) {
                     // Unresolvable BEFORE the RHS ran -- honor that verdict
@@ -1793,7 +1795,8 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             }
 
             case Op::LdaEnv: {
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
                 pc += 2;
                 // `this` is not in any environment; it is answered from the
                 // frame, so it keeps the general path.
@@ -1807,7 +1810,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     bool from_object = false;
                     int r = Environment::kNotBound;
                     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-                        r = e->env_read_step(name, acc, &ctx);
+                        r = e->env_read_step_interned(key, acc, &ctx);
                         CHECK_EXC();
                         if (r == Environment::kObjectValue) {
                             if (!from_object) { from_object = true; object_value = acc; }
@@ -1843,16 +1846,17 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
             case Op::StaEnv: {
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
                 pc += 2;
-                if (ctx.is_in_tdz(name)) {
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = ctx.find_binding_env_interned(key);
                 if (env) {
-                    if (!env->set_binding_direct(name, acc, &ctx) &&
+                    if (!env->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                         CHECK_EXC();
@@ -1864,9 +1868,9 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
             case Op::StaEnvInit: {
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
                 pc += 2;
-                ctx.get_lexical_environment()->initialize_binding(name, acc);  // current environment, no chain walk
+                ctx.get_lexical_environment()->initialize_binding_interned(key, acc);  // current environment, no chain walk
                 break;
             }
 
@@ -1878,9 +1882,10 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             case Op::LdaEnvSlot: {
                 uint8_t slot = code[pc];
                 pc += 1;
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
                     if (!e->slot.initialized) {
                         ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                         CHECK_EXC();
@@ -1889,14 +1894,14 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     acc = e->slot.value;
                     break;
                 }
-                if (ctx.is_in_tdz(name)) {
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = ctx.find_binding_env_interned(key);
                 if (env) {
-                    acc = env->get_binding_direct(name, &ctx);
+                    acc = env->get_binding_direct_interned(key, &ctx);
                 } else {
                     ctx.throw_reference_error("'" + name + "' is not defined");
                 }
@@ -1906,9 +1911,10 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             case Op::StaEnvSlot: {
                 uint8_t slot = code[pc];
                 pc += 1;
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
                     // The refusal used to be spelled as a silent skip, so a
                     // const write here vanished instead of raising.
                     if (!e->slot.mutable_flag) {
@@ -1922,14 +1928,14 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     e->slot.value = acc;
                     break;
                 }
-                if (ctx.is_in_tdz(name)) {
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = ctx.find_binding_env_interned(key);
                 if (env) {
-                    if (!env->set_binding_direct(name, acc, &ctx) &&
+                    if (!env->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                         CHECK_EXC();
@@ -1943,9 +1949,9 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             case Op::StaEnvSlotInit: {
                 uint8_t slot = code[pc];
                 pc += 1;
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
                     // Skipping the name lookup is the point of this path; the
                     // barrier initialize_binding runs below is not optional
                     // with it. An environment already traced by an open major
@@ -1957,7 +1963,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     e->slot.initialized = true;
                     break;
                 }
-                ctx.get_lexical_environment()->initialize_binding(name, acc);
+                ctx.get_lexical_environment()->initialize_binding_interned(key, acc);
                 break;
             }
 
@@ -2176,7 +2182,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());
                     acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, Value());
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -2202,7 +2208,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());
                     acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, receiver);
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -2228,7 +2234,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a constructor");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -2259,7 +2265,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());
                     acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, regs[this_reg]);
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -2285,7 +2291,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a constructor");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -2296,7 +2302,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t pat_idx = read_u16(code, pc);
                 uint16_t flg_idx = read_u16(code, pc + 2);
                 pc += 4;
-                acc = create_regexp_literal(ctx, chunk.names[pat_idx], chunk.names[flg_idx]);
+                acc = create_regexp_literal(ctx, chunk.name_at(pat_idx), chunk.name_at(flg_idx));
                 CHECK_EXC();
                 break;
             }
@@ -2304,7 +2310,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             case Op::HasPrivate: {
                 uint16_t name_idx = read_u16(code, pc);
                 pc += 2;
-                acc = private_name_in(ctx, chunk.names[name_idx], acc);
+                acc = private_name_in(ctx, chunk.name_at(name_idx), acc);
                 CHECK_EXC();
                 break;
             }
@@ -2322,7 +2328,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
             case Op::GetSuper: {
                 uint16_t name_idx = read_u16(code, pc);
                 pc += 2;
-                acc = super_get(ctx, chunk.names[name_idx]);
+                acc = super_get(ctx, chunk.name_at(name_idx));
                 CHECK_EXC();
                 break;
             }
@@ -2331,7 +2337,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint8_t base_reg = code[pc];
                 uint16_t name_idx = read_u16(code, pc + 1);
                 pc += 3;
-                super_set_on(ctx, as_object_like(regs[base_reg]), chunk.names[name_idx], acc);
+                super_set_on(ctx, as_object_like(regs[base_reg]), chunk.name_at(name_idx), acc);
                 CHECK_EXC();
                 break;
             }
@@ -2419,7 +2425,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_named(ctx, regs[obj_reg], chunk.names[name_idx], &chunk.feedback[fb_idx], owner);
+                acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner);
                 CHECK_EXC();
                 break;
             }
@@ -2428,7 +2434,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                set_named(ctx, regs[obj_reg], chunk.names[name_idx], acc, &chunk.feedback[fb_idx], owner);
+                set_named(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx], owner);
                 CHECK_EXC();
                 break;
             }
@@ -2437,7 +2443,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_private(ctx, regs[obj_reg], chunk.names[name_idx], &private_feedback_data[fb_idx]);
+                acc = get_private(ctx, regs[obj_reg], chunk.name_at(name_idx), &private_feedback_data[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -2446,7 +2452,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                set_private(ctx, regs[obj_reg], chunk.names[name_idx], acc, &private_feedback_data[fb_idx]);
+                set_private(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &private_feedback_data[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -2517,7 +2523,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint8_t obj_reg = code[pc];
                 std::string property_name;
                 if (op == Op::DeleteNamed) {
-                    property_name = chunk.names[read_u16(code, pc + 1)];
+                    property_name = chunk.name_at(read_u16(code, pc + 1));
                     pc += 3;
                 } else {
                     pc += 1;
@@ -2567,7 +2573,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
                 Object* obj = as_object_like(regs[obj_reg]);
-                define_own_cached(obj, chunk.names[name_idx], acc, &chunk.feedback[fb_idx]);
+                define_own_cached(obj, chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -2631,9 +2637,9 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                     // mirror literals.cpp's own guard exactly rather than
                     // assume that.
                     if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                        fn->set_name(chunk.names[display_name_idx]);
+                        fn->set_name(chunk.name_at(display_name_idx));
                     }
-                    const std::string& key = chunk.names[key_name_idx];
+                    const std::string& key = chunk.name_at(key_name_idx);
                     if (kind == 0) {
                         // Method: spec 14.3.9 -- non-generator methods are not
                         // constructors and have no .prototype.
@@ -2722,7 +2728,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 if (acc.is_function()) {
                     Function* fn = acc.as_function();
                     if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                        fn->set_name(chunk.names[name_idx]);
+                        fn->set_name(chunk.name_at(name_idx));
                     }
                 }
                 break;
@@ -2901,7 +2907,7 @@ Value h_gen_LdarChecked(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 pc += 3;
                 if (regs[reg].is_vm_tdz_sentinel()) {
-                    ctx.throw_reference_error("Cannot access '" + chunk.names[name_idx] +
+                    ctx.throw_reference_error("Cannot access '" + chunk.name_at(name_idx) +
                                                "' before initialization");
                     CHECK_EXC();
                     break;
@@ -2928,7 +2934,7 @@ Value h_gen_StarChecked(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 pc += 3;
                 if (regs[reg].is_vm_tdz_sentinel()) {
-                    ctx.throw_reference_error("Cannot access '" + chunk.names[name_idx] +
+                    ctx.throw_reference_error("Cannot access '" + chunk.name_at(name_idx) +
                                                "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3326,8 +3332,9 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                     } else if (entry.slot) { acc = *entry.slot; break; }
                 }
                 // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
-                const std::string& name = chunk.names[name_idx];
-                if (ctx.is_in_tdz(name)) {
+                const std::string* key = chunk.names[name_idx];
+                const std::string& name = *key;
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3335,7 +3342,7 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 Environment* env = ctx.get_lexical_environment();
                 bool found = false;
                 for (; env; env = env->get_outer()) {
-                    if (env->try_get_binding(name, acc, &ctx)) { found = true; break; }
+                    if (env->try_get_binding_interned(key, acc, &ctx)) { found = true; break; }
                     CHECK_EXC();
                 }
                 CHECK_EXC();
@@ -3378,7 +3385,7 @@ Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
     do {
                 {
                 // `typeof x` suppresses only the unresolved-binding case, not TDZ.
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string& name = chunk.name_at(read_u16(code, pc));
                 pc += 2;
                 if (ctx.is_in_tdz(name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
@@ -3436,13 +3443,14 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                 // Mirrors AssignmentExpression's identifier PutValue. `with` and
                 // direct eval bail out of the VM, so resolving the reference at
                 // write time matches the tree-walker's captured-env behavior.
-                const std::string& name = chunk.names[sta_name_idx];
-                if (ctx.is_in_tdz(name)) {
+                const std::string* key = chunk.names[sta_name_idx];
+                const std::string& name = *key;
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = ctx.find_binding_env_interned(key);
                 CHECK_EXC();
                 if (!env) {
                     if (ctx.is_strict_mode()) {
@@ -3496,7 +3504,7 @@ Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
     pc += 1;
     do {
                 {
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string& name = chunk.name_at(read_u16(code, pc));
                 pc += 2;
                 acc = Value(ctx.find_binding_env(name) != nullptr || ctx.has_binding(name));
                 break;
@@ -3561,7 +3569,7 @@ Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
     do {
                 {
                 uint8_t resolved_reg = code[pc];
-                const std::string& name = chunk.names[read_u16(code, pc + 1)];
+                const std::string& name = chunk.name_at(read_u16(code, pc + 1));
                 pc += 3;
                 if (!regs[resolved_reg].to_boolean()) {
                     // Unresolvable BEFORE the RHS ran -- honor that verdict
@@ -3621,7 +3629,8 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
     pc += 1;
     do {
                 {
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
                 pc += 2;
                 // `this` is not in any environment; it is answered from the
                 // frame, so it keeps the general path.
@@ -3635,7 +3644,7 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
                     bool from_object = false;
                     int r = Environment::kNotBound;
                     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-                        r = e->env_read_step(name, acc, &ctx);
+                        r = e->env_read_step_interned(key, acc, &ctx);
                         CHECK_EXC();
                         if (r == Environment::kObjectValue) {
                             if (!from_object) { from_object = true; object_value = acc; }
@@ -3684,16 +3693,17 @@ Value h_gen_StaEnv(Frame& f, uint32_t pc, Value acc) {
     pc += 1;
     do {
                 {
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
                 pc += 2;
-                if (ctx.is_in_tdz(name)) {
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = ctx.find_binding_env_interned(key);
                 if (env) {
-                    if (!env->set_binding_direct(name, acc, &ctx) &&
+                    if (!env->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                         CHECK_EXC();
@@ -3718,9 +3728,9 @@ Value h_gen_StaEnvInit(Frame& f, uint32_t pc, Value acc) {
     pc += 1;
     do {
                 {
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
                 pc += 2;
-                ctx.get_lexical_environment()->initialize_binding(name, acc);  // current environment, no chain walk
+                ctx.get_lexical_environment()->initialize_binding_interned(key, acc);  // current environment, no chain walk
                 break;
             }
 
@@ -3745,9 +3755,10 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint8_t slot = code[pc];
                 pc += 1;
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
                     if (!e->slot.initialized) {
                         ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                         CHECK_EXC();
@@ -3756,14 +3767,14 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                     acc = e->slot.value;
                     break;
                 }
-                if (ctx.is_in_tdz(name)) {
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = ctx.find_binding_env_interned(key);
                 if (env) {
-                    acc = env->get_binding_direct(name, &ctx);
+                    acc = env->get_binding_direct_interned(key, &ctx);
                 } else {
                     ctx.throw_reference_error("'" + name + "' is not defined");
                 }
@@ -3786,9 +3797,10 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint8_t slot = code[pc];
                 pc += 1;
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
                     // The refusal used to be spelled as a silent skip, so a
                     // const write here vanished instead of raising.
                     if (!e->slot.mutable_flag) {
@@ -3802,14 +3814,14 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                     e->slot.value = acc;
                     break;
                 }
-                if (ctx.is_in_tdz(name)) {
+                if (ctx.is_in_tdz_interned(key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = ctx.find_binding_env_interned(key);
                 if (env) {
-                    if (!env->set_binding_direct(name, acc, &ctx) &&
+                    if (!env->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                         CHECK_EXC();
@@ -3836,9 +3848,9 @@ Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint8_t slot = code[pc];
                 pc += 1;
-                const std::string& name = chunk.names[read_u16(code, pc)];
+                const std::string* key = chunk.names[read_u16(code, pc)];
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot(slot, name)) {
+                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
                     // Skipping the name lookup is the point of this path; the
                     // barrier initialize_binding runs below is not optional
                     // with it. An environment already traced by an open major
@@ -3850,7 +3862,7 @@ Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
                     e->slot.initialized = true;
                     break;
                 }
-                ctx.get_lexical_environment()->initialize_binding(name, acc);
+                ctx.get_lexical_environment()->initialize_binding_interned(key, acc);
                 break;
             }
     } while (0);
@@ -4307,7 +4319,7 @@ Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());
                     acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, Value());
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -4347,7 +4359,7 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());
                     acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, receiver);
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -4386,7 +4398,7 @@ Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a constructor");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -4430,7 +4442,7 @@ Value h_gen_CallSpread(Frame& f, uint32_t pc, Value acc) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());
                     acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, regs[this_reg]);
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a function");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -4469,7 +4481,7 @@ Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
                 } else {
-                    ctx.throw_type_error(chunk.names[name_idx] + " is not a constructor");
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -4492,7 +4504,7 @@ Value h_gen_CreateRegExp(Frame& f, uint32_t pc, Value acc) {
                 uint16_t pat_idx = read_u16(code, pc);
                 uint16_t flg_idx = read_u16(code, pc + 2);
                 pc += 4;
-                acc = create_regexp_literal(ctx, chunk.names[pat_idx], chunk.names[flg_idx]);
+                acc = create_regexp_literal(ctx, chunk.name_at(pat_idx), chunk.name_at(flg_idx));
                 CHECK_EXC();
                 break;
             }
@@ -4532,7 +4544,7 @@ Value h_gen_HasPrivate(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t name_idx = read_u16(code, pc);
                 pc += 2;
-                acc = private_name_in(ctx, chunk.names[name_idx], acc);
+                acc = private_name_in(ctx, chunk.name_at(name_idx), acc);
                 CHECK_EXC();
                 break;
             }
@@ -4552,7 +4564,7 @@ Value h_gen_GetSuper(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t name_idx = read_u16(code, pc);
                 pc += 2;
-                acc = super_get(ctx, chunk.names[name_idx]);
+                acc = super_get(ctx, chunk.name_at(name_idx));
                 CHECK_EXC();
                 break;
             }
@@ -4574,7 +4586,7 @@ Value h_gen_SetSuper(Frame& f, uint32_t pc, Value acc) {
                 uint8_t base_reg = code[pc];
                 uint16_t name_idx = read_u16(code, pc + 1);
                 pc += 3;
-                super_set_on(ctx, as_object_like(regs[base_reg]), chunk.names[name_idx], acc);
+                super_set_on(ctx, as_object_like(regs[base_reg]), chunk.name_at(name_idx), acc);
                 CHECK_EXC();
                 break;
             }
@@ -4753,7 +4765,7 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_named(ctx, regs[obj_reg], chunk.names[name_idx], &chunk.feedback[fb_idx], owner);
+                acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner);
                 CHECK_EXC();
                 break;
             }
@@ -4825,7 +4837,7 @@ Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                set_named(ctx, regs[obj_reg], chunk.names[name_idx], acc, &chunk.feedback[fb_idx], owner);
+                set_named(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx], owner);
                 CHECK_EXC();
                 break;
             }
@@ -4904,7 +4916,7 @@ Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_private(ctx, regs[obj_reg], chunk.names[name_idx], &private_feedback_data[fb_idx]);
+                acc = get_private(ctx, regs[obj_reg], chunk.name_at(name_idx), &private_feedback_data[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -4928,7 +4940,7 @@ Value h_gen_SetPrivate(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                set_private(ctx, regs[obj_reg], chunk.names[name_idx], acc, &private_feedback_data[fb_idx]);
+                set_private(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &private_feedback_data[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -5040,7 +5052,7 @@ Value h_gen_DeleteNamed(Frame& f, uint32_t pc, Value acc) {
                 uint8_t obj_reg = code[pc];
                 std::string property_name;
                 if (op == Op::DeleteNamed) {
-                    property_name = chunk.names[read_u16(code, pc + 1)];
+                    property_name = chunk.name_at(read_u16(code, pc + 1));
                     pc += 3;
                 } else {
                     pc += 1;
@@ -5102,7 +5114,7 @@ Value h_gen_DeleteKeyed(Frame& f, uint32_t pc, Value acc) {
                 uint8_t obj_reg = code[pc];
                 std::string property_name;
                 if (op == Op::DeleteNamed) {
-                    property_name = chunk.names[read_u16(code, pc + 1)];
+                    property_name = chunk.name_at(read_u16(code, pc + 1));
                     pc += 3;
                 } else {
                     pc += 1;
@@ -5165,7 +5177,7 @@ Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
                 Object* obj = as_object_like(regs[obj_reg]);
-                define_own_cached(obj, chunk.names[name_idx], acc, &chunk.feedback[fb_idx]);
+                define_own_cached(obj, chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx]);
                 CHECK_EXC();
                 break;
             }
@@ -5283,9 +5295,9 @@ Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
                     // mirror literals.cpp's own guard exactly rather than
                     // assume that.
                     if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                        fn->set_name(chunk.names[display_name_idx]);
+                        fn->set_name(chunk.name_at(display_name_idx));
                     }
-                    const std::string& key = chunk.names[key_name_idx];
+                    const std::string& key = chunk.name_at(key_name_idx);
                     if (kind == 0) {
                         // Method: spec 14.3.9 -- non-generator methods are not
                         // constructors and have no .prototype.
@@ -5401,7 +5413,7 @@ Value h_gen_SetFunctionNameIfUnnamed(Frame& f, uint32_t pc, Value acc) {
                 if (acc.is_function()) {
                     Function* fn = acc.as_function();
                     if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                        fn->set_name(chunk.names[name_idx]);
+                        fn->set_name(chunk.name_at(name_idx));
                     }
                 }
                 break;

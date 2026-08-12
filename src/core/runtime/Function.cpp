@@ -484,7 +484,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             const std::string& self_name = get_name();
             if (!self_name.empty() && self_name != "<anonymous>") {
                 for (const auto& n : executable_->bytecode_chunk->names) {
-                    if (n == self_name) { executable_->self_name_state = 1; break; }
+                    if (*n == self_name) { executable_->self_name_state = 1; break; }
                 }
             }
             executable_->recompute_fast_gate();
@@ -856,7 +856,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 const std::string& self_name = get_name();
                 if (!self_name.empty() && self_name != "<anonymous>") {
                     for (const auto& n : executable_->bytecode_chunk->names) {
-                        if (n == self_name) { executable_->self_name_state = 1; break; }
+                        if (*n == self_name) { executable_->self_name_state = 1; break; }
                     }
                 }
                 executable_->recompute_fast_gate();
