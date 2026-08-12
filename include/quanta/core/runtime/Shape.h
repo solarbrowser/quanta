@@ -156,21 +156,39 @@ private:
                                                 std::equal_to<std::string>,
                                                 SmallMapAllocator<std::pair<const std::string, OverflowEntry>>>;
         std::unique_ptr<OverflowMap> overflow;
+        // One bit per key held, from the length and the two end bytes. Four in
+        // five of the lookups this map is asked to do are for a key it does
+        // not hold, and each of those scanned the inline entries and then
+        // hashed the string for the overflow table. A clear bit answers them
+        // outright. The summary only over-claims -- every key present has its
+        // bit set -- so a miss is exact and a hit still does the real search.
+        uint64_t key_bits_ = 0;
+
+        static uint64_t key_bit(const std::string& key) {
+            const size_t n = key.size();
+            if (n == 0) return 1ull;
+            const unsigned char a = static_cast<unsigned char>(key[0]);
+            const unsigned char b = static_cast<unsigned char>(key[n - 1]);
+            return 1ull << ((n * 31u + a * 7u + b) & 63u);
+        }
 
         SlotMap() = default;
         SlotMap(const SlotMap& other)
             : inline_entries(other.inline_entries),
-              overflow(other.overflow ? std::make_unique<OverflowMap>(*other.overflow) : nullptr) {}
+              overflow(other.overflow ? std::make_unique<OverflowMap>(*other.overflow) : nullptr),
+              key_bits_(other.key_bits_) {}
         SlotMap& operator=(const SlotMap& other) {
             if (this == &other) return *this;
             inline_entries = other.inline_entries;
             overflow = other.overflow ? std::make_unique<OverflowMap>(*other.overflow) : nullptr;
+            key_bits_ = other.key_bits_;
             return *this;
         }
         SlotMap(SlotMap&&) = default;
         SlotMap& operator=(SlotMap&&) = default;
 
         int32_t find(const std::string& key) const {
+            if (!(key_bits_ & key_bit(key))) return -1;
             for (const auto& e : inline_entries) {
                 if (e.in_use && *e.key == key) return static_cast<int32_t>(e.value);
             }
@@ -183,6 +201,7 @@ private:
         // -1 when absent OR when the entry is an accessor pair, which the
         // callers that want a plain readable value must not treat as one.
         int32_t find_data(const std::string& key) const {
+            if (!(key_bits_ & key_bit(key))) return -1;
             for (const auto& e : inline_entries) {
                 if (e.in_use && *e.key == key) {
                     return e.is_accessor ? -1 : static_cast<int32_t>(e.value);
@@ -197,6 +216,7 @@ private:
             return -1;
         }
         bool is_accessor(const std::string& key) const {
+            if (!(key_bits_ & key_bit(key))) return false;
             for (const auto& e : inline_entries) {
                 if (e.in_use && *e.key == key) return e.is_accessor;
             }
@@ -208,6 +228,7 @@ private:
         }
         // `key` must already be interned (see the struct's own doc comment).
         void set(const std::string* key, uint32_t value, bool is_accessor = false) {
+            key_bits_ |= key_bit(*key);
             for (auto& e : inline_entries) {
                 if (e.in_use && *e.key == *key) { e.value = value; e.is_accessor = is_accessor; return; }
             }
