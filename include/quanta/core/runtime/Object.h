@@ -861,7 +861,22 @@ public:
                                             std::equal_to<std::string>,
                                             SmallMapAllocator<std::pair<const std::string, PropertyDescriptor>>>;
 
+    // A summary of the keys present, one bit each. Two thirds of the lookups
+    // this map is asked to do are for a key it does not hold, and answering
+    // those took a full string hash and a probe; the summary answers them
+    // from the length and the two end bytes. It can only ever say "maybe" --
+    // a key that is present always has its bit set -- so a hit still does the
+    // real lookup and a miss is exact.
+    static uint64_t key_bit(const std::string& key) {
+        const size_t n = key.size();
+        if (n == 0) return 1ull;
+        const unsigned char a = static_cast<unsigned char>(key[0]);
+        const unsigned char b = static_cast<unsigned char>(key[n - 1]);
+        return 1ull << ((n * 31u + a * 7u + b) & 63u);
+    }
+
     PropertyDescriptor* find(const std::string& key) {
+        if (!(key_bits_ & key_bit(key))) return nullptr;
         for (size_t i = 0; i < inline_count_; i++) {
             if (*inline_[i].key == key) return &inline_[i].desc;
         }
@@ -878,6 +893,7 @@ public:
 
     PropertyDescriptor& operator[](const std::string& key) {
         if (PropertyDescriptor* existing = find(key)) return *existing;
+        key_bits_ |= key_bit(key);
         if (!overflow_ && inline_count_ < kInlineCapacity) {
             inline_[inline_count_].key = Shape::intern(key);
             return inline_[inline_count_++].desc;
@@ -894,6 +910,9 @@ public:
         return (*overflow_)[key];
     }
 
+    // erase leaves the bit set. The summary is allowed to claim a key that is
+    // gone -- that only costs a lookup which then fails -- but never to deny
+    // one that is present.
     bool erase(const std::string& key) {
         for (size_t i = 0; i < inline_count_; i++) {
             if (*inline_[i].key == key) {
@@ -957,6 +976,7 @@ private:
     std::array<Entry, kInlineCapacity> inline_;
     size_t inline_count_ = 0;
     std::unique_ptr<OverflowMap> overflow_;
+    uint64_t key_bits_ = 0;
 };
 
 // Everything an object needs only rarely: sparse array-index overflow,
