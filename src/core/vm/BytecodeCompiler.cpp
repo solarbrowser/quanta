@@ -3003,8 +3003,17 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     std::unordered_set<std::string> all_names;
     bool an_eval = false, an_class = false, an_unknown = false;
     collect_closure_names(body, /*inside_closure=*/true, all_names, an_eval, an_class, an_unknown, suspendable);
+    // Destructuring does not go here. It delegates to the tree-walker, so the
+    // names it binds have to be Environment-resident -- but only those names.
+    // Demanding a full environment for the whole function meant one pattern
+    // anywhere in a body put every local in the environment and dropped every
+    // call to the slow path; measured, that was the single largest reason
+    // calls miss the register path. The selective scan below marks exactly the
+    // bound names instead (see collect_closure_names' DESTRUCTURING_ASSIGNMENT
+    // case, which already inserts them).
+    const bool has_destructuring = contains_destructuring(body);
     bool full_env = has_complex_params || needs_arguments ||
-                    contains_destructuring(body) || an_class || an_unknown ||
+                    an_class || an_unknown ||
                     all_names.count("super") > 0;
 
     // Selective env_mode: only names a closure (or a suspendable body's own
@@ -3019,7 +3028,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // register rather than a shadow it must refuse.
     std::unordered_set<std::string> sibling_safe;
     bool selective = false;
-    if (!full_env && (has_closures || has_nested_lex || suspendable || has_delegated_expr)) {
+    if (!full_env && (has_closures || has_nested_lex || suspendable || has_delegated_expr ||
+                      has_destructuring)) {
         bool saw_eval = false, saw_class = false, unknown = false;
         collect_closure_names(body, /*inside_closure=*/false, env_resident,
                               saw_eval, saw_class, unknown, suspendable);
