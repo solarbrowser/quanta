@@ -525,6 +525,35 @@ public:
             return &(*overflow)[name];
         }
 
+        // The caller already holds the interned key, so the inline entries can
+        // be matched by pointer: both sides come from Shape::intern, where
+        // equal strings are the same pointer. The overflow map is keyed by
+        // value and still needs the string.
+        BindingSlot* find_interned(const std::string* key) {
+            for (auto& e : inline_entries) {
+                if (e.in_use && e.key == key) return &e.slot;
+            }
+            if (overflow) {
+                auto it = overflow->find(*key);
+                if (it != overflow->end()) return &it->second;
+            }
+            return nullptr;
+        }
+
+        BindingSlot& get_or_create_interned(const std::string* key) {
+            if (BindingSlot* existing = find_interned(key)) return *existing;
+            for (auto& e : inline_entries) {
+                if (!e.in_use) {
+                    e.key = key;
+                    e.slot = BindingSlot{};
+                    e.in_use = true;
+                    return e.slot;
+                }
+            }
+            if (!overflow) overflow = std::make_unique<OverflowMap>();
+            return (*overflow)[*key];
+        }
+
         BindingSlot& get_or_create(const std::string& name) {
             if (BindingSlot* existing = find(name)) return *existing;
             for (auto& e : inline_entries) {
@@ -818,6 +847,12 @@ public:
     }
     void create_global_function_binding(const std::string& name, const Value& value, bool configurable = false);
     void create_uninitialized_binding(const std::string& name, bool is_mutable = true);
+    // Same as the two above for a declarative environment, given the key
+    // already interned (see BytecodeChunk::EnvBundle::env_param_keys). An
+    // object environment has no interned form -- it defines a property, which
+    // needs the name itself -- so those fall through to the string versions.
+    bool create_binding_interned(const std::string* key, const Value& value, bool mutable_binding);
+    void create_uninitialized_binding_interned(const std::string* key, bool is_mutable);
 };
 
 // Suspends the current async fiber until `value` settles (mirrors AwaitExpression::evaluate);

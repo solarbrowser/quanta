@@ -5678,29 +5678,41 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 
     if (chunk.env_mode && chunk.env) {
         Environment* env = ctx.get_lexical_environment();
+        // Intern the chunk's binding names once instead of once per call; the
+        // pointers are stable for the thread's lifetime.
+        if (!chunk.env->env_keys_ready) {
+            auto& b = const_cast<BytecodeChunk::EnvBundle&>(*chunk.env);
+            b.env_param_keys.reserve(b.env_params.size());
+            for (const auto& p : b.env_params) b.env_param_keys.push_back(Shape::intern(p));
+            b.env_local_keys.reserve(b.env_locals.size());
+            for (const auto& l : b.env_locals) b.env_local_keys.push_back(Shape::intern(l.name));
+            b.env_keys_ready = true;
+        }
         if (chunk.env_params_tdz) {
             // Spec FDI ordering: params start uninitialized (their raw values
             // sit in registers), the entry bytecode initializes each one left
             // to right, and Op::BindEnvLocals creates the body's bindings
             // only after the whole parameter list resolved.
-            for (const auto& p : chunk.env->env_params) {
-                env->create_uninitialized_binding(p, true);
+            for (const auto* k : chunk.env->env_param_keys) {
+                env->create_uninitialized_binding_interned(k, true);
             }
         } else {
-            for (size_t i = 0; i < chunk.env->env_params.size(); i++) {
+            for (size_t i = 0; i < chunk.env->env_param_keys.size(); i++) {
                 Value v = i < args.size() ? args[i] : Value();
-                env->create_binding(chunk.env->env_params[i], v, true);
+                env->create_binding_interned(chunk.env->env_param_keys[i], v, true);
             }
-            for (const auto& loc : chunk.env->env_locals) {
+            for (size_t li = 0; li < chunk.env->env_locals.size(); li++) {
+                const auto& loc = chunk.env->env_locals[li];
+                const std::string* lk = chunk.env->env_local_keys[li];
                 if (loc.is_lexical) {
-                        env->create_uninitialized_binding(loc.name, !loc.is_const);
+                        env->create_uninitialized_binding_interned(lk, !loc.is_const);
                         // is_strict_const() wants the const SET, not just the cleared mutable
                         // flag, and every "Assignment to constant variable" check gates on
                         // it -- without this they are all inert in sloppy mode for a binding
                         // the VM created.
                         if (loc.is_const) env->mark_const_binding(loc.name);
                     }
-                else env->create_binding(loc.name, Value(), true);
+                else env->create_binding_interned(lk, Value(), true);
             }
         }
     }

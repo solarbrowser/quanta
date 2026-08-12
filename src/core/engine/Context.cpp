@@ -1152,6 +1152,29 @@ void Environment::create_global_function_binding(const std::string& name, const 
     }
 }
 
+bool Environment::create_binding_interned(const std::string* key, const Value& value, bool mutable_binding) {
+    Collector::write_barrier_env_for(this, value);
+    if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(*key)) {
+        return create_binding(*key, value, mutable_binding, true, true);
+    }
+    // Same refusal as create_binding: an existing binding is not redefined.
+    if (slots_.find_interned(key)) return false;
+    slots_.get_or_create_interned(key) = BindingSlot{value, mutable_binding, true, true};
+    return true;
+}
+
+void Environment::create_uninitialized_binding_interned(const std::string* key, bool is_mutable) {
+    Collector::write_barrier_env(this);
+    if (type_ == Type::Object && binding_object_ && !is_internal_env_slot(*key)) {
+        create_uninitialized_binding(*key, is_mutable);
+        return;
+    }
+    // Same refusal as create_uninitialized_binding: re-creating would clear
+    // the initialized flag and the const mark of a binding already made.
+    if (slots_.find_interned(key)) return;
+    slots_.get_or_create_interned(key) = BindingSlot{Value(), is_mutable, false, false};
+}
+
 bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable, bool enumerable) {
     Collector::write_barrier_env_for(this, value);
     // has_own_binding branches on exactly this condition, so asking it up

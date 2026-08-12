@@ -497,6 +497,14 @@ struct BytecodeChunk {
         std::vector<std::string> env_params;
         struct EnvLocal { std::string name; bool is_lexical; bool is_const; };
         std::vector<EnvLocal> env_locals;
+        // The same names, interned once (Shape::intern). Every call through
+        // this chunk binds the same list, and interning is a hash and a probe
+        // per name per call -- so it is done once for the chunk instead. The
+        // pointers are stable for the thread's lifetime, which is what makes
+        // caching them safe. Filled on the first call; see VM::run.
+        std::vector<const std::string*> env_param_keys;
+        std::vector<const std::string*> env_local_keys;
+        bool env_keys_ready = false;
         // Per-iteration Environment locals for one loop/block (Op::EnterLoopEnv).
         // copy_forward: a `for` header's own let/const carries across iterations;
         // everything else starts fresh each time.
