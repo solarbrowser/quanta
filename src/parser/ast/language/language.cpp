@@ -526,24 +526,12 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
     }
 
     // ES5 10.1.1: strict if the enclosing code is strict OR the body says so.
+    // No own "caller"/"arguments" go with it: ES2017 removed those from
+    // ordinary functions, leaving the single %ThrowTypeError% accessor pair on
+    // Function.prototype (FunctionBuiltin.cpp) to make the read throw by
+    // inheritance.
     if (ctx.is_strict_mode() || tpl.body_is_strict) {
         function->set_is_strict(true);
-        if (tpl.form == Form::FunctionExpr) {
-            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                [](Context& c, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    c.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-                    return Value();
-                });
-            PropertyDescriptor d;
-            d.set_getter(thrower.get());
-            d.set_setter(thrower.get());
-            d.set_configurable(false);
-            d.set_enumerable(false);
-            function->set_property_descriptor("caller", d);
-            function->set_property_descriptor("arguments", d);
-            thrower.release();
-        }
     }
 
     if (tpl.has_direct_eval) {
