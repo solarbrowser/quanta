@@ -82,6 +82,14 @@ private:
     bool eval_arguments_conflict_ : 1 = false;
     bool is_arrow_function_context_ : 1 = false;
     bool in_class_field_init_ : 1 = false;
+    // Owned by the Collector: which major epoch last reached this context
+    // through a real edge (not through the survivor pool, which roots its
+    // entries unconditionally). A stamp rather than a flag so that opening a
+    // major invalidates every context at once, by bumping the epoch, instead
+    // of walking the pool to clear it. Eight bits: on wrap a stale stamp can
+    // only ever read as "reached", which keeps a context that could have been
+    // freed and never frees one that is still held.
+    uint8_t gc_major_epoch_ = 0;
 
     Environment* lexical_environment_;
     Environment* variable_environment_;
@@ -263,6 +271,10 @@ public:
     Environment* get_owned_env() const { return owned_env_; }
     void mark_exposed_to_escape() { exposed_to_escape_ = true; }
     bool exposed_to_escape() const { return exposed_to_escape_; }
+
+    // See gc_major_epoch_'s declaration.
+    void gc_stamp_major_epoch(uint8_t epoch) { gc_major_epoch_ = epoch; }
+    bool gc_reached_since_major(uint8_t epoch) const { return gc_major_epoch_ == epoch; }
     Environment* get_variable_environment() const { return variable_environment_; }
     void set_lexical_environment(Environment* env) { lexical_environment_ = env; }
     void set_variable_environment(Environment* env) { variable_environment_ = env; }

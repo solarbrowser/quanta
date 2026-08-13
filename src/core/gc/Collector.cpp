@@ -70,6 +70,13 @@ bool env_hunt();
 void hunt_note_free(const Environment* env);
 void hunt_check(const Environment* env, const char* who);
 
+// Bumped by every major cycle that opens, i.e. by every clear_all_marks. A
+// Context survivor not stamped with the current value has not been reached
+// through a real edge by any collection since every mark bit in the heap was
+// cleared, so no marked cell is known to point at it -- see
+// run_minor_collection's survivor prune.
+thread_local uint8_t g_major_epoch = 1;
+
 class MarkVisitor final : public Visitor {
 public:
     size_t marked_cells = 0;
@@ -94,13 +101,24 @@ public:
     // Contexts keep the set: there are few of them, and Context has no room
     // for a stamp without growing (its size is asserted).
     void visit_context(Context* ctx) override {
-        if (ctx && seen_contexts_.insert(ctx).second) context_work_.push_back(ctx);
+        if (ctx && seen_contexts_.insert(ctx).second) {
+            ctx->gc_stamp_major_epoch(g_major_epoch);
+            context_work_.push_back(ctx);
+        }
     }
     void visit_environment(Environment* env) override {
         if (env && env->gc_seen_cycle_ != cycle_) {
             env->gc_seen_cycle_ = cycle_;
             environment_work_.push_back(env);
         }
+    }
+
+    // Queues a survivor-pool entry without recording it as reached by a real
+    // edge. The pool roots every entry it holds, so stamping here would answer
+    // "can anything other than the pool still reach this?" with a permanent
+    // yes for every entry -- see run_minor_collection.
+    void root_survivor_context(Context* ctx) {
+        if (ctx && seen_contexts_.insert(ctx).second) context_work_.push_back(ctx);
     }
 
     // True once `ctx` has been visited this cycle, as a root or via tracing
@@ -574,6 +592,7 @@ void scan_stacks(MarkVisitor& v) {
 
 thread_local Collector::CycleStats g_last_cycle;
 
+
 // How many requested collections per major. Halved back to the floor by a
 // major that reclaimed a worthwhile share of what it marked, doubled by one
 // that did not.
@@ -852,10 +871,6 @@ void run_minor_collection() {
 
     for (Engine* engine : Engine::all_engines()) {
         v.visit_context(engine->get_global_context());
-        // A minor cycle doesn't retrace old, unmutated cells, so a survivor
-        // only reachable through one wouldn't be rediscovered this cycle --
-        // keep rooting all of them here unconditionally.
-        for (Context* c : engine->get_survivor_contexts()) v.visit_context(c);
         // Modules are otherwise entirely outside the root set (exports_,
         // thrown_exception_, the cached namespace object) -- see
         // ModuleLoader::gc_trace's doc comment.
@@ -879,6 +894,51 @@ void run_minor_collection() {
     auto t2 = std::chrono::steady_clock::now();
 
     Collector::mark_step(std::chrono::microseconds(-1));
+
+    // The Context survivor pool is rooted only now, after every other root has
+    // been traced to exhaustion. A minor doesn't retrace old, unmutated cells,
+    // so a survivor only reachable through one wouldn't be rediscovered this
+    // cycle and still has to be rooted -- but rooting it alongside the real
+    // roots also destroys the one thing worth knowing about it, namely whether
+    // anything OTHER than the pool can still reach it. Rooted separately, and
+    // without the stamp visit_context leaves, that question has an answer: an
+    // entry no collection has stamped since the last major cleared every mark
+    // bit has no marked cell pointing at it, and no unmarked one either --
+    // an unmarked holder is either traced right here or swept by this cycle.
+    //
+    // Environment survivors are deliberately neither rooted nor pruned by a
+    // minor: one is reached only through a real edge or through
+    // Collector::write_barrier_env (remembered_envs above), and its pool stays
+    // small enough that the major's own prune keeps up with it.
+    for (Engine* engine : Engine::all_engines())
+        for (Context* ctx : engine->get_survivor_contexts()) v.root_survivor_context(ctx);
+    Collector::mark_step(std::chrono::microseconds(-1));
+
+    // Pruned only now, with the whole graph traced. A pool entry kept for any
+    // reason can reach a Function whose closure_context_ is a different pool
+    // entry, so nothing may be freed until every entry's subgraph has been
+    // walked -- deciding entry by entry as they are rooted frees a Context
+    // that a later entry then traces.
+    for (Engine* engine : Engine::all_engines()) {
+        std::vector<Context*>& survivors = engine->mutable_survivor_contexts();
+        std::vector<Context*> kept;
+        kept.reserve(survivors.size());
+        std::vector<Context*> doomed;
+        for (Context* ctx : survivors) {
+            if (ctx->gc_reached_since_major(g_major_epoch) ||
+                EventLoop::instance().is_context_in_use(ctx)) {
+                kept.push_back(ctx);
+            } else {
+                doomed.push_back(ctx);
+            }
+        }
+        survivors = std::move(kept);
+        // Deleted only once the pool no longer refers to them: ~Context hands
+        // an escaped owned_env_ back to the Environment survivor pool and
+        // routes the rest through Collector::release_env, so it can append
+        // while this runs.
+        for (Context* ctx : doomed) delete ctx;
+    }
     auto t3 = std::chrono::steady_clock::now();
 
     v.drain_ephemerons();
@@ -1135,6 +1195,10 @@ Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
         Heap::clear_major_gc_request();
         Heap::clear_all_marks();
         v.reset_for_new_cycle();
+        // Symmetric with clear_all_marks: this cycle re-derives reachability
+        // from scratch, so every Context's "a real edge reached me" stamp goes
+        // stale at the same instant and is re-set by this cycle's own tracing.
+        if (++g_major_epoch == 0) ++g_major_epoch;
         Collector::major_in_progress_ = true;
         g_major_cycle_start = std::chrono::steady_clock::now();
         g_major_slice_count = 0;
