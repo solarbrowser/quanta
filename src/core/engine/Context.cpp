@@ -113,12 +113,13 @@ thread_local std::vector<void*> g_context_pool;
 constexpr size_t kEnvironmentPoolCap = 16384;
 thread_local std::vector<void*> g_environment_pool;
 
-// QUANTA_GC_POISON covers heap CELLS (Collector.cpp's sweep), and an
-// Environment is not one -- it is a pooled plain C++ object, so a freed one
-// keeps its bytes and a use-after-free reads plausible data instead of
-// crashing. Under the same flag, stop pooling environments and stamp the block
-// before handing it back, so a stale Environment* fails loudly (and lands in
-// ASan's quarantine) rather than silently answering.
+// QUANTA_GC_POISON covers heap CELLS (Collector.cpp's sweep), and neither a
+// Context nor an Environment is one -- both are pooled plain C++ objects, so a
+// freed one keeps its bytes and a use-after-free reads plausible data instead
+// of crashing. Under the same flag, stop pooling them and stamp the block
+// before handing it back, so a stale pointer fails loudly (and lands in ASan's
+// quarantine) rather than silently answering. Without this the pool makes ASan
+// blind to exactly the class of bug the collector can introduce here.
 bool environment_poison() {
     static const bool on = [] {
         const char* v = std::getenv("QUANTA_GC_POISON");
@@ -139,6 +140,11 @@ void* Context::operator new(size_t size) {
 
 void Context::operator delete(void* ptr) {
     if (!ptr) return;
+    if (environment_poison()) {
+        std::memset(ptr, 0xE5, sizeof(Context));
+        ::operator delete(ptr);
+        return;
+    }
     if (g_context_pool.size() < kContextPoolCap) {
         g_context_pool.push_back(ptr);
         return;

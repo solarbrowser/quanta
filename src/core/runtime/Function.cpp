@@ -51,6 +51,19 @@ namespace Quanta {
 
 thread_local Object* Function::s_throw_type_error_ = nullptr;
 
+// closure_context_ is stored for the Function's whole life and read by the
+// tracer (Function::trace_default) and by every arrow's `this`/`super` lookup,
+// so the Context has to outlive the call that created the closure. Saying so
+// here, at the one place the pointer is taken, is what makes it unconditional:
+// the survivor guard reads this off the environment instead, and the
+// environment's own signal is deliberately deferred by mark_escaped_now=false
+// and simply never arrives for generator/async class methods -- which left a
+// live closure pointing at a freed Context.
+static Context* capture_closure_context(Context* closure_context) {
+    if (closure_context) closure_context->mark_exposed_to_escape();
+    return closure_context;
+}
+
 // A closure pins its captured environment chain: pop_block_scope deletes
 // unescaped block envs, so the capture must mark the chain first -- unless
 // the caller has already proven (closure_needs_outer_environment) that
@@ -88,7 +101,7 @@ Function::Function(const std::string& name,
                    Context* closure_context,
                    bool create_prototype)
     : Object(ObjectType::Function),
-      closure_context_(closure_context),
+      closure_context_(capture_closure_context(closure_context)),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     auto exe = make_executable_ref();
@@ -125,7 +138,7 @@ Function::Function(const std::string& name,
                    Context* closure_context,
                    bool create_prototype)
     : Object(ObjectType::Function),
-      closure_context_(closure_context),
+      closure_context_(capture_closure_context(closure_context)),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     auto exe = make_executable_ref();
@@ -176,7 +189,7 @@ Function::Function(const std::string& name,
                    Context* closure_context,
                    bool create_prototype)
     : Object(ObjectType::Function), executable_(std::move(executable)),
-      closure_context_(closure_context),
+      closure_context_(capture_closure_context(closure_context)),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     // executable_ may already be shared with sibling instances from the same

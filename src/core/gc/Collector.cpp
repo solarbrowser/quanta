@@ -981,10 +981,12 @@ void finish_major_cycle(MarkVisitor& v) {
     // force-traced (nothing else would mark its subgraph) and kept;
     // anything else is unreachable and deleted.
     bool any_forced = false;
+    std::vector<std::pair<Engine*, std::vector<Context*>>> doomed;
     for (Engine* engine : Engine::all_engines()) {
         std::vector<Context*>& survivors = engine->mutable_survivor_contexts();
         std::vector<Context*> still_alive;
         still_alive.reserve(survivors.size());
+        std::vector<Context*> candidates;
         for (Context* ctx : survivors) {
             if (v.context_seen(ctx)) {
                 still_alive.push_back(ctx);
@@ -993,13 +995,33 @@ void finish_major_cycle(MarkVisitor& v) {
                 still_alive.push_back(ctx);
                 any_forced = true;
             } else {
-                delete ctx;
+                candidates.push_back(ctx);
             }
         }
         survivors = std::move(still_alive);
+        doomed.emplace_back(engine, std::move(candidates));
     }
-    // Trace the force-kept ones' own subgraph.
-    if (any_forced) Collector::mark_step(std::chrono::microseconds(-1));
+    // Trace the force-kept ones' own subgraph, and only then free anything: a
+    // force-kept Context can reach a Function whose closure_context_ is one of
+    // the candidates, so deciding and deleting in the same pass frees a
+    // Context that this very drain then goes on to walk. Whatever the drain
+    // reaches goes back into its own engine's pool.
+    if (any_forced) {
+        Collector::mark_step(std::chrono::microseconds(-1));
+        for (auto& [engine, candidates] : doomed) {
+            std::vector<Context*> still_doomed;
+            still_doomed.reserve(candidates.size());
+            for (Context* ctx : candidates) {
+                if (v.context_seen(ctx)) engine->mutable_survivor_contexts().push_back(ctx);
+                else still_doomed.push_back(ctx);
+            }
+            candidates = std::move(still_doomed);
+        }
+    }
+    for (auto& [engine, candidates] : doomed) {
+        (void)engine;
+        for (Context* ctx : candidates) delete ctx;
+    }
 
     v.drain_ephemerons();
     v.finalize_ephemerons();
