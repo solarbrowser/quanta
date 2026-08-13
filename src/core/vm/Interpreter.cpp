@@ -517,7 +517,12 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             // by the time control reaches here the receiver has been shown to
             // have no own property for this key, so what is left is the plain
             // prototype walk. Those two keys are excluded outright.
+            bool walked_to_end = true;
             for (Object* proto = obj->get_prototype(); proto; proto = proto->get_prototype()) {
+                // A Proxy answers a read through its "get" trap, which a
+                // descriptor query does not run -- the walk cannot conclude
+                // anything about a chain containing one.
+                if (proto->get_type() == Object::ObjectType::Proxy) { walked_to_end = false; break; }
                 PropertyDescriptor proto_desc = proto->get_property_descriptor(name);
                 if (proto_desc.is_accessor_descriptor()) {
                     if (!proto_desc.has_getter()) return Value();
@@ -569,8 +574,20 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                     if (obj->get_type() == Object::ObjectType::Ordinary) {
                         return proto_desc.get_value();
                     }
+                    walked_to_end = false;
                     break;
                 }
+            }
+            // Same shortcut for the other outcome: the walk ran to the end of
+            // the chain, so the key is on neither the receiver nor any
+            // prototype, and get_property below would redo the walk to reach
+            // that same answer. Any '#' key is handed over instead of decided
+            // here -- private storage is deliberately not reported as an own
+            // property (Object::has_own_property_default), so an absence
+            // observed for one of those keys is not an absence.
+            if (walked_to_end && obj->get_type() == Object::ObjectType::Ordinary &&
+                (name.empty() || name[0] != '#')) {
+                return Value();
             }
         }
     }
@@ -4815,6 +4832,35 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
                     acc = *slot;
                     pc += 6;
                     DISPATCH();
+                }
+            }
+            // Inherited-property fast path -- the same entry scan get_named
+            // does, hoisted here. Reading a method off a prototype is the
+            // single commonest read this handler could not serve, and each
+            // one paid the generated handler's prologue and a rescan from
+            // scratch. The own-descriptor guard is the whole-object form
+            // rather than the keyed one: strictly stronger, and O(1).
+            if (f.owner && !fb.proto_mega && fb.proto_count > 0 &&
+                !obj->has_any_descriptor_override()) {
+                Shape* rs = obj->get_shape();
+                Object* p0 = obj->get_prototype();
+                uint64_t pep = Object::proto_epoch();
+                for (uint8_t k = 0; k < fb.proto_count; k++) {
+                    const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+                    if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep) {
+                        if (pe.from_descriptor) {
+                            if (pe.desc_epoch == Object::descriptor_epoch()) {
+                                acc = pe.cached_value;
+                                pc += 6;
+                                DISPATCH();
+                            }
+                        } else if (const Value* hs = pe.holder->get_shape_slot_unchecked(pe.slot_index)) {
+                            acc = *hs;
+                            pc += 6;
+                            DISPATCH();
+                        }
+                        break;
+                    }
                 }
             }
         }
