@@ -124,7 +124,20 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
     out << "== " << (name.empty() ? "<anonymous>" : name) << " ==  "
         << chunk.code.size() << " bytes, " << chunk.register_count << " registers ("
         << static_cast<int>(chunk.parameter_count) << " params), "
-        << chunk.constants.size() << " constants\n";
+        << chunk.constants.size() << " constants";
+    // Whether the frame gets an Environment of its own is what decides which
+    // of the two call paths every call to this chunk takes (Function::call's
+    // register-mode gate), so it belongs in the header rather than having to
+    // be inferred from the presence of an Op::LdaEnv further down.
+    if (chunk.env_mode) {
+        out << ", env_mode";
+        if (const auto* e = chunk.env.get()) {
+            if (!e->env_params.empty() || !e->env_locals.empty())
+                out << " (" << e->env_params.size() << " env params, "
+                    << e->env_locals.size() << " env locals)";
+        }
+    }
+    out << "\n";
 
     size_t pc = 0;
     while (pc < chunk.code.size()) {
