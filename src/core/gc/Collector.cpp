@@ -1192,7 +1192,6 @@ Collector::SliceResult run_major_slice(std::chrono::microseconds budget) {
     bool cycle_opened = false;
     if (!Collector::major_in_progress_) {
         Heap::clear_gc_request();
-        Heap::clear_major_gc_request();
         Heap::clear_all_marks();
         v.reset_for_new_cycle();
         // Symmetric with clear_all_marks: this cycle re-derives reachability
@@ -1424,26 +1423,15 @@ void Collector::safepoint_slow() {
         return;
     }
 
-    // Survivor contexts can only be pruned by a major (see finish_major_cycle).
-    // Their growth feeds gc_requested()'s budget directly (see
-    // Engine::add_survivor_context/Heap::note_extra_bytes), so a call-heavy
-    // workload earns proportionally more frequent majors, no fixed threshold.
-    if (Heap::major_gc_requested()) {
-        Heap::clear_major_gc_request();
-        Heap::clear_gc_request();  // consumed together, run_major_slice clears it too
-        run_major_slice(next_slice_budget());
-        return;
-    }
-
     if (Heap::gc_requested()) {
         // Majors must keep coming -- minors never reclaim old-generation
         // garbage -- but a fixed one-in-eight charges the same price whether
         // the last one paid for itself or not. A program whose old generation
         // is nearly all live pays a full mark of it to free what a minor
         // frees anyway, so the interval backs off when that is what happened
-        // and snaps back the moment a major earns its keep. Survivor growth
-        // asks for majors through its own budget (Heap::note_extra_bytes), so
-        // backing off here cannot starve the survivor pool.
+        // and snaps back the moment a major earns its keep. Backing off cannot
+        // strand the survivor pool: a minor prunes it now (see
+        // run_minor_collection), so it no longer depends on a major arriving.
         // The interval above backs off when majors come back empty-handed,
         // which is right until the heap starts growing on top of what the last
         // major left live: that growth is old-generation garbage no minor can

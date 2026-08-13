@@ -19,7 +19,6 @@ namespace Quanta {
 
 thread_local Heap* Heap::active_ = nullptr;
 thread_local bool Heap::gc_requested_ = false;
-thread_local bool Heap::major_gc_requested_ = false;
 thread_local size_t Heap::bytes_since_major_ = 0;
 thread_local size_t Heap::live_after_major_ = 0;
 
@@ -132,13 +131,6 @@ namespace {
 // doc comment) so both contribute to the same, already-tuned cadence
 // instead of survivor growth needing its own separate threshold.
 thread_local size_t g_bytes_since_gc = 0;
-// Survivor memory is only reclaimable by a major, so it carries its own
-// running total and asks for one on its own terms. Reading `needs_major` at
-// the moment the shared line is crossed made the answer depend on which
-// allocation happened to cross it: survivor memory could pile up while every
-// crossing landed on an ordinary cell, and a few bytes of layout change on a
-// hot object flipped it the other way.
-thread_local size_t g_survivor_bytes = 0;
 // How many bytes may be allocated before the next collection. A fixed number
 // asks the wrong question: it makes collection frequency a function of how
 // big the program's objects happen to be, so shrinking a hot type silently
@@ -156,17 +148,12 @@ thread_local size_t g_gc_budget = kGcBudgetFloor;
 
 size_t gc_budget() { return g_gc_budget; }
 
-void account_bytes(size_t size, bool needs_major) {
+void account_bytes(size_t size) {
     g_bytes_since_gc += size;
     Heap::note_bytes_since_major(size);
-    if (needs_major) g_survivor_bytes += size;
     if (g_bytes_since_gc >= gc_budget()) {
         g_bytes_since_gc = 0;
         Heap::request_gc();
-        if (g_survivor_bytes >= gc_budget()) {
-            g_survivor_bytes = 0;
-            Heap::request_major_gc();
-        }
     }
 }
 }
@@ -188,12 +175,12 @@ void Heap::retune_budget(size_t live_bytes, size_t root_scan_bytes) {
 void Heap::note_bytes_since_major(size_t bytes) { bytes_since_major_ += bytes; }
 
 void Heap::note_extra_bytes(size_t bytes) {
-    account_bytes(bytes, /*needs_major=*/true);
+    account_bytes(bytes);
 }
 
 void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
     if (size == 0) size = 1;
-    account_bytes(size, /*needs_major=*/false);
+    account_bytes(size);
     size_t cls = size_class_index(size);
     if (cls == kNumSizeClasses) return allocate_large(size, kind);
 

@@ -105,9 +105,6 @@ public:
     static bool gc_requested() { return gc_requested_; }
     static void request_gc()   { gc_requested_ = true; }
     static void clear_gc_request() { gc_requested_ = false; }
-    // A request that specifically needs a major collection (see note_extra_bytes).
-    static bool major_gc_requested() { return major_gc_requested_; }
-    static void request_major_gc() { major_gc_requested_ = true; }
     // Bytes allocated since the last major finished, and the live set it left
     // behind. A major is due once the heap has grown by a share of what was
     // live: that is the signal that old-generation garbage is piling up, and
@@ -119,10 +116,9 @@ public:
         live_after_major_ = live_bytes;
     }
     static size_t live_after_major() { return live_after_major_; }
-    static void clear_major_gc_request() { major_gc_requested_ = false; }
-    // Charges `bytes` toward gc_requested()'s budget for memory the cell
-    // heap doesn't see directly (pinned survivor Contexts). Requests a
-    // major specifically since only one can reclaim a survivor Context.
+    // Charges `bytes` toward gc_requested()'s budget for memory the cell heap
+    // doesn't see directly (survivor Contexts). An ordinary charge: a minor
+    // reclaims that pool now, so its growth no longer has to buy a major.
     static void note_extra_bytes(size_t bytes);
     // Sets the allocation budget from what a collection just cost: the live
     // set it marked and the roots it had to scan, which are budgeted for
@@ -166,7 +162,6 @@ private:
 
     static thread_local Heap* active_;
     static thread_local bool gc_requested_;
-    static thread_local bool major_gc_requested_;
     static thread_local size_t bytes_since_major_;
     static thread_local size_t live_after_major_;
 

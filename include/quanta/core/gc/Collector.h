@@ -47,8 +47,7 @@ public:
     // have to be updated at every site that arms or disarms one of them, and
     // an undercount there means a collection that silently never runs.
     static void safepoint() {
-        if (Heap::gc_requested() || Heap::major_gc_requested() ||
-            major_in_progress_ || stress_mode_ != 0) {
+        if (Heap::gc_requested() || major_in_progress_ || stress_mode_ != 0) {
             safepoint_slow();
         }
     }
