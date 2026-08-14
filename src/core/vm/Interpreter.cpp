@@ -310,9 +310,18 @@ void learn_transition(FeedbackSlot* fb, Shape* from_shape, Shape* to_shape,
 void learn_proto(FeedbackSlot* fb, Shape* receiver_shape, Object* prototype,
                   Object* holder, uint32_t slot_index, uint64_t epoch, Function* owner,
                   bool from_descriptor = false, const Value& cached = Value(),
-                  uint64_t desc_epoch = 0) {
-    FeedbackSlot::ProtoEntry fresh{receiver_shape, prototype, epoch, holder, slot_index,
-                                    from_descriptor, desc_epoch, cached};
+                  uint64_t desc_epoch = 0, bool absent = false, bool is_getter = false) {
+    FeedbackSlot::ProtoEntry fresh;
+    fresh.receiver_shape = receiver_shape;
+    fresh.prototype = prototype;
+    fresh.proto_epoch = epoch;
+    fresh.holder = holder;
+    fresh.slot_index = slot_index;
+    fresh.from_descriptor = from_descriptor;
+    fresh.absent = absent;
+    fresh.is_getter = is_getter;
+    fresh.desc_epoch = desc_epoch;
+    fresh.cached_value = cached;
     for (uint8_t i = 0; i < fb->proto_count; i++) {
         auto& pe = fb->proto_entries[i];
         if (pe.receiver_shape == receiver_shape && pe.prototype == prototype) {
@@ -396,6 +405,18 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         for (uint8_t i = 0; i < fb->proto_count; i++) {
             const auto& pe = fb->proto_entries[i];
             if (pe.receiver_shape == shape && pe.prototype == proto0 && pe.proto_epoch == epoch) {
+                // Nothing on the chain carries this key, so the read is
+                // undefined. The gate above has already re-established the
+                // receiver's own side (its shape is the entry's key, and the
+                // descriptor map its shape cannot show has just been asked).
+                if (pe.absent) return Value();
+                if (pe.is_getter) {
+                    if (pe.desc_epoch == cur_epoch) {
+                        Function* getter_fn = as_function(as_object_like(pe.cached_value));
+                        return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
+                    }
+                    break;
+                }
                 if (pe.from_descriptor) {
                     if (pe.desc_epoch == cur_epoch) return pe.cached_value;
                     break;
@@ -527,6 +548,25 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 if (proto_desc.is_accessor_descriptor()) {
                     if (!proto_desc.has_getter()) return Value();
                     Function* getter_fn = as_function(proto_desc.get_getter());
+                    // Learn the getter itself. `get x()` on a class puts the
+                    // accessor in the prototype's descriptor map, so finding it
+                    // again costs a rebuilt descriptor on the receiver, the walk
+                    // and a second rebuilt descriptor on the holder -- all
+                    // before the call that does the actual work. The entry
+                    // caches what the walk arrived at, on the same terms a
+                    // from_descriptor entry does: the receiver is Ordinary with
+                    // no own override for the key (established above), and
+                    // desc_epoch retires the entry if the accessor is
+                    // redefined.
+                    if (owner && fb && !fb->proto_mega && getter_fn && obj->get_shape() &&
+                        obj->get_type() == Object::ObjectType::Ordinary &&
+                        proto->get_type() == Object::ObjectType::Ordinary &&
+                        !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
+                        learn_proto(fb, obj->get_shape(), obj->get_prototype(), proto, 0,
+                                    Object::proto_epoch(), owner, /*from_descriptor=*/false,
+                                    Value(getter_fn), Object::descriptor_epoch(),
+                                    /*absent=*/false, /*is_getter=*/true);
+                    }
                     return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
                 }
                 if (proto_desc.has_value()) {
@@ -587,6 +627,24 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             // observed for one of those keys is not an absence.
             if (walked_to_end && obj->get_type() == Object::ObjectType::Ordinary &&
                 (name.empty() || name[0] != '#')) {
+                // Record the absence, so the next read of this key on this
+                // shape answers without walking. What the walk just proved --
+                // no own property, no Proxy anywhere, nothing on the chain --
+                // is exactly what a ProtoEntry's key already validates, so the
+                // absence rides in the cache the hit paths already scan.
+                // Beyond what the walk established:
+                //  - a shapeless (dictionary-mode) receiver is refused, since a
+                //    null receiver_shape would match every other shapeless
+                //    object rather than identifying this one;
+                //  - a digit-leading key is refused, because an exotic object
+                //    on the chain can answer one out of its elements, and an
+                //    element write does not move proto_epoch.
+                if (owner && fb && !fb->proto_mega && obj->get_shape() &&
+                    !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
+                    learn_proto(fb, obj->get_shape(), obj->get_prototype(), nullptr, 0,
+                                Object::proto_epoch(), owner, /*from_descriptor=*/false,
+                                Value(), /*desc_epoch=*/0, /*absent=*/true);
+                }
                 return Value();
             }
         }
@@ -4848,6 +4906,16 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
                 for (uint8_t k = 0; k < fb.proto_count; k++) {
                     const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
                     if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep) {
+                        // An absence is a value like any other here: undefined.
+                        // A getter entry is not served from this handler -- the
+                        // call it needs can throw, which is what the generated
+                        // handler's epilogue is for.
+                        if (pe.absent) {
+                            acc = Value();
+                            pc += 6;
+                            DISPATCH();
+                        }
+                        if (pe.is_getter) break;
                         if (pe.from_descriptor) {
                             if (pe.desc_epoch == Object::descriptor_epoch()) {
                                 acc = pe.cached_value;
@@ -4862,6 +4930,36 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
                         break;
                     }
                 }
+            }
+        }
+    } else if (!receiver.is_function()) {
+        // Primitive receiver. get_primitive_named already caches the resolved
+        // value per site (prim_*), but only after get_named's entry checks, its
+        // own `length`/index early-outs and the kind dispatch have all run --
+        // so a `s.charCodeAt` that the cache can answer outright still pays the
+        // generated handler's prologue and two calls to get there. This is the
+        // identical predicate, asked where the read starts.
+        //
+        // The two string early-outs get_primitive_named runs first (`length`
+        // and a canonical index) are not skipped, they are unreachable: a
+        // GetNamed site's name is a compile-time constant, and either of those
+        // returns before the cache is ever written, so a site whose name is one
+        // of them can only carry a prim entry learned from a DIFFERENT kind --
+        // whose prototype then fails the identity check below.
+        const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+        if (LIKELY(fb.prim_valid && !fb.prim_is_getter &&
+                   fb.prim_desc_epoch == Object::descriptor_epoch())) {
+            using PK = Context::PrimitiveKind;
+            PK kind = receiver.is_string()  ? PK::String
+                    : receiver.is_number()  ? PK::Number
+                    : receiver.is_boolean() ? PK::Boolean
+                    : receiver.is_bigint()  ? PK::BigInt
+                    : receiver.is_symbol()  ? PK::Symbol
+                                            : PK::Count;
+            if (LIKELY(kind != PK::Count && Context::primitive_prototype(kind) == fb.prim_proto)) {
+                acc = fb.prim_value;
+                pc += 6;
+                DISPATCH();
             }
         }
     }

@@ -291,6 +291,22 @@ struct FeedbackSlot {
         // keeps it honest: any write that could change it moves the global
         // descriptor epoch. slot_index is meaningless when this is set.
         bool from_descriptor = false;
+        // The walk reached the end of the chain without finding the key, so the
+        // read yields undefined. `holder`, `slot_index` and `cached_value` mean
+        // nothing on such an entry; proto_epoch alone keeps it honest, because
+        // a key can only APPEAR on a chain through a property add, a
+        // defineProperty or a [[Prototype]] change, and each of those bumps it
+        // (see Object::proto_epoch). Absence on the receiver's own side is
+        // re-established per hit instead: its shape is part of the key, and the
+        // descriptor map it cannot show is what the override guard covers.
+        bool absent = false;
+        // cached_value is the getter, not the value: an inherited accessor whose
+        // getter sits in the holder's descriptor map, which is where a class's
+        // `get x()` lands. A hit still has to call it -- what it skips is the
+        // rebuild of two descriptors and the walk between them. Guarded by
+        // desc_epoch exactly like from_descriptor, since it caches out of the
+        // same map. Never set together with from_descriptor or absent.
+        bool is_getter = false;
         uint64_t desc_epoch = 0;
         Value cached_value;
     };
