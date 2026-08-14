@@ -45,16 +45,26 @@ void FunctionExecutable::gc_trace_roots(Visitor& v) {
     }
 }
 
+// Both body setters funnel through here: the directive is a fact about the
+// tree, so it is read while the tree is certainly in hand rather than on the
+// first call, which is what used to make Function::call reach for it.
+static bool opens_with_use_strict(const ASTNode* node) {
+    return node && node->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
+           static_cast<const BlockStatement*>(node)->has_use_strict_directive();
+}
+
 void FunctionExecutable::adopt_body(std::unique_ptr<ASTNode> node) {
     owned_body_ = std::move(node);
     unit_ = ExecutableRef<ScriptUnit>();
     body_ = owned_body_.get();
+    body_has_use_strict = opens_with_use_strict(body_);
 }
 
 void FunctionExecutable::borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTNode* node) {
     owned_body_.reset();
     unit_ = unit;
     body_ = node;
+    body_has_use_strict = opens_with_use_strict(body_);
 }
 
 }  // namespace Quanta

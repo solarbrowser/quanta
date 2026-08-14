@@ -479,13 +479,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // the block outright instead of re-asking three questions it settled on
     // its first trip through.
     if (executable_ && !executable_->fast_gate && executable_->bytecode_chunk) {
-        if (executable_->strict_directive_state < 0 && executable_->has_body()) {
+        if (executable_->strict_directive_state < 0) {
             // A concise arrow body is an expression, which cannot carry a
             // directive prologue -- resolved, not skipped, or the gate below
-            // never opens for one.
+            // never opens for one. Read off the executable rather than the
+            // tree: body_has_use_strict was taken when the body was attached.
             executable_->strict_directive_state =
-                (!is_strict_ && executable_->body()->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
-                 static_cast<BlockStatement*>(executable_->body())->has_use_strict_directive()) ? 1 : 0;
+                (!is_strict_ && executable_->body_has_use_strict) ? 1 : 0;
             executable_->recompute_fast_gate();
         }
         if (executable_->closure_props_state < 0) {

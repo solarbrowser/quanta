@@ -182,6 +182,12 @@ public:
 
     mutable bool vm_incompatible = false;
     mutable bool suspendable_incompatible = false;
+    // Whether the body opens with a "use strict" directive. Read once, at the
+    // moment the body is attached, so that resolving strict_directive_state
+    // below never has to reach for the tree -- which is the whole point: a
+    // ScriptUnit's tree is kept alive by any executable still needing it, so a
+    // claim that outlives compilation keeps the entire parse tree resident.
+    bool body_has_use_strict = false;
 
     // -1 unknown, 0 no, 1 yes -- see Function::call_default's own doc
     // comments on the fields these replace.
