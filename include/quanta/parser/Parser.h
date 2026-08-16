@@ -69,6 +69,7 @@ public:
 
 private:
     TokenSequence tokens_;
+    bool detached_tokens_ = false;
     // Token span of the most recently parsed function body, so the literal
     // built right after it can record where its body lives. Only read
     // immediately after that body's parse returns, before any nested parse
@@ -211,6 +212,17 @@ public:
     // on the enclosing function's kind).
     std::unique_ptr<ASTNode> parse_body_at(size_t tok_index, bool strict,
                                            bool is_generator, bool is_async);
+    // Hands the token stream to whoever will keep the tree, so a body recorded
+    // as a range can be parsed back later. The parser is finished with it by
+    // then -- parse_program_unit does the same thing at the end of a parse.
+    TokenSequence take_tokens() { return std::move(tokens_); }
+
+    // A parser whose tokens are its own throwaway stream, not the one its unit
+    // keeps -- template substitutions are re-lexed and parsed this way. The
+    // literals it builds are still stamped with the enclosing unit, so they
+    // must not record body ranges: those indices address a stream nobody can
+    // parse from later, and a body rebuilt at one would be arbitrary code.
+    void set_detached_tokens(bool v) { detached_tokens_ = v; }
     bool check_substatement_restrictions(bool is_loop_body = true);
     bool validate_array_destructuring(ArrayLiteral* arr);
     bool validate_object_destructuring(ObjectLiteral* obj);

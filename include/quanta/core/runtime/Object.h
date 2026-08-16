@@ -1469,7 +1469,12 @@ public:
     // the literals nested in that tree stay stamped, so they lend their own
     // bodies out too rather than each starting a fresh round of copying.
     void borrow_body_from(const ExecutableRef<ScriptUnit>& unit, class ASTNode* body);
-    class ASTNode* ast_body() const { return executable_ ? executable_->body() : nullptr; }
+    // Materializes a deferred body (FunctionExecutable::ensure_body): a leaf
+    // body is dropped once its analyses are cached and re-parsed from the
+    // unit's tokens the first time anything actually wants the tree. Every
+    // consumer of the body reaches it through here, which is what keeps that
+    // one-way transition invisible to them.
+    class ASTNode* ast_body() const { return executable_ ? executable_->ensure_body() : nullptr; }
 
     // Non-virtual: switches on get_function_kind(), same reasoning as
     // trace() above. call_default() is the plain-Function body.

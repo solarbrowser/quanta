@@ -265,6 +265,10 @@ static bool contains_direct_eval(ASTNode* node) {
 // leaves the copy's own nested literals unowned, so every site that skips this
 // spreads copying to everything underneath it.
 static void install_literal_body(FunctionExecutable* exe, ASTNode* value_node) {
+    if (std::getenv("QUANTA_EXE_COUNT")) {
+        static size_t n = 0;
+        if ((++n % 500) == 0) std::fprintf(stderr, "[ilb] install_literal_body=%zu\n", n);
+    }
     if (value_node && value_node->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
         auto* fe = static_cast<FunctionExpression*>(value_node);
         if (ScriptUnit* unit = fe->owning_unit()) {
@@ -285,6 +289,10 @@ static ExecutableRef<FunctionExecutable> ensure_shared_executable(
         uint32_t src_end,
         ScriptUnit* owning_unit = nullptr) {
     if (cached) return cached;
+    if (std::getenv("QUANTA_EXE_COUNT")) {
+        static size_t n = 0;
+        if ((++n % 500) == 0) std::fprintf(stderr, "[ese] ensure_shared_executable=%zu\n", n);
+    }
     ExecutableRef<FunctionExecutable> exe = make_executable_ref();
     // A literal that knows which tree it came from lends its body out and the
     // executable keeps that tree alive; one that does not (any entry point not
@@ -356,6 +364,30 @@ static void load_body_facts(const Literal* lit, bool& is_strict, bool& has_eval)
     has_eval = lit->body_direct_eval_state() == 1;
 }
 
+// Hands the executable the token range instead of the body, and drops the
+// subtree. Runs only after every analysis this literal caches has been taken
+// (strict, direct-eval, needs-outer-env, spec length), which is why it sits at
+// the end of each branch rather than inside ensure_shared_executable.
+//
+// Leaf only: a body holding inner literals cannot be rebuilt, because those
+// literals are where their own executables are cached and a re-parse would
+// produce different nodes for the same declaration site.
+template <typename Literal>
+static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fresh,
+                            bool strict, bool is_generator, bool is_async) {
+    // Only the instantiation that built the executable may do this. A later one
+    // would reach an executable that has since materialized its body and
+    // compiled from it, and dropping that tree leaves the chunk's own AST
+    // references (treewalk_nodes) pointing at freed nodes.
+    if (!fresh) return;
+    if (!exe || !lit->body_is_leaf() || !lit->has_body_token_range()) return;
+    ScriptUnit* unit = lit->owning_unit();
+    if (!unit || !unit->can_reparse_bodies() || !lit->get_body()) return;
+    exe->defer_body(ExecutableRef<ScriptUnit>(unit), lit->body_token_first(),
+                    strict, is_generator, is_async);
+    const_cast<Literal*>(lit)->release_body();
+}
+
 ClosureTemplate closure_template_for(const ASTNode* literal) {
     ClosureTemplate tpl;
     switch (literal->get_type()) {
@@ -379,10 +411,13 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
                 }
                 tpl.needs_outer_env = fe->get_needs_outer_env_state() != 0;
             }
+            const bool fe_fresh = !fe->get_cached_executable();
             tpl.executable = ensure_shared_executable(fe->get_cached_executable(), fe->get_body(),
                                                       fe->get_params(), fe->source_start(), fe->source_end(),
                                                       fe->owning_unit());
-            if (!fe->get_cached_executable()) fe->set_cached_executable(tpl.executable);
+            if (fe_fresh) fe->set_cached_executable(tpl.executable);
+            defer_leaf_body(fe, tpl.executable.get(), fe_fresh, tpl.body_is_strict,
+                            fe->is_generator(), fe->is_async());
             break;
         }
         case ASTNode::Type::FUNCTION_DECLARATION: {
@@ -394,10 +429,13 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             // Only the plain branch ever pinned the environment.
             tpl.needs_outer_env = !fd->is_generator() && !fd->is_async();
             load_body_facts(fd, tpl.body_is_strict, tpl.has_direct_eval);
+            const bool fd_fresh = !fd->get_cached_executable();
             tpl.executable = ensure_shared_executable(fd->get_cached_executable(), fd->get_body(),
                                                       fd->get_params(), fd->source_start(), fd->source_end(),
                                                       fd->owning_unit());
-            if (!fd->get_cached_executable()) fd->set_cached_executable(tpl.executable);
+            if (fd_fresh) fd->set_cached_executable(tpl.executable);
+            defer_leaf_body(fd, tpl.executable.get(), fd_fresh, tpl.body_is_strict,
+                            fd->is_generator(), fd->is_async());
             tpl.declared_length = spec_length_of(*tpl.executable);
             break;
         }
@@ -1824,6 +1862,18 @@ std::string FunctionExpression::to_string() const {
     for (size_t i = 0; i < params_.size(); ++i) {
         if (i > 0) oss << ", ";
         oss << params_[i]->get_name();
+    }
+    // A leaf body may have been released back to its token range (see
+    // defer_leaf_body), and rendering it is exactly the kind of read that must
+    // not force it back. The unit still holds the text this literal came from,
+    // which is what toString is supposed to report anyway.
+    if (!body_) {
+        if (ScriptUnit* unit = owning_unit()) {
+            std::string src = unit->source_range(source_start(), source_end());
+            if (!src.empty()) return src;
+        }
+        oss << ") { [body] }";
+        return oss.str();
     }
     oss << ") " << body_->to_string();
     return oss.str();

@@ -5,8 +5,6 @@
  */
 
 #include "quanta/parser/FunctionExecutable.h"
-#include <cstdio>
-#include <cstdlib>
 #include "quanta/parser/AST.h"
 #include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/vm/Bytecode.h"
@@ -19,7 +17,11 @@ namespace Quanta {
 #if defined(__GLIBCXX__)
 // Grew by a borrowed-body pointer and the ScriptUnitRef that keeps it alive.
 // Paid once per function literal, against a body that is no longer copied.
-static_assert(sizeof(FunctionExecutable) == 192);
+// Then by the deferred-body state (a token index and the parse context the
+// body needs rebuilding in): 16 bytes each, so ~190KB across a bundle's worth
+// of literals, against the megabytes of parse tree those literals stop
+// holding. See defer_body.
+static_assert(sizeof(FunctionExecutable) == 208);
 #else
 static_assert(sizeof(FunctionExecutable) <= 224);
 #endif
@@ -58,6 +60,33 @@ void FunctionExecutable::adopt_body(std::unique_ptr<ASTNode> node) {
     unit_ = ExecutableRef<ScriptUnit>();
     body_ = owned_body_.get();
     body_has_use_strict = opens_with_use_strict(body_);
+}
+
+void FunctionExecutable::defer_body(const ExecutableRef<ScriptUnit>& unit, uint32_t tok_first,
+                                   bool strict, bool is_generator, bool is_async) {
+    owned_body_.reset();
+    unit_ = unit;
+    body_ = nullptr;
+    body_tok_first_ = tok_first;
+    body_deferred_ = true;
+    deferred_strict_ = strict;
+    deferred_generator_ = is_generator;
+    deferred_async_ = is_async;
+    body_has_use_strict = strict;
+}
+
+ASTNode* FunctionExecutable::ensure_body() const {
+    if (body_) return body_;
+    if (!body_is_deferred() || !unit_) return nullptr;
+    // Deliberately not adopt_body: that clears unit_, and the unit still backs
+    // the source text this executable reports. The tree is owned outright from
+    // here on -- the token range has done its job.
+    owned_body_ = unit_->parse_body_at(body_tok_first_, deferred_strict_,
+                                       deferred_generator_, deferred_async_);
+    body_ = owned_body_.get();
+    body_deferred_ = false;
+    body_tok_first_ = 0;
+    return body_;
 }
 
 void FunctionExecutable::borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTNode* node) {

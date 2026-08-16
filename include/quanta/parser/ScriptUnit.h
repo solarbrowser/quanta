@@ -10,6 +10,7 @@
 namespace Quanta {
 
 class ASTNode;
+class Parser;
 
 // Owns one parse tree and keeps it alive for exactly as long as anything still
 // points into it.
@@ -48,6 +49,11 @@ public:
     // held as a tree the whole time. Cheap next to what it replaces: for a
     // 3MB script the tokens come to single-digit megabytes.
     const TokenSequence& tokens() const { return tokens_; }
+    // Whether a body can be rebuilt out of this unit. Not every unit keeps its
+    // tokens -- `new Function` moves them into its parser and hands the unit
+    // only the tree -- and a deferred body there would re-parse an empty
+    // stream and come back as an empty function.
+    bool can_reparse_bodies() const { return tokens_.size() > 0 || body_parser_ != nullptr; }
     void set_tokens(TokenSequence t) { tokens_ = std::move(t); }
     void set_source(std::string src) { source_ = std::move(src); }
     std::string source_range(uint32_t start, uint32_t end) const {
@@ -80,6 +86,15 @@ public:
     // keeps taking its own clone.
     static ScriptUnit* building() { return building_; }
 
+    // Re-parses one function body out of this unit's own tokens. Backs
+    // FunctionExecutable's deferred bodies: a leaf body is dropped once its
+    // analyses are cached and rebuilt here the first time anything needs the
+    // tree. The parser is built once per unit and reused -- Parser takes its
+    // TokenSequence by value, so constructing one per body would copy the
+    // whole stream every time.
+    std::unique_ptr<ASTNode> parse_body_at(uint32_t tok_first, bool strict,
+                                           bool is_generator, bool is_async);
+
 private:
     ScriptUnit() = default;
     ~ScriptUnit();
@@ -87,6 +102,8 @@ private:
     std::unique_ptr<ASTNode> root_;
     std::string source_;
     TokenSequence tokens_;
+    // Built on the first deferred body this unit is asked for, then reused.
+    std::unique_ptr<Parser> body_parser_;
     mutable uint32_t ref_count_ = 0;
 
     static thread_local ScriptUnit* building_;

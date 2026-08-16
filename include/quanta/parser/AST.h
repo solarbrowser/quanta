@@ -40,6 +40,7 @@ class FunctionExpression;
 
 class ASTNode {
 public:
+
     enum class Type {
         NUMBER_LITERAL,
         STRING_LITERAL,
@@ -1124,6 +1125,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
+    // Drops the body subtree, leaving the token range to rebuild it from.
+    // Only valid for a leaf: an inner literal's node is where its executable
+    // is cached, and a rebuilt one would not be the same node.
+    void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
     // dropped, and asking the body again is exactly what is being avoided.
@@ -1235,6 +1240,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
+    // Drops the body subtree, leaving the token range to rebuild it from.
+    // Only valid for a leaf: an inner literal's node is where its executable
+    // is cached, and a rebuilt one would not be the same node.
+    void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
     // dropped, and asking the body again is exactly what is being avoided.
@@ -1479,6 +1488,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
+    // Drops the body subtree, leaving the token range to rebuild it from.
+    // Only valid for a leaf: an inner literal's node is where its executable
+    // is cached, and a rebuilt one would not be the same node.
+    void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
     // dropped, and asking the body again is exactly what is being avoided.
@@ -1607,6 +1620,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
+    // Drops the body subtree, leaving the token range to rebuild it from.
+    // Only valid for a leaf: an inner literal's node is where its executable
+    // is cached, and a rebuilt one would not be the same node.
+    void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
     // dropped, and asking the body again is exactly what is being avoided.
@@ -1737,6 +1754,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
+    // Drops the body subtree, leaving the token range to rebuild it from.
+    // Only valid for a leaf: an inner literal's node is where its executable
+    // is cached, and a rebuilt one would not be the same node.
+    void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
     // dropped, and asking the body again is exactly what is being avoided.

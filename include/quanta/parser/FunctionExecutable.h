@@ -93,9 +93,17 @@ public:
     FunctionExecutable& operator=(const FunctionExecutable&) = delete;
 
 private:
-    std::unique_ptr<ASTNode> owned_body_;      // set only by adopt_body
+    // mutable for the same reason bytecode_chunk and the *_state fields are:
+    // a deferred body is populated on first use and the result is a pure
+    // function of what was already recorded, so materializing it does not
+    // change what this executable means.
+    mutable std::unique_ptr<ASTNode> owned_body_;  // set only by adopt_body/ensure_body
     ExecutableRef<ScriptUnit> unit_;           // set only by borrow_body
-    ASTNode* body_ = nullptr;
+    mutable ASTNode* body_ = nullptr;
+    // Where the body starts in unit_'s token stream, when it was deferred.
+    // Only the opening index is kept: parse_body_at reads to the matching
+    // brace itself, so an end index would be a second copy of the same fact.
+    mutable uint32_t body_tok_first_ = 0;
 
 public:
     // Backs ExecutableRef<T> above -- intentionally not atomic, see that
@@ -115,8 +123,20 @@ public:
     // dangling body behind.
     void adopt_body(std::unique_ptr<ASTNode> node);
     void borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTNode* node);
+    // Third form: keep the unit and the token range the body occupies in it,
+    // but not the body. Only ever used for a LEAF body -- one holding no
+    // nested literal -- because materializing rebuilds the subtree, and a
+    // rebuilt inner literal would be a different node from the one its
+    // executable is cached on.
+    void defer_body(const ExecutableRef<ScriptUnit>& unit, uint32_t tok_first,
+                    bool strict, bool is_generator, bool is_async);
+    // Reads the body, parsing it back from the unit's tokens if it was
+    // deferred. Every consumer that needs a tree must come through here;
+    // body() stays the raw accessor for the paths that only test for one.
+    ASTNode* ensure_body() const;
     ASTNode* body() const { return body_; }
     bool has_body() const { return body_ != nullptr; }
+    bool body_is_deferred() const { return body_deferred_ && body_ == nullptr; }
 
     std::vector<std::unique_ptr<Parameter>> parameter_objects;
     std::vector<std::string> parameters;
@@ -182,6 +202,13 @@ public:
 
     mutable bool vm_incompatible = false;
     mutable bool suspendable_incompatible = false;
+    // Set together with the token range below, describing the context the body
+    // was originally parsed in -- a body's grammar depends on it, since yield
+    // and await are identifiers or operators according to the enclosing kind.
+    bool deferred_strict_ = false;
+    bool deferred_generator_ = false;
+    bool deferred_async_ = false;
+    mutable bool body_deferred_ = false;
     // Whether the body opens with a "use strict" directive. Read once, at the
     // moment the body is attached, so that resolving strict_directive_state
     // below never has to reach for the tree -- which is the whole point: a
