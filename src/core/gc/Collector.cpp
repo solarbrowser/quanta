@@ -603,8 +603,13 @@ uint32_t& major_interval_ref() {
 uint32_t major_interval() { return major_interval_ref(); }
 
 // A major that frees less than this share of the cells it marked did not pay
-// for the marking, and the next one is unlikely to either.
-constexpr size_t kMajorYieldDivisor = 16;
+// for the marking, and the next one is unlikely to either. Set against what
+// marking actually costs: it is the single largest phase in the collector, so
+// a major has to reclaim a quarter of what it walks to be worth walking. The
+// bar used to be a sixteenth, which a bundle-shaped workload clears without
+// ever being productive -- majors there marked thirteen cells per cell freed
+// and the backoff below reset to the floor every time, so it never engaged.
+constexpr size_t kMajorYieldDivisor = 4;
 constexpr uint32_t kMajorIntervalFloor = 8;
 constexpr uint32_t kMajorIntervalCap = 64;
 
@@ -1437,8 +1442,16 @@ void Collector::safepoint_slow() {
         // major left live: that growth is old-generation garbage no minor can
         // reclaim, and no amount of poor yield makes it collectable any other
         // way. Ask for one once the heap has added half of the live set again.
+        // Scaled by the same backoff the interval uses. Growth on top of the
+        // last live set is the signal that old-generation garbage is piling
+        // up, but it is only a guess -- and when the majors it forces keep
+        // coming back empty, it is a wrong guess. The interval is the
+        // collector's own measurement of exactly that, so the threshold rides
+        // it: unproductive majors make this trigger progressively harder to
+        // reach instead of firing on the same half-a-live-set forever.
         const size_t live = Heap::live_after_major();
-        const bool grown_enough = live > 0 && Heap::bytes_since_major() >= live / 2;
+        const size_t growth_needed = (live / 2) * (major_interval() / kMajorIntervalFloor);
+        const bool grown_enough = live > 0 && Heap::bytes_since_major() >= growth_needed;
         if (!barriers_disabled() && !grown_enough && ++cycle_count % major_interval() != 0) {
             run_minor_collection();
         } else {
