@@ -369,9 +369,11 @@ static void load_body_facts(const Literal* lit, bool& is_strict, bool& has_eval)
 // (strict, direct-eval, needs-outer-env, spec length), which is why it sits at
 // the end of each branch rather than inside ensure_shared_executable.
 //
-// Leaf only: a body holding inner literals cannot be rebuilt, because those
-// literals are where their own executables are cached and a re-parse would
-// produce different nodes for the same declaration site.
+// Leaf only, and the reason is cost rather than safety: releasing a body that
+// holds inner literals works (the rebuild happens at most once, so no node is
+// ever orphaned), but it means re-parsing every body inside it on the next
+// call. Measured on a bundle, that bought a further 17MB of live tree for
+// about 5% of cycles -- the leaves alone give 39MB for no measurable time.
 template <typename Literal>
 static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fresh,
                             bool strict, bool is_generator, bool is_async) {

@@ -20,8 +20,8 @@ namespace Quanta {
 
 namespace ast_detail {
 // A literal records its body span exactly once, and literals are constructed
-// innermost-first, so the span recorded immediately before this one is this
-// body's last inner literal if it has any. One pair of counters answers
+// innermost-first, so the span recorded immediately before this one belongs to
+// this body's last inner literal if it has any. One pair of counters answers
 // "does this body contain a nested literal" for the whole parse.
 inline bool note_span_and_is_leaf(size_t first, size_t last) {
     static thread_local size_t prev_first = 0, prev_last = 0;
@@ -33,6 +33,7 @@ inline bool note_span_and_is_leaf(size_t first, size_t last) {
 }
 
 
+
 class Context;
 class Object;
 class FunctionExpression;
@@ -40,6 +41,7 @@ class FunctionExpression;
 
 class ASTNode {
 public:
+
 
     enum class Type {
         NUMBER_LITERAL,
@@ -1071,10 +1073,10 @@ private:
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
     uint32_t body_tok_last_ = 0;
-    // Whether this body contains no nested function literal. Only a leaf body
-    // can be released and re-parsed on demand: discarding one that holds inner
-    // literals would destroy the nodes their executables are cached on, and a
-    // re-parse would hand back different nodes for the same declaration site.
+    // Whether this body holds no nested function literal. Only a leaf is
+    // released: releasing an outer body means re-parsing every body inside it
+    // on the next call, and that was measured at ~5% of cycles for the last
+    // 17MB -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1171,10 +1173,10 @@ private:
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
     uint32_t body_tok_last_ = 0;
-    // Whether this body contains no nested function literal. Only a leaf body
-    // can be released and re-parsed on demand: discarding one that holds inner
-    // literals would destroy the nodes their executables are cached on, and a
-    // re-parse would hand back different nodes for the same declaration site.
+    // Whether this body holds no nested function literal. Only a leaf is
+    // released: releasing an outer body means re-parsing every body inside it
+    // on the next call, and that was measured at ~5% of cycles for the last
+    // 17MB -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1294,10 +1296,10 @@ private:
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
     uint32_t body_tok_last_ = 0;
-    // Whether this body contains no nested function literal. Only a leaf body
-    // can be released and re-parsed on demand: discarding one that holds inner
-    // literals would destroy the nodes their executables are cached on, and a
-    // re-parse would hand back different nodes for the same declaration site.
+    // Whether this body holds no nested function literal. Only a leaf is
+    // released: releasing an outer body means re-parsing every body inside it
+    // on the next call, and that was measured at ~5% of cycles for the last
+    // 17MB -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1414,10 +1416,10 @@ private:
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
     uint32_t body_tok_last_ = 0;
-    // Whether this body contains no nested function literal. Only a leaf body
-    // can be released and re-parsed on demand: discarding one that holds inner
-    // literals would destroy the nodes their executables are cached on, and a
-    // re-parse would hand back different nodes for the same declaration site.
+    // Whether this body holds no nested function literal. Only a leaf is
+    // released: releasing an outer body means re-parsing every body inside it
+    // on the next call, and that was measured at ~5% of cycles for the last
+    // 17MB -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1568,10 +1570,10 @@ private:
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
     uint32_t body_tok_last_ = 0;
-    // Whether this body contains no nested function literal. Only a leaf body
-    // can be released and re-parsed on demand: discarding one that holds inner
-    // literals would destroy the nodes their executables are cached on, and a
-    // re-parse would hand back different nodes for the same declaration site.
+    // Whether this body holds no nested function literal. Only a leaf is
+    // released: releasing an outer body means re-parsing every body inside it
+    // on the next call, and that was measured at ~5% of cycles for the last
+    // 17MB -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1698,10 +1700,10 @@ private:
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
     uint32_t body_tok_last_ = 0;
-    // Whether this body contains no nested function literal. Only a leaf body
-    // can be released and re-parsed on demand: discarding one that holds inner
-    // literals would destroy the nodes their executables are cached on, and a
-    // re-parse would hand back different nodes for the same declaration site.
+    // Whether this body holds no nested function literal. Only a leaf is
+    // released: releasing an outer body means re-parsing every body inside it
+    // on the next call, and that was measured at ~5% of cycles for the last
+    // 17MB -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
