@@ -441,7 +441,10 @@ bool Value::to_boolean() const {
         return true;
     }
     if (is_string()) {
-        return !as_string()->str().empty();
+        // empty() rather than str().empty(): a cons node answers from its own
+        // flag without flattening, and a rope is never empty by construction.
+        // Testing a string for truth is not a reason to build it.
+        return !as_string()->empty();
     }
     if (is_bigint()) {
         return as_bigint()->to_boolean();
