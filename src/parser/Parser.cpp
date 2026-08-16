@@ -7901,6 +7901,12 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     }
     
     Position end = get_current_position();
+    // A concise body is an expression, so parse_block_statement never ran and
+    // last_body_tok_* still describe some earlier function. Recording it here
+    // would hand this arrow a span pointing at a different body -- one that
+    // still opens with `{` and closes with `}`, so no structural check would
+    // catch it. Only a block body has a range to record.
+    const bool has_block_body = body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT;
     auto arrow_expr = std::make_unique<ArrowFunctionExpression>(
         std::move(params), std::move(body), false, start, end
     );
@@ -7910,7 +7916,16 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             ? last.get_start().offset + 1
             : last.get_end().offset;
         arrow_expr->set_source_range(start.offset, src_end);
-        arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+        if (has_block_body) {
+            arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+        } else {
+            // Still joins the innermost-first chain the leaf test walks, so a
+            // body holding only a concise arrow is not mistaken for a leaf.
+            // Token indices, not source offsets: that is the unit the chain
+            // compares in. The current index sits strictly inside any body
+            // that encloses this arrow, which is all the test needs.
+            ast_detail::note_span_and_is_leaf(current_token_index_, current_token_index_);
+        }
     }
     return arrow_expr;
 }
