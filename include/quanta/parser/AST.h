@@ -966,7 +966,7 @@ public:
     // leaves the caller not calling iterator_close (matching spec: don't
     // close if GetIterator/next itself threw).
     static bool get_iterator(Context& ctx, const Value& iterable, Value& out_iterator, Value& out_next_fn);
-    static bool iterator_step(Context& ctx, const Value& iterator, const Value& next_fn,
+    static bool iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
                                bool& out_done, Value& out_value);
     // validate_result: check return()'s result is an Object (IteratorClose-
     // after-break rule). is_pending/pending_exception: an in-flight

@@ -1418,6 +1418,21 @@ std::unique_ptr<ASTNode> ForInStatement::clone() const {
 // steps below (see the `if (iterator_symbol && obj && ...)` block) -- the VM's
 // Op::GetIterator calls this directly instead of duplicating the logic.
 bool ForOfStatement::get_iterator(Context& ctx, const Value& iterable, Value& out_iterator, Value& out_next_fn) {
+    // A dense array whose iteration nothing has redefined is walked by index,
+    // which is what %ArrayIteratorPrototype%.next does anyway -- it reads
+    // a[i] and hands back {value, done}. Skipping it skips the iterator
+    // object, a result object per step, and the call that makes them. The
+    // protector is what says nothing has redefined it; the pair is marked by
+    // handing back a NUMBER where a next function would be, which the step
+    // below tests for.
+    if (iterable.is_object() && Object::array_iterator_protector_intact()) {
+        Object* a = iterable.as_object();
+        if (a->get_type() == Object::ObjectType::Array && a->has_only_dense_elements()) {
+            out_iterator = iterable;
+            out_next_fn = Value(0.0);
+            return true;
+        }
+    }
     if (!iterable.is_object() && !iterable.is_string() && !iterable.is_function()) {
         ctx.throw_type_error(iterable.to_string() + " is not iterable");
         return false;
@@ -1478,8 +1493,34 @@ bool ForOfStatement::get_iterator(Context& ctx, const Value& iterable, Value& ou
 // extraction (including the Object::current_context_ getter-exception
 // rescue for a `done`/`value` accessor that throws through a different
 // Context, e.g. a Proxy trap) below in the sync for-of loop.
-bool ForOfStatement::iterator_step(Context& ctx, const Value& iterator, const Value& next_fn,
+bool ForOfStatement::iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
                                     bool& out_done, Value& out_value) {
+    // Index form, set up by get_iterator above. Re-checked every step rather
+    // than trusted from the start: the body can redefine the iteration or make
+    // the array sparse, and either has to stop this from answering.
+    if (next_fn.is_number()) {
+        Object* a = iterator.as_object();
+        const double di = next_fn.as_number();
+        const uint32_t i = static_cast<uint32_t>(di);
+        // Nothing is re-checked against the protector here: GetIterator reads
+        // `next` once and the loop keeps that one, so redefining array
+        // iteration after the loop started cannot reach it -- exactly as it
+        // cannot reach an iterator object that was already made.
+        if (LIKELY(a->has_only_dense_elements())) {
+            if (i >= a->element_count()) { out_done = true; return true; }
+            out_value = a->get_element(i);
+        } else {
+            // Made sparse while the loop was running. The iterator this stands
+            // in for reads a[i] against the current length and yields
+            // undefined for a hole, so this does the same rather than refusing.
+            const double len = a->get_property("length").to_number();
+            if (!(di < len)) { out_done = true; return true; }
+            out_value = a->get_property(std::to_string(i));
+        }
+        out_done = false;
+        next_fn = Value(di + 1.0);
+        return true;
+    }
     Value result = next_fn.as_function()->call(ctx, {}, iterator);
     // Per spec: if next() throws abruptly, do NOT close the iterator.
     if (ctx.has_exception()) return false;

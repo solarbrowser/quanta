@@ -1515,6 +1515,11 @@ void Object::remove_own_property(const std::string& key) {
 }
 
 bool Object::delete_property(const std::string& key) {
+    // Removing the hook is a redefinition like any other: `delete
+    // Array.prototype[Symbol.iterator]` has to make array iteration stop
+    // taking the shortcut, or a destructuring that must raise silently
+    // succeeds instead.
+    note_protector_write(this, key);
     if (get_type() == ObjectType::Array && key == "length") return false;
     switch (get_type()) {
         case ObjectType::Function: return static_cast<Function*>(this)->delete_property(key);
