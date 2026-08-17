@@ -140,11 +140,11 @@ Value Iterator::iterator_throw(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-thread_local Object* Iterator::s_iterator_prototype_ = nullptr;
-thread_local Object* Iterator::s_array_iterator_prototype_ = nullptr;
-thread_local Object* Iterator::s_string_iterator_prototype_ = nullptr;
-thread_local Object* Iterator::s_map_iterator_prototype_ = nullptr;
-thread_local Object* Iterator::s_set_iterator_prototype_ = nullptr;
+constinit thread_local Object* Iterator::s_iterator_prototype_ = nullptr;
+constinit thread_local Object* Iterator::s_array_iterator_prototype_ = nullptr;
+constinit thread_local Object* Iterator::s_string_iterator_prototype_ = nullptr;
+constinit thread_local Object* Iterator::s_map_iterator_prototype_ = nullptr;
+constinit thread_local Object* Iterator::s_set_iterator_prototype_ = nullptr;
 
 void Iterator::setup_iterator_prototype(Context& ctx) {
     // %IteratorPrototype% - only has [Symbol.iterator] returning this

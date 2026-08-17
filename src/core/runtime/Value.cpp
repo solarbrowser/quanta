@@ -33,7 +33,7 @@ static int32_t ToInt32(double number) {
 }
 
 #if PLATFORM_POINTER_COMPRESSION
-thread_local uintptr_t Value::heap_base_ = 0;
+constinit thread_local uintptr_t Value::heap_base_ = 0;
 #endif
 
 Value::Value(Object* obj) {

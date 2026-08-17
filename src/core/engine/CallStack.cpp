@@ -12,7 +12,7 @@
 
 namespace Quanta {
 
-thread_local CallStack* CallStack::instance_ = nullptr;
+constinit thread_local CallStack* CallStack::instance_ = nullptr;
 
 std::string resolve_private_storage_key(const std::string& bare_name, Object* obj) {
     CallStack& cs = CallStack::instance();

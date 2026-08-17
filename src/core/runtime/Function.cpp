@@ -49,7 +49,7 @@ static bool is_anon_func_def(const ASTNode* node) {
 
 namespace Quanta {
 
-thread_local Object* Function::s_throw_type_error_ = nullptr;
+constinit thread_local Object* Function::s_throw_type_error_ = nullptr;
 
 // closure_context_ is stored for the Function's whole life and read by the
 // tracer (Function::trace_default) and by every arrow's `this`/`super` lookup,

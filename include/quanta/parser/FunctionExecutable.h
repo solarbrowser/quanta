@@ -165,7 +165,7 @@ private:
     // set would cost a node plus a malloc per construction and a hash+erase
     // per destruction. Doubly linked so unlinking stays O(1): executables die
     // in arbitrary order, not LIFO.
-    static thread_local FunctionExecutable* live_head_;
+    static constinit thread_local FunctionExecutable* live_head_;
     FunctionExecutable* live_next_ = nullptr;
     FunctionExecutable* live_prev_ = nullptr;
 

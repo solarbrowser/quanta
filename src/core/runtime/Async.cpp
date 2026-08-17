@@ -53,7 +53,7 @@ void AsyncGenerator::trace(Visitor& v) {
 }
 
 
-thread_local AsyncExecutor* AsyncExecutor::current_ = nullptr;
+constinit thread_local AsyncExecutor* AsyncExecutor::current_ = nullptr;
 
 AsyncExecutor::AsyncExecutor(ASTNode* body,
                               AsyncFunction* owner_fn,
@@ -457,9 +457,9 @@ void AsyncFunction::trace(Visitor& v) {
 }
 
 
-thread_local Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
-thread_local Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
-thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
+constinit thread_local Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
+constinit thread_local Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
+constinit thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 
 AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body,
                                AsyncGeneratorFunction* owner_fn, Context* outer_ctx)

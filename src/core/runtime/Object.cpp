@@ -44,10 +44,10 @@ static_assert(sizeof(AsyncFunction) <= 144);
 static_assert(sizeof(AsyncGeneratorFunction) <= 144);
 #endif
 
-thread_local Context* Object::current_context_ = nullptr;
+constinit thread_local Context* Object::current_context_ = nullptr;
 
-thread_local uint64_t Object::proto_epoch_ = 0;
-thread_local uint64_t Object::descriptor_epoch_ = 0;
+constinit thread_local uint64_t Object::proto_epoch_ = 0;
+constinit thread_local uint64_t Object::descriptor_epoch_ = 0;
 
 thread_local std::unordered_map<std::string, std::string> Object::interned_keys_;
 
@@ -1117,8 +1117,8 @@ namespace {
 // Array.prototype and per-instance shadowing) or patches
 // %ArrayIteratorPrototype%.next. Real code never does either, so the fast
 // path effectively always holds; when it does not, correctness wins.
-thread_local bool g_array_iterator_intact = true;
-thread_local Object* g_array_iterator_prototype = nullptr;
+constinit thread_local bool g_array_iterator_intact = true;
+constinit thread_local Object* g_array_iterator_prototype = nullptr;
 
 // Both checks lead with a length test so the common case costs a compare.
 inline void note_protector_write(const Object* target, const std::string& key) {

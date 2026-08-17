@@ -59,11 +59,11 @@ public:
 
     // Well-known prototype objects (set during setup_iterator_prototype).
     // Thread-local: each agent builds and owns its own intrinsics.
-    static thread_local Object* s_iterator_prototype_;
-    static thread_local Object* s_array_iterator_prototype_;
-    static thread_local Object* s_string_iterator_prototype_;
-    static thread_local Object* s_map_iterator_prototype_;
-    static thread_local Object* s_set_iterator_prototype_;
+    static constinit thread_local Object* s_iterator_prototype_;
+    static constinit thread_local Object* s_array_iterator_prototype_;
+    static constinit thread_local Object* s_string_iterator_prototype_;
+    static constinit thread_local Object* s_map_iterator_prototype_;
+    static constinit thread_local Object* s_set_iterator_prototype_;
 
 protected:
     IteratorResult next_default();

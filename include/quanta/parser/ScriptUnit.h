@@ -106,7 +106,7 @@ private:
     std::unique_ptr<Parser> body_parser_;
     mutable uint32_t ref_count_ = 0;
 
-    static thread_local ScriptUnit* building_;
+    static constinit thread_local ScriptUnit* building_;
 };
 
 using ScriptUnitRef = ExecutableRef<ScriptUnit>;

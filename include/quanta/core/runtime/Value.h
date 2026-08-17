@@ -66,7 +66,7 @@ public:
 
 private:
     #if PLATFORM_POINTER_COMPRESSION
-    static thread_local uintptr_t heap_base_;
+    static constinit thread_local uintptr_t heap_base_;
     static void set_heap_base(void* base) { heap_base_ = reinterpret_cast<uintptr_t>(base); }
     static uint64_t compress_pointer(void* ptr) {
         if (!ptr) return 0;

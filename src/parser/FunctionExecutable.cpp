@@ -26,7 +26,7 @@ static_assert(sizeof(FunctionExecutable) == 208);
 static_assert(sizeof(FunctionExecutable) <= 224);
 #endif
 
-thread_local FunctionExecutable* FunctionExecutable::live_head_ = nullptr;
+constinit thread_local FunctionExecutable* FunctionExecutable::live_head_ = nullptr;
 
 FunctionExecutable::FunctionExecutable() {
     live_next_ = live_head_;

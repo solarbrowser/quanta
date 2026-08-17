@@ -88,8 +88,8 @@ public:
 
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
 private:
-    static thread_local Generator* current_generator_;
-    static thread_local size_t current_yield_counter_;
+    static constinit thread_local Generator* current_generator_;
+    static constinit thread_local size_t current_yield_counter_;
 
     static void fiber_entry(mco_coro* co);
     void run_body();
@@ -134,9 +134,9 @@ public:
     static void reset_yield_counter();
 
     // %GeneratorPrototype%. Thread-local: each agent owns its own intrinsics.
-    static thread_local Object* s_generator_prototype_;
+    static constinit thread_local Object* s_generator_prototype_;
     // %GeneratorFunction.prototype%
-    static thread_local Object* s_generator_function_prototype_;
+    static constinit thread_local Object* s_generator_function_prototype_;
     
 private:
     void complete_generator(const Value& value);

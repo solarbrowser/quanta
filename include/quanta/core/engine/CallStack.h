@@ -45,7 +45,7 @@ struct CallStackFrame {
 class CallStack {
 private:
     std::vector<CallStackFrame> frames_;
-    static thread_local CallStack* instance_;
+    static constinit thread_local CallStack* instance_;
     static void init_default_instance();
     
 public:

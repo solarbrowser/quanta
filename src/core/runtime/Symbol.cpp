@@ -29,7 +29,7 @@ void Symbol::operator delete(void* p) noexcept {
 }
 
 
-thread_local uint64_t Symbol::next_id_ = 1;
+constinit thread_local uint64_t Symbol::next_id_ = 1;
 thread_local std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::well_known_symbols_;
 thread_local std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::global_registry_;
 thread_local std::unordered_map<std::string, Symbol*> Symbol::user_symbol_registry_;

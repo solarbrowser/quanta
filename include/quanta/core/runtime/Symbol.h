@@ -20,7 +20,7 @@ class Symbol {
 private:
     std::string description_;
     bool has_description_ = false;
-    static thread_local uint64_t next_id_;
+    static constinit thread_local uint64_t next_id_;
     uint64_t id_;
 
     // Thread-local: each agent has its own well-known/registered symbols,

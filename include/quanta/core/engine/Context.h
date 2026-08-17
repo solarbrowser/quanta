@@ -151,7 +151,7 @@ private:
     // now a plain pointer copy.
     const std::string* current_filename_;
 
-    static thread_local uint32_t next_context_id_;
+    static constinit thread_local uint32_t next_context_id_;
 
     // Microtask queue for Promise/async (only used on global context).
     // keep_alive lists every cell a task's lambda captures: closure storage

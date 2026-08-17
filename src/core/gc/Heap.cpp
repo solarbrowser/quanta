@@ -17,10 +17,10 @@
 
 namespace Quanta {
 
-thread_local Heap* Heap::active_ = nullptr;
-thread_local bool Heap::gc_requested_ = false;
-thread_local size_t Heap::bytes_since_major_ = 0;
-thread_local size_t Heap::live_after_major_ = 0;
+constinit thread_local Heap* Heap::active_ = nullptr;
+constinit thread_local bool Heap::gc_requested_ = false;
+constinit thread_local size_t Heap::bytes_since_major_ = 0;
+constinit thread_local size_t Heap::live_after_major_ = 0;
 
 Heap& Heap::active() {
     assert(active_ && "no active Heap -- Engine init must install a HeapScope "
@@ -130,7 +130,7 @@ namespace {
 // heap can't see directly, e.g. a pinned survivor Context -- see its own
 // doc comment) so both contribute to the same, already-tuned cadence
 // instead of survivor growth needing its own separate threshold.
-thread_local size_t g_bytes_since_gc = 0;
+constinit thread_local size_t g_bytes_since_gc = 0;
 // How many bytes may be allocated before the next collection. A fixed number
 // asks the wrong question: it makes collection frequency a function of how
 // big the program's objects happen to be, so shrinking a hot type silently

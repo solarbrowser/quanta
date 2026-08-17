@@ -66,7 +66,7 @@ public:
 private:
     ASTNode* body_;
     AsyncFunction* owner_fn_;
-    static thread_local AsyncExecutor* current_;
+    static constinit thread_local AsyncExecutor* current_;
     static void fiber_entry(mco_coro* co);
 };
 
@@ -194,9 +194,9 @@ public:
 
     static void setup_async_generator_prototype(Context& ctx);
     // Thread-local: each agent owns its own intrinsics.
-    static thread_local Object* s_async_generator_prototype_;
+    static constinit thread_local Object* s_async_generator_prototype_;
     // %AsyncGeneratorFunction.prototype% -- [[Prototype]] of all async generator functions
-    static thread_local Object* s_async_generator_function_prototype_;
+    static constinit thread_local Object* s_async_generator_function_prototype_;
 
     static AsyncGenerator* get_current() { return current_; }
     static void set_current(AsyncGenerator* g) { current_ = g; }
@@ -218,7 +218,7 @@ private:
     // Start processing request_queue_.front() -- assumes pending_promise_ == nullptr.
     void process_next_request();
 
-    static thread_local AsyncGenerator* current_;
+    static constinit thread_local AsyncGenerator* current_;
     static void fiber_entry(mco_coro* co);
 };
 

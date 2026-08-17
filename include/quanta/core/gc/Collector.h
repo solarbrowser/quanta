@@ -55,7 +55,7 @@ public:
 
     // True between an incremental major cycle's first slice and its last;
     // read directly by safepoint() above and by the barriers in Collector.cpp.
-    static thread_local bool major_in_progress_;
+    static constinit thread_local bool major_in_progress_;
 
     // QUANTA_GC_STRESS, resolved on the first safepoint_slow(). Starts at -1
     // ("not resolved yet"), which reads as armed, so the inline test above

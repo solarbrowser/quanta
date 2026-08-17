@@ -87,13 +87,17 @@ public:
         Custom
     };
 
-    static thread_local Context* current_context_;
+    // constinit so every translation unit knows the initializer is a constant:
+    // without it a thread_local defined elsewhere is reached through a lazy
+    // init wrapper, and the check plus its call land on the call path three
+    // times per invocation.
+    static constinit thread_local Context* current_context_;
 
     // Monotonic; bumped by set_prototype() and by property add/remove/
     // attribute-change on a used_as_prototype() object. SetNamed's
     // transition-cache trusts a cached "no [[Set]] blocker on this chain"
     // answer only while this hasn't moved since it was validated.
-    static thread_local uint64_t proto_epoch_;
+    static constinit thread_local uint64_t proto_epoch_;
 public:
     static uint64_t proto_epoch() { return proto_epoch_; }
 private:
@@ -109,7 +113,7 @@ private:
     // safe (worst case, an unrelated object's change forces one extra real
     // check), just occasionally more conservative than a per-object signal
     // would be.
-    static thread_local uint64_t descriptor_epoch_;
+    static constinit thread_local uint64_t descriptor_epoch_;
 public:
     static uint64_t descriptor_epoch() { return descriptor_epoch_; }
 
@@ -1532,7 +1536,7 @@ public:
     std::string to_string() const;
 
     // The %ThrowTypeError% intrinsic, shared by Function.prototype.caller/.arguments and arguments.callee.
-    static thread_local Object* s_throw_type_error_;
+    static constinit thread_local Object* s_throw_type_error_;
 
 protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx, class Environment* param_env = nullptr);

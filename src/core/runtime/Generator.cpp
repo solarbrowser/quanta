@@ -42,10 +42,10 @@ void Generator::trace(Visitor& v) {
 
 
 
-thread_local Generator* Generator::current_generator_ = nullptr;
-thread_local size_t Generator::current_yield_counter_ = 0;
-thread_local Object* Generator::s_generator_prototype_ = nullptr;
-thread_local Object* Generator::s_generator_function_prototype_ = nullptr;
+constinit thread_local Generator* Generator::current_generator_ = nullptr;
+constinit thread_local size_t Generator::current_yield_counter_ = 0;
+constinit thread_local Object* Generator::s_generator_prototype_ = nullptr;
+constinit thread_local Object* Generator::s_generator_function_prototype_ = nullptr;
 
 void Generator::fiber_entry(mco_coro* co) {
     Generator* gen = static_cast<Generator*>(mco_get_user_data(co));

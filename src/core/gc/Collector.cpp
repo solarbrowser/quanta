@@ -57,7 +57,7 @@
 
 namespace Quanta {
 
-thread_local bool Collector::major_in_progress_ = false;
+constinit thread_local bool Collector::major_in_progress_ = false;
 int Collector::stress_mode_ = -1;  // -1: not resolved yet, reads as armed
 
 namespace {
@@ -75,7 +75,7 @@ void hunt_check(const Environment* env, const char* who);
 // through a real edge by any collection since every mark bit in the heap was
 // cleared, so no marked cell is known to point at it -- see
 // run_minor_collection's survivor prune.
-thread_local uint8_t g_major_epoch = 1;
+constinit thread_local uint8_t g_major_epoch = 1;
 
 class MarkVisitor final : public Visitor {
 public:
@@ -457,7 +457,7 @@ __attribute__((no_sanitize("address")))
 // program keeps many suspended fibers, each with its own stack, and scanning
 // them is most of what its collections cost -- none of which shows in how much
 // memory is live. See Heap::retune_budget's caller.
-thread_local size_t g_scanned_words = 0;
+constinit thread_local size_t g_scanned_words = 0;
 
 // A conservative scanner reads whole stack ranges on purpose, redzones and
 // all, and ASan flags every such read -- which buried every other report this
@@ -1028,7 +1028,7 @@ void scan_major_roots(MarkVisitor& v) {
 }
 
 thread_local std::chrono::steady_clock::time_point g_major_cycle_start;
-thread_local uint32_t g_major_slice_count = 0;
+constinit thread_local uint32_t g_major_slice_count = 0;
 
 // Only reachable once Collector::mark_step has returned CycleComplete, i.e.
 // gray_/context_work_/environment_work_ are all genuinely empty -- the one

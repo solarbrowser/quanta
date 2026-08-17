@@ -56,7 +56,7 @@ static_assert(sizeof(Context) <= 896);
 static_assert(sizeof(Environment) <= 512);
 #endif
 
-thread_local uint32_t Context::next_context_id_ = 1;
+constinit thread_local uint32_t Context::next_context_id_ = 1;
 
 ContextSurvivorGuard::~ContextSurvivorGuard() {
     if (!ptr) return;
@@ -241,7 +241,7 @@ namespace {
 // -- and this pool is touched twice on every call.
 constexpr size_t kCallContextPoolCap = 64;
 thread_local Context* g_call_context_pool[kCallContextPoolCap];
-thread_local size_t g_call_context_pool_len = 0;
+constinit thread_local size_t g_call_context_pool_len = 0;
 }
 
 Context* CallContextPool::acquire(Engine* engine, Context* parent) {
@@ -835,7 +835,7 @@ namespace {
 // One realm per thread for this purpose, matching Generator's own
 // s_generator_prototype_. Never cleared: these live as long as the builtins do.
 thread_local Object* g_primitive_protos[static_cast<size_t>(Context::PrimitiveKind::Count)] = {};
-thread_local Function* g_intrinsic_promise = nullptr;
+constinit thread_local Function* g_intrinsic_promise = nullptr;
 }  // namespace
 
 Function* Context::intrinsic_promise() { return g_intrinsic_promise; }

@@ -160,10 +160,10 @@ private:
     void* allocate_large(size_t size, CellKind kind);
     static void free_large(void* p);
 
-    static thread_local Heap* active_;
-    static thread_local bool gc_requested_;
-    static thread_local size_t bytes_since_major_;
-    static thread_local size_t live_after_major_;
+    static constinit thread_local Heap* active_;
+    static constinit thread_local bool gc_requested_;
+    static constinit thread_local size_t bytes_since_major_;
+    static constinit thread_local size_t live_after_major_;
 
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into

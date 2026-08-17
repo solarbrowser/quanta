@@ -5,7 +5,7 @@
 
 namespace Quanta {
 
-thread_local ScriptUnit* ScriptUnit::building_ = nullptr;
+constinit thread_local ScriptUnit* ScriptUnit::building_ = nullptr;
 
 ScriptUnit::~ScriptUnit() = default;
 
