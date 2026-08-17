@@ -19,8 +19,20 @@ CXXFLAGS += -fstrict-aliasing -fstrict-enums
 # The stack canary is a mitigation for overflowing a stack buffer, and the
 # interpreter and runtime have none to overflow -- their arrays are sized from
 # the chunk the compiler just produced. It is kept where bytes the engine did
-# not produce are first handled: the lexer, the parser and their buffers.
+# not produce are first handled: the lexer, the parser and their buffers,
+# which are cold once a script is running and so cost nothing to protect.
+#
+# This is a deliberate trade, not an oversight, and it is not something a test
+# run can vouch for: a mitigation only matters once there is a bug to exploit,
+# so a green suite says nothing about it either way. What the split rests on is
+# structural -- past the parser, nothing is sized from bytes this engine did
+# not produce. The one exception is VM::run's register bank, indexed by
+# operands our own compiler emitted, and that is covered by
+# validate_chunk_registers instead (Bytecode.cpp), which rejects a bad operand
+# where it is introduced rather than noticing the damage at return. Reverting
+# is one line: drop -fno-stack-protector.
 CXXFLAGS += -fno-stack-protector
+# Applied per-directory below, to the lexer and parser objects only.
 HARDEN_FLAGS = -fstack-protector-strong
 CXXFLAGS += -pthread
 
