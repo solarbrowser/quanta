@@ -9,6 +9,8 @@
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/parser/FunctionExecutable.h"
 #include <sstream>
+#include <cstdio>
+#include <cstdlib>
 
 namespace Quanta {
 
@@ -86,14 +88,14 @@ const OpInfo& op_info(Op op) {
         {"BindEnvLocals", 0, '-'},
         {"EnterLoopEnv", 2, 'z'}, {"AdvanceLoopEnv", 2, 'z'}, {"ExitLoopEnv", 0, '-'},
         {"SaveEnv", 0, '-'}, {"RestoreEnv", 0, '-'}, {"PopEnvSave", 0, '-'},
-        {"GetIterator", 1, 'r'}, {"IteratorNextOrJump", 4, 'j'}, {"IteratorClose", 2, 'r'},
+        {"GetIterator", 1, 'r'}, {"IteratorNextOrJump", 4, 'j'}, {"IteratorClose", 2, 'C'},
         {"CreateForInKeys", 1, 'r'},
         {"JumpIfNotNullish", 2, 'o'}, {"JumpIfNullish", 2, 'o'}, {"JumpIfNotUndefined", 2, 'o'},
         {"CreateClosure", 2, 'z'},
         {"DeclareFunction", 2, 'z'},
         {"EvalAst", 2, 'z'},
         {"CopyRestProperties", 2, 'r'},
-        {"CreateRestArray", 1, 'r'},
+        {"CreateRestArray", 1, 'A'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},
         {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"ObjectSpreadInto", 1, 'r'}, {"HasPrivate", 2, 'n'},
         {"LdaEngineHelper", 1, 'E'},
@@ -118,6 +120,62 @@ const OpInfo& op_info(Op op) {
 }
 
 }
+
+#ifdef QUANTA_VALIDATE_BYTECODE
+void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& name) {
+    const uint32_t limit = chunk.register_count;
+    auto bad = [&](size_t pc, const char* op, const char* what, unsigned reg) {
+        std::fprintf(stderr,
+            "[bytecode] %s at pc %zu in '%s': %s r%u but the chunk declares %u registers\n",
+            op, pc, name.empty() ? "<anonymous>" : name.c_str(), what, reg, limit);
+        std::abort();
+    };
+
+    size_t pc = 0;
+    while (pc < chunk.code.size()) {
+        Op op = static_cast<Op>(chunk.code[pc]);
+        if (op >= Op::kCount) {
+            std::fprintf(stderr, "[bytecode] invalid opcode %d at pc %zu in '%s'\n",
+                         static_cast<int>(chunk.code[pc]), pc,
+                         name.empty() ? "<anonymous>" : name.c_str());
+            std::abort();
+        }
+        const OpInfo& info = op_info(op);
+        const size_t operand_pc = pc + 1;
+        // Which operand bytes name a register, per kind -- the same decoding
+        // disassemble_chunk does below, kept beside it so the two stay in step.
+        auto reg_at = [&](size_t i) { return static_cast<unsigned>(chunk.code[operand_pc + i]); };
+        auto check = [&](size_t i, const char* what) {
+            if (reg_at(i) >= limit) bad(pc, info.name, what, reg_at(i));
+        };
+        // An argument list occupies a run of registers starting at `first`.
+        // An empty list names the register the run would have started at and
+        // never reads it, so that operand may sit one past the end.
+        auto check_run = [&](size_t first_i, size_t count_i) {
+            const unsigned count = reg_at(count_i);
+            if (count == 0) return;
+            const unsigned first = reg_at(first_i);
+            if (first + count > limit)
+                bad(pc, info.name, "argument list ends past", first + count - 1);
+        };
+
+        switch (info.kind) {
+            case 'r': for (int i = 0; i < info.operand_bytes; i++) check(i, "reads"); break;
+            case 'S': check_run(0, 1); break;
+            case 'c': check(0, "calls"); check_run(1, 2); break;
+            case 'v': check(0, "calls"); check(1, "receiver"); check_run(2, 3); break;
+            case 'w': check(0, "calls"); check(1, "receiver"); check(2, "spread array"); break;
+            case 'W': check(0, "constructs"); check(1, "spread array"); break;
+            case 'g': case 'f': case 'l': case 'm': case 's': check(0, "receiver"); break;
+            case 'C': check(0, "closes the iterator in"); break;
+            case 'x': case 'j': check(0, "reads"); check(1, "reads"); break;
+            case 'p': check(0, "reads"); check(1, "key"); check(2, "raw key"); break;
+            default: break;  // no register operands
+        }
+        pc = operand_pc + info.operand_bytes;
+    }
+}
+#endif
 
 std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& name) {
     std::ostringstream out;
@@ -312,6 +370,15 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " kind=" << static_cast<int>(chunk.code[operand_pc + 3]);
                 break;
             }
+            case 'C':
+                // Second operand is a close mode, not a register.
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " mode=" << static_cast<int>(chunk.code[operand_pc + 1]);
+                break;
+            case 'A':
+                // Operand indexes the incoming argument list, not the registers.
+                out << " args[" << static_cast<int>(chunk.code[operand_pc]) << "..]";
+                break;
             case 'j': {
                 uint16_t raw = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
                                (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);

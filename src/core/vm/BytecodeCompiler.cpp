@@ -3448,6 +3448,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
         compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
         compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
+#ifdef QUANTA_VALIDATE_BYTECODE
+            if (compiler.chunk_) validate_chunk_registers(*compiler.chunk_, std::string());
+#endif
         return compiler.failed_ ? nullptr : std::move(compiler.chunk_);
     }
 
@@ -3490,6 +3493,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
     compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
+#ifdef QUANTA_VALIDATE_BYTECODE
+        if (compiler.chunk_) validate_chunk_registers(*compiler.chunk_, std::string());
+#endif
     return std::move(compiler.chunk_);
 }
 
@@ -3678,6 +3684,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
     compiler.chunk_->feedback = FixedArray<FeedbackSlot>::from(std::move(compiler.feedback_));
+#ifdef QUANTA_VALIDATE_BYTECODE
+        if (compiler.chunk_) validate_chunk_registers(*compiler.chunk_, std::string());
+#endif
     return std::move(compiler.chunk_);
 }
 

@@ -16,11 +16,17 @@ CXXFLAGS += -funroll-loops -finline-functions
 CXXFLAGS += -fvectorize -fslp-vectorize
 CXXFLAGS += -fomit-frame-pointer
 CXXFLAGS += -fstrict-aliasing -fstrict-enums
+# The stack canary is a mitigation for overflowing a stack buffer, and the
+# interpreter and runtime have none to overflow -- their arrays are sized from
+# the chunk the compiler just produced. It is kept where bytes the engine did
+# not produce are first handled: the lexer, the parser and their buffers.
+CXXFLAGS += -fno-stack-protector
+HARDEN_FLAGS = -fstack-protector-strong
 CXXFLAGS += -pthread
 
 LTO_FLAGS = -fuse-ld=lld -flto=thin
 
-DEBUG_FLAGS = -g -DDEBUG -O0
+DEBUG_FLAGS = -g -DDEBUG -O0 -DQUANTA_VALIDATE_BYTECODE
 
 # On top of the default -O3 set, not -O0/DEBUG_FLAGS: some GC-rooting bugs
 # only reproduce under -O3's register allocation, never under -O0/-O1.
@@ -32,7 +38,7 @@ DEBUG_FLAGS = -g -DDEBUG -O0
 # far away as corrupted string bytes -- under GC stress the same script
 # returned a different answer on every run, with nothing wrong in the engine.
 ASAN_FLAGS = -g -fsanitize=address,undefined -fno-omit-frame-pointer \
-             -fsanitize-address-use-after-return=never
+             -fsanitize-address-use-after-return=never -DQUANTA_VALIDATE_BYTECODE
 
 PCRE2_DIR = third_party/pcre2/src
 PCRE2_CFLAGS = -O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -I$(PCRE2_DIR) -march=native -fomit-frame-pointer
@@ -214,13 +220,13 @@ $(OBJ_DIR)/lexer/%.o: $(LEXER_SRC)/%.cpp
 	@$(MKDIR_P) $(dir $@)
 	@echo "[BUILD] Compiling lexer: $<"
 	@echo "[BUILD] $<" >> $(LOG_FILE)
-	@$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+	@$(CXX) $(CXXFLAGS) $(HARDEN_FLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 $(OBJ_DIR)/parser/%.o: $(PARSER_SRC)/%.cpp
 	@$(MKDIR_P) $(dir $@)
 	@echo "[BUILD] Compiling parser: $<"
 	@echo "[BUILD] $<" >> $(LOG_FILE)
-	@$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+	@$(CXX) $(CXXFLAGS) $(HARDEN_FLAGS) $(INCLUDES) -MMD -MP -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 $(OBJ_DIR)/pcre2/%.o: $(PCRE2_DIR)/%.c
 	@$(MKDIR_P) $(dir $@)
@@ -246,6 +252,11 @@ release: all
 # bugs vanish with this option set, at 15x their normal repro iteration
 # count). Real release builds never have ASan, so this is a test-harness
 # setting, not a product bug.
+# Release speed with the bytecode validator on, so a full conformance run can
+# check every chunk the compiler emits without paying for a sanitizer.
+validate: CXXFLAGS += -DQUANTA_VALIDATE_BYTECODE
+validate: all
+
 asan: CXXFLAGS += $(ASAN_FLAGS)
 asan: all
 	@echo ""

@@ -552,6 +552,19 @@ struct BytecodeChunk {
 // Human-readable dump for QUANTA_VM_DISASM=1.
 std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& name);
 
+// Every register operand a chunk carries must name a register the chunk
+// declared. The VM indexes its register bank with these bytes and does not
+// re-check them, so a compiler that emitted one too large would write past
+// the bank -- past the inline array in VM::run, into that frame's saved
+// registers. Nothing at run time can tell that apart from correct code, and
+// the check belongs where the bug is, in the compiler that just emitted it,
+// not on a path taken millions of times a second. Compiled in only for
+// -DQUANTA_VALIDATE_BYTECODE builds (debug and asan), where it runs once per
+// chunk and aborts on the first bad operand.
+#ifdef QUANTA_VALIDATE_BYTECODE
+void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& name);
+#endif
+
 }
 
 #endif
