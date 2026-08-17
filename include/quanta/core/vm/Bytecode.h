@@ -362,7 +362,7 @@ struct PrivateFeedback {
 // replicating here yet).
 struct KeyedFeedback {
     struct Entry { Shape* shape = nullptr; std::string key; uint32_t slot_index = 0; };
-    static constexpr uint8_t kMaxEntries = 4;
+    static constexpr uint8_t kMaxEntries = 8;
     std::array<Entry, kMaxEntries> entries{};
     uint8_t count = 0;
     bool mega = false;
