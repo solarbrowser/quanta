@@ -158,8 +158,8 @@ private:
         void clear_flags() { bits_ &= ~kMask; }
     private:
         // Objects are at least 16-byte aligned (HeapBlock::kCellAlign), so the
-        // low four bits are always free; three are in use.
-        static constexpr uintptr_t kMask = 0x7;
+        // low four bits are always free.
+        static constexpr uintptr_t kMask = 0xF;
         uintptr_t bits_ = 0;
     };
     TaggedProto proto_;
@@ -201,6 +201,15 @@ private:
 
     // is_extensible()/prevent_extensions()/reopen_extensible()'s bit in proto_.
     static constexpr uintptr_t kNotExtensible = 0x1;
+
+    // Whether this object has ever been given a descriptor map. Asked on the
+    // inline cache's own-property path, which is where nearly every property
+    // read lands and where the stamp it would rather trust is stale most of
+    // the time -- so the answer had better not be three dependent loads
+    // (butterfly, its header's extras, that extras' map). Set once and never
+    // cleared: ensure_descriptors is the only place a map is created, and
+    // nothing takes one away.
+    static constexpr uintptr_t kHasDescriptors = 0x8;
 
     // Single allocation backing both dense array elements and shape-slot
     // values, one pointer instead of two std::vectors' own ptr+size+capacity

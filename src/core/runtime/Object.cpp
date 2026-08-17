@@ -157,7 +157,7 @@ std::unordered_set<uint32_t>& Object::ensure_deleted_elements() {
     return *e.deleted_elements;
 }
 bool Object::has_any_descriptor_override() const {
-    return descriptors() != nullptr;
+    return proto_.flag(kHasDescriptors);
 }
 
 HybridDescriptorMap* Object::descriptors() const {
@@ -176,6 +176,10 @@ HybridDescriptorMap& Object::ensure_descriptors() {
     bump_descriptor_epoch();
     RareExtras& e = ensure_extras();
     if (!e.descriptors) e.descriptors = std::make_unique<HybridDescriptorMap>();
+    // Set on every call, not just the one that creates the map: clearing an
+    // object's properties empties the map and clears this bit while leaving
+    // the map itself in place, and the next descriptor has to turn it back on.
+    proto_.set_flag(kHasDescriptors);
     return *e.descriptors;
 }
 std::unordered_map<std::string, Value>* Object::internals() const {
