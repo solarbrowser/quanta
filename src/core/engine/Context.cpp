@@ -233,14 +233,20 @@ void Context::reset_for_call(Engine* engine, Context* parent) {
 }
 
 namespace {
-thread_local std::vector<Context*> g_call_context_pool;
+// A plain array rather than a vector, because the cap is fixed and release()
+// already refuses anything past it. A thread_local with a non-trivial
+// destructor has to be guarded on every access so its constructor can run
+// once per thread; these two are trivially constructible, so the guard, the
+// at-exit registration and the end-minus-begin size computation all go away
+// -- and this pool is touched twice on every call.
 constexpr size_t kCallContextPoolCap = 64;
+thread_local Context* g_call_context_pool[kCallContextPoolCap];
+thread_local size_t g_call_context_pool_len = 0;
 }
 
 Context* CallContextPool::acquire(Engine* engine, Context* parent) {
-    if (!g_call_context_pool.empty()) {
-        Context* c = g_call_context_pool.back();
-        g_call_context_pool.pop_back();
+    if (g_call_context_pool_len > 0) {
+        Context* c = g_call_context_pool[--g_call_context_pool_len];
         c->reset_for_call(engine, parent);
         return c;
     }
@@ -257,16 +263,16 @@ void CallContextPool::release(Context* ctx, Engine* engine) {
         else delete ctx;
         return;
     }
-    if (ctx->is_pristine() && g_call_context_pool.size() < kCallContextPoolCap) {
-        g_call_context_pool.push_back(ctx);
+    if (ctx->is_pristine() && g_call_context_pool_len < kCallContextPoolCap) {
+        g_call_context_pool[g_call_context_pool_len++] = ctx;
         return;
     }
     delete ctx;
 }
 
 void CallContextPool::drain() {
-    for (Context* c : g_call_context_pool) delete c;
-    g_call_context_pool.clear();
+    for (size_t i = 0; i < g_call_context_pool_len; ++i) delete g_call_context_pool[i];
+    g_call_context_pool_len = 0;
 }
 
 Context::~Context() {
