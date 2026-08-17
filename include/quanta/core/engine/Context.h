@@ -766,6 +766,23 @@ public:
     // Interned counterpart of the above. An object environment has no interned
     // form -- it questions a real object, which needs the text -- so that
     // branch hands *key to the same string path and answers identically.
+    // The whole walk when it stays declarative: the first environment that
+    // binds the name answers, and anything else -- an object environment on
+    // the way (whose lookup can run a proxy trap, so it must not be touched
+    // twice), a hole, a name that is nowhere -- refuses and leaves the full
+    // handler to redo it from the start.
+    bool try_read_declarative_chain(const std::string* key, Value& out) const {
+        for (const Environment* e = this; e; e = e->outer_environment_) {
+            if (e->type_ == Type::Object) return false;
+            const BindingSlot* s = e->slots_.find_interned(key);
+            if (!s) continue;
+            if (!s->initialized) return false;
+            out = s->value;
+            return true;
+        }
+        return false;
+    }
+
     int env_read_step_interned(const std::string* key, Value& out, Context* ctx) const {
         if (type_ != Type::Object) {
             const BindingSlot* s = slots_.find_interned(key);

@@ -3695,6 +3695,28 @@ Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc);
+
+// Only the read that the declarative chain answers outright. `this` is not in
+// any environment, an object environment on the way has to be asked in the
+// order the full handler asks it, and a hole has to be reported -- all three
+// tail-call below.
+Value h_LdaEnvFast(Frame& f, uint32_t pc, Value acc) {
+    static const std::string* kThis = Shape::intern("this");
+    const std::string* key = f.chunk.names[read_u16(f.code, pc + 1)];
+    if (LIKELY(key != kThis)) {
+        if (Environment* env = f.ctx.get_lexical_environment()) {
+            Value out;
+            if (LIKELY(env->try_read_declarative_chain(key, out))) {
+                acc = out;
+                pc += 3;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_LdaEnv(f, pc, acc);
+}
+
 Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5780,7 +5802,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::StaLookup)] = &h_StaLookupFast;
     t[static_cast<uint8_t>(Op::CheckLookupResolvable)] = &h_gen_CheckLookupResolvable;
     t[static_cast<uint8_t>(Op::StaLookupChecked)] = &h_gen_StaLookupChecked;
-    t[static_cast<uint8_t>(Op::LdaEnv)] = &h_gen_LdaEnv;
+    t[static_cast<uint8_t>(Op::LdaEnv)] = &h_LdaEnvFast;
     t[static_cast<uint8_t>(Op::StaEnv)] = &h_gen_StaEnv;
     t[static_cast<uint8_t>(Op::StaEnvInit)] = &h_gen_StaEnvInit;
     t[static_cast<uint8_t>(Op::LdaEnvSlot)] = &h_LdaEnvSlotFast;
