@@ -111,10 +111,8 @@ public:
     // Live JS call frames. Contexts are not cells and only exist as raw
     // pointers on the C++ stack, which the conservative scanner cannot
     // trace through -- every running frame must register itself.
-    static void push_exec_context(Context* ctx);
     // Pop by identity, not LIFO: a suspending fiber leaves its frames on the
     // stack while the host keeps pushing, so unwind order is not LIFO.
-    static void pop_exec_context(Context* ctx);
 
     // In-flight temporaries: argument lists and similar Value vectors live in
     // malloc'd std::vector storage that the conservative stack scan cannot
@@ -161,20 +159,6 @@ public:
 
 private:
     const FixedArray<Value>* arr_;
-};
-
-// RAII frame registration for Function::call and friends.
-class ExecContextScope {
-public:
-    explicit ExecContextScope(Context* ctx) : ctx_(ctx) { Collector::push_exec_context(ctx); }
-    ~ExecContextScope() { Collector::pop_exec_context(ctx_); }
-
-private:
-    Context* ctx_;
-
-public:
-    ExecContextScope(const ExecContextScope&) = delete;
-    ExecContextScope& operator=(const ExecContextScope&) = delete;
 };
 
 }

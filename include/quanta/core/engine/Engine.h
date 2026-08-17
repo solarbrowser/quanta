@@ -73,6 +73,13 @@ private:
     // prune loop) -- without this, an escaped Environment (any closure that
     // captures an outer variable) would never be freed at all.
     std::vector<Environment*> survivor_environments_;
+
+    // Head of the chain of ExecContextScopes currently open on this engine.
+    // Kept here rather than in a thread-local because every site that opens
+    // one already holds the engine: reaching a thread-local from another
+    // translation unit costs more than the push it guards, and reaching it
+    // through a call forces the hot caller to spill around it.
+    class ExecContextScope* exec_top_scope_ = nullptr;
     
     std::unordered_map<std::string, Value> default_exports_registry_;
     
@@ -120,6 +127,9 @@ public:
     // only by the collector's own reachability-based pass (Collector.cpp) --
     // a context not currently in EventLoop use may still be reachable
     // through a closure, which only a mark pass can confirm.
+    class ExecContextScope* exec_top_scope() const { return exec_top_scope_; }
+    void set_exec_top_scope(class ExecContextScope* s) { exec_top_scope_ = s; }
+
     void add_survivor_context(Context* ctx);
 
     // Same pattern for escaped Environments (see survivor_environments_).
@@ -190,6 +200,50 @@ public:
 /**
  * Engine factory for different configurations
  */
+// Registers a Context as a collection root for as long as a call is running
+// on it. A Context is not a GC cell, so the conservative stack scan cannot
+// reach the values it holds -- something has to name it explicitly.
+//
+// The link lives in the scope object itself, which is already a stack local
+// at every site, so neither Context nor Engine grows a per-call field, and
+// the head is reached through an engine pointer the caller already holds.
+class ExecContextScope {
+public:
+    explicit ExecContextScope(Context* ctx)
+        : ctx_(ctx), engine_(ctx->get_engine()) {
+        prev_ = engine_->exec_top_scope();
+        engine_->set_exec_top_scope(this);
+    }
+
+    // A call returns before its caller, so the scope being closed is almost
+    // always the head. A fiber suspended mid-call and resumed from another
+    // stack is the exception, and unlinks from the middle instead.
+    ~ExecContextScope() {
+        if (engine_->exec_top_scope() == this) {
+            engine_->set_exec_top_scope(prev_);
+            return;
+        }
+        unlink();
+    }
+
+    Context* context() const { return ctx_; }
+    ExecContextScope* prev() const { return prev_; }
+
+    ExecContextScope(const ExecContextScope&) = delete;
+    ExecContextScope& operator=(const ExecContextScope&) = delete;
+
+private:
+    void unlink() {
+        for (ExecContextScope* s = engine_->exec_top_scope(); s; s = s->prev_) {
+            if (s->prev_ == this) { s->prev_ = prev_; return; }
+        }
+    }
+
+    Context* ctx_;
+    Engine* engine_;
+    ExecContextScope* prev_;
+};
+
 namespace EngineFactory {
     std::unique_ptr<Engine> create_browser_engine();
     std::unique_ptr<Engine> create_server_engine();

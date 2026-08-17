@@ -628,11 +628,6 @@ MarkVisitor& mark_visitor() {
     return v;
 }
 
-std::vector<Context*>& exec_context_stack() {
-    static thread_local std::vector<Context*> stack;
-    return stack;
-}
-
 std::vector<const std::vector<Value>*>& value_vector_roots() {
     static thread_local std::vector<const std::vector<Value>*> roots;
     return roots;
@@ -887,7 +882,9 @@ void run_minor_collection() {
         }
     }
     v.visit_context(Object::current_context_);
-    for (Context* c : exec_context_stack()) v.visit_context(c);
+    for (Engine* engine : Engine::all_engines())
+        for (ExecContextScope* s = engine->exec_top_scope(); s; s = s->prev())
+            v.visit_context(s->context());
     for (const std::vector<Value>* vec : value_vector_roots())
         for (const Value& val : *vec) v.visit(val);
     for (const FixedArray<Value>* arr : value_array_roots())
@@ -1017,7 +1014,9 @@ void scan_major_roots(MarkVisitor& v) {
         }
     }
     v.revisit_context(Object::current_context_);
-    for (Context* c : exec_context_stack()) v.revisit_context(c);
+    for (Engine* engine : Engine::all_engines())
+        for (ExecContextScope* s = engine->exec_top_scope(); s; s = s->prev())
+            v.revisit_context(s->context());
     for (const std::vector<Value>* vec : value_vector_roots())
         for (const Value& val : *vec) v.visit(val);
     for (const FixedArray<Value>* arr : value_array_roots())
@@ -1464,10 +1463,6 @@ const Collector::CycleStats& Collector::last_cycle() {
     return g_last_cycle;
 }
 
-void Collector::push_exec_context(Context* ctx) {
-    exec_context_stack().push_back(ctx);
-}
-
 void Collector::push_value_vector(const std::vector<Value>* vec) {
     value_vector_roots().push_back(vec);
 }
@@ -1490,14 +1485,6 @@ void Collector::pop_value_array(const FixedArray<Value>* arr) {
     if (!roots.empty() && roots.back() == arr) { roots.pop_back(); return; }
     for (size_t i = roots.size(); i-- > 0;) {
         if (roots[i] == arr) { roots.erase(roots.begin() + i); return; }
-    }
-}
-
-void Collector::pop_exec_context(Context* ctx) {
-    auto& stack = exec_context_stack();
-    if (!stack.empty() && stack.back() == ctx) { stack.pop_back(); return; }
-    for (size_t i = stack.size(); i-- > 0;) {
-        if (stack[i] == ctx) { stack.erase(stack.begin() + i); return; }
     }
 }
 

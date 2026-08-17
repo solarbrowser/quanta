@@ -8,6 +8,7 @@
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/runtime/FiberStackPool.h"
 #include "quanta/core/gc/Collector.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/FiberRegistry.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
