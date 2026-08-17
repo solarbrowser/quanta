@@ -1488,24 +1488,39 @@ bool ForOfStatement::iterator_step(Context& ctx, const Value& iterator, const Va
         return false;
     }
     Object* result_obj = result.as_object();
-    Value done = result_obj->get_property("done");
-    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-            && Object::current_context_->has_exception()) {
-        ctx.throw_exception(Object::current_context_->get_exception(), true);
-        Object::current_context_->clear_exception();
+    // Neither read sits at a bytecode site, so no inline cache ever sees them:
+    // every step of every for-of pays the general lookup twice. A plain
+    // {value, done} result answers both straight from its own shape slots.
+    // Whatever the shortcut cannot serve -- an accessor, an inherited done, a
+    // proxy, an absent key -- falls through to the general path unchanged,
+    // which is also why a slot hit needs none of the exception plumbing below.
+    static const std::string kDone = "done";
+    static const std::string kValue = "value";
+
+    Value done;
+    if (!result_obj->try_read_own_data_slot(kDone, done)) {
+        done = result_obj->get_property(kDone);
+        if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                && Object::current_context_->has_exception()) {
+            ctx.throw_exception(Object::current_context_->get_exception(), true);
+            Object::current_context_->clear_exception();
+        }
+        if (ctx.has_exception()) return false;
     }
-    if (ctx.has_exception()) return false;
     if (done.to_boolean()) {
         out_done = true;
         return true;
     }
-    Value value = result_obj->get_property("value");
-    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-            && Object::current_context_->has_exception()) {
-        ctx.throw_exception(Object::current_context_->get_exception(), true);
-        Object::current_context_->clear_exception();
+    Value value;
+    if (!result_obj->try_read_own_data_slot(kValue, value)) {
+        value = result_obj->get_property(kValue);
+        if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                && Object::current_context_->has_exception()) {
+            ctx.throw_exception(Object::current_context_->get_exception(), true);
+            Object::current_context_->clear_exception();
+        }
+        if (ctx.has_exception()) return false;
     }
-    if (ctx.has_exception()) return false;
     out_done = false;
     out_value = value;
     return true;
