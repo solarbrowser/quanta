@@ -537,13 +537,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         fast_ctx.set_lexical_environment(outer_env);
         fast_ctx.set_variable_environment(outer_env);
         fast_ctx.set_arrow_function_context(is_arrow_);
-        if (is_strict_ || executable_->strict_directive_state == 1) fast_ctx.set_strict_mode(true);
+        if (is_strict_ || executable_->fast_strict) fast_ctx.set_strict_mode(true);
 
         Value fast_this = this_value;
         // Skipped entirely when the body cannot observe `this`: Op::LdaThis is
         // the only reader, and a native called from here is handed its own
         // receiver rather than reading one off this context.
-        if (executable_->bytecode_chunk->uses_this) {
+        if (executable_->fast_uses_this) {
             if (is_arrow_) {
                 // Own, not inherited: ArrowFunctionExpression::evaluate stamps
                 // these markers on the arrow itself, so asking has_property here

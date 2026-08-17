@@ -238,10 +238,20 @@ public:
     // declaration site, so an instance-side cache would go stale when a
     // sibling changed one.
     mutable bool fast_gate = false;
+    // Read on the register-mode path immediately after the gate, and both were
+    // reached by chasing a pointer for a single bit: the strict flag one load
+    // into the executable, uses_this two -- executable, then chunk. Cached
+    // beside the gate so that path loads the executable once and answers all
+    // three from the same line. Maintained here rather than at the reads for
+    // the same reason the gate is: every write to an input already recomputes.
+    mutable bool fast_strict = false;
+    mutable bool fast_uses_this = false;
     void recompute_fast_gate() const {
         fast_gate = !vm_incompatible && bytecode_chunk && !bytecode_chunk->env_mode &&
                     strict_directive_state >= 0 && closure_props_state == 0 &&
                     (self_name_state == 0 || self_name_state == 2);
+        fast_strict = strict_directive_state == 1;
+        fast_uses_this = bytecode_chunk && bytecode_chunk->uses_this;
     }
 
     // GC-roots every live executable's compiled chunk, every cycle (minor
