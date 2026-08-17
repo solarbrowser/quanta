@@ -1489,7 +1489,17 @@ public:
     // the values are already GC roots (a register bank is either on the C++
     // stack, which probe_word scans through NaN-boxing, or in VM::run's
     // rooted spill vector), and the view stays valid for the whole call.
-    Value call_register_args(Context& ctx, std::span<const Value> args, Value this_value);
+    // Inline: the body is a kind test and a forward, but as its own symbol it
+    // opened a frame on every call from the interpreter for that one test.
+    Value call_register_args(Context& ctx, std::span<const Value> args, Value this_value) {
+        // The three suspendable kinds keep the arguments past the call that
+        // made them, so a view of the caller's registers cannot serve them.
+        if (get_function_kind() != FunctionKind::Plain) {
+            std::vector<Value> copy(args.begin(), args.end());
+            return call(ctx, copy, this_value);
+        }
+        return call_default_impl(ctx, args, this_value, nullptr);
+    }
     Value construct(Context& ctx, const std::vector<Value>& args);
     
     // None of these seven are virtual on Object anymore -- Object's own

@@ -423,16 +423,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
 }
 
-Value Function::call_register_args(Context& ctx, std::span<const Value> args, Value this_value) {
-    // The three suspendable kinds keep the arguments past the call that made
-    // them, so a view of the caller's registers cannot serve them.
-    if (get_function_kind() != FunctionKind::Plain) {
-        std::vector<Value> copy(args.begin(), args.end());
-        return call(ctx, copy, this_value);
-    }
-    return call_default_impl(ctx, args, this_value, nullptr);
-}
-
 Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value this_value) {
     return call_default_impl(ctx, args, this_value, &args);
 }
