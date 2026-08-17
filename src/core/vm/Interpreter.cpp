@@ -255,6 +255,9 @@ void set_primitive_named(Context& ctx, const Value& prim, const std::string& nam
 // actually-distinct shape, tripping mega early for no benefit.
 void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, uint64_t no_override_epoch,
                      bool is_accessor) {
+    // A site that gave up stays given up, which is what lets going mega empty
+    // the table below.
+    if (fb->mega) return;
     for (uint8_t i = 0; i < fb->count; i++) {
         if (fb->entries[i].shape == shape) {
             // Refresh, not no-op: a caller re-deriving this same shape has
@@ -270,7 +273,13 @@ void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, uint64_
     if (fb->count < FeedbackSlot::kMaxEntries) {
         fb->entries[fb->count++] = {shape, slot_index, is_accessor, no_override_epoch};
     } else {
+        // Emptied as well as marked, so a live first entry is by itself proof
+        // that the site is still caching: the read path then asks one question
+        // where it asked three. Every other reader already tests mega before
+        // it looks at the table.
         fb->mega = true;
+        fb->count = 0;
+        fb->entries[0].shape = nullptr;
     }
 }
 
@@ -4914,7 +4923,9 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
         if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
             const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
             const FeedbackSlot::Entry& e = fb.entries[0];
-            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&
+            // A non-null shape here means the site is neither empty nor
+            // megamorphic: going mega clears it (see learn_feedback).
+            if (LIKELY(e.shape && !e.is_accessor &&
                        e.shape == obj->get_shape() &&
                        (e.no_override_epoch == Object::descriptor_epoch() ||
                         !obj->has_any_descriptor_override()))) {
@@ -4956,7 +4967,9 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             // sent nearly every read here down the general path. The map is
             // per-receiver and re-establishes itself on every read, and it is
             // the one that can be trusted from a single object.
-            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&
+            // A non-null shape here means the site is neither empty nor
+            // megamorphic: going mega clears it (see learn_feedback).
+            if (LIKELY(e.shape && !e.is_accessor &&
                        e.shape == obj->get_shape() &&
                        (e.no_override_epoch == Object::descriptor_epoch() ||
                         !obj->has_any_descriptor_override()))) {
@@ -5078,7 +5091,9 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
             const FeedbackSlot::Entry& e = fb.entries[0];
             // Same pair of facts as the read side: the stamp is global and
             // never revived, the receiver's own map answers for itself.
-            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&
+            // A non-null shape here means the site is neither empty nor
+            // megamorphic: going mega clears it (see learn_feedback).
+            if (LIKELY(e.shape && !e.is_accessor &&
                        e.shape == obj->get_shape() &&
                        (e.no_override_epoch == Object::descriptor_epoch() ||
                         !obj->has_any_descriptor_override()))) {
