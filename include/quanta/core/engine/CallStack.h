@@ -46,6 +46,7 @@ class CallStack {
 private:
     std::vector<CallStackFrame> frames_;
     static thread_local CallStack* instance_;
+    static void init_default_instance();
     
 public:
     // The point at which a JS call is refused with a RangeError. Has to stay
@@ -55,12 +56,29 @@ public:
     CallStack() = default;
     ~CallStack() = default;
     
-    static CallStack& instance();
+    // Inline for the same reason push_frame is: this is read once per JS call,
+    // and the lazy default lives behind a cold out-of-line helper so the hot
+    // path is a thread-local load and a null test rather than a call whose
+    // body carries a function-scope thread_local's guard.
+    static CallStack& instance() {
+        if (!instance_) init_default_instance();
+        return *instance_;
+    }
     static void set_instance(CallStack* stack);
     
-    void push_frame(const std::string* filename, Function* function_ptr = nullptr);
-    
-    void pop_frame();
+    // Inline, and deliberately so: a frame is two pointers, but reaching a
+    // push in another translation unit cost more than the push itself -- an
+    // out-of-line call each way on every JS call, for a vector append the
+    // caller could have done in a handful of instructions.
+    void push_frame(const std::string* filename, Function* function_ptr = nullptr) {
+        if (frames_.size() >= MAX_STACK_DEPTH) return;
+        frames_.emplace_back(filename, function_ptr);
+    }
+
+    void pop_frame() {
+        if (!frames_.empty()) frames_.pop_back();
+    }
+
     void clear();
     
     size_t depth() const { return frames_.size(); }

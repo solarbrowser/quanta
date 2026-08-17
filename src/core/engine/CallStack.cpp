@@ -93,30 +93,13 @@ std::string CallStackFrame::to_string() const {
     return oss.str();
 }
 
-CallStack& CallStack::instance() {
-    if (!instance_) {
-        static thread_local CallStack default_instance;
-        instance_ = &default_instance;
-    }
-    return *instance_;
+void CallStack::init_default_instance() {
+    static thread_local CallStack default_instance;
+    instance_ = &default_instance;
 }
 
 void CallStack::set_instance(CallStack* stack) {
     instance_ = stack;
-}
-
-void CallStack::push_frame(const std::string* filename, Function* function_ptr) {
-    if (is_full()) {
-        return;
-    }
-    
-    frames_.emplace_back(filename, function_ptr);
-}
-
-void CallStack::pop_frame() {
-    if (!frames_.empty()) {
-        frames_.pop_back();
-    }
 }
 
 void CallStack::clear() {
