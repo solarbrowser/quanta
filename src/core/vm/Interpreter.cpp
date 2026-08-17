@@ -3819,6 +3819,28 @@ Value h_gen_StaEnvInit(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc);
+
+// Only the read that lands in the frame environment's own slot at the index
+// the compiler assigned. A TDZ hole, a name that is not there and the chain
+// walk behind it all tail-call the generated handler, so the common read
+// stops paying its prologue.
+Value h_LdaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const uint8_t slot = code[pc + 1];
+    const std::string* key = f.chunk.names[read_u16(code, pc + 2)];
+    if (Environment* env = f.ctx.get_lexical_environment()) {
+        if (auto* e = env->inline_slot_interned(slot, key)) {
+            if (LIKELY(e->slot.initialized)) {
+                acc = e->slot.value;
+                pc += 4;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_LdaEnvSlot(f, pc, acc);
+}
+
 Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4855,7 +4877,37 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
 // a throw would ever need. The first feedback entry is the whole fast path
 // here: a miss, a polymorphic site or anything that is not a plain object
 // tail-calls the generated handler, which rescans from scratch.
+Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc);
+
+// Only the read that answers from the receiver's own shape slot, which is
+// seven in ten of them. Everything else -- an Array's length, an inherited
+// property, a primitive receiver, a miss -- tail-calls the handler below, so
+// the common read stops paying that handler's prologue: it saves five
+// callee-saved registers and a frame, for paths it does not take.
 Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& receiver = f.regs[code[pc + 1]];
+    if (LIKELY(receiver.is_object())) {
+        Object* obj = receiver.as_object();
+        if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
+            const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+            const FeedbackSlot::Entry& e = fb.entries[0];
+            if (LIKELY(!fb.mega && fb.count > 0 && e.shape && !e.is_accessor &&
+                       e.shape == obj->get_shape() &&
+                       (e.no_override_epoch == Object::descriptor_epoch() ||
+                        !obj->has_any_descriptor_override()))) {
+                if (const Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
+                    acc = *slot;
+                    pc += 6;
+                    DISPATCH();
+                }
+            }
+        }
+    }
+    [[clang::musttail]] return h_GetNamedRest(f, pc, acc);
+}
+
+Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
@@ -5731,7 +5783,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaEnv)] = &h_gen_LdaEnv;
     t[static_cast<uint8_t>(Op::StaEnv)] = &h_gen_StaEnv;
     t[static_cast<uint8_t>(Op::StaEnvInit)] = &h_gen_StaEnvInit;
-    t[static_cast<uint8_t>(Op::LdaEnvSlot)] = &h_gen_LdaEnvSlot;
+    t[static_cast<uint8_t>(Op::LdaEnvSlot)] = &h_LdaEnvSlotFast;
     t[static_cast<uint8_t>(Op::StaEnvSlot)] = &h_gen_StaEnvSlot;
     t[static_cast<uint8_t>(Op::StaEnvSlotInit)] = &h_gen_StaEnvSlotInit;
     t[static_cast<uint8_t>(Op::BindEnvLocals)] = &h_gen_BindEnvLocals;
