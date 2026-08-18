@@ -4025,6 +4025,23 @@ Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// The chunk's loop-env names, interned once. Unlike the parameter and local
+// lists, this one is rebound on every iteration rather than once per call, so
+// probing the intern pool per name here was the heaviest of the three.
+const std::vector<const std::string*>& loop_env_keys_for(const BytecodeChunk& chunk, uint16_t idx) {
+    auto& b = const_cast<BytecodeChunk::EnvBundle&>(*chunk.env);
+    if (!b.loop_env_keys_ready) {
+        b.loop_env_keys.resize(b.loop_envs.size());
+        for (size_t li = 0; li < b.loop_envs.size(); li++) {
+            auto& keys = b.loop_env_keys[li];
+            keys.reserve(b.loop_envs[li].size());
+            for (const auto& v : b.loop_envs[li]) keys.push_back(Shape::intern(v.name));
+        }
+        b.loop_env_keys_ready = true;
+    }
+    return b.loop_env_keys[idx];
+}
+
 Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4038,12 +4055,15 @@ Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 pc += 2;
                 ctx.push_block_scope();
                 Environment* env = ctx.get_lexical_environment();
-                for (const auto& v : chunk.env->loop_envs[idx]) {
+                const auto& vars = chunk.env->loop_envs[idx];
+                const auto& keys = loop_env_keys_for(chunk, idx);
+                for (size_t i = 0; i < vars.size(); i++) {
+                    const auto& v = vars[i];
                     if (v.is_lexical) {
-                        env->create_uninitialized_binding(v.name, !v.is_const);
+                        env->create_uninitialized_binding_interned(keys[i], !v.is_const);
                         if (v.is_const) env->mark_const_binding(v.name);
                     }
-                    else env->create_binding(v.name, Value(), true);
+                    else env->create_binding_interned(keys[i], Value(), true);
                 }
                 break;
             }
@@ -4064,10 +4084,11 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
                 const auto& vars = chunk.env->loop_envs[idx];
+                const auto& keys = loop_env_keys_for(chunk, idx);
                 std::vector<Value> carried(vars.size());
                 Environment* old_env = ctx.get_lexical_environment();
                 for (size_t i = 0; i < vars.size(); i++) {
-                    if (vars[i].copy_forward) carried[i] = old_env->get_binding_direct(vars[i].name, &ctx);
+                    if (vars[i].copy_forward) carried[i] = old_env->get_binding_direct_interned(keys[i], &ctx);
                 }
                 ctx.pop_block_scope();
                 ctx.push_block_scope();
@@ -4075,11 +4096,11 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 for (size_t i = 0; i < vars.size(); i++) {
                     const auto& v = vars[i];
                     if (v.is_lexical) {
-                        new_env->create_uninitialized_binding(v.name, !v.is_const);
+                        new_env->create_uninitialized_binding_interned(keys[i], !v.is_const);
                         if (v.is_const) new_env->mark_const_binding(v.name);
                     }
-                    else new_env->create_binding(v.name, Value(), true);
-                    if (v.copy_forward) new_env->initialize_binding(v.name, carried[i]);
+                    else new_env->create_binding_interned(keys[i], Value(), true);
+                    if (v.copy_forward) new_env->initialize_binding_interned(keys[i], carried[i]);
                 }
                 break;
             }

@@ -537,6 +537,12 @@ struct BytecodeChunk {
         // everything else starts fresh each time.
         struct LoopEnvVar { std::string name; bool is_lexical; bool is_const; bool copy_forward; };
         std::vector<std::vector<LoopEnvVar>> loop_envs;
+        // loop_envs' names interned once, same rationale and same lifetime as
+        // env_param_keys above. This list is rebound on every iteration rather
+        // than once per call, so paying the pool probe per name here cost the
+        // most of any of them.
+        std::vector<std::vector<const std::string*>> loop_env_keys;
+        bool loop_env_keys_ready = false;
     };
     std::unique_ptr<EnvBundle> env;
     EnvBundle& ensure_env() { if (!env) env = std::make_unique<EnvBundle>(); return *env; }
