@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/runtime/StackFloor.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/engine/Context.h"
@@ -444,6 +445,18 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     if (stack.depth() >= CallStack::MAX_STACK_DEPTH) {
         ctx.throw_range_error("Maximum call stack size exceeded");
         return Value();
+    }
+    // A frame count is only a stand-in for how much stack is left, and it is
+    // calibrated for the thread's. A generator or async function runs on a
+    // fiber whose stack is a fraction of that, so the count runs out long
+    // after the stack does and the process dies instead of reporting
+    // anything. Where the stack's own end is known, ask it.
+    if (const char* floor = current_stack_floor()) {
+        const char probe = 0;
+        if (&probe < floor) {
+            ctx.throw_range_error("Maximum call stack size exceeded");
+            return Value();
+        }
     }
     CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
