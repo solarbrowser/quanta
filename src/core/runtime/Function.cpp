@@ -733,6 +733,15 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // both are decl-site data living on the shared executable_.
     const auto& parameter_objects_ = get_parameter_objects();
     ASTNode* ast = ast_body();
+    // A body that is still deferred after being asked for did not rebuild.
+    // The one way that happens is running out of stack partway through it,
+    // which is an error the caller has to see: without this the function is
+    // indistinguishable from one with an empty body and quietly answers
+    // undefined.
+    if (!ast && executable_ && executable_->body_is_deferred()) {
+        ctx.throw_syntax_error("Maximum expression nesting exceeded");
+        return Value();
+    }
     ASTNode* body_ = ast;
 
     Context* parent_context = &ctx;

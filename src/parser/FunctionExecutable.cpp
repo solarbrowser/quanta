@@ -81,8 +81,19 @@ ASTNode* FunctionExecutable::ensure_body() const {
     // Deliberately not adopt_body: that clears unit_, and the unit still backs
     // the source text this executable reports. The tree is owned outright from
     // here on -- the token range has done its job.
-    owned_body_ = unit_->parse_body_at(body_tok_first_, deferred_strict_,
+    auto parsed = unit_->parse_body_at(body_tok_first_, deferred_strict_,
                                        deferred_generator_, deferred_async_);
+    if (!parsed) {
+        // Left deferred on purpose. A rebuild that did not finish is not the
+        // same thing as a function without a body, and whoever asked has to be
+        // able to tell them apart -- clearing the flag here made a failed
+        // rebuild look like an empty function, which then quietly returned
+        // undefined. Staying deferred also lets a later call try again, which
+        // matters because the one way this fails is running out of stack, and
+        // how much there is depends on where the call came from.
+        return nullptr;
+    }
+    owned_body_ = std::move(parsed);
     body_ = owned_body_.get();
     body_deferred_ = false;
     body_tok_first_ = 0;
