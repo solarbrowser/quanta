@@ -78,15 +78,6 @@ void HeapBlock::retire_cell(void* p) {
     h_.free_count++;
 }
 
-size_t HeapBlock::slot_index(const void* p) const {
-    const char* base = payload_start();
-    const char* cp = static_cast<const char*>(p);
-    if (cp < base) return SIZE_MAX;
-    size_t offset = static_cast<size_t>(cp - base);
-    size_t idx = static_cast<size_t>(
-        (static_cast<uint64_t>(offset) * h_.cell_size_magic) >> 32);
-    return idx < h_.capacity ? idx : SIZE_MAX;
-}
 
 bool HeapBlock::is_allocated(const void* p) const {
     size_t idx = slot_index(p);
@@ -101,22 +92,7 @@ void* HeapBlock::cell_containing(const void* p) {
     return payload_start() + idx * h_.cell_size;
 }
 
-bool HeapBlock::mark_if_unmarked(const void* p) {
-    size_t idx = slot_index(p);
-    if (idx == SIZE_MAX) return false;
-    const size_t word = idx / 64;
-    const uint64_t bit = static_cast<uint64_t>(1) << (idx % 64);
-    if (!(h_.alloc_bitmap[word] & bit)) return false;
-    if (h_.mark_bitmap[word] & bit) return false;
-    h_.mark_bitmap[word] |= bit;
-    return true;
-}
 
-bool HeapBlock::test_mark(const void* p) const {
-    size_t idx = slot_index(p);
-    if (idx == SIZE_MAX) return false;
-    return (h_.mark_bitmap[idx / 64] >> (idx % 64)) & 1;
-}
 
 void HeapBlock::set_mark(const void* p) {
     size_t idx = slot_index(p);

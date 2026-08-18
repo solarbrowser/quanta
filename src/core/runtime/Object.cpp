@@ -89,13 +89,18 @@ void Object::trace_default(Visitor& v) {
         uint32_t scount = shape_->slot_count();
         for (uint32_t i = 0; i < scount; i++) v.visit(*shape_slot_ptr(i));
     }
-    if (auto* so = sparse_overflow()) {
+    // One walk to the extras, not three: all three of these live in the same
+    // block, and an object that has none -- which is most of them -- used to
+    // pay the trip to find that out once per question.
+    RareExtras* extras = peek_extras();
+    if (!extras) return;
+    if (auto* so = extras->sparse_overflow.get()) {
         for (const auto& entry : *so) v.visit(entry.second);
     }
-    if (auto* in = internals()) {
+    if (auto* in = extras->internals.get()) {
         for (const auto& entry : *in) v.visit(entry.second);
     }
-    if (auto* d = descriptors()) {
+    if (auto* d = extras->descriptors.get()) {
         for (size_t i = 0; i < d->inline_size(); i++) {
             const PropertyDescriptor& desc = d->inline_value(i);
             if (desc.has_value()) v.visit(desc.get_value());

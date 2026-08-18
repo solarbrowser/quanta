@@ -63,8 +63,35 @@ public:
     // call, and the index costs a division because the size classes are not
     // powers of two; an edge already names a cell base, so one pass answers
     // all three questions.
-    bool mark_if_unmarked(const void* p);
-    bool test_mark(const void* p) const;
+    // Inline: every trace edge and every barrier asks one of these, and the
+    // callers are in other translation units, so each question was a call for
+    // a body that is a multiply, a shift and a bit test.
+    size_t slot_index(const void* p) const {
+        const char* base = payload_start();
+        const char* cp = static_cast<const char*>(p);
+        if (cp < base) return SIZE_MAX;
+        const size_t offset = static_cast<size_t>(cp - base);
+        const size_t idx = static_cast<size_t>(
+            (static_cast<uint64_t>(offset) * h_.cell_size_magic) >> 32);
+        return idx < h_.capacity ? idx : SIZE_MAX;
+    }
+
+    bool mark_if_unmarked(const void* p) {
+        const size_t idx = slot_index(p);
+        if (idx == SIZE_MAX) return false;
+        const size_t word = idx / 64;
+        const uint64_t bit = static_cast<uint64_t>(1) << (idx % 64);
+        if (!(h_.alloc_bitmap[word] & bit)) return false;
+        if (h_.mark_bitmap[word] & bit) return false;
+        h_.mark_bitmap[word] |= bit;
+        return true;
+    }
+
+    bool test_mark(const void* p) const {
+        const size_t idx = slot_index(p);
+        if (idx == SIZE_MAX) return false;
+        return (h_.mark_bitmap[idx / 64] >> (idx % 64)) & 1;
+    }
     void set_mark(const void* p);
     void clear_marks();
 
@@ -135,7 +162,6 @@ private:
     char*  payload_start()            { return reinterpret_cast<char*>(this) + kHeaderSize; }
     const char* payload_start() const { return reinterpret_cast<const char*>(this) + kHeaderSize; }
     // Slot index of p, or SIZE_MAX when p lies outside the payload.
-    size_t slot_index(const void* p) const;
 
     Header h_;
 };

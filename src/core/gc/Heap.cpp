@@ -275,6 +275,10 @@ void* Heap::find_cell(const void* p) const {
 namespace {
 
 bool owned_by_this_thread(const Heap* heap) {
+    // Almost every cell reached from a barrier or a trace edge belongs to the
+    // heap this thread is running on, and asking that is a compare where the
+    // list below is a walk.
+    if (heap == Heap::active_or_null()) return true;
     for (Heap* h : thread_heaps()) {
         if (h == heap) return true;
     }
