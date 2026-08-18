@@ -493,7 +493,7 @@ public:
     // pointer. Re-audit lookup_cache/instance_lookup_cache() before relaxing
     // any of this.
     struct SlotMap {
-        static constexpr size_t kInlineCapacity = 4;
+        static constexpr size_t kInlineCapacity = 6;
         // key is interned (Shape::intern(), same pool Shape's own SlotMap/
         // TransitionMap use) instead of a 32-byte embedded std::string --
         // 8 bytes per entry instead. find()/inline_slot() (the get/set hot

@@ -50,7 +50,7 @@ namespace Quanta {
 
 #if defined(__GLIBCXX__)
 static_assert(sizeof(Context) == 208);
-static_assert(sizeof(Environment) == 168);  // 168 and 176 land in the same allocator bin
+static_assert(sizeof(Environment) == 216); 
 #else
 static_assert(sizeof(Context) <= 896);
 static_assert(sizeof(Environment) <= 512);
