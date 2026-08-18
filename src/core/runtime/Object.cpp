@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include <unordered_set>
 #include "quanta/core/runtime/Object.h"
 #include <cstring>
 #include "quanta/core/gc/Collector.h"
@@ -1797,8 +1798,17 @@ void Object::collect_named_keys_in_order(std::vector<std::string>& raw_keys) con
     std::vector<Shape::PropertyInfo> shape_props;
     if (shape_) shape_props = shape_->properties_in_order();
     size_t shape_idx = 0;
+    // What has been emitted, for the duplicate check in the extras loop
+    // below. That check used to walk everything emitted so far and compare
+    // strings, which turned enumerating an object into work proportional to
+    // the square of its property count -- a few thousand properties and the
+    // scan is the whole cost of the enumeration. Only built when there are
+    // extras to check against.
+    std::unordered_set<std::string> emitted;
+    const bool track_emitted = peek_extras() != nullptr;
     auto emit_shape_before = [&](uint32_t snapshot) {
         while (shape_idx < shape_props.size() && shape_props[shape_idx].slot_index < snapshot) {
+            if (track_emitted) emitted.insert(shape_props[shape_idx].key);
             raw_keys.push_back(shape_props[shape_idx].key);
             shape_idx++;
         }
@@ -1816,11 +1826,7 @@ void Object::collect_named_keys_in_order(std::vector<std::string>& raw_keys) con
             emit_shape_before(snapshot);
             bool present = (so && so->count(key) > 0) || (d && d->count(key) > 0);
             if (!present) continue;
-            bool already = false;
-            for (const auto& k : raw_keys) {
-                if (k == key) { already = true; break; }
-            }
-            if (!already) raw_keys.push_back(key);
+            if (emitted.insert(key).second) raw_keys.push_back(key);
         }
     }
     emit_shape_before(UINT32_MAX);
