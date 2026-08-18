@@ -584,10 +584,33 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         const ClassSlots& slots = class_slots();
         if (!slots.home_object && !slots.super_ctor && !slots.super_is_null && !slots.private_brands) {
             Engine* env_engine = ctx.get_engine();
-            auto env_ctx_ptr = ContextFactory::create_function_context(env_engine, &ctx, this);
-            Context& env_ctx = *env_ctx_ptr;
+            Context& env_ctx = *CallContextPool::acquire(env_engine, &ctx);
+            struct PoolRelease {
+                Context* c; Engine* e;
+                ~PoolRelease() { CallContextPool::release(c, e); }
+            } env_release{&env_ctx, env_engine};
+            // What create_function_context builds around the context: the
+            // scope the closure was created in, and a fresh Environment of
+            // this call's own hanging off it.
+            Environment* outer_env = get_closure_environment();
+            if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
+            if (!outer_env) outer_env = ctx.get_lexical_environment();
+            if (is_param_default()) {
+                Environment* walk = outer_env;
+                while (walk && walk->get_type() == Environment::Type::Declarative) {
+                    if (!walk->get_outer()) break;
+                    walk = walk->get_outer();
+                }
+                if (walk && walk->get_type() != Environment::Type::Declarative) outer_env = walk;
+            }
+            // The chain can outlive this call: a closure made inside it keeps
+            // pointing here after the call returns.
+            if (outer_env) outer_env->mark_escaped();
+            Environment* call_env = new Environment(Environment::Type::Function, outer_env);
+            env_ctx.set_lexical_environment(call_env);
+            env_ctx.set_variable_environment(call_env);
+            env_ctx.set_owned_env(call_env);
             ExecContextScope gc_frame(&env_ctx);
-            ContextSurvivorGuard survivor_guard(env_ctx_ptr, env_engine);
             env_ctx.set_arrow_function_context(false);
             if (is_strict_ || executable_->fast_strict) env_ctx.set_strict_mode(true);
 

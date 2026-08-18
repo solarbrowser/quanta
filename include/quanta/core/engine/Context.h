@@ -267,6 +267,13 @@ public:
     Environment* get_lexical_environment() const { return lexical_environment_; }
     // The env created FOR this context (function/eval env); dies with the
     // context in ~Context unless a capture marked it escaped.
+    // Hands back the environment this context owns -- and any block scope
+    // still open inside it -- deciding per environment whether it can be
+    // freed or has to be kept for whoever captured it. The destructor's own
+    // work, callable early: a context whose environment is gone is reusable,
+    // which is what lets a call that needed a real Environment still return
+    // its context to the pool.
+    void release_owned_env();
     void set_owned_env(Environment* env) { owned_env_ = env; }
     Environment* get_owned_env() const { return owned_env_; }
     void mark_exposed_to_escape() { exposed_to_escape_ = true; }

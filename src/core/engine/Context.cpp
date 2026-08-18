@@ -263,6 +263,11 @@ void CallContextPool::release(Context* ctx, Engine* engine) {
         else delete ctx;
         return;
     }
+    // Owning an environment is what kept a call like this out of the pool.
+    // Nothing captured it -- that was the question just answered above -- so
+    // handing it back here is exactly what the destructor was about to do,
+    // and leaves a context the next call can take as-is.
+    ctx->release_owned_env();
     if (ctx->is_pristine() && g_call_context_pool_len < kCallContextPoolCap) {
         g_call_context_pool[g_call_context_pool_len++] = ctx;
         return;
@@ -275,18 +280,20 @@ void CallContextPool::drain() {
     g_call_context_pool_len = 0;
 }
 
-Context::~Context() {
-    // Block scopes still open when the context dies were abandoned outright:
-    // only owned_env_ was ever released here, and a `return` out of a loop
-    // body or an exception unwinding past one leaves its Environment on the
-    // chain with nothing else pointing at it. They go through the same path
-    // pop_block_scope uses, which is what decides whether a closure could
-    // still be holding one.
+Context::~Context() { release_owned_env(); }
+
+void Context::release_owned_env() {
+    if (!owned_env_) return;
+    // Block scopes still open when the environment goes back were abandoned
+    // outright: a `return` out of a loop body or an exception unwinding past
+    // one leaves its Environment on the chain with nothing else pointing at
+    // it. They go through the same path pop_block_scope uses, which is what
+    // decides whether a closure could still be holding one.
     //
     // Only after the walk has found owned_env_ on this chain: a context that
     // took no environment of its own is looking at a scope chain that belongs
     // to somebody else, and those are not ours to free.
-    if (owned_env_ && lexical_environment_ && lexical_environment_ != owned_env_) {
+    if (lexical_environment_ && lexical_environment_ != owned_env_) {
         bool chain_is_ours = false;
         for (Environment* e = lexical_environment_; e; e = e->get_outer()) {
             if (e == owned_env_) { chain_is_ours = true; break; }
@@ -302,13 +309,14 @@ Context::~Context() {
             lexical_environment_ = owned_env_;
         }
     }
-    if (owned_env_) {
-        if (!owned_env_->is_escaped()) {
-            Collector::release_env(owned_env_);
-        } else if (engine_) {
-            engine_->add_survivor_environment(owned_env_);
-        }
+    if (!owned_env_->is_escaped()) {
+        Collector::release_env(owned_env_);
+    } else if (engine_) {
+        engine_->add_survivor_environment(owned_env_);
     }
+    owned_env_ = nullptr;
+    lexical_environment_ = nullptr;
+    variable_environment_ = nullptr;
 }
 
 void Context::set_global_object(Object* global) {
