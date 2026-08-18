@@ -3195,12 +3195,18 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // mode, or by this function's own selective-mode StaEnvInit loop below,
     // both in the same order), then env_locals (in push order, right
     // below), then a rest slot if present.
+    // Mirrors Environment::SlotMap::kMaxReservedSlots, which is what decides
+    // how many of these indices an environment actually sizes itself for. The
+    // two are checked independently at runtime -- an index the environment did
+    // not reserve simply fails its guard and falls back to the name path -- so
+    // they bound each other rather than having to agree.
+    constexpr size_t kEnvSlotPredictMax = 32;
     size_t flat_slot_counter = 0;
     if (env_mode) {
         for (const auto& p : param_names) {
             bool resident = !selective || env_resident.count(p) > 0;
             if (!resident) continue;
-            if (flat_slot_counter < 4) {
+            if (flat_slot_counter < kEnvSlotPredictMax) {
                 auto cit = compiler.global_decl_count_.find(p);
                 if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
                     compiler.env_slot_info_[p] = {static_cast<uint8_t>(flat_slot_counter), 0};
@@ -3265,7 +3271,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             if (!info.is_catch_param &&
                 (!info.is_lexical || direct_lexical_names.count(info.name))) {
                 compiler.chunk_->ensure_env().env_locals.push_back({info.name, info.is_lexical, info.is_const});
-                if (flat_slot_counter < 4) {
+                if (flat_slot_counter < kEnvSlotPredictMax) {
                     auto cit = compiler.global_decl_count_.find(info.name);
                     if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
                         compiler.env_slot_info_[info.name] = {static_cast<uint8_t>(flat_slot_counter), 0};
@@ -3335,7 +3341,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // since CreateRestArray below fills it, not run().
     if (has_rest) {
         compiler.chunk_->ensure_env().env_locals.push_back({rest_name, false, false});
-        if (flat_slot_counter < 4) {
+        if (flat_slot_counter < kEnvSlotPredictMax) {
             auto cit = compiler.global_decl_count_.find(rest_name);
             if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
                 compiler.env_slot_info_[rest_name] = {static_cast<uint8_t>(flat_slot_counter), 0};
@@ -3449,6 +3455,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         compiler.chunk_->env_params_tdz = params_tdz;
         compiler.chunk_->needs_arguments = needs_arguments;
         if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
+        if (env_mode) compiler.chunk_->ensure_env().env_slot_total = static_cast<uint16_t>(flat_slot_counter);
         if (compiler.chunk_->uses_lookup_cache) {
             compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
                 static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
@@ -3494,6 +3501,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->env_params_tdz = params_tdz;
     compiler.chunk_->needs_arguments = needs_arguments;
     if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
+    if (env_mode) compiler.chunk_->ensure_env().env_slot_total = static_cast<uint16_t>(flat_slot_counter);
     if (compiler.chunk_->uses_lookup_cache) {
         compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
             static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});

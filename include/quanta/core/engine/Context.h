@@ -501,11 +501,38 @@ public:
         // intern; only get_or_create()'s insert branch below calls
         // Shape::intern(), once per binding-creation event.
         struct InlineEntry {
+            // Null means the entry is free. A populated entry's key always
+            // comes from Shape::intern, so it is never null, which makes the
+            // pointer both the key and the occupancy flag.
             const std::string* key = nullptr;
             BindingSlot slot;
-            bool in_use = false;
         };
         std::array<InlineEntry, kInlineCapacity> inline_entries;
+        // Exact-sized continuation of inline_entries, for an environment whose
+        // binding count is known before the first binding exists -- a call
+        // environment learns it from its chunk. Sized once and never grown, so
+        // the never-move rule above holds for it unchanged. Indices past the
+        // inline entries address it directly, which is what lets a binding
+        // that would otherwise only ever be reachable by name be reached by
+        // index instead.
+        static constexpr size_t kMaxReservedSlots = 32;
+        std::unique_ptr<InlineEntry[]> ext;
+        uint16_t ext_capacity = 0;
+
+        // Must run before the first binding exists: an entry's address
+        // outlives every cached pointer into it, so the inline entries stay
+        // where they are and this only ever appends storage after them.
+        void reserve(size_t total) {
+            if (ext || total <= kInlineCapacity || total > kMaxReservedSlots) return;
+            ext_capacity = static_cast<uint16_t>(total - kInlineCapacity);
+            ext = std::make_unique<InlineEntry[]>(ext_capacity);
+        }
+
+        InlineEntry* entry_at(size_t index) {
+            if (index < kInlineCapacity) return &inline_entries[index];
+            const size_t e = index - kInlineCapacity;
+            return e < ext_capacity ? &ext[e] : nullptr;
+        }
         // Keyed by the interned pointer, like the inline entries: every name
         // that reaches an insert below goes through Shape::intern first, so
         // equal names are the same pointer and the map hashes 8 bytes instead
@@ -520,7 +547,10 @@ public:
 
         BindingSlot* find(const std::string& name) {
             for (auto& e : inline_entries) {
-                if (e.in_use && *e.key == name) return &e.slot;
+                if (e.key && *e.key == name) return &e.slot;
+            }
+            for (uint16_t i = 0; i < ext_capacity; i++) {
+                if (ext[i].key && *ext[i].key == name) return &ext[i].slot;
             }
             if (overflow) {
                 // Every overflow key is interned, so a name the pool has never
@@ -546,13 +576,10 @@ public:
         // name up a second time; one lookup answers both.
         BindingSlot* create_if_absent(const std::string& name) {
             if (find(name)) return nullptr;
-            for (auto& e : inline_entries) {
-                if (!e.in_use) {
-                    e.key = Shape::intern(name);
-                    e.slot = BindingSlot{};
-                    e.in_use = true;
-                    return &e.slot;
-                }
+            if (InlineEntry* e = free_entry()) {
+                e->key = Shape::intern(name);
+                e->slot = BindingSlot{};
+                return &e->slot;
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
             return &(*overflow)[Shape::intern(name)];
@@ -563,7 +590,10 @@ public:
         // from Shape::intern, where equal strings are the same pointer.
         BindingSlot* find_interned(const std::string* key) {
             for (auto& e : inline_entries) {
-                if (e.in_use && e.key == key) return &e.slot;
+                if (e.key == key) return &e.slot;
+            }
+            for (uint16_t i = 0; i < ext_capacity; i++) {
+                if (ext[i].key == key) return &ext[i].slot;
             }
             if (overflow) {
                 auto it = overflow->find(key);
@@ -578,13 +608,10 @@ public:
 
         BindingSlot& get_or_create_interned(const std::string* key) {
             if (BindingSlot* existing = find_interned(key)) return *existing;
-            for (auto& e : inline_entries) {
-                if (!e.in_use) {
-                    e.key = key;
-                    e.slot = BindingSlot{};
-                    e.in_use = true;
-                    return e.slot;
-                }
+            if (InlineEntry* e = free_entry()) {
+                e->key = key;
+                e->slot = BindingSlot{};
+                return e->slot;
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
             return (*overflow)[key];
@@ -592,27 +619,38 @@ public:
 
         BindingSlot& get_or_create(const std::string& name) {
             if (BindingSlot* existing = find(name)) return *existing;
-            for (auto& e : inline_entries) {
-                if (!e.in_use) {
-                    e.key = Shape::intern(name);
-                    e.slot = BindingSlot{};
-                    e.in_use = true;
-                    return e.slot;
-                }
+            if (InlineEntry* e = free_entry()) {
+                e->key = Shape::intern(name);
+                e->slot = BindingSlot{};
+                return e->slot;
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
             return (*overflow)[Shape::intern(name)];
+        }
+
+        // Bytes this map owns outside the environment object itself. The GC
+        // budget is charged with it, since none of it lives in the cell heap.
+        size_t side_bytes() const {
+            return ext_capacity * sizeof(InlineEntry);
+        }
+
+        // First free entry across both regions, or null when both are full and
+        // the caller has to fall back to the overflow map.
+        InlineEntry* free_entry() {
+            for (auto& e : inline_entries) if (!e.key) return &e;
+            for (uint16_t i = 0; i < ext_capacity; i++) if (!ext[i].key) return &ext[i];
+            return nullptr;
         }
 
         // Tombstones (never compacts -- see class doc comment). Overflow
         // erase is ordinary unordered_map::erase: safe unchanged, since
         // erasing one node never moves another node's address.
         bool erase(const std::string& name) {
-            for (auto& e : inline_entries) {
-                if (e.in_use && *e.key == name) {
-                    e.in_use = false;
-                    e.slot = BindingSlot{};
-                    e.key = nullptr;
+            for (size_t i = 0; i < kInlineCapacity + ext_capacity; i++) {
+                InlineEntry* e = entry_at(i);
+                if (e->key && *e->key == name) {
+                    e->slot = BindingSlot{};
+                    e->key = nullptr;
                     return true;
                 }
             }
@@ -623,7 +661,8 @@ public:
 
         size_t size() const {
             size_t n = 0;
-            for (const auto& e : inline_entries) if (e.in_use) n++;
+            for (const auto& e : inline_entries) if (e.key) n++;
+            for (uint16_t i = 0; i < ext_capacity; i++) if (ext[i].key) n++;
             if (overflow) n += overflow->size();
             return n;
         }
@@ -631,7 +670,10 @@ public:
         template <typename Fn>
         void for_each(Fn&& fn) const {
             for (const auto& e : inline_entries) {
-                if (e.in_use) fn(*e.key, e.slot);
+                if (e.key) fn(*e.key, e.slot);
+            }
+            for (uint16_t i = 0; i < ext_capacity; i++) {
+                if (ext[i].key) fn(*ext[i].key, ext[i].slot);
             }
             if (overflow) {
                 for (const auto& kv : *overflow) fn(*kv.first, kv.second);
@@ -877,13 +919,12 @@ public:
     // Guarded direct-index access to slots_'s inline array, backing
     // Op::LdaEnvSlot/StaEnvSlot/StaEnvSlotInit. The compiler's predicted
     // index can be wrong (see BytecodeCompiler.h's EnvSlotInfo for why), so
-    // this re-validates by name: returns null unless inline_entries[index]
-    // is in_use AND its key equals `name`. A null return means "fall back
+    // this re-validates by name: returns null unless the entry at that index
+    // is populated AND its key equals `name`. A null return means "fall back
     // to the name-based path," never "this binding doesn't exist."
     SlotMap::InlineEntry* inline_slot(size_t index, const std::string& name) {
-        if (index >= SlotMap::kInlineCapacity) return nullptr;
-        SlotMap::InlineEntry& e = slots_.inline_entries[index];
-        if (e.in_use && *e.key == name) return &e;
+        SlotMap::InlineEntry* e = slots_.entry_at(index);
+        if (e && e->key && *e->key == name) return e;
         return nullptr;
     }
     // Interned counterpart. An inline entry's key is always interned (every
@@ -891,11 +932,19 @@ public:
     // index against an already-interned key is one pointer compare and means
     // exactly what the byte compare above means.
     SlotMap::InlineEntry* inline_slot_interned(size_t index, const std::string* key) {
-        if (index >= SlotMap::kInlineCapacity) return nullptr;
-        SlotMap::InlineEntry& e = slots_.inline_entries[index];
-        if (e.in_use && e.key == key) return &e;
+        SlotMap::InlineEntry* e = slots_.entry_at(index);
+        if (e && e->key == key) return e;
         return nullptr;
     }
+    // Sizes the slot storage to the binding count this environment is known
+    // to reach, before any of them exists. Called with what the chunk
+    // declares, so every declared binding gets an index instead of spilling
+    // into the hash map. Sized once, never grown.
+    void reserve_slots(size_t total) { slots_.reserve(total); }
+    // What this environment costs in real memory: the object plus whatever its
+    // slot storage allocated alongside it. The survivor path charges this
+    // toward the collector's budget, which only ever saw the object before.
+    size_t footprint_bytes() const { return sizeof(Environment) + slots_.side_bytes(); }
     bool set_binding_direct(const std::string& name, const Value& value, Context* ctx = nullptr);
     Environment* find_binding_env(const std::string& name);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);

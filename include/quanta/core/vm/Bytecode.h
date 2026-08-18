@@ -543,6 +543,11 @@ struct BytecodeChunk {
         // most of any of them.
         std::vector<std::vector<const std::string*>> loop_env_keys;
         bool loop_env_keys_ready = false;
+        // How many bindings this chunk seeds into the call's own environment,
+        // in the order the slot indices above were predicted. The environment
+        // is sized from it once, so a declared binding gets an index instead
+        // of a hash node.
+        uint16_t env_slot_total = 0;
     };
     std::unique_ptr<EnvBundle> env;
     EnvBundle& ensure_env() { if (!env) env = std::make_unique<EnvBundle>(); return *env; }

@@ -5946,6 +5946,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
         Environment* env = ctx.get_lexical_environment();
         // Intern the chunk's binding names once instead of once per call; the
         // pointers are stable for the thread's lifetime.
+        env->reserve_slots(chunk.env->env_slot_total);
         if (!chunk.env->env_keys_ready) {
             auto& b = const_cast<BytecodeChunk::EnvBundle&>(*chunk.env);
             b.env_param_keys.reserve(b.env_params.size());
