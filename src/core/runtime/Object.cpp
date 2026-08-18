@@ -156,10 +156,6 @@ std::unordered_set<uint32_t>& Object::ensure_deleted_elements() {
     if (!e.deleted_elements) e.deleted_elements = std::make_unique<std::unordered_set<uint32_t>>();
     return *e.deleted_elements;
 }
-bool Object::has_any_descriptor_override() const {
-    return proto_.flag(kHasDescriptors);
-}
-
 HybridDescriptorMap* Object::descriptors() const {
     RareExtras* e = peek_extras();
     return e ? e->descriptors.get() : nullptr;

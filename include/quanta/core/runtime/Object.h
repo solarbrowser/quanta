@@ -583,7 +583,7 @@ public:
     // strong answer the inline cache wants: no map, so no override, for any
     // key, right now -- a per-object fact, unlike the global epoch, which only
     // records that no object had one at the moment an entry was learned.
-    bool has_any_descriptor_override() const;
+    bool has_any_descriptor_override() const { return proto_.flag(kHasDescriptors); }
     // One shape probe for "is `key` a plain own data property of this ordinary
     // object, readable straight from its slot?". Answers false for anything
     // that needs the general path -- an accessor, a descriptor override, a
