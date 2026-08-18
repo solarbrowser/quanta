@@ -156,10 +156,6 @@ std::unordered_set<uint32_t>& Object::ensure_deleted_elements() {
     if (!e.deleted_elements) e.deleted_elements = std::make_unique<std::unordered_set<uint32_t>>();
     return *e.deleted_elements;
 }
-HybridDescriptorMap* Object::descriptors() const {
-    RareExtras* e = peek_extras();
-    return e ? e->descriptors.get() : nullptr;
-}
 HybridDescriptorMap& Object::ensure_descriptors() {
     // Every path that mutates the map comes through here (reads take
     // descriptors(), which never creates one), so this is the one place that
@@ -249,24 +245,6 @@ bool Object::try_read_own_data_slot(const std::string& key, Value& out) const {
     if (!slot) return false;
     out = *slot;
     return true;
-}
-
-bool Object::has_descriptor_override(const std::string& key) const {
-    // An accessor living in shape_slots_ (see add_accessor_shape_property_cached)
-    // has no descriptors_ entry at all, but every IC fast path across the VM
-    // (get_keyed/set_keyed/define_own_cached/SetNamed's transition caches,
-    // etc.) already treats "has_descriptor_override -> take the slow/general
-    // path" as its ONE guard for "don't trust a raw shape-slot value" --
-    // folding the shape-accessor check in here makes all of those sites
-    // correct for free, with no changes to any of them.
-    HybridDescriptorMap* d = descriptors();
-    return (d && d->count(key) > 0) ||
-           (shape_ && shape_->is_accessor_slot(key));
-}
-
-PropertyDescriptor* Object::find_descriptor_override(const std::string& key) const {
-    HybridDescriptorMap* d = descriptors();
-    return d ? d->find(key) : nullptr;
 }
 
 void Object::add_shape_property_cached(const std::string& key, const Value& value, Shape* to_shape) {

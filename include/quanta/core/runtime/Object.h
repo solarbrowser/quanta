@@ -1027,6 +1027,39 @@ struct RareExtras {
     std::unique_ptr<std::unordered_map<std::string, Value>> internals;
 };
 
+// Defined here rather than in the .cpp because the inline caches ask them on
+// nearly every property access, and reaching a two-line body through a call
+// costs more than the body. RareExtras has to be complete first, which is why
+// they sit below it instead of in the class.
+inline HybridDescriptorMap* Object::descriptors() const {
+    RareExtras* e = peek_extras();
+    return e ? e->descriptors.get() : nullptr;
+}
+
+inline PropertyDescriptor* Object::find_descriptor_override(const std::string& key) const {
+    HybridDescriptorMap* d = descriptors();
+    return d ? d->find(key) : nullptr;
+}
+
+inline bool Object::has_descriptor_override(const std::string& key) const {
+    // An accessor living in shape_slots_ (see add_accessor_shape_property_cached)
+    // has no descriptors_ entry at all, but every IC fast path across the VM
+    // (get_keyed/set_keyed/define_own_cached/SetNamed's transition caches,
+    // etc.) already treats "has_descriptor_override -> take the slow/general
+    // path" as its ONE guard for "don't trust a raw shape-slot value" --
+    // folding the shape-accessor check in here makes all of those sites
+    // correct for free, with no changes to any of them.
+    //
+    // The bit answers "is there a map at all" without walking to it, so an
+    // object that never had one goes straight to the shape question.
+    if (proto_.flag(kHasDescriptors)) {
+        HybridDescriptorMap* d = descriptors();
+        if (d && d->count(key) > 0) return true;
+    }
+    return shape_ && shape_->is_accessor_slot(key);
+}
+
+
 /**
  * JavaScript Function object implementation
  */
