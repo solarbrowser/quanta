@@ -97,6 +97,15 @@ Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* o
         }
     }
 
+}
+
+void Generator::ensure_fiber() {
+    if (fiber_->co) return;
+    // Built on the first resume rather than with the generator. A generator
+    // that is made and never run -- one whose consumer breaks out of the loop
+    // on the first value, or that is put in a list and dropped -- pays for a
+    // stack, a control block and a registry entry it never touches, and the
+    // stack is the expensive part.
     mco_desc desc = mco_desc_init(fiber_entry, STACK_SIZE);
     desc.user_data = this;
     desc.alloc_cb = fiber_alloc_cb;
@@ -131,6 +140,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     Generator* prev = current_generator_;
     current_generator_ = this;
     {
+        ensure_fiber();
         FiberEnterScope enter_scope;
         quanta_fiber_resume(fiber_.get());
     }
@@ -177,6 +187,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     Generator* prev = current_generator_;
     current_generator_ = this;
     {
+        ensure_fiber();
         FiberEnterScope enter_scope;
         quanta_fiber_resume(fiber_.get());
     }
@@ -228,6 +239,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     Generator* prev = current_generator_;
     current_generator_ = this;
     {
+        ensure_fiber();
         FiberEnterScope enter_scope;
         quanta_fiber_resume(fiber_.get());
     }

@@ -91,6 +91,7 @@ private:
     static constinit thread_local Generator* current_generator_;
     static constinit thread_local size_t current_yield_counter_;
 
+    void ensure_fiber();
     static void fiber_entry(mco_coro* co);
     void run_body();
 
