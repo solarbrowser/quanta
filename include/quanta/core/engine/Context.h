@@ -499,13 +499,16 @@ public:
             bool in_use = false;
         };
         std::array<InlineEntry, kInlineCapacity> inline_entries;
-        // Stays keyed by plain std::string (the rare/slow spill path once
-        // inline capacity is exceeded) -- it's a unique_ptr either way, so
-        // interning it wouldn't shrink Environment, same rationale as
-        // Shape::SlotMap's own overflow map.
-        using OverflowMap = std::unordered_map<std::string, BindingSlot, std::hash<std::string>,
-                                                std::equal_to<std::string>,
-                                                SmallMapAllocator<std::pair<const std::string, BindingSlot>>>;
+        // Keyed by the interned pointer, like the inline entries: every name
+        // that reaches an insert below goes through Shape::intern first, so
+        // equal names are the same pointer and the map hashes 8 bytes instead
+        // of the string's contents. The spill path is where a scope with many
+        // bindings does all of its lookups, so hashing the text there was the
+        // dominant cost of a deep scope.
+        using OverflowMap = std::unordered_map<const std::string*, BindingSlot,
+                                                std::hash<const std::string*>,
+                                                std::equal_to<const std::string*>,
+                                                SmallMapAllocator<std::pair<const std::string* const, BindingSlot>>>;
         std::unique_ptr<OverflowMap> overflow;
 
         BindingSlot* find(const std::string& name) {
@@ -513,8 +516,14 @@ public:
                 if (e.in_use && *e.key == name) return &e.slot;
             }
             if (overflow) {
-                auto it = overflow->find(name);
-                if (it != overflow->end()) return &it->second;
+                // Every overflow key is interned, so a name the pool has never
+                // seen cannot be bound here. Asking without inserting keeps an
+                // unbound lookup (a miss walking the scope chain) from pinning
+                // the string in the pool forever.
+                if (const std::string* key = Shape::intern_existing(name)) {
+                    auto it = overflow->find(key);
+                    if (it != overflow->end()) return &it->second;
+                }
             }
             return nullptr;
         }
@@ -539,19 +548,18 @@ public:
                 }
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
-            return &(*overflow)[name];
+            return &(*overflow)[Shape::intern(name)];
         }
 
-        // The caller already holds the interned key, so the inline entries can
-        // be matched by pointer: both sides come from Shape::intern, where
-        // equal strings are the same pointer. The overflow map is keyed by
-        // value and still needs the string.
+        // The caller already holds the interned key, so both the inline
+        // entries and the overflow map match by pointer: every side comes
+        // from Shape::intern, where equal strings are the same pointer.
         BindingSlot* find_interned(const std::string* key) {
             for (auto& e : inline_entries) {
                 if (e.in_use && e.key == key) return &e.slot;
             }
             if (overflow) {
-                auto it = overflow->find(*key);
+                auto it = overflow->find(key);
                 if (it != overflow->end()) return &it->second;
             }
             return nullptr;
@@ -572,7 +580,7 @@ public:
                 }
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
-            return (*overflow)[*key];
+            return (*overflow)[key];
         }
 
         BindingSlot& get_or_create(const std::string& name) {
@@ -586,7 +594,7 @@ public:
                 }
             }
             if (!overflow) overflow = std::make_unique<OverflowMap>();
-            return (*overflow)[name];
+            return (*overflow)[Shape::intern(name)];
         }
 
         // Tombstones (never compacts -- see class doc comment). Overflow
@@ -601,7 +609,9 @@ public:
                     return true;
                 }
             }
-            return overflow && overflow->erase(name) > 0;
+            if (!overflow) return false;
+            const std::string* key = Shape::intern_existing(name);
+            return key && overflow->erase(key) > 0;
         }
 
         size_t size() const {
@@ -617,7 +627,7 @@ public:
                 if (e.in_use) fn(*e.key, e.slot);
             }
             if (overflow) {
-                for (const auto& kv : *overflow) fn(kv.first, kv.second);
+                for (const auto& kv : *overflow) fn(*kv.first, kv.second);
             }
         }
     };

@@ -102,6 +102,10 @@ public:
     // pointee by value instead (see find_slot()/is_accessor_slot() above
     // for the pattern).
     static const std::string* intern(const std::string& key);
+    // Same pool, lookup only: returns nullptr instead of inserting. A caller
+    // holding an arbitrary, possibly-never-interned string uses this to ask
+    // "could this name be a key at all" without growing the pool for good.
+    static const std::string* intern_existing(const std::string& key);
 
 private:
     Shape() = default;

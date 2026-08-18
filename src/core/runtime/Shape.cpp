@@ -15,13 +15,26 @@ static_assert(sizeof(Shape) == 128);
 static_assert(sizeof(Shape) <= 256);
 #endif
 
-const std::string* Shape::intern(const std::string& key) {
-    // Never erased from, so returned pointers are stable for the thread's
-    // lifetime -- see the field's own doc comment in Shape.h.
+namespace {
+// Never erased from, so returned pointers are stable for the thread's
+// lifetime -- see the field's own doc comment in Shape.h.
+std::unordered_set<std::string>& intern_table() {
     static thread_local std::unordered_set<std::string> table;
+    return table;
+}
+}  // namespace
+
+const std::string* Shape::intern(const std::string& key) {
+    auto& table = intern_table();
     auto it = table.find(key);
     if (it == table.end()) it = table.insert(key).first;
     return &*it;
+}
+
+const std::string* Shape::intern_existing(const std::string& key) {
+    auto& table = intern_table();
+    auto it = table.find(key);
+    return it == table.end() ? nullptr : &*it;
 }
 
 Shape::Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is_accessor)
