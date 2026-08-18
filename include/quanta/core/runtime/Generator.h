@@ -85,8 +85,17 @@ public:
     bool yield_raw_result_ = false; // if true, return yielded_result_ as-is
     bool throwing_ = false;
     bool returning_ = false;
+    // Sits in the padding after the flags above rather than in a word of its
+    // own. It indexes yields within one delegation, so the narrower type is
+    // not a limit anyone can reach, and the eight bytes it gives back are
+    // what let the fiber state below be held directly.
+    uint32_t target_yield_index_ = 0;
 
-    std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
+    // Held directly: it is two pointers, and a generator that has one has it
+    // for as long as it lives, so the separate allocation bought nothing. Its
+    // address is handed to the fiber registry, which is safe for the same
+    // reason it was safe before -- a generator does not move.
+    FiberState fiber_;
 private:
     static constinit thread_local Generator* current_generator_;
     static constinit thread_local size_t current_yield_counter_;
@@ -117,7 +126,6 @@ public:
     bool is_done() const { return state_ == State::Completed; }
 
     Context* outer_context_ = nullptr;
-    size_t target_yield_index_ = 0;
 
     Context* get_context() const { return generator_context_; }
 

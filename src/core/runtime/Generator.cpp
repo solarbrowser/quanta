@@ -81,7 +81,7 @@ void Generator::run_body() {
         // Other exceptions -- propagated via generator_context_
     } catch (...) {}
     state_ = State::Completed;
-    quanta_fiber_yield(fiber_.get());
+    quanta_fiber_yield(&fiber_);
 }
 
 Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx)
@@ -100,7 +100,7 @@ Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* o
 }
 
 void Generator::ensure_fiber() {
-    if (fiber_->co) return;
+    if (fiber_.co) return;
     // Built on the first resume rather than with the generator. A generator
     // that is made and never run -- one whose consumer breaks out of the loop
     // on the first value, or that is put in a list and dropped -- pays for a
@@ -110,9 +110,9 @@ void Generator::ensure_fiber() {
     desc.user_data = this;
     desc.alloc_cb = fiber_alloc_cb;
     desc.dealloc_cb = fiber_dealloc_cb;
-    mco_create(&fiber_->co, &desc);
-    FiberRegistry::register_fiber(this, static_cast<char*>(fiber_->co->stack_base),
-                                   fiber_->co->stack_size, fiber_.get(), this);
+    mco_create(&fiber_.co, &desc);
+    FiberRegistry::register_fiber(this, static_cast<char*>(fiber_.co->stack_base),
+                                   fiber_.co->stack_size, &fiber_, this);
 }
 
 Generator::~Generator() {
@@ -120,10 +120,10 @@ Generator::~Generator() {
 }
 
 void Generator::release_fiber() {
-    if (!fiber_->co) return;
+    if (!fiber_.co) return;
     FiberRegistry::unregister_fiber(this);
-    mco_destroy(fiber_->co);
-    fiber_->co = nullptr;
+    mco_destroy(fiber_.co);
+    fiber_.co = nullptr;
 }
 
 Generator::GeneratorResult Generator::next(const Value& value) {
@@ -142,7 +142,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     {
         ensure_fiber();
         FiberEnterScope enter_scope;
-        quanta_fiber_resume(fiber_.get());
+        quanta_fiber_resume(&fiber_);
     }
     current_generator_ = prev;
     if (state_ == State::Completed) release_fiber();
@@ -189,7 +189,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     {
         ensure_fiber();
         FiberEnterScope enter_scope;
-        quanta_fiber_resume(fiber_.get());
+        quanta_fiber_resume(&fiber_);
     }
     current_generator_ = prev;
     if (state_ == State::Completed) release_fiber();
@@ -241,7 +241,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     {
         ensure_fiber();
         FiberEnterScope enter_scope;
-        quanta_fiber_resume(fiber_.get());
+        quanta_fiber_resume(&fiber_);
     }
     current_generator_ = prev;
     if (state_ == State::Completed) release_fiber();

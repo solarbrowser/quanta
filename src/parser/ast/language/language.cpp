@@ -2659,7 +2659,7 @@ Value YieldExpression::evaluate(Context& ctx) {
 
         // Fiber-based generators: yield* directly swaps context for each element
         // (target_yield_index_ stays 0 since fiber doesn't use replay)
-        if (current_gen->fiber_->co != nullptr) {
+        if (current_gen->fiber_.co != nullptr) {
             // Set current_context_ so accessor getters (poisoned properties in tests) can execute.
             Context* prev_ctx = Object::current_context_;
             Object::current_context_ = &ctx;
@@ -2750,7 +2750,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                 current_gen->set_state(Generator::State::SuspendedYield);
                 // Direct-assigned traced field: re-gray for an open incremental cycle.
                 Collector::write_barrier(current_gen);
-                quanta_fiber_yield(current_gen->fiber_.get());
+                quanta_fiber_yield(&current_gen->fiber_);
                 // Caller side may have repointed this thread-local during suspension -- restore it.
                 Object::current_context_ = &ctx;
                 // Resumed -- forward the value sent to outer generator into inner next()
@@ -2811,7 +2811,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     current_gen->yield_raw_result_ = true;
                     current_gen->set_state(Generator::State::SuspendedYield);
                     Collector::write_barrier(current_gen);
-                    quanta_fiber_yield(current_gen->fiber_.get());
+                    quanta_fiber_yield(&current_gen->fiber_);
                     Object::current_context_ = &ctx;
                     next_arg = current_gen->sent_value_;
                 }
@@ -3170,7 +3170,7 @@ Value YieldExpression::evaluate(Context& ctx) {
     current_gen->yielded_value_ = yield_value;
     current_gen->set_state(Generator::State::SuspendedYield);
     Collector::write_barrier(current_gen);
-    quanta_fiber_yield(current_gen->fiber_.get());
+    quanta_fiber_yield(&current_gen->fiber_);
 
     // Resumed by next()/throw()/return()
     if (current_gen->returning_) {
