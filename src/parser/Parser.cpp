@@ -31,18 +31,21 @@ using NameSet = std::unordered_set<std::string, NameHash, std::equal_to<>>;
 
 }
 
-void Parser::init_stack_budget() {
-    // Most of the thread's stack, leaving room for whatever the deepest parse
-    // frame still has to do after the check says stop, and for the error path
-    // that unwinds it. rlimit is what the thread actually got; the fallback
-    // matches the common default.
-    size_t total = 8u * 1024 * 1024;
-    struct rlimit rl;
-    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
-        rl.rlim_cur >= 1u * 1024 * 1024) {
-        total = static_cast<size_t>(rl.rlim_cur);
-    }
-    stack_budget_ = total / 2;
+size_t Parser::thread_stack_budget() {
+    static const size_t budget = [] {
+        // Half the thread's stack: the check has to leave room for the deepest
+        // frame to finish and for the tree it built to be taken apart, which
+        // unwinds recursively too. rlimit is what the thread actually got; the
+        // fallback matches the common default.
+        size_t total = 8u * 1024 * 1024;
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
+            rl.rlim_cur >= 1u * 1024 * 1024) {
+            total = static_cast<size_t>(rl.rlim_cur);
+        }
+        return total / 2;
+    }();
+    return budget;
 }
 
 Parser::Parser(TokenSequence tokens)
@@ -51,7 +54,6 @@ Parser::Parser(TokenSequence tokens)
     options_.allow_await_outside_async = false;
     options_.strict_mode = false;
     options_.source_type_module = false;
-    init_stack_budget();
 
     while (current_token_index_ < tokens_.size() && 
            (current_token().get_type() == TokenType::NEWLINE || 
@@ -67,7 +69,6 @@ Parser::Parser(TokenSequence tokens)
 
 Parser::Parser(TokenSequence tokens, const ParseOptions& options)
     : tokens_(std::move(tokens)), options_(options), current_token_index_(0) {
-    init_stack_budget();
     while (current_token_index_ < tokens_.size() && 
            (current_token().get_type() == TokenType::NEWLINE || 
             current_token().get_type() == TokenType::WHITESPACE ||
@@ -889,7 +890,7 @@ std::unique_ptr<ASTNode> Parser::parse_nullish_coalescing_expression() {
     };
 
     size_t left_start_idx = current_token_index_;
-    auto left = parse_logical_and_expression();
+    auto left = parse_binary_chain(2);
     if (!left) return nullptr;
 
     if (!match(TokenType::NULLISH_COALESCING)) return left;
@@ -904,7 +905,7 @@ std::unique_ptr<ASTNode> Parser::parse_nullish_coalescing_expression() {
         advance();
 
         size_t right_start_idx = current_token_index_;
-        auto right = parse_logical_and_expression();
+        auto right = parse_binary_chain(2);
         if (!right) {
             add_error("Expected expression after '??'");
             return left;
@@ -923,39 +924,39 @@ std::unique_ptr<ASTNode> Parser::parse_nullish_coalescing_expression() {
     return left;
 }
 
-std::unique_ptr<ASTNode> Parser::parse_logical_and_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_bitwise_or_expression(); },
-        {TokenType::LOGICAL_AND}
-    );
-}
-
-std::unique_ptr<ASTNode> Parser::parse_bitwise_or_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_bitwise_xor_expression(); },
-        {TokenType::BITWISE_OR}
-    );
-}
-
-std::unique_ptr<ASTNode> Parser::parse_bitwise_xor_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_bitwise_and_expression(); },
-        {TokenType::BITWISE_XOR}
-    );
-}
-
-std::unique_ptr<ASTNode> Parser::parse_bitwise_and_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_equality_expression(); },
-        {TokenType::BITWISE_AND}
-    );
-}
-
-std::unique_ptr<ASTNode> Parser::parse_equality_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_relational_expression(); },
-        {TokenType::EQUAL, TokenType::NOT_EQUAL, TokenType::STRICT_EQUAL, TokenType::STRICT_NOT_EQUAL}
-    );
+// Binding power of a binary operator, zero for anything that is not one.
+// Higher binds tighter. `**` sits above all of these and keeps its own
+// function: it associates the other way and its left operand is restricted.
+// `||` and `??` sit below and keep theirs: they build different nodes and
+// refuse to mix without parentheses.
+int Parser::binary_precedence(TokenType type) const {
+    switch (type) {
+        case TokenType::LOGICAL_AND: return 2;
+        case TokenType::BITWISE_OR: return 3;
+        case TokenType::BITWISE_XOR: return 4;
+        case TokenType::BITWISE_AND: return 5;
+        case TokenType::EQUAL:
+        case TokenType::NOT_EQUAL:
+        case TokenType::STRICT_EQUAL:
+        case TokenType::STRICT_NOT_EQUAL: return 6;
+        case TokenType::LESS_THAN:
+        case TokenType::GREATER_THAN:
+        case TokenType::LESS_EQUAL:
+        case TokenType::GREATER_EQUAL:
+        case TokenType::INSTANCEOF: return 7;
+        // A `for` head takes `in` out of the grammar rather than making it an
+        // error there, so it simply stops being an operator.
+        case TokenType::IN: return no_in_mode_ ? 0 : 7;
+        case TokenType::LEFT_SHIFT:
+        case TokenType::RIGHT_SHIFT:
+        case TokenType::UNSIGNED_RIGHT_SHIFT: return 8;
+        case TokenType::PLUS:
+        case TokenType::MINUS: return 9;
+        case TokenType::MULTIPLY:
+        case TokenType::DIVIDE:
+        case TokenType::MODULO: return 10;
+        default: return 0;
+    }
 }
 
 static bool is_private_identifier(const ASTNode* n) {
@@ -964,10 +965,16 @@ static bool is_private_identifier(const ASTNode* n) {
     return !nm.empty() && nm[0] == '#';
 }
 
-std::unique_ptr<ASTNode> Parser::parse_relational_expression() {
-    auto left = parse_shift_expression();
+// One loop over the nine precedence levels between `??` and `**`. Each level
+// used to be a function that called the next one down, so reaching an operand
+// cost nine frames however simple the expression was -- and nine allocations
+// with them, since both the operator set and the operand callback were built
+// fresh on every call. Here the depth follows the operators actually written.
+std::unique_ptr<ASTNode> Parser::parse_binary_chain(int min_precedence) {
+    auto left = parse_exponentiation_expression();
     if (!left) return nullptr;
 
+    // A private name is an expression in exactly one place: the left of `in`.
     if (is_private_identifier(left.get())) {
         if (no_in_mode_ || !match(TokenType::IN)) {
             add_error("SyntaxError: Private identifier '" +
@@ -975,39 +982,23 @@ std::unique_ptr<ASTNode> Parser::parse_relational_expression() {
                       "' is not valid here");
             return nullptr;
         }
-        Position op_start = current_token().get_start();
-        advance();
-        bool saved_bin = options_.in_binary_expr;
-        options_.in_binary_expr = true;
-        auto right = parse_shift_expression();
-        options_.in_binary_expr = saved_bin;
-        if (!right) {
-            add_error("Expected expression after 'in'");
-            return left;
-        }
-        if (is_private_identifier(right.get())) {
-            add_error("SyntaxError: Private identifier '" +
-                      static_cast<Identifier*>(right.get())->get_name() +
-                      "' is not valid here");
-            return nullptr;
-        }
-        Position end = right->get_end();
-        left = std::make_unique<BinaryExpression>(
-            std::move(left), BinaryExpression::Operator::IN, std::move(right), op_start, end);
     }
 
-    static const std::vector<TokenType> relops_no_in  = {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF};
-    static const std::vector<TokenType> relops_with_in = {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF, TokenType::IN};
-    const std::vector<TokenType>& ops = no_in_mode_ ? relops_no_in : relops_with_in;
+    for (;;) {
+        const TokenType op_token = current_token().get_type();
+        const int precedence = binary_precedence(op_token);
+        if (precedence == 0 || precedence < min_precedence) break;
 
-    while (match_any(ops)) {
-        TokenType op_token = current_token().get_type();
-        Position op_start = current_token().get_start();
+        const Position op_start = current_token().get_start();
         advance();
-        bool saved_bin = options_.in_binary_expr;
+
+        const bool saved_in_binary = options_.in_binary_expr;
         options_.in_binary_expr = true;
-        auto right = parse_shift_expression();
-        options_.in_binary_expr = saved_bin;
+        // Left-associative: the right side may only take operators that bind
+        // tighter, so a run at one level folds inside this loop instead of
+        // recursing.
+        auto right = parse_binary_chain(precedence + 1);
+        options_.in_binary_expr = saved_in_binary;
         if (!right) {
             add_error("Expected expression after binary operator");
             return left;
@@ -1018,33 +1009,14 @@ std::unique_ptr<ASTNode> Parser::parse_relational_expression() {
                       "' is not valid here");
             return nullptr;
         }
-        Position end = right->get_end();
+
+        const Position end = right->get_end();
         left = std::make_unique<BinaryExpression>(
-            std::move(left), token_to_binary_operator(op_token), std::move(right), op_start, end);
+            std::move(left), token_to_binary_operator(op_token), std::move(right),
+            op_start, end);
     }
 
     return left;
-}
-
-std::unique_ptr<ASTNode> Parser::parse_shift_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_additive_expression(); },
-        {TokenType::LEFT_SHIFT, TokenType::RIGHT_SHIFT, TokenType::UNSIGNED_RIGHT_SHIFT}
-    );
-}
-
-std::unique_ptr<ASTNode> Parser::parse_additive_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_multiplicative_expression(); },
-        {TokenType::PLUS, TokenType::MINUS}
-    );
-}
-
-std::unique_ptr<ASTNode> Parser::parse_multiplicative_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_exponentiation_expression(); },
-        {TokenType::MULTIPLY, TokenType::DIVIDE, TokenType::MODULO}
-    );
 }
 
 std::unique_ptr<ASTNode> Parser::parse_exponentiation_expression() {
@@ -2875,38 +2847,6 @@ std::unique_ptr<ASTNode> Parser::parse_parenthesized_expression() {
 }
 
 
-std::unique_ptr<ASTNode> Parser::parse_binary_expression(
-    std::function<std::unique_ptr<ASTNode>()> parse_operand,
-    const std::vector<TokenType>& operators) {
-    
-    auto left = parse_operand();
-    if (!left) return nullptr;
-    
-    while (match_any(operators)) {
-        TokenType op_token = current_token().get_type();
-        Position op_start = current_token().get_start();
-        advance();
-
-        bool saved_bin = options_.in_binary_expr;
-        options_.in_binary_expr = true;
-        auto right = parse_operand();
-        options_.in_binary_expr = saved_bin;
-        if (!right) {
-            add_error("Expected expression after binary operator");
-            return left;
-        }
-        
-        BinaryExpression::Operator op = token_to_binary_operator(op_token);
-        Position end = right->get_end();
-        
-        left = std::make_unique<BinaryExpression>(
-            std::move(left), op, std::move(right), op_start, end
-        );
-    }
-    
-    return left;
-}
-
 BinaryExpression::Operator Parser::token_to_binary_operator(TokenType type) {
     return BinaryExpression::token_type_to_operator(type);
 }
@@ -3033,6 +2973,7 @@ Position Parser::get_current_position() const {
 
 
 void Parser::add_error(const std::string& message) {
+
     errors_.emplace_back(message, get_current_position());
 }
 

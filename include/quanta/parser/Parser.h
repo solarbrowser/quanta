@@ -1,3 +1,4 @@
+#include "quanta/core/runtime/StackFloor.h"
 #include <cstdlib>
 /*
  * This Source Code Form is subject to the terms of the Mozilla Public
@@ -92,23 +93,33 @@ private:
     // else: nested parentheses, array literals and function expressions each
     // cost a frame per level, and their per-level cost differs by more than a
     // factor of two, so counting levels cannot say how close the stack is.
-    // Measuring it can -- but only against a mark taken on the same stack, and
-    // a body parsed lazily runs on whichever stack called it (a generator or
-    // async function resumes on a fiber of its own). So the mark is taken at
-    // the outermost level of each parse rather than once for the parser.
+    // Measuring it can.
+    //
+    // Two ways to measure, because there are two kinds of stack to be on. A
+    // fiber's extent is known exactly, so the check is against its floor. A
+    // thread's is not tracked here, so the check is how far this parse has
+    // come from where it started, against a budget taken from the thread's
+    // limit. Which applies is decided per parse rather than per parser: a
+    // generator or async function resumes on a fiber of its own, and anything
+    // parsed while it runs is parsed over there.
     const char* stack_base_ = nullptr;
+    const char* stack_floor_ = nullptr;
     size_t stack_budget_ = 0;
     size_t parse_depth_ = 0;
-    void init_stack_budget();
+    static size_t thread_stack_budget();
     struct StackMark {
         Parser* parser;
         explicit StackMark(Parser* p) : parser(p) { parser->parse_depth_++; }
         ~StackMark() { parser->parse_depth_--; }
     };
-    // Cheap enough for the expression entry point: at the root, one store;
-    // below it, an address subtraction and a compare.
     bool stack_exhausted(const char* here) {
-        if (parse_depth_ == 0) { stack_base_ = here; return false; }
+        if (parse_depth_ == 0) {
+            stack_floor_ = current_stack_floor();
+            stack_base_ = here;
+            stack_budget_ = thread_stack_budget();
+            return false;
+        }
+        if (stack_floor_) return here < stack_floor_;
         return static_cast<size_t>(stack_base_ - here) > stack_budget_;
     }
     std::vector<std::unordered_set<std::string>> private_scope_stack_; // private names per class depth
@@ -159,15 +170,8 @@ public:
     std::unique_ptr<ASTNode> parse_conditional_expression();
     std::unique_ptr<ASTNode> parse_logical_or_expression();
     std::unique_ptr<ASTNode> parse_nullish_coalescing_expression();
-    std::unique_ptr<ASTNode> parse_logical_and_expression();
-    std::unique_ptr<ASTNode> parse_bitwise_or_expression();
-    std::unique_ptr<ASTNode> parse_bitwise_xor_expression();
-    std::unique_ptr<ASTNode> parse_bitwise_and_expression();
-    std::unique_ptr<ASTNode> parse_equality_expression();
-    std::unique_ptr<ASTNode> parse_relational_expression();
-    std::unique_ptr<ASTNode> parse_shift_expression();
-    std::unique_ptr<ASTNode> parse_additive_expression();
-    std::unique_ptr<ASTNode> parse_multiplicative_expression();
+    int binary_precedence(TokenType type) const;
+    std::unique_ptr<ASTNode> parse_binary_chain(int min_precedence);
     std::unique_ptr<ASTNode> parse_exponentiation_expression();
     std::unique_ptr<ASTNode> parse_unary_expression();
     std::unique_ptr<ASTNode> parse_postfix_expression();
@@ -277,10 +281,6 @@ public:
     bool at_end() const;
     
 private:
-    std::unique_ptr<ASTNode> parse_binary_expression(
-        std::function<std::unique_ptr<ASTNode>()> parse_operand,
-        const std::vector<TokenType>& operators
-    );
     
     BinaryExpression::Operator token_to_binary_operator(TokenType type);
     UnaryExpression::Operator token_to_unary_operator(TokenType type);

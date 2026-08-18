@@ -7,6 +7,7 @@
 #ifndef QUANTA_FIBERSTATE_H
 #define QUANTA_FIBERSTATE_H
 
+#include "quanta/core/runtime/StackFloor.h"
 #include "minicoro.h"
 #include "quanta/core/runtime/FiberStackPool.h"
 
@@ -39,6 +40,11 @@ inline void quanta_fiber_yield(FiberState* fs) {
 }
 inline void quanta_fiber_resume(FiberState* fs) {
     fs->suspend_sp = nullptr;
+    // The fiber runs on its own stack, which is a fraction of the thread's.
+    // Anything that recurses over there -- a function body reached for the
+    // first time gets parsed where it is called -- has to be bounded by that
+    // stack, not by the one this call came from.
+    StackFloorScope floor(static_cast<const char*>(fs->co->stack_base), fs->co->stack_size);
     mco_resume(fs->co);
 }
 
