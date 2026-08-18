@@ -246,10 +246,20 @@ public:
     // the same reason the gate is: every write to an input already recomputes.
     mutable bool fast_strict = false;
     mutable bool fast_uses_this = false;
+    // The same question for the functions the compiler put in environment
+    // mode. They cannot use the register-mode path -- their bindings live in a
+    // real Environment, which the context has to own -- but everything the
+    // general path does around that is decl-site constant, so it is answered
+    // here once instead of per call.
+    mutable bool fast_env_gate = false;
     void recompute_fast_gate() const {
         fast_gate = !vm_incompatible && bytecode_chunk && !bytecode_chunk->env_mode &&
                     strict_directive_state >= 0 && closure_props_state == 0 &&
                     (self_name_state == 0 || self_name_state == 2);
+        fast_env_gate = !vm_incompatible && bytecode_chunk && bytecode_chunk->env_mode &&
+                        !bytecode_chunk->needs_arguments && strict_directive_state >= 0 &&
+                        closure_props_state == 0 &&
+                        (self_name_state == 0 || self_name_state == 2);
         fast_strict = strict_directive_state == 1;
         fast_uses_this = bytecode_chunk && bytecode_chunk->uses_this;
     }

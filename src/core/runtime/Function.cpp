@@ -569,6 +569,61 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         return vm_result;
     }
 
+    // Environment-mode functions take the general path today only because the
+    // register-mode gate excludes them, not because they need any of what that
+    // path does: the context still has to be built and own an Environment, but
+    // the prologue around it -- parameter objects, the strict directive scan,
+    // new.target and arrow bookkeeping, the closure-property sweep, the class
+    // slots, the self-name and arguments questions -- is either decl-site
+    // constant or does not apply. Everything that is not constant is a term of
+    // this gate, so entering here means the general path would have done
+    // exactly what follows.
+    if (g_vm_enabled && executable_ && executable_->fast_env_gate && !is_arrow_ &&
+        !is_class_constructor_ &&
+        !(ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined())) {
+        const ClassSlots& slots = class_slots();
+        if (!slots.home_object && !slots.super_ctor && !slots.super_is_null && !slots.private_brands) {
+            Engine* env_engine = ctx.get_engine();
+            auto env_ctx_ptr = ContextFactory::create_function_context(env_engine, &ctx, this);
+            Context& env_ctx = *env_ctx_ptr;
+            ExecContextScope gc_frame(&env_ctx);
+            ContextSurvivorGuard survivor_guard(env_ctx_ptr, env_engine);
+            env_ctx.set_arrow_function_context(false);
+            if (is_strict_ || executable_->fast_strict) env_ctx.set_strict_mode(true);
+
+            Value actual_this = this_value;
+            if (!env_ctx.is_strict_mode()) {
+                if (this_value.is_undefined() || this_value.is_null()) {
+                    if (Object* global = env_ctx.get_global_object()) actual_this = Value(global);
+                } else if (!this_value.is_object() && !this_value.is_function()) {
+                    actual_this = ObjectFactory::box_primitive_this_sloppy(env_ctx, this_value);
+                }
+            }
+            if (actual_this.is_object() || actual_this.is_function()) {
+                env_ctx.set_this_binding(actual_this.is_object() ? actual_this.as_object()
+                                                                 : actual_this.as_function());
+            }
+            env_ctx.create_binding("this", actual_this, true);
+
+            Context* prev_context = Object::current_context_;
+            Object::current_context_ = &env_ctx;
+            Value vm_result = VM::run(*executable_->bytecode_chunk, env_ctx, args, nullptr, this);
+            Object::current_context_ = prev_context;
+
+            if (env_ctx.was_super_called()) {
+                ctx.set_super_called(true);
+                if (env_ctx.last_super_override()) {
+                    ctx.set_last_super_override(env_ctx.last_super_override());
+                }
+            }
+            if (env_ctx.has_exception()) {
+                ctx.throw_exception(env_ctx.get_exception(), true);
+                return Value();
+            }
+            return vm_result;
+        }
+    }
+
     return call_tree_walker(ctx, args, this_value);
 }
 
