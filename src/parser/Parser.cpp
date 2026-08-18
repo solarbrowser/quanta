@@ -1161,6 +1161,11 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
             }
         }
 
+        // Parentheses around the operand are not parentheses around this
+        // expression. `**` refuses a bare unary operand and accepts a
+        // parenthesized one, and the difference between `(-2) ** 2` and
+        // `-(2) ** 2` is exactly which of the two the parentheses belong to.
+        last_expr_was_parenthesized_ = false;
         return std::make_unique<UnaryExpression>(op, std::move(operand), true, start, end);
     }
 
