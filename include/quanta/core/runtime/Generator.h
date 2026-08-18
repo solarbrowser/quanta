@@ -79,7 +79,8 @@ private:
     ASTNode* body_;
 
     // Fiber-based (stackful coroutine) implementation
-    static constexpr size_t STACK_SIZE = 512 * 1024;
+    
+    static constexpr size_t STACK_SIZE = 1024 * 1024;
 public:
     State state_;
     bool yield_raw_result_ = false; // if true, return yielded_result_ as-is
