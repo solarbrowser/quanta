@@ -361,11 +361,15 @@ void Engine::run_event_loop_to_completion(Context& ctx) {
         ctx.drain_microtasks();
     }
 
-    if (EventLoop::instance().has_pending_timers()) {
-        EventLoop::instance().run_pending_timers(ctx);
-        // Safety net in case run_pending_timers exited early via its cap mid-iteration.
+    // Without this a long enough chain simply stopped partway, every timer still
+    // queued was dropped, and the script exited reporting success.
+    
+    while (EventLoop::instance().has_pending_timers() || ctx.has_pending_microtasks()) {
         if (ctx.has_pending_microtasks()) {
             ctx.drain_microtasks();
+        }
+        if (EventLoop::instance().has_pending_timers()) {
+            EventLoop::instance().run_pending_timers(ctx);
         }
     }
 
