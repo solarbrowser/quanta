@@ -553,11 +553,12 @@ void scan_stacks(MarkVisitor& v) {
         scan_range(v, deepest, main_hi);
     }
 
-    // Fiber stacks are zero-initialized vectors: scanning the full buffer is
-    // safe, and untouched regions are all zeros (skipped fast). A suspended
-    // fiber's saved registers live in its mco_coro control block, which sits
-    // outside stack_lo/stack_hi (a separate part of the same allocation) --
-    // co->coro_size covers it.
+    // A suspended fiber's saved registers live in its mco_coro control block,
+    // which sits outside stack_lo/stack_hi -- ahead of the stack in the same
+    // allocation, so [co, stack_lo) is exactly it. Not co->coro_size: that
+    // measures the whole allocation, stack included, and scanning to it undoes
+    // the narrowing below and walks every page of every live fiber on every
+    // cycle. The stack's own live region is decided from the suspend point.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
         // A fiber's live region is [sp, stack_hi] -- stacks grow down, so
         // anything below the deepest point it currently reaches is dead. Take
@@ -583,7 +584,10 @@ void scan_stacks(MarkVisitor& v) {
         scan_range(v, from, rec.stack_hi);
         if (rec.state && rec.state->co) {
             mco_coro* co = rec.state->co;
-            scan_range(v, co, reinterpret_cast<const char*>(co) + co->coro_size);
+            const char* control_end = rec.stack_lo;
+            if (control_end > reinterpret_cast<const char*>(co)) {
+                scan_range(v, co, control_end);
+            }
         }
         if (rec.extra_roots) rec.extra_roots(v);
     });
