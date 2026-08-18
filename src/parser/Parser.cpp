@@ -1,3 +1,4 @@
+#include <sys/resource.h>
 /*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -30,13 +31,28 @@ using NameSet = std::unordered_set<std::string, NameHash, std::equal_to<>>;
 
 }
 
+void Parser::init_stack_budget() {
+    // Most of the thread's stack, leaving room for whatever the deepest parse
+    // frame still has to do after the check says stop, and for the error path
+    // that unwinds it. rlimit is what the thread actually got; the fallback
+    // matches the common default.
+    size_t total = 8u * 1024 * 1024;
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
+        rl.rlim_cur >= 1u * 1024 * 1024) {
+        total = static_cast<size_t>(rl.rlim_cur);
+    }
+    stack_budget_ = total / 2;
+}
+
 Parser::Parser(TokenSequence tokens)
     : tokens_(std::move(tokens)), current_token_index_(0) {
     options_.allow_return_outside_function = false;
     options_.allow_await_outside_async = false;
     options_.strict_mode = false;
     options_.source_type_module = false;
-    
+    init_stack_budget();
+
     while (current_token_index_ < tokens_.size() && 
            (current_token().get_type() == TokenType::NEWLINE || 
             current_token().get_type() == TokenType::WHITESPACE ||
@@ -51,6 +67,7 @@ Parser::Parser(TokenSequence tokens)
 
 Parser::Parser(TokenSequence tokens, const ParseOptions& options)
     : tokens_(std::move(tokens)), options_(options), current_token_index_(0) {
+    init_stack_budget();
     while (current_token_index_ < tokens_.size() && 
            (current_token().get_type() == TokenType::NEWLINE || 
             current_token().get_type() == TokenType::WHITESPACE ||
@@ -774,10 +791,6 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_conditional_expression() {
-    if (ternary_depth_ > 100) {
-        add_error("ternary nesting depth exceeded");
-        return nullptr;
-    }
 
     auto test = parse_logical_or_expression();
     if (!test) return nullptr;
@@ -810,9 +823,7 @@ std::unique_ptr<ASTNode> Parser::parse_conditional_expression() {
         // parsing it any tighter leaves the `=` to be read as an assignment to
         // the whole conditional, which is not a valid target.
         no_in_mode_ = saved_no_in;  // restore ?In for alternate
-        ternary_depth_++;
         auto alternate = parse_assignment_expression();
-        ternary_depth_--;
         if (!alternate) {
             add_error("Expected expression after ':' in conditional expression");
             return nullptr;
@@ -1789,6 +1800,16 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
+    // Every form that nests -- parentheses, array and object literals,
+    // function expressions, a conditional's branches -- comes back through
+    // here once per level, so one check here bounds all of them.
+    const char stack_probe = 0;
+    if (stack_exhausted(&stack_probe)) {
+        add_error("expression nesting too deep");
+        return nullptr;
+    }
+    StackMark stack_mark(this);
+
     const Token& token = current_token();
     
     switch (token.get_type()) {

@@ -1,3 +1,4 @@
+#include <cstdlib>
 /*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -87,7 +88,29 @@ private:
     // because the alternate is parsed as a full AssignmentExpression, so the
     // chain leaves and re-enters parse_conditional_expression and a parameter
     // would reset to zero at every link.
-    int ternary_depth_ = 0;
+    // A recursive-descent parser is bounded by the C++ stack and nothing
+    // else: nested parentheses, array literals and function expressions each
+    // cost a frame per level, and their per-level cost differs by more than a
+    // factor of two, so counting levels cannot say how close the stack is.
+    // Measuring it can -- but only against a mark taken on the same stack, and
+    // a body parsed lazily runs on whichever stack called it (a generator or
+    // async function resumes on a fiber of its own). So the mark is taken at
+    // the outermost level of each parse rather than once for the parser.
+    const char* stack_base_ = nullptr;
+    size_t stack_budget_ = 0;
+    size_t parse_depth_ = 0;
+    void init_stack_budget();
+    struct StackMark {
+        Parser* parser;
+        explicit StackMark(Parser* p) : parser(p) { parser->parse_depth_++; }
+        ~StackMark() { parser->parse_depth_--; }
+    };
+    // Cheap enough for the expression entry point: at the root, one store;
+    // below it, an address subtraction and a compare.
+    bool stack_exhausted(const char* here) {
+        if (parse_depth_ == 0) { stack_base_ = here; return false; }
+        return static_cast<size_t>(stack_base_ - here) > stack_budget_;
+    }
     std::vector<std::unordered_set<std::string>> private_scope_stack_; // private names per class depth
 
 public:
