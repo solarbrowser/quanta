@@ -54,6 +54,10 @@ void BytecodeChunk::trace(Visitor& v) const {
         // alive for the pointer to mean anything.
         v.visit_object(fb.prim_proto);
         v.visit(fb.prim_value);
+        // The own-descriptor entry names the receiver it was learned from and
+        // caches the value out of that receiver's map, so both are references.
+        v.visit_object(fb.own_desc_receiver);
+        v.visit(fb.own_desc_value);
     }
 }
 

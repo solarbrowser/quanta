@@ -329,6 +329,24 @@ struct FeedbackSlot {
     bool prim_is_getter = false;
     bool prim_valid = false;
     uint64_t prim_desc_epoch = 0;
+
+    // GetNamed on an OWN property that lives in the receiver's descriptor map
+    // rather than in a shape slot. Every namespace builtin is one of these --
+    // Math.floor, JSON.stringify -- because a builtin has to be non-enumerable
+    // and a shape slot carries no attributes. Such a read reaches neither the
+    // shape-slot cache nor the prototype cache, so it hashed the key and
+    // searched the map for it twice over: once for the prototype gate's
+    // "is there an override" question and once for the value itself.
+    // A shape cannot key this entry -- descriptors_ is per-object, not
+    // per-shape -- so the receiver's own identity is the key, and the global
+    // descriptor epoch is what retires it, on exactly the terms a
+    // from_descriptor prototype entry is retired: anything that could change
+    // the value, a plain assignment included, moves that epoch.
+    // `own_desc_receiver` and `own_desc_value` are real GC cells -- see
+    // BytecodeChunk::trace and the barrier where this is learned.
+    Object* own_desc_receiver = nullptr;
+    Value own_desc_value;
+    uint64_t own_desc_epoch = 0;
 };
 
 // Inline cache for one GetPrivate/SetPrivate site: the resolved qualified

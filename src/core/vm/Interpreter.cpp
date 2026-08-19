@@ -394,6 +394,13 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     bool ordinary = obj->get_type() == Object::ObjectType::Ordinary;
     uint64_t cur_epoch = Object::descriptor_epoch();
 
+    // An own property answered out of the receiver's descriptor map, learned
+    // below. Keyed on the receiver itself because that map is its own; the
+    // epoch is what says the value in it has not moved since.
+    if (fb && obj == fb->own_desc_receiver && fb->own_desc_epoch == cur_epoch) {
+        return fb->own_desc_value;
+    }
+
     // Asked before the receiver's own descriptor is built, not after: that
     // query walks own properties and, on an Array, recomputes length -- all of
     // it wasted once this hits. The gate is what makes the order safe: the
@@ -479,6 +486,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // get_property_descriptor() back to back would otherwise re-scan the
     // same map for the same key with no mutation in between.
     PropertyDescriptor* override_desc = obj->find_descriptor_override(name);
+    const bool own_descriptor = override_desc != nullptr;
     bool cacheable = fb && !fb->mega && ordinary && !override_desc;
     if (cacheable) {
         Shape* shape = obj_shape;
@@ -526,6 +534,15 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 Shape* s = obj->get_shape();
                 int32_t idx = s ? s->find_slot(name) : -1;
                 if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx), cur_epoch);
+            }
+            // Learn only what the descriptor map itself answered. A shape-slot
+            // value belongs to the entries above, which track it through shape
+            // changes this entry knows nothing about.
+            else if (override_desc && fb && owner) {
+                Collector::write_barrier(owner);
+                fb->own_desc_receiver = obj;
+                fb->own_desc_value = desc.get_value();
+                fb->own_desc_epoch = cur_epoch;
             }
             return desc.get_value();
         }
@@ -664,6 +681,23 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
         if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx), cur_epoch);
+    }
+    // A function object holding the key in its own descriptor map: every
+    // constructor-namespace builtin is one -- Number.isInteger, Object.keys,
+    // Date.now -- and none of them reaches a cache above, since the shape-slot
+    // entries want an Ordinary receiver and the prototype entries want the key
+    // to be absent from the receiver. For the answer to keep coming out of
+    // that map, Function::get_property must not answer the key from somewhere
+    // else first, and there are exactly two it does: `name`, which it takes
+    // from the function's own name field, and `length`, which falls back to
+    // the arity. Those two are refused rather than tracked.
+    if (own_descriptor && fb && owner &&
+        obj->get_type() == Object::ObjectType::Function &&
+        name != "name" && name != "length") {
+        Collector::write_barrier(owner);
+        fb->own_desc_receiver = obj;
+        fb->own_desc_value = result;
+        fb->own_desc_epoch = cur_epoch;
     }
     return result;
 }
