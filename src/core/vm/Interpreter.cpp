@@ -944,6 +944,30 @@ inline bool dense_element_slot(const Value& receiver, uint32_t index, Object*& o
     return true;
 }
 
+// The same question for a WRITE, which may also extend the array by one.
+// A read at the element count is out of bounds and answers undefined, which is
+// why the two cannot share a bound -- but a write there appends, and appending
+// through the dense vector is what push does.
+//
+// Overwriting and appending are not the same question, though. An index the
+// array already owns shadows whatever the prototype chain holds, so nothing
+// there can intervene. Creating one does not: [[Set]] walks the chain looking
+// for a setter to run or a non-writable data property to refuse on, and the
+// array has to be willing to take a new property at all. Both are asked here
+// and only for the appending case.
+inline bool dense_element_store_slot(const Value& receiver, uint32_t index, Object*& out) {
+    Object* obj = as_object_like(receiver);
+    if (!obj || !obj->has_only_dense_elements()) return false;
+    const uint32_t count = obj->element_count();
+    if (index > count) return false;  // past the end: a hole, for the general path to place
+    if (index == count &&
+        (!obj->is_extensible() || !obj->proto_chain_has_no_indices())) {
+        return false;
+    }
+    out = obj;
+    return true;
+}
+
 // The same question for a typed array. current_length() is the spec-current
 // length, and already answers 0 for a detached buffer and for a view whose
 // window no longer fits its resizable buffer, so one bound test covers those.
@@ -5355,7 +5379,7 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                 Object* dense;
                 TypedArrayBase* typed;
                 if (array_index_key(regs[key_reg], index)) {
-                    if (dense_element_slot(recv, index, dense)) {
+                    if (dense_element_store_slot(recv, index, dense)) {
                         dense->set_element(index, acc);
                         break;
                     }
