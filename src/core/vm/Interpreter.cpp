@@ -4998,6 +4998,23 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
 Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const Value& receiver = f.regs[code[pc + 1]];
+    // An own property that lives in the receiver's descriptor map -- every
+    // namespace builtin, where the shape-slot entry above can never hit
+    // because a non-enumerable property has no slot to be in. The receiver's
+    // own identity is the key and the descriptor epoch retires the entry, so
+    // the whole test is two compares against a site that has learned one.
+    // It sits ahead of the is_object() gate because a constructor namespace
+    // is a function object, and those never reach that gate at all.
+    {
+        const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+        if (fb.own_desc_receiver != nullptr &&
+            fb.own_desc_epoch == Object::descriptor_epoch() &&
+            as_object_like(receiver) == fb.own_desc_receiver) {
+            acc = fb.own_desc_value;
+            pc += 6;
+            DISPATCH();
+        }
+    }
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
         if (obj->get_type() == Object::ObjectType::Array) {
