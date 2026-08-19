@@ -221,21 +221,12 @@ enum class Op : uint8_t {
 // the polymorphic case -- all three share the same scan/learn code path.
 // Once `mega` is set the site is permanently uncached (same as fb==nullptr).
 struct FeedbackSlot {
-    // no_override_epoch: Object::descriptor_epoch() at the moment this
-    // entry's receiver was last confirmed to have no descriptors_ override
-    // for this site's key. GetNamed/SetNamed's own-property fast path
-    // trusts "still no override" -- skipping a real descriptors_ scan --
-    // only while the CURRENT epoch still matches; descriptors_ is per-
-    // object, not per-shape, so this is what keeps a different instance's
-    // later defineProperty from being silently missed by this shape's
-    // cached entry.
     // is_accessor: slot_index names an accessor-kind shape slot, so the slot
     // holds the getter rather than the property's value and a hit has to call
     // it. Lives in the padding slot_index's alignment already leaves. Every
     // reader that stores through slot_index, or hands its contents back as a
     // value, has to exclude these.
-    struct Entry { Shape* shape = nullptr; uint32_t slot_index = 0; bool is_accessor = false;
-                   uint64_t no_override_epoch = 0; };
+    struct Entry { Shape* shape = nullptr; uint32_t slot_index = 0; bool is_accessor = false; };
     static constexpr uint8_t kMaxEntries = 8;
     std::array<Entry, kMaxEntries> entries{};
     uint8_t count = 0;
