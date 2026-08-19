@@ -1,4 +1,3 @@
-#include <sys/resource.h>
 /*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -16,6 +15,16 @@
 #include <iostream>
 #include <map>
 #include <unordered_set>
+#ifdef _WIN32
+// GetCurrentThreadStackLimits below is Windows 8; say so before windows.h in
+// case the toolchain's SDK would otherwise hide the declaration.
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0602
+#endif
+#include <windows.h>
+#else
+#include <sys/resource.h>
+#endif
 
 namespace Quanta {
 
@@ -35,14 +44,24 @@ size_t Parser::thread_stack_budget() {
     static const size_t budget = [] {
         // Half the thread's stack: the check has to leave room for the deepest
         // frame to finish and for the tree it built to be taken apart, which
-        // unwinds recursively too. rlimit is what the thread actually got; the
-        // fallback matches the common default.
+        // unwinds recursively too. Each platform is asked what the thread
+        // actually got, and each falls back to its own usual default rather
+        // than a shared one -- the two differ by a factor of eight.
+#ifdef _WIN32
+        size_t total = 1u * 1024 * 1024;
+        ULONG_PTR stack_low = 0, stack_high = 0;
+        GetCurrentThreadStackLimits(&stack_low, &stack_high);
+        if (stack_high > stack_low) {
+            total = static_cast<size_t>(stack_high - stack_low);
+        }
+#else
         size_t total = 8u * 1024 * 1024;
         struct rlimit rl;
         if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
             rl.rlim_cur >= 1u * 1024 * 1024) {
             total = static_cast<size_t>(rl.rlim_cur);
         }
+#endif
         return total / 2;
     }();
     return budget;
