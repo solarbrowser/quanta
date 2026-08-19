@@ -3700,7 +3700,7 @@ std::unique_ptr<Object> create_array(uint32_t length) {
         // The array is made here and returned; nothing has seen its chain, so
         // the prototype cache has nothing to retire. Every array literal took
         // this path.
-        array->initialize_prototype(array_prototype_object);
+        array->initialize_prototype_of_new(array_prototype_object);
     }
 
     return array;

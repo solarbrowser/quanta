@@ -10,6 +10,7 @@
 #include "quanta/core/gc/BlockAllocator.h"
 #include "quanta/core/gc/CellKind.h"
 #include "quanta/core/gc/HeapBlock.h"
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -65,7 +66,12 @@ public:
     // for block cells; large cells match on their payload range.
     static ProbeResult probe_word(uint64_t word);
 
-    static bool test_mark(const ProbeResult& p);
+    static bool test_mark(const ProbeResult& p) {
+        if (!p.cell) return true;  // non-cell: nothing to mark
+        if (p.is_large) return large_cell_marked(p.cell);
+        return HeapBlock::from_cell(p.cell)->test_mark(p.cell);
+    }
+    static bool large_cell_marked(const void* cell);
     static void set_mark(const ProbeResult& p);
     // Exact, known-live cell (from a trace edge, not a guess).
     static ProbeResult exact_cell(const void* p);
@@ -80,7 +86,30 @@ public:
     // -- the write barrier's container, not a guessed stack word. Skips the
     // interior-pointer resolution the conservative probe has to do; the kind
     // still comes from the block, since the barrier's callers do not carry it.
-    static ProbeResult exact_cell_base(const void* p);
+    // True once any large cell has ever been allocated. Read on the barrier's
+    // hot path, so it is here rather than behind a call.
+    static std::atomic<bool>& any_large_cell();
+    // Slow forms, for the cases the inline ones below hand off: a heap this
+    // thread owns but is not running on, and the interior-pointer walk a large
+    // cell needs.
+    static ProbeResult exact_cell_base_foreign(const void* p);
+    static bool owns_heap_on_this_thread(const Heap* heap);
+
+    // The caller's own cell base. Every caller hands its own `this`, so there
+    // is nothing to resolve -- which makes this a mask, a compare and two
+    // loads, and worth not paying a cross-unit call for. The barrier asks it
+    // millions of times a run.
+    static ProbeResult exact_cell_base(const void* p) {
+        ProbeResult r;
+        if (!p) return r;
+        if (any_large_cell().load(std::memory_order_relaxed)) return exact_cell_base_foreign(p);
+        HeapBlock* block = HeapBlock::from_cell(p);
+        const Heap* owner = block->heap();
+        if (owner != active_or_null() && !owns_heap_on_this_thread(owner)) return r;
+        r.cell = const_cast<void*>(p);
+        r.kind = block->cell_kind();
+        return r;
+    }
 
     // Write-barrier dedup bit: previous state, set as a side effect.
     static bool test_and_set_remembered(const ProbeResult& p);

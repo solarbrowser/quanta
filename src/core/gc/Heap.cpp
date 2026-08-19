@@ -328,17 +328,14 @@ Heap::ProbeResult Heap::exact_cell(const void* p) {
     return probe_pointer(const_cast<void*>(p));
 }
 
-Heap::ProbeResult Heap::exact_cell_base(const void* p) {
-    ProbeResult r;
-    if (!p) return r;
-    if (!g_any_large_cell.load(std::memory_order_relaxed)) {
-        HeapBlock* block = HeapBlock::from_cell(p);
-        if (!owned_by_this_thread(block->heap())) return r;
-        r.cell = const_cast<void*>(p);
-        r.kind = block->cell_kind();
-        return r;
-    }
+std::atomic<bool>& Heap::any_large_cell() { return g_any_large_cell; }
+
+Heap::ProbeResult Heap::exact_cell_base_foreign(const void* p) {
     return probe_pointer(const_cast<void*>(p));
+}
+
+bool Heap::owns_heap_on_this_thread(const Heap* heap) {
+    return owned_by_this_thread(heap);
 }
 
 Heap::ProbeResult Heap::mark_exact(const void* p, CellKind kind) {
@@ -370,13 +367,9 @@ Heap::ProbeResult Heap::mark_exact(const void* p, CellKind kind) {
     return large;
 }
 
-bool Heap::test_mark(const ProbeResult& p) {
-    if (!p.cell) return true;  // non-cell: nothing to mark
-    if (p.is_large) {
-        auto* lc = reinterpret_cast<LargeCell*>(static_cast<char*>(p.cell) - kLargeHeaderSize);
-        return lc->marked;
-    }
-    return HeapBlock::from_cell(p.cell)->test_mark(p.cell);
+bool Heap::large_cell_marked(const void* cell) {
+    auto* lc = reinterpret_cast<LargeCell*>(const_cast<char*>(static_cast<const char*>(cell)) - kLargeHeaderSize);
+    return lc->marked;
 }
 
 void Heap::set_mark(const ProbeResult& p) {
