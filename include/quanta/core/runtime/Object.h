@@ -246,6 +246,11 @@ private:
     // ensure_ accessors is deliberately early: a clear with no insert behind it
     // costs one re-check, a missed clear answers wrongly.
     static constexpr uint32_t kDenseVerifiedBit = 1u << 31;
+    // The butterfly sits in the object's own cell rather than in a block of
+    // its own. A shape caps its slot count at kMaxSlots (128), so these two
+    // bits of the capacity word are free and cost the object nothing.
+    static constexpr uint32_t kInlineButterflyBit = 1u << 30;
+    static constexpr uint32_t kButterflyFlagBits = kDenseVerifiedBit | kInlineButterflyBit;
     bool dense_verified() const {
         return butterfly_ && (butterfly_header()->shape_capacity & kDenseVerifiedBit);
     }
@@ -256,7 +261,7 @@ private:
         if (butterfly_) butterfly_header()->shape_capacity &= ~kDenseVerifiedBit;
     }
     uint32_t shape_capacity() const {
-        return butterfly_ ? (butterfly_header()->shape_capacity & ~kDenseVerifiedBit) : 0;
+        return butterfly_ ? (butterfly_header()->shape_capacity & ~kButterflyFlagBits) : 0;
     }
     // An array's JS length. Zero without a butterfly, which is right: an array
     // with no elements and no explicit length is empty.
@@ -289,6 +294,22 @@ public:
     // free-list, which keeps existing unique_ptr ownership correct while
     // release()'d cells wait for the collector.
     static void* operator new(size_t size);
+    // The cell is asked for room past the object itself, where its first
+    // butterfly goes instead of into a block of its own. Freed by the ordinary
+    // single-argument delete: the heap knows the cell's size from its block.
+    static void* operator new(size_t size, size_t trailing_bytes);
+    static void  operator delete(void* p, size_t trailing_bytes) noexcept;
+    bool butterfly_is_inline() const {
+        return butterfly_ && (butterfly_header()->shape_capacity & kInlineButterflyBit);
+    }
+    // How many trailing bytes a cell needs to carry its own first butterfly.
+    static constexpr size_t inline_butterfly_bytes(uint32_t slots) {
+        return sizeof(ButterflyHeader) + static_cast<size_t>(slots) * sizeof(Value);
+    }
+    // Points butterfly_ at the trailing space the cell was given. `object_bytes`
+    // is where that space starts, which is the size of the concrete type.
+    void adopt_inline_butterfly(size_t object_bytes, uint32_t slots);
+
     static void  operator delete(void* p) noexcept;
     static void* operator new[](size_t) = delete;
     static void  operator delete[](void*) = delete;
@@ -1637,6 +1658,10 @@ namespace ObjectFactory {
     void return_to_pool(std::unique_ptr<Object> obj);
     
     std::unique_ptr<Object> create_object(Object* prototype = nullptr);
+    // An object whose first butterfly rides in its own cell. For a creation
+    // site that already knows how many properties are coming -- an object
+    // literal, a constructor with a slot hint -- which is nearly all of them.
+    std::unique_ptr<Object> create_object_with_slots(uint32_t slots);
     std::unique_ptr<Object> create_array(uint32_t length = 0);
     std::unique_ptr<Object> create_function();
     

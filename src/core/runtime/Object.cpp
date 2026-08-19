@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <span>
 #include "quanta/core/runtime/Object.h"
+#include <new>
 #include <cstring>
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Heap.h"
@@ -57,8 +58,29 @@ void* Object::operator new(size_t size) {
     return Heap::active().allocate(size, CellKind::Object);
 }
 
+void* Object::operator new(size_t size, size_t trailing_bytes) {
+    return Heap::active().allocate(size + trailing_bytes, CellKind::Object);
+}
+
 void Object::operator delete(void* p) noexcept {
     Heap::cell_free(p);
+}
+
+void Object::operator delete(void* p, size_t) noexcept {
+    Heap::cell_free(p);
+}
+
+void Object::adopt_inline_butterfly(size_t object_bytes, uint32_t slots) {
+    char* trailing = reinterpret_cast<char*>(this) + object_bytes;
+    ButterflyHeader* header = reinterpret_cast<ButterflyHeader*>(trailing);
+    header->elements_length = 0;
+    header->elements_capacity = 0;
+    header->shape_capacity = slots | kInlineButterflyBit;
+    header->array_length = 0;
+    header->extras = nullptr;
+    Value* slot_base = reinterpret_cast<Value*>(header + 1);
+    for (uint32_t i = 0; i < slots; i++) slot_base[i] = Value();
+    butterfly_ = slot_base;
 }
 
 void Object::trace(Visitor& v) {
@@ -376,7 +398,7 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
         old_elements_length = old_header->elements_length;
         old_array_length = old_header->array_length;
         uint32_t old_elements_cap = old_header->elements_capacity;
-        uint32_t old_shape_cap = old_header->shape_capacity & ~kDenseVerifiedBit;
+        uint32_t old_shape_cap = old_header->shape_capacity & ~kButterflyFlagBits;
         old_extras = old_header->extras;
         // Both regions' OLD capacities are <= their new ones (callers only
         // ever grow) -- copy each region's full old extent across at its
@@ -410,6 +432,11 @@ void Object::free_butterfly() {
 }
 
 void Object::release_butterfly_block() {
+    // An inline butterfly is part of the cell: it is freed when the cell is.
+    if (butterfly_header()->shape_capacity & kInlineButterflyBit) {
+        butterfly_ = nullptr;
+        return;
+    }
     size_t elem_cap = elements_capacity();
     size_t shape_cap = shape_capacity();
     char* base = reinterpret_cast<char*>(butterfly_) - sizeof(ButterflyHeader) -
@@ -3535,6 +3562,14 @@ void PropertyDescriptor::set_configurable(bool configurable) {
 namespace ObjectFactory {
 
 void initialize_memory_pools() {}
+
+std::unique_ptr<Object> create_object_with_slots(uint32_t slots) {
+    void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(slots));
+    Object* obj = ::new (cell) Object(Object::ObjectType::Ordinary);
+    obj->adopt_inline_butterfly(sizeof(Object), slots);
+    if (Object* obj_proto = get_object_prototype()) obj->initialize_prototype(obj_proto);
+    return std::unique_ptr<Object>(obj);
+}
 
 std::unique_ptr<Object> get_pooled_object() {
     auto obj = std::make_unique<Object>(Object::ObjectType::Ordinary);

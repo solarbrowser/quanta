@@ -5737,9 +5737,18 @@ Value h_gen_CreateObject(Frame& f, uint32_t pc, Value acc) {
     pc += 1;
     do {
                 {
-                pc += 2;  // hint currently informational only (see BytecodeCompiler)
-                Object* obj = ObjectFactory::create_object().release();
-                obj->reserve_property_slots(read_u16(code, pc - 2));
+                pc += 2;
+                const uint16_t slot_hint = read_u16(code, pc - 2);
+                // The literal says how many properties are coming, so the cell
+                // is asked for room to hold them and the object never reaches
+                // for a butterfly block of its own.
+                Object* obj;
+                if (slot_hint >= 1 && slot_hint <= 4) {
+                    obj = ObjectFactory::create_object_with_slots(4).release();
+                } else {
+                    obj = ObjectFactory::create_object().release();
+                    obj->reserve_property_slots(slot_hint);
+                }
                 acc = Value(obj);
                 break;
             }
