@@ -100,6 +100,22 @@ std::string Value::to_string() const {
             return "0";
         }
 
+        // An integer's shortest round-tripping form is its digits, and the
+        // general path below arrives at exactly that -- after formatting the
+        // double in scientific notation, finding the exponent, re-parsing it,
+        // and reassembling the digits through several temporary strings. Every
+        // integer within the safe range has at most 16 digits, well under the
+        // 21 where the spec switches to exponential form, so the digits are
+        // the whole answer and integer to_chars produces them directly.
+        if (num >= -9007199254740992.0 && num <= 9007199254740992.0) {
+            const int64_t as_int = static_cast<int64_t>(num);
+            if (static_cast<double>(as_int) == num) {
+                char ibuf[24];
+                auto ires = std::to_chars(ibuf, ibuf + sizeof(ibuf), as_int);
+                return std::string(ibuf, ires.ptr);
+            }
+        }
+
         // Number::toString(10): shortest round-tripping significant digits
         // (to_chars scientific), placed by the spec 6.1.6.1.20 rules. Fixed-format
         // to_chars would print large integers exactly (more digits than needed).
