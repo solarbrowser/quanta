@@ -384,6 +384,26 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
     // Pooled: doubling growth converges same-shaped objects onto a handful
     // of common byte sizes; plain new/delete here measurably regressed
     // object-literal-heavy workloads straight to malloc/free.
+    // A butterfly is the object's own memory but it is not a cell, so the
+    // collector cannot see it. For an ordinary object that does not matter:
+    // the cell it hangs off was accounted for, and the two are the same order
+    // of magnitude. For an array it matters entirely -- a million elements is
+    // eight megabytes behind a twenty-four byte cell, and a program that
+    // allocates nothing else runs to completion without ever collecting.
+    // So the pressure is reported once a butterfly is past what any single
+    // cell could have been, and it is the growth that is reported: the old
+    // block is handed back below, so the difference is what is newly held.
+    if (new_bytes >= Heap::kMaxTier1Size) {
+        size_t old_bytes = 0;
+        if (butterfly_) {
+            ButterflyHeader* h = butterfly_header();
+            old_bytes = static_cast<size_t>(h->elements_capacity) * sizeof(Value) +
+                        sizeof(ButterflyHeader) +
+                        static_cast<size_t>(h->shape_capacity & ~kButterflyFlagBits) * sizeof(Value);
+        }
+        if (new_bytes > old_bytes) Heap::note_extra_bytes(new_bytes - old_bytes);
+    }
+
     char* new_block = static_cast<char*>(SmallMapPool::take(new_bytes));
     Value* new_butterfly = reinterpret_cast<Value*>(new_block + new_elements_capacity * sizeof(Value) +
                                                       sizeof(ButterflyHeader));
