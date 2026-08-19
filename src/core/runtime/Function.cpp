@@ -21,6 +21,7 @@
 #include <iostream>
 #include <chrono>
 #include <unordered_set>
+#include <deque>
 
 #ifdef _MSC_VER
 #include <xmmintrin.h>
@@ -664,6 +665,29 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
 }
 
 // Out of line for the same reason as call_tree_walker below.
+namespace {
+
+// Every native builtin takes its arguments as a vector, but a register-mode
+// call has them in a span, so one has to be built for the callee. Doing that
+// with a fresh vector spends a malloc and a free on every builtin invocation.
+// These buffers are recycled instead, keeping their capacity between calls.
+// Natives nest -- a builtin can call back into JS, which calls another
+// builtin -- so each depth keeps its own buffer, and a deque is used because
+// growing it must not move the buffers the outer levels are still holding.
+std::deque<std::vector<Value>>& native_arg_buffers() {
+    static thread_local std::deque<std::vector<Value>> buffers;
+    return buffers;
+}
+
+thread_local size_t native_arg_depth = 0;
+
+struct NativeArgDepthScope {
+    bool taken = false;
+    ~NativeArgDepthScope() { if (taken) --native_arg_depth; }
+};
+
+}
+
 [[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
                                               Value this_value, const std::vector<Value>* args_vec,
                                               bool is_construct_invocation) {
@@ -713,10 +737,18 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     if (native_captures_ctx_) ctx.mark_exposed_to_escape();
     Context* prev_context = Object::current_context_;
     Object::current_context_ = &ctx;
-    // The native signature demands a vector; rebuild one only when the
-    // caller did not already have one.
-    std::vector<Value> native_args_owned;
-    if (!args_vec) { native_args_owned.assign(args.begin(), args.end()); args_vec = &native_args_owned; }
+    // The native signature demands a vector; borrow a recycled one only when
+    // the caller did not already have one.
+    NativeArgDepthScope arg_scope;
+    if (!args_vec) {
+        auto& buffers = native_arg_buffers();
+        const size_t slot = native_arg_depth++;
+        arg_scope.taken = true;
+        if (slot >= buffers.size()) buffers.resize(slot + 1);
+        std::vector<Value>& borrowed = buffers[slot];
+        borrowed.assign(args.begin(), args.end());
+        args_vec = &borrowed;
+    }
     Value result = native_data()->fn(ctx, *args_vec);
     Object::current_context_ = prev_context;
     ctx.set_original_this_nullish(prev_nullish);
