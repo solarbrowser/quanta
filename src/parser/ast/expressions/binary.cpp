@@ -475,6 +475,15 @@ Value BinaryExpression::evaluate(Context& ctx) {
 }
 
 Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& left_value, const Value& right_value) {
+    // Two strings added together are concatenated, and nothing on the way to
+    // that answer can observe anything: ToPrimitive returns a string
+    // unchanged, neither operand can be a symbol or a bigint, and nothing
+    // throws. The general path below still asks all of those questions, and
+    // for a template literal -- which is additions and nothing else -- they
+    // are the bulk of what it costs.
+    if (op == Operator::ADD && left_value.is_string() && right_value.is_string()) {
+        return Value(String::make_concat(left_value.as_string(), right_value.as_string()));
+    }
     if (LIKELY(left_value.is_number() && right_value.is_number())) {
         double left_num = left_value.as_number();
         double right_num = right_value.as_number();
