@@ -647,6 +647,17 @@ std::vector<Heap::ProbeResult>& remembered_cells() {
     return cells;
 }
 
+// The targets of writes into old containers, recorded instead of the
+// containers themselves. A minor collection needs old-to-young edges as
+// roots; the container is one way to find them and the edge itself is
+// another, and the second does not cost a walk of everything the container
+// holds. Drained and cleared by every minor, so it only ever holds the
+// writes since the last one.
+std::vector<Value>& remembered_values() {
+    static thread_local std::vector<Value> values;
+    return values;
+}
+
 std::vector<Environment*>& remembered_envs() {
     static thread_local std::vector<Environment*> envs;
     return envs;
@@ -865,6 +876,8 @@ void run_minor_collection() {
     // Null entries are environments freed since being remembered, plus ones
     // whose earlier entry a later barrier superseded -- see
     // Collector::release_env. visit_environment already ignores them.
+    for (const Value& val : remembered_values()) v.visit(val);
+    remembered_values().clear();
     for (Environment* e : remembered_envs()) v.visit_environment(e);
     // See FiberRegistry::Record::owner_cell for why these are minor roots.
     FiberRegistry::for_each([&](const FiberRegistry::Record& rec) {
@@ -963,6 +976,10 @@ void run_minor_collection() {
     // and traps (SIGFPE).
     for (const Heap::ProbeResult& p : remembered_cells()) Heap::clear_remembered(p);
     remembered_cells().clear();
+    // A sweep can free anything this still points at: whatever was reachable
+    // is marked and whatever was not is gone, and either way the edges it
+    // recorded have been accounted for by the mark that just finished.
+    remembered_values().clear();
     for (Environment* e : remembered_envs()) if (e) { e->gc_remembered_ = false; e->gc_in_remembered_ = false; }
     remembered_envs().clear();
     // Deliberately NOT freeing pending envs here: a minor traces from the roots
@@ -1105,6 +1122,10 @@ void finish_major_cycle(MarkVisitor& v) {
     // slot_index's offset/cell_size divides by that and traps (SIGFPE).
     for (const Heap::ProbeResult& p : remembered_cells()) Heap::clear_remembered(p);
     remembered_cells().clear();
+    // A sweep can free anything this still points at: whatever was reachable
+    // is marked and whatever was not is gone, and either way the edges it
+    // recorded have been accounted for by the mark that just finished.
+    remembered_values().clear();
     for (Environment* e : remembered_envs()) if (e) { e->gc_remembered_ = false; e->gc_in_remembered_ = false; }
     remembered_envs().clear();
     resolve_pending_env_frees(v);
@@ -1346,17 +1367,25 @@ void Collector::write_barrier(const void* cell) {
 
 void Collector::write_barrier_value(const void* cell, const Value& value) {
     if (barriers_disabled() || !cell) return;
-    // Shade the target first, and unconditionally: this is the half that
-    // keeps an in-progress mark from losing the edge, and it has to happen on
-    // every write, not just the first one that dirties this container.
+    // Nothing but a cell can hide a reference, so nothing else is worth
+    // recording or shading.
+    if (!value.is_object() && !value.is_function() && !value.is_string() &&
+        !value.is_symbol() && !value.is_bigint()) {
+        return;
+    }
+    // Shade the target, and on every write rather than only the first one
+    // that dirties this container: this is the half that keeps an in-progress
+    // mark from losing the edge.
     if (Collector::major_in_progress_) mark_visitor().visit(value);
-    // The generational half is unchanged -- the container still has to be
-    // findable by the next minor collection, and once recorded it stays
-    // recorded for the cycle.
+    // A young container needs no record at all -- a minor reaches every live
+    // young cell from the roots.
     Heap::ProbeResult p = Heap::exact_cell_base(cell);
     if (!p.cell || !Heap::test_mark(p)) return;
-    if (Heap::test_and_set_remembered(p)) return;
-    remembered_cells().push_back(p);
+    // Old container, so the edge has to survive to the next minor. Record the
+    // edge rather than the container: handing back the container makes the
+    // minor walk every element it holds to find the one that changed, which
+    // is the whole array on every append.
+    remembered_values().push_back(value);
 }
 
 void Collector::write_barrier_env_for(Environment* env, const Value& value) {
