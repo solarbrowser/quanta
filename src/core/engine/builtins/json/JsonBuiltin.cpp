@@ -17,22 +17,22 @@ void register_json_builtins(Context& ctx) {
     auto json_object = ObjectFactory::create_object();
 
     auto json_parse = ObjectFactory::create_native_function("parse",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            return JSON::js_parse(ctx, args);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return JSON::js_parse(ctx, args, receiver);
         }, 2);
     json_object->set_property("parse", Value(json_parse.release()),
         PropertyAttributes::BuiltinFunction);
 
     auto json_stringify = ObjectFactory::create_native_function("stringify",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            return JSON::js_stringify(ctx, args);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return JSON::js_stringify(ctx, args, receiver);
         }, 3);
     json_object->set_property("stringify", Value(json_stringify.release()),
         PropertyAttributes::BuiltinFunction);
 
     // JSON.rawJSON(text): creates a frozen null-prototype object with "rawJSON" property
     auto json_rawJSON = ObjectFactory::create_native_function("rawJSON",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.empty()) {
                 ctx.throw_syntax_error("JSON.rawJSON: text must be a valid JSON primitive");
                 return Value();
@@ -84,7 +84,7 @@ void register_json_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
 
     auto json_isRawJSON = ObjectFactory::create_native_function("isRawJSON",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;
             if (args.empty() || !args[0].is_object()) return Value(false);
             Object* obj = args[0].as_object();

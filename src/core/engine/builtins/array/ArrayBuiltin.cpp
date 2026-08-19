@@ -25,12 +25,12 @@ namespace Quanta {
 
 // ToObject for array generics: boxes primitive this (bool/number/string) with the correct prototype. 
 // Only Array.prototype methods should call this -- Iterator/Number/String methods must NOT box
-static Object* array_to_object(Context& ctx) {
-    if (ctx.original_this_was_nullish()) return nullptr;
-    Object* obj = ctx.get_this_binding();
+static Object* array_to_object(Context& ctx, const Value& receiver) {
+    if (receiver.is_nullish()) return nullptr;
+    Object* obj = receiver.as_object_or_null();
     // The receiver as it really is: get_this_binding above answers null for a
     // primitive, which these generics still have to box.
-    Value prim = ctx.get_this_value();
+    Value prim = receiver;
     if (prim.is_symbol() || prim.is_bigint()) {
         // Reuse Object()'s wrapper setup rather than duplicating it here.
         Value obj_ctor_val = ctx.get_binding("Object");
@@ -272,7 +272,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
     // over the raw Promise* (mirrors Promise.all's pattern of capturing rp).
     Promise* rp = result_promise;
     auto reject_fn = ObjectFactory::create_native_function("",
-        [rp](Context& c, std::span<const Value> args) -> Value {
+        [rp](Context& c, std::span<const Value> args, Value receiver) -> Value {
             fa_reject(c, rp, args.empty() ? Value() : args[0]);
             return Value();
         });
@@ -280,7 +280,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
 
     // Step 1: handle the (possibly-awaited) iterator-result object {value, done}.
     auto on_next_settled = ObjectFactory::create_native_function("",
-        [rp](Context& c, std::span<const Value> args) -> Value {
+        [rp](Context& c, std::span<const Value> args, Value receiver) -> Value {
             Value nr = args.empty() ? Value() : args[0];
             if (!nr.is_object()) {
                 c.throw_type_error("iterator result is not an object");
@@ -321,7 +321,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
 
     // Step 2: value (now resolved) -- apply mapfn if present (and Await its result).
     auto on_value = ObjectFactory::create_native_function("",
-        [rp](Context& c, std::span<const Value> args) -> Value {
+        [rp](Context& c, std::span<const Value> args, Value receiver) -> Value {
             Value value = args.empty() ? Value() : args[0];
             Value mapfn_v = rp->get_internal_slot("__fa_mapfn__");
             if (mapfn_v.is_function()) {
@@ -341,7 +341,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
 
     // Step 3: mapped value (now resolved) -- store and advance to the next index.
     auto on_mapped = ObjectFactory::create_native_function("",
-        [rp](Context& c, std::span<const Value> args) -> Value {
+        [rp](Context& c, std::span<const Value> args, Value receiver) -> Value {
             fa_set_and_advance(c, rp, args.empty() ? Value() : args[0]);
             return Value();
         });
@@ -542,7 +542,7 @@ static double flatten_into_array(Context& ctx, Object* target, Object* source, d
 
 void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto array_constructor = ObjectFactory::create_native_constructor("Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             std::unique_ptr<Object> array;
             if (args.empty()) {
                 array = ObjectFactory::create_array();
@@ -578,7 +578,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         }, 1);
 
     auto isArray_fn = ObjectFactory::create_native_function("isArray",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;
             if (args.empty()) return Value(false);
             const Value& arg = args[0];
@@ -604,7 +604,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_constructor->set_property("isArray", Value(isArray_ptr), isArray_attrs);
 
     auto from_fn = ObjectFactory::create_native_function("from",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value items = args.empty() ? Value() : args[0];
             Value thisArg = (args.size() > 2) ? args[2] : Value();
 
@@ -619,7 +619,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             // Determine result array constructor: `this` if it's a constructor, else Array.
-            Object* this_binding = array_to_object(ctx);
+            Object* this_binding = array_to_object(ctx, receiver);
             Function* ctor = (this_binding && this_binding->is_function())
                 ? static_cast<Function*>(this_binding) : nullptr;
 
@@ -794,8 +794,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_constructor->set_property("from", Value(from_ptr), from_attrs);
 
     auto of_fn = ObjectFactory::create_native_function("of",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_binding = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_binding = array_to_object(ctx, receiver);
             Function* constructor = nullptr;
             if (this_binding && this_binding->is_function() &&
                 static_cast<Function*>(this_binding)->is_constructor()) {
@@ -833,7 +833,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_constructor->set_property("of", Value(of_ptr), of_attrs);
 
     auto fromAsync_fn = ObjectFactory::create_native_function("fromAsync",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value items = args.empty() ? Value() : args[0];
             Value this_arg = args.size() > 2 ? args[2] : Value();
 
@@ -925,7 +925,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             // Use the `this` constructor for the result array if it's a constructor
             // (Array.fromAsync.call(MyClass, ...) should produce instanceof MyClass).
-            Object* this_obj2 = ctx.get_this_binding();
+            Object* this_obj2 = receiver.as_object_or_null();
             Function* this_ctor = (this_obj2 && this_obj2->is_function())
                 ? static_cast<Function*>(this_obj2) : nullptr;
 
@@ -992,9 +992,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_constructor->set_property("fromAsync", Value(fromAsync_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_binding = array_to_object(ctx);
+            Object* this_binding = array_to_object(ctx, receiver);
             if (this_binding) {
                 return Value(this_binding);
             }
@@ -1017,10 +1017,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     }
 
     auto find_fn = ObjectFactory::create_native_function("find",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value();
 
             double len_d = array_like_length(ctx, this_obj);
@@ -1060,9 +1060,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("find", find_desc);
 
     auto findLast_fn = ObjectFactory::create_native_function("findLast",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) {
                 ctx.throw_type_error("Array.prototype.findLast called on non-object");
                 return Value();
@@ -1104,9 +1104,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("findLast", findLast_desc);
 
     auto findLastIndex_fn = ObjectFactory::create_native_function("findLastIndex",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) {
                 ctx.throw_type_error("Array.prototype.findLastIndex called on non-object");
                 return Value();
@@ -1148,9 +1148,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("findLastIndex", findLastIndex_desc);
 
     auto with_fn = ObjectFactory::create_native_function("with",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -1209,9 +1209,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("with", with_desc);
 
     auto at_fn = ObjectFactory::create_native_function("at",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) {
                 ctx.throw_type_error("Array.prototype.at called on non-object");
                 return Value();
@@ -1248,9 +1248,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
 
     auto includes_fn = ObjectFactory::create_native_function("includes",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             Value search_element = args.empty() ? Value() : args[0];
 
             double length = array_like_length(ctx, this_obj);
@@ -1304,9 +1304,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("includes", array_includes_desc);
 
     auto flat_fn = ObjectFactory::create_native_function("flat",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double source_len = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -1342,9 +1342,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("flat", flat_desc);
 
     auto flatMap_fn = ObjectFactory::create_native_function("flatMap",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double source_len = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -1377,9 +1377,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("flatMap", flatMap_desc);
 
     auto fill_fn = ObjectFactory::create_native_function("fill",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value();
 
             Value fill_value = args.empty() ? Value() : args[0];
@@ -1423,7 +1423,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("fill", fill_desc);
 
     auto array_keys_fn = ObjectFactory::create_native_function("keys",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             auto result = ObjectFactory::create_array();
             result->set_element(0, Value(0));
             result->set_element(1, Value(1));
@@ -1436,7 +1436,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("keys", keys_desc);
 
     auto array_values_fn = ObjectFactory::create_native_function("values",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             auto result = ObjectFactory::create_array();
             result->set_element(0, Value(1));
             result->set_element(1, Value(2));
@@ -1452,7 +1452,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("values", values_desc);
 
     auto array_entries_fn = ObjectFactory::create_native_function("entries",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             auto result = ObjectFactory::create_array();
 
             auto pair0 = ObjectFactory::create_array();
@@ -1469,9 +1469,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("entries", entries_desc);
 
     auto array_toString_fn = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) {
                 ctx.throw_type_error("Array.prototype.toString called on non-object");
                 return Value();
@@ -1495,9 +1495,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toString", array_toString_desc);
 
     auto array_push_fn = ObjectFactory::create_native_function("push",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) {
                 ctx.throw_type_error("Array.prototype.push called on non-object");
                 return Value();
@@ -1558,9 +1558,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("push", push_desc);
 
     auto copyWithin_fn = ObjectFactory::create_native_function("copyWithin",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -1640,9 +1640,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("copyWithin", copyWithin_desc);
 
     auto lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) {
                 return Value(-1.0);
             }
@@ -1699,9 +1699,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("lastIndexOf", lastIndexOf_desc);
 
     auto reduceRight_fn = ObjectFactory::create_native_function("reduceRight",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -1775,10 +1775,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("reduceRight", reduceRight_desc);
 
     auto toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(std::string(""));
 
             uint32_t length = this_obj->get_length();
@@ -1831,10 +1831,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toLocaleString", array_toLocaleString_desc);
 
     auto toReversed_fn = ObjectFactory::create_native_function("toReversed",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
             double len_d = array_like_length(ctx, this_obj);
@@ -1863,8 +1863,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toReversed", toReversed_desc);
 
     auto toSorted_fn = ObjectFactory::create_native_function("toSorted",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
 
             Function* compareFn = nullptr;
             if (!args.empty() && !args[0].is_undefined()) {
@@ -1875,7 +1875,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 compareFn = args[0].as_function();
             }
 
-            Object* this_obj = array_to_object(ctx);
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -1934,9 +1934,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toSorted", toSorted_desc);
 
     auto toSpliced_fn = ObjectFactory::create_native_function("toSpliced",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -2017,9 +2017,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toSpliced", toSpliced_desc);
 
     auto array_concat_fn = ObjectFactory::create_native_function("concat",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.concat called on null or undefined"); return Value(); }
-            Object* this_array = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array.prototype.concat called on null or undefined"); return Value(); }
+            Object* this_array = array_to_object(ctx, receiver);
 
             // ES6: use @@species constructor for result
             Value result_val = array_species_create(ctx, this_array, 0);
@@ -2125,9 +2125,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("concat", concat_desc);
 
     auto every_fn = ObjectFactory::create_native_function("every",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(false);
 
             double len_d = array_like_length(ctx, this_obj);
@@ -2162,9 +2162,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("every", every_desc);
 
     auto filter_fn = ObjectFactory::create_native_function("filter",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -2215,10 +2215,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("filter", filter_desc);
 
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value();
 
             double len_d = array_like_length(ctx, this_obj);
@@ -2254,9 +2254,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("forEach", forEach_desc);
 
     auto indexOf_fn = ObjectFactory::create_native_function("indexOf",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(-1.0);
 
             Value search_element = args.empty() ? Value() : args[0];
@@ -2298,9 +2298,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("indexOf", array_indexOf_desc);
 
     auto map_fn = ObjectFactory::create_native_function("map",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -2352,9 +2352,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("map", map_desc);
 
     auto reduce_fn = ObjectFactory::create_native_function("reduce",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -2419,9 +2419,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("reduce", reduce_desc);
 
     auto some_fn = ObjectFactory::create_native_function("some",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(false);
 
             double len_d = array_like_length(ctx, this_obj);
@@ -2460,9 +2460,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("some", some_desc);
 
     auto findIndex_fn = ObjectFactory::create_native_function("findIndex",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(-1.0);
 
             double len_d = array_like_length(ctx, this_obj);
@@ -2493,9 +2493,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("findIndex", findIndex_desc);
 
     auto join_fn = ObjectFactory::create_native_function("join",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(std::string(""));
 
             double length = array_like_length(ctx, this_obj);
@@ -2530,10 +2530,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("join", join_desc);
 
     auto pop_fn = ObjectFactory::create_native_function("pop",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value();
 
             double length = array_like_length(ctx, this_obj);
@@ -2580,10 +2580,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("pop", pop_desc);
 
     auto reverse_fn = ObjectFactory::create_native_function("reverse",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(this_obj);
 
             double length = array_like_length(ctx, this_obj);
@@ -2656,10 +2656,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("reverse", reverse_desc);
 
     auto shift_fn = ObjectFactory::create_native_function("shift",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value();
 
             double length = array_like_length(ctx, this_obj);
@@ -2722,11 +2722,11 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("shift", shift_desc);
 
     auto slice_fn = ObjectFactory::create_native_function("slice",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;
             (void)args;
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) {
                 auto empty = ObjectFactory::create_array();
                 return Value(empty.release());
@@ -2800,9 +2800,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("slice", slice_desc);
 
     auto sort_fn = ObjectFactory::create_native_function("sort",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(this_obj);
 
             Function* compareFn = nullptr;
@@ -2882,9 +2882,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("sort", sort_desc);
 
     auto splice_fn = ObjectFactory::create_native_function("splice",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
             double length = array_like_length(ctx, this_obj);
@@ -3036,9 +3036,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("splice", splice_desc);
 
     auto unshift_fn = ObjectFactory::create_native_function("unshift",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value(0.0);
 
             double length = array_like_length(ctx, this_obj);
@@ -3119,17 +3119,17 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_proto_ptr->set_property_descriptor("constructor", array_constructor_desc);
 
     auto array_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) return Value();
             auto iterator = ObjectFactory::create_object();
             struct ArrIterState { Object* arr; uint32_t index = 0; };
             auto state = std::make_shared<ArrIterState>(ArrIterState{this_obj, 0});
             auto next_fn = ObjectFactory::create_native_function("next",
-                [state](Context& ctx, std::span<const Value> args) -> Value {
+                [state](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx; (void)args;
                     uint32_t length = state->arr->get_length();
                     auto result = ObjectFactory::create_object();
@@ -3178,8 +3178,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_constructor->set_property("prototype", Value(array_prototype.release()), PropertyAttributes::None);
 
     auto array_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            return Value(ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return Value(receiver.as_object_or_null());
         }, 0);
 
     PropertyDescriptor array_species_desc;

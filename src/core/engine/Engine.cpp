@@ -315,7 +315,7 @@ void Engine::register_function(const std::string& name, std::function<Value(cons
     if (!global_context_) return;
     
     auto native_func = ObjectFactory::create_native_function(name, 
-        [func](Context& ctx, std::span<const Value> args) -> Value {
+        [func](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;
             // The embedder API takes a vector; this is the one place that
             // still has to build one, and it is not on any hot path.

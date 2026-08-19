@@ -93,7 +93,7 @@ public:
     
     static std::string type_to_name(Type type);
     
-    static Value isError(Context& ctx, std::span<const Value> args);
+    static Value isError(Context& ctx, std::span<const Value> args, Value receiver);
     
 private:
     void initialize_properties();

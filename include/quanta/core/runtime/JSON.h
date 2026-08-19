@@ -54,8 +54,8 @@ public:
         std::string& out_root_source);
     static std::string stringify(const Value& value, const StringifyOptions& options = StringifyOptions());
     
-    static Value js_parse(Context& ctx, std::span<const Value> args);
-    static Value js_stringify(Context& ctx, std::span<const Value> args);
+    static Value js_parse(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_stringify(Context& ctx, std::span<const Value> args, Value receiver);
     
     static std::unique_ptr<Object> create_json_object();
 

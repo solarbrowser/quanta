@@ -218,7 +218,6 @@ void Context::reset_for_call(Engine* engine, Context* parent) {
     has_exception_ = false; has_return_value_ = false; has_break_ = false;
     has_continue_ = false; is_in_constructor_call_ = false; super_called_ = false;
     this_needs_super_ = false; exposed_to_escape_ = false;
-    original_this_kind_ = kThisReference;
     pending_construct_call_ = false; strict_mode_ = false; in_param_eval_ = false;
     is_direct_eval_call_ = false; eval_arguments_conflict_ = false;
     is_arrow_function_context_ = false; in_class_field_init_ = false;
@@ -1543,11 +1542,11 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
         auto wrapped_obj = ObjectFactory::create_promise(gctx);
         Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
         auto res_fn = ObjectFactory::create_native_function("",
-            [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                 wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
             }, 1);
         auto rej_fn = ObjectFactory::create_native_function("",
-            [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
             }, 1);
         wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
@@ -1580,13 +1579,13 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
         if (is_pending) {
             auto self = async_gen;
             auto on_f = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, std::span<const Value> args) -> Value {
+                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                     Value val = args.empty() ? Value() : args[0];
                     self->resume_from_await(val, false);
                     return Value();
                 });
             auto on_r = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, std::span<const Value> args) -> Value {
+                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                     Value reason = args.empty() ? Value() : args[0];
                     self->resume_from_await(reason, true);
                     return Value();
@@ -1615,13 +1614,13 @@ bool await_value(Context& ctx, const Value& value, Value& out_result) {
         if (is_pending) {
             auto self = exec->shared_from_this();
             auto on_f = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, std::span<const Value> args) -> Value {
+                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                     Value val = args.empty() ? Value() : args[0];
                     self->resume(val, false);
                     return Value();
                 });
             auto on_r = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, std::span<const Value> args) -> Value {
+                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                     Value reason = args.empty() ? Value() : args[0];
                     self->resume(reason, true);
                     return Value();

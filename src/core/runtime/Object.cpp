@@ -3695,8 +3695,8 @@ std::unique_ptr<Object> create_boolean(bool value) {
 }
 
 std::unique_ptr<Function> create_array_method(const std::string& method_name) {
-    auto method_fn = [method_name](Context& ctx, std::span<const Value> args) -> Value {
-        Object* array = ctx.get_this_binding();
+    auto method_fn = [method_name](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        Object* array = receiver.as_object_or_null();
         
         if (!array || !array->is_array()) {
             ctx.throw_exception(Value(std::string("Array method called on non-array")));

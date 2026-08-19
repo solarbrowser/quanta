@@ -131,11 +131,11 @@ public:
 
     Context* get_context() const { return generator_context_; }
 
-    static Value generator_next(Context& ctx, std::span<const Value> args);
-    static Value generator_return(Context& ctx, std::span<const Value> args);
-    static Value generator_throw(Context& ctx, std::span<const Value> args);
+    static Value generator_next(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value generator_return(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value generator_throw(Context& ctx, std::span<const Value> args, Value receiver);
     
-    static Value generator_function_constructor(Context& ctx, std::span<const Value> args);
+    static Value generator_function_constructor(Context& ctx, std::span<const Value> args, Value receiver);
     
     static void setup_generator_prototype(Context& ctx);
     

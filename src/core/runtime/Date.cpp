@@ -176,18 +176,18 @@ void set_date_value(Object* obj, double t) {
     obj->set_property("_timestamp", Value(t));
 }
 
-Object* this_date_object(Context& ctx) {
-    Object* obj = ctx.get_this_binding();
+Object* this_date_object(Context& ctx, const Value& receiver) {
+    Object* obj = receiver.as_object_or_null();
     if (!obj || obj->get_type() != Object::ObjectType::Date ||
-        ctx.original_this_was_primitive() || ctx.original_this_was_nullish()) {
+        (!receiver.is_nullish() && !receiver.is_object_like()) || receiver.is_nullish()) {
         ctx.throw_type_error("this is not a Date object");
         return nullptr;
     }
     return obj;
 }
 
-bool this_time_value(Context& ctx, double& t) {
-    Object* obj = this_date_object(ctx);
+bool this_time_value(Context& ctx, const Value& receiver, double& t) {
+    Object* obj = this_date_object(ctx, receiver);
     if (!obj) return false;
     t = get_date_value(obj);
     return true;
@@ -279,8 +279,8 @@ std::string time_zone_string(double tv) {
 // Fields ordered as in MakeDay/MakeTime; setters write a contiguous run of them.
 enum DateField { kFieldYear = 0, kFieldMonth, kFieldDate, kFieldHour, kFieldMin, kFieldSec, kFieldMs };
 
-Value set_date_fields(Context& ctx, std::span<const Value> args, bool utc, int first, int count) {
-    Object* obj = this_date_object(ctx);
+Value set_date_fields(Context& ctx, std::span<const Value> args, const Value& receiver, bool utc, int first, int count) {
+    Object* obj = this_date_object(ctx, receiver);
     if (!obj) return Value();
     double t = get_date_value(obj);
 
@@ -545,9 +545,9 @@ double parse_date_string(const std::string& input) {
     return parse_legacy_string(s);
 }
 
-Value date_getter(Context& ctx, bool utc, double (*extract)(double)) {
+Value date_getter(Context& ctx, const Value& receiver, bool utc, double (*extract)(double)) {
     double t;
-    if (!this_time_value(ctx, t)) return Value();
+    if (!this_time_value(ctx, receiver, t)) return Value();
     if (std::isnan(t)) return nan_result();
     return Value(extract(utc ? t : local_time(t)));
 }
@@ -566,7 +566,7 @@ std::string Date::to_date_string(double tv) {
     return date_string(t) + " " + time_string(t) + time_zone_string(tv);
 }
 
-Value Date::date_constructor(Context& ctx, std::span<const Value> args) {
+Value Date::date_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
     if (!ctx.is_in_constructor_call()) {
         return Value(to_date_string(current_time_ms()));
     }
@@ -611,19 +611,19 @@ Value Date::date_constructor(Context& ctx, std::span<const Value> args) {
     return Value(obj.release());
 }
 
-Value Date::now(Context& ctx, std::span<const Value> args) {
+Value Date::now(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)ctx; (void)args;
     return Value(current_time_ms());
 }
 
-Value Date::parse(Context& ctx, std::span<const Value> args) {
+Value Date::parse(Context& ctx, std::span<const Value> args, Value receiver) {
     Value str_val = args.empty() ? Value() : args[0];
     std::string s = str_val.to_string();
     if (ctx.has_exception()) return Value();
     return Value(parse_date_string(s));
 }
 
-Value Date::UTC(Context& ctx, std::span<const Value> args) {
+Value Date::UTC(Context& ctx, std::span<const Value> args, Value receiver) {
     double f[7] = {nan_value(), 0.0, 1.0, 0.0, 0.0, 0.0, 0.0};
     f[0] = (args.empty() ? Value() : args[0]).to_number();
     if (ctx.has_exception()) return Value();
@@ -639,112 +639,112 @@ Value Date::UTC(Context& ctx, std::span<const Value> args) {
     return Value(time_clip(make_date(make_day(y, f[1], f[2]), make_time(f[3], f[4], f[5], f[6]))));
 }
 
-Value Date::getTime(Context& ctx, std::span<const Value> args) {
+Value Date::getTime(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     double t;
-    if (!this_time_value(ctx, t)) return Value();
+    if (!this_time_value(ctx, receiver, t)) return Value();
     return Value(t);
 }
 
-Value Date::valueOf(Context& ctx, std::span<const Value> args) {
-    return getTime(ctx, args);
+Value Date::valueOf(Context& ctx, std::span<const Value> args, Value receiver) {
+    return getTime(ctx, args, receiver);
 }
 
-Value Date::getFullYear(Context& ctx, std::span<const Value> args) {
+Value Date::getFullYear(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return year_from_time(t); });
+    return date_getter(ctx, receiver, false, [](double t) { return year_from_time(t); });
 }
 
-Value Date::getMonth(Context& ctx, std::span<const Value> args) {
+Value Date::getMonth(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return static_cast<double>(month_from_time(t)); });
+    return date_getter(ctx, receiver, false, [](double t) { return static_cast<double>(month_from_time(t)); });
 }
 
-Value Date::getDate(Context& ctx, std::span<const Value> args) {
+Value Date::getDate(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return date_from_time(t); });
+    return date_getter(ctx, receiver, false, [](double t) { return date_from_time(t); });
 }
 
-Value Date::getDay(Context& ctx, std::span<const Value> args) {
+Value Date::getDay(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return week_day(t); });
+    return date_getter(ctx, receiver, false, [](double t) { return week_day(t); });
 }
 
-Value Date::getHours(Context& ctx, std::span<const Value> args) {
+Value Date::getHours(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return hour_from_time(t); });
+    return date_getter(ctx, receiver, false, [](double t) { return hour_from_time(t); });
 }
 
-Value Date::getMinutes(Context& ctx, std::span<const Value> args) {
+Value Date::getMinutes(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return min_from_time(t); });
+    return date_getter(ctx, receiver, false, [](double t) { return min_from_time(t); });
 }
 
-Value Date::getSeconds(Context& ctx, std::span<const Value> args) {
+Value Date::getSeconds(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return sec_from_time(t); });
+    return date_getter(ctx, receiver, false, [](double t) { return sec_from_time(t); });
 }
 
-Value Date::getMilliseconds(Context& ctx, std::span<const Value> args) {
+Value Date::getMilliseconds(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return ms_from_time(t); });
+    return date_getter(ctx, receiver, false, [](double t) { return ms_from_time(t); });
 }
 
-Value Date::getYear(Context& ctx, std::span<const Value> args) {
+Value Date::getYear(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, false, [](double t) { return year_from_time(t) - 1900.0; });
+    return date_getter(ctx, receiver, false, [](double t) { return year_from_time(t) - 1900.0; });
 }
 
-Value Date::getUTCFullYear(Context& ctx, std::span<const Value> args) {
+Value Date::getUTCFullYear(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, true, [](double t) { return year_from_time(t); });
+    return date_getter(ctx, receiver, true, [](double t) { return year_from_time(t); });
 }
 
-Value Date::getUTCMonth(Context& ctx, std::span<const Value> args) {
+Value Date::getUTCMonth(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, true, [](double t) { return static_cast<double>(month_from_time(t)); });
+    return date_getter(ctx, receiver, true, [](double t) { return static_cast<double>(month_from_time(t)); });
 }
 
-Value Date::getUTCDate(Context& ctx, std::span<const Value> args) {
+Value Date::getUTCDate(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, true, [](double t) { return date_from_time(t); });
+    return date_getter(ctx, receiver, true, [](double t) { return date_from_time(t); });
 }
 
-Value Date::getUTCDay(Context& ctx, std::span<const Value> args) {
+Value Date::getUTCDay(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, true, [](double t) { return week_day(t); });
+    return date_getter(ctx, receiver, true, [](double t) { return week_day(t); });
 }
 
-Value Date::getUTCHours(Context& ctx, std::span<const Value> args) {
+Value Date::getUTCHours(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, true, [](double t) { return hour_from_time(t); });
+    return date_getter(ctx, receiver, true, [](double t) { return hour_from_time(t); });
 }
 
-Value Date::getUTCMinutes(Context& ctx, std::span<const Value> args) {
+Value Date::getUTCMinutes(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, true, [](double t) { return min_from_time(t); });
+    return date_getter(ctx, receiver, true, [](double t) { return min_from_time(t); });
 }
 
-Value Date::getUTCSeconds(Context& ctx, std::span<const Value> args) {
+Value Date::getUTCSeconds(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, true, [](double t) { return sec_from_time(t); });
+    return date_getter(ctx, receiver, true, [](double t) { return sec_from_time(t); });
 }
 
-Value Date::getUTCMilliseconds(Context& ctx, std::span<const Value> args) {
+Value Date::getUTCMilliseconds(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    return date_getter(ctx, true, [](double t) { return ms_from_time(t); });
+    return date_getter(ctx, receiver, true, [](double t) { return ms_from_time(t); });
 }
 
-Value Date::getTimezoneOffset(Context& ctx, std::span<const Value> args) {
+Value Date::getTimezoneOffset(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     double t;
-    if (!this_time_value(ctx, t)) return Value();
+    if (!this_time_value(ctx, receiver, t)) return Value();
     if (std::isnan(t)) return nan_result();
     return Value((t - local_time(t)) / kMsPerMinute);
 }
 
-Value Date::setTime(Context& ctx, std::span<const Value> args) {
-    Object* obj = this_date_object(ctx);
+Value Date::setTime(Context& ctx, std::span<const Value> args, Value receiver) {
+    Object* obj = this_date_object(ctx, receiver);
     if (!obj) return Value();
     double v = (args.empty() ? Value() : args[0]).to_number();
     if (ctx.has_exception()) return Value();
@@ -753,64 +753,64 @@ Value Date::setTime(Context& ctx, std::span<const Value> args) {
     return Value(u);
 }
 
-Value Date::setMilliseconds(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, false, kFieldMs, 1);
+Value Date::setMilliseconds(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, false, kFieldMs, 1);
 }
 
-Value Date::setSeconds(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, false, kFieldSec, 2);
+Value Date::setSeconds(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, false, kFieldSec, 2);
 }
 
-Value Date::setMinutes(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, false, kFieldMin, 3);
+Value Date::setMinutes(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, false, kFieldMin, 3);
 }
 
-Value Date::setHours(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, false, kFieldHour, 4);
+Value Date::setHours(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, false, kFieldHour, 4);
 }
 
-Value Date::setDate(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, false, kFieldDate, 1);
+Value Date::setDate(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, false, kFieldDate, 1);
 }
 
-Value Date::setMonth(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, false, kFieldMonth, 2);
+Value Date::setMonth(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, false, kFieldMonth, 2);
 }
 
-Value Date::setFullYear(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, false, kFieldYear, 3);
+Value Date::setFullYear(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, false, kFieldYear, 3);
 }
 
-Value Date::setUTCMilliseconds(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, true, kFieldMs, 1);
+Value Date::setUTCMilliseconds(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, true, kFieldMs, 1);
 }
 
-Value Date::setUTCSeconds(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, true, kFieldSec, 2);
+Value Date::setUTCSeconds(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, true, kFieldSec, 2);
 }
 
-Value Date::setUTCMinutes(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, true, kFieldMin, 3);
+Value Date::setUTCMinutes(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, true, kFieldMin, 3);
 }
 
-Value Date::setUTCHours(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, true, kFieldHour, 4);
+Value Date::setUTCHours(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, true, kFieldHour, 4);
 }
 
-Value Date::setUTCDate(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, true, kFieldDate, 1);
+Value Date::setUTCDate(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, true, kFieldDate, 1);
 }
 
-Value Date::setUTCMonth(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, true, kFieldMonth, 2);
+Value Date::setUTCMonth(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, true, kFieldMonth, 2);
 }
 
-Value Date::setUTCFullYear(Context& ctx, std::span<const Value> args) {
-    return set_date_fields(ctx, args, true, kFieldYear, 3);
+Value Date::setUTCFullYear(Context& ctx, std::span<const Value> args, Value receiver) {
+    return set_date_fields(ctx, args, receiver, true, kFieldYear, 3);
 }
 
-Value Date::setYear(Context& ctx, std::span<const Value> args) {
-    Object* obj = this_date_object(ctx);
+Value Date::setYear(Context& ctx, std::span<const Value> args, Value receiver) {
+    Object* obj = this_date_object(ctx, receiver);
     if (!obj) return Value();
     double t = get_date_value(obj);
     t = std::isnan(t) ? 0.0 : local_time(t);
@@ -828,33 +828,33 @@ Value Date::setYear(Context& ctx, std::span<const Value> args) {
     return Value(u);
 }
 
-Value Date::toString(Context& ctx, std::span<const Value> args) {
+Value Date::toString(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     double t;
-    if (!this_time_value(ctx, t)) return Value();
+    if (!this_time_value(ctx, receiver, t)) return Value();
     return Value(to_date_string(t));
 }
 
-Value Date::toDateString(Context& ctx, std::span<const Value> args) {
+Value Date::toDateString(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     double t;
-    if (!this_time_value(ctx, t)) return Value();
+    if (!this_time_value(ctx, receiver, t)) return Value();
     if (std::isnan(t)) return Value(std::string("Invalid Date"));
     return Value(date_string(local_time(t)));
 }
 
-Value Date::toTimeString(Context& ctx, std::span<const Value> args) {
+Value Date::toTimeString(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     double t;
-    if (!this_time_value(ctx, t)) return Value();
+    if (!this_time_value(ctx, receiver, t)) return Value();
     if (std::isnan(t)) return Value(std::string("Invalid Date"));
     return Value(time_string(local_time(t)) + time_zone_string(t));
 }
 
-Value Date::toISOString(Context& ctx, std::span<const Value> args) {
+Value Date::toISOString(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     double t;
-    if (!this_time_value(ctx, t)) return Value();
+    if (!this_time_value(ctx, receiver, t)) return Value();
     if (std::isnan(t)) {
         ctx.throw_range_error("Invalid time value");
         return Value();
@@ -878,10 +878,10 @@ Value Date::toISOString(Context& ctx, std::span<const Value> args) {
     return Value(std::string(buf));
 }
 
-Value Date::toUTCString(Context& ctx, std::span<const Value> args) {
+Value Date::toUTCString(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     double t;
-    if (!this_time_value(ctx, t)) return Value();
+    if (!this_time_value(ctx, receiver, t)) return Value();
     if (std::isnan(t)) return Value(std::string("Invalid Date"));
     char buf[64];
     std::snprintf(buf, sizeof buf, "%s, %02d %s ",
@@ -891,33 +891,33 @@ Value Date::toUTCString(Context& ctx, std::span<const Value> args) {
     return Value(buf + padded_year(year_from_time(t)) + " " + time_string(t));
 }
 
-Value Date::toGMTString(Context& ctx, std::span<const Value> args) {
-    return toUTCString(ctx, args);
+Value Date::toGMTString(Context& ctx, std::span<const Value> args, Value receiver) {
+    return toUTCString(ctx, args, receiver);
 }
 
-Value Date::toLocaleString(Context& ctx, std::span<const Value> args) {
-    return toString(ctx, args);
+Value Date::toLocaleString(Context& ctx, std::span<const Value> args, Value receiver) {
+    return toString(ctx, args, receiver);
 }
 
-Value Date::toLocaleDateString(Context& ctx, std::span<const Value> args) {
-    return toDateString(ctx, args);
+Value Date::toLocaleDateString(Context& ctx, std::span<const Value> args, Value receiver) {
+    return toDateString(ctx, args, receiver);
 }
 
-Value Date::toLocaleTimeString(Context& ctx, std::span<const Value> args) {
-    return toTimeString(ctx, args);
+Value Date::toLocaleTimeString(Context& ctx, std::span<const Value> args, Value receiver) {
+    return toTimeString(ctx, args, receiver);
 }
 
-Value Date::toJSON(Context& ctx, std::span<const Value> args) {
+Value Date::toJSON(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    if (ctx.original_this_was_nullish()) {
+    if (receiver.is_nullish()) {
         ctx.throw_type_error("Date.prototype.toJSON called on null or undefined");
         return Value();
     }
 
     Value this_val;
-    if (ctx.original_this_was_primitive()) {
+    if ((!receiver.is_nullish() && !receiver.is_object_like())) {
         try {
-            this_val = ctx.get_binding("this");
+            this_val = receiver;
         } catch (...) {
             ctx.throw_type_error("Date.prototype.toJSON called on invalid this");
             return Value();
@@ -925,7 +925,7 @@ Value Date::toJSON(Context& ctx, std::span<const Value> args) {
         this_val = ObjectFactory::box_primitive_this_sloppy(ctx, this_val);
         if (ctx.has_exception()) return Value();
     } else {
-        Object* obj = ctx.get_this_binding();
+        Object* obj = receiver.as_object_or_null();
         if (!obj) {
             ctx.throw_type_error("Date.prototype.toJSON called on null or undefined");
             return Value();
@@ -952,9 +952,9 @@ Value Date::toJSON(Context& ctx, std::span<const Value> args) {
     return to_iso.as_function()->call(ctx, {}, this_val);
 }
 
-Value Date::symbol_to_primitive(Context& ctx, std::span<const Value> args) {
-    Object* obj = ctx.get_this_binding();
-    if (!obj || ctx.original_this_was_primitive() || ctx.original_this_was_nullish()) {
+Value Date::symbol_to_primitive(Context& ctx, std::span<const Value> args, Value receiver) {
+    Object* obj = receiver.as_object_or_null();
+    if (!obj || (!receiver.is_nullish() && !receiver.is_object_like()) || receiver.is_nullish()) {
         ctx.throw_type_error("Date.prototype[Symbol.toPrimitive] called on non-object");
         return Value();
     }

@@ -96,8 +96,8 @@ static Object* create_iterator_helper_base(Object* iterator_proto, const Value& 
     helper->set_internal_slot("__ih_running__", Value(false));
 
     auto return_fn = ObjectFactory::create_native_function("return",
-        [](Context& ctx, std::span<const Value>) -> Value {
-            Object* self = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+            Object* self = receiver.as_object_or_null();
             if (self) {
                 Value inner_val = self->get_internal_slot("__ih_inner__");
                 if (inner_val.is_object() || inner_val.is_function()) {
@@ -123,8 +123,8 @@ static Object* create_iterator_helper_base(Object* iterator_proto, const Value& 
 static void set_guarded_next(Object* helper, std::unique_ptr<Object> actual_next_fn) {
     helper->set_internal_slot("__ih_actual_next__", Value(actual_next_fn.release()));
     auto guarded = ObjectFactory::create_native_function("next",
-        [](Context& ctx, std::span<const Value>) -> Value {
-            Object* self = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+            Object* self = receiver.as_object_or_null();
             if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
             // If __ih_iter__ was cleared (exhausted or closed), report done immediately.
             Value ih_iter = self->get_internal_slot("__ih_iter__");
@@ -154,8 +154,8 @@ static void iterator_zip_close_all(Context& ctx, Object* iters_arr, Object* aliv
 
 // Shared next() for zip/zipKeyed: steps every alive column, padding exhausted ones in "longest"
 // mode, packaging the row as an array or (zipKeyed) a null-prototype keyed object.
-static Value iterator_zip_step(Context& ctx, std::span<const Value>) {
-    Object* self = ctx.get_this_binding();
+static Value iterator_zip_step(Context& ctx, std::span<const Value>, Value receiver) {
+    Object* self = receiver.as_object_or_null();
     if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
     // GeneratorValidate runs before the completed-state check: a reentrant call
     // while executing is a TypeError even if the generator was just completed.
@@ -258,8 +258,8 @@ static Value iterator_zip_step(Context& ctx, std::span<const Value>) {
     return Value(make_iter_result(Value(results.release()), false));
 }
 
-static Value iterator_zip_return(Context& ctx, std::span<const Value>) {
-    Object* self = ctx.get_this_binding();
+static Value iterator_zip_return(Context& ctx, std::span<const Value>, Value receiver) {
+    Object* self = receiver.as_object_or_null();
     if (!self) return Value(make_iter_result(Value(), true));
     // A reentrant return() while the helper is mid-call (e.g. from an inner
     // iterator's own return) sees the generator in the executing state.
@@ -303,8 +303,8 @@ void register_iterator_helpers(Context& ctx) {
         Symbol* dispose_sym = Symbol::get_well_known(Symbol::DISPOSE);
         if (dispose_sym) {
             auto iter_dispose = ObjectFactory::create_native_function("[Symbol.dispose]",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     if (!self) { ctx.throw_type_error("Symbol.dispose called on non-object"); return Value(); }
                     Value ret_fn = self->get_property("return");
                     if (ctx.has_exception()) return Value();
@@ -319,8 +319,8 @@ void register_iterator_helpers(Context& ctx) {
 
         (void)call_iter_next;
         auto iter_toArray = ObjectFactory::create_native_function("toArray",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                (void)args; Object* it = ctx.get_this_binding(); if (!it) return Value();
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                (void)args; Object* it = receiver.as_object_or_null(); if (!it) return Value();
                 Value next_method = it->get_property("next");
                 if (ctx.has_exception()) return Value();
                 auto a = ObjectFactory::create_array(); uint32_t i=0;
@@ -330,8 +330,8 @@ void register_iterator_helpers(Context& ctx) {
         iter_proto_obj->set_property("toArray", Value(iter_toArray.release()));
 
         auto iter_forEach2 = ObjectFactory::create_native_function("forEach",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                Object* it=ctx.get_this_binding();
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* it=receiver.as_object_or_null();
                 if(!it||args.empty()||!args[0].is_function()){ctx.throw_type_error("forEach requires a callable");iterator_helper_close(ctx,Value(it));return Value();}
                 Function* cb=args[0].as_function();
                 Value next_method = it->get_property("next");
@@ -343,8 +343,8 @@ void register_iterator_helpers(Context& ctx) {
         iter_proto_obj->set_property("forEach", Value(iter_forEach2.release()));
 
         auto iter_reduce2 = ObjectFactory::create_native_function("reduce",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                Object* it=ctx.get_this_binding();
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* it=receiver.as_object_or_null();
                 if(!it||args.empty()||!args[0].is_function()){ctx.throw_type_error("reduce requires a callable");iterator_helper_close(ctx,Value(it));return Value();}
                 Function* cb=args[0].as_function();
                 Value next_method = it->get_property("next");
@@ -362,8 +362,8 @@ void register_iterator_helpers(Context& ctx) {
         iter_proto_obj->set_property("reduce", Value(iter_reduce2.release()));
 
         auto iter_some2 = ObjectFactory::create_native_function("some",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                Object* it=ctx.get_this_binding();
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* it=receiver.as_object_or_null();
                 if(!it||args.empty()||!args[0].is_function()){ctx.throw_type_error("some requires a callable");iterator_helper_close(ctx,Value(it));return Value();}
                 Function* cb=args[0].as_function();
                 Value next_method = it->get_property("next");
@@ -380,8 +380,8 @@ void register_iterator_helpers(Context& ctx) {
         iter_proto_obj->set_property("some", Value(iter_some2.release()));
 
         auto iter_every2 = ObjectFactory::create_native_function("every",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                Object* it=ctx.get_this_binding();
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* it=receiver.as_object_or_null();
                 if(!it||args.empty()||!args[0].is_function()){ctx.throw_type_error("every requires a callable");iterator_helper_close(ctx,Value(it));return Value();}
                 Function* cb=args[0].as_function();
                 Value next_method = it->get_property("next");
@@ -398,8 +398,8 @@ void register_iterator_helpers(Context& ctx) {
         iter_proto_obj->set_property("every", Value(iter_every2.release()));
 
         auto iter_find2 = ObjectFactory::create_native_function("find",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                Object* it=ctx.get_this_binding();
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* it=receiver.as_object_or_null();
                 if(!it||args.empty()||!args[0].is_function()){ctx.throw_type_error("find requires a callable");iterator_helper_close(ctx,Value(it));return Value();}
                 Function* cb=args[0].as_function();
                 Value next_method = it->get_property("next");
@@ -417,8 +417,8 @@ void register_iterator_helpers(Context& ctx) {
 
         // Lazy Iterator Helpers, mirroring register_iterator_constructor's versions below.
         auto iter_map2 = ObjectFactory::create_native_function("map",
-            [iter_proto_obj](Context& ctx, std::span<const Value> args) -> Value {
-                Object* iter = ctx.get_this_binding();
+            [iter_proto_obj](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* iter = receiver.as_object_or_null();
                 if (!iter) { ctx.throw_type_error("map called on non-object"); return Value(); }
                 if (args.empty() || !args[0].is_function()) {
                     ctx.throw_type_error("map requires a callable");
@@ -433,8 +433,8 @@ void register_iterator_helpers(Context& ctx) {
                 helper->set_internal_slot("__ih_counter__", Value(0.0));
 
                 auto next_fn = ObjectFactory::create_native_function("next",
-                    [](Context& ctx, std::span<const Value>) -> Value {
-                        Object* self = ctx.get_this_binding();
+                    [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                        Object* self = receiver.as_object_or_null();
                         Value mapper_val = self->get_internal_slot("__ih_fn__");
                         Value iter_val = self->get_internal_slot("__ih_iter__");
                         Value next_method = self->get_internal_slot("__ih_next__");
@@ -455,8 +455,8 @@ void register_iterator_helpers(Context& ctx) {
         iter_proto_obj->set_property("map", Value(iter_map2.release()));
 
         auto iter_filter2 = ObjectFactory::create_native_function("filter",
-            [iter_proto_obj](Context& ctx, std::span<const Value> args) -> Value {
-                Object* iter = ctx.get_this_binding();
+            [iter_proto_obj](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* iter = receiver.as_object_or_null();
                 if (!iter) { ctx.throw_type_error("filter called on non-object"); return Value(); }
                 if (args.empty() || !args[0].is_function()) {
                     ctx.throw_type_error("filter requires a callable");
@@ -471,8 +471,8 @@ void register_iterator_helpers(Context& ctx) {
                 helper->set_internal_slot("__ih_counter__", Value(0.0));
 
                 auto next_fn = ObjectFactory::create_native_function("next",
-                    [](Context& ctx, std::span<const Value>) -> Value {
-                        Object* self = ctx.get_this_binding();
+                    [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                        Object* self = receiver.as_object_or_null();
                         Value pred_val = self->get_internal_slot("__ih_fn__");
                         Value iter_val = self->get_internal_slot("__ih_iter__");
                         Value next_method = self->get_internal_slot("__ih_next__");
@@ -495,8 +495,8 @@ void register_iterator_helpers(Context& ctx) {
         iter_proto_obj->set_property("filter", Value(iter_filter2.release()));
 
         auto iter_take2 = ObjectFactory::create_native_function("take",
-            [iter_proto_obj](Context& ctx, std::span<const Value> args) -> Value {
-                Object* iter = ctx.get_this_binding();
+            [iter_proto_obj](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* iter = receiver.as_object_or_null();
                 if (!iter) { ctx.throw_type_error("take called on non-object"); return Value(); }
                 double num_limit = args.empty() ? std::nan("") : args[0].to_number();
                 if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
@@ -510,8 +510,8 @@ void register_iterator_helpers(Context& ctx) {
                 helper->set_internal_slot("__ih_remaining__", Value(limit));
 
                 auto next_fn = ObjectFactory::create_native_function("next",
-                    [](Context& ctx, std::span<const Value>) -> Value {
-                        Object* self = ctx.get_this_binding();
+                    [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                        Object* self = receiver.as_object_or_null();
                         Value iter_val = self->get_internal_slot("__ih_iter__");
                         double remaining = self->get_internal_slot("__ih_remaining__").to_number();
                         if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
@@ -528,8 +528,8 @@ void register_iterator_helpers(Context& ctx) {
         iter_proto_obj->set_property("take", Value(iter_take2.release()));
 
         auto iter_drop2 = ObjectFactory::create_native_function("drop",
-            [iter_proto_obj](Context& ctx, std::span<const Value> args) -> Value {
-                Object* iter = ctx.get_this_binding();
+            [iter_proto_obj](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* iter = receiver.as_object_or_null();
                 if (!iter) { ctx.throw_type_error("drop called on non-object"); return Value(); }
                 double num_limit = args.empty() ? std::nan("") : args[0].to_number();
                 if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
@@ -543,8 +543,8 @@ void register_iterator_helpers(Context& ctx) {
                 helper->set_internal_slot("__ih_remaining__", Value(limit));
 
                 auto next_fn = ObjectFactory::create_native_function("next",
-                    [](Context& ctx, std::span<const Value>) -> Value {
-                        Object* self = ctx.get_this_binding();
+                    [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                        Object* self = receiver.as_object_or_null();
                         Value iter_val = self->get_internal_slot("__ih_iter__");
                         Value next_method = self->get_internal_slot("__ih_next__");
                         double remaining = self->get_internal_slot("__ih_remaining__").to_number();
@@ -570,7 +570,7 @@ void register_iterator_helpers(Context& ctx) {
 
 void register_iterator_constructor(Context& ctx) {
     auto iterator_constructor = ObjectFactory::create_native_constructor("Iterator",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             Value new_target = ctx.get_new_target();
             // Throw if called as plain function (no new.target) OR as direct `new Iterator()`.
@@ -580,7 +580,7 @@ void register_iterator_constructor(Context& ctx) {
                 return Value();
             }
 
-            Object* constructor = ctx.get_this_binding();
+            Object* constructor = receiver.as_object_or_null();
             auto iterator_obj = ObjectFactory::create_object();
             if (constructor && constructor->is_function()) {
                 Value prototype_val = constructor->get_property("prototype");
@@ -595,7 +595,7 @@ void register_iterator_constructor(Context& ctx) {
     auto iterator_prototype = ObjectFactory::create_object();
 
     auto iterator_next = ObjectFactory::create_native_function("next",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx; (void)args;
             auto result = ObjectFactory::create_object();
             result->set_property("done", Value(true));
@@ -606,9 +606,9 @@ void register_iterator_constructor(Context& ctx) {
 
     // toArray
     auto iter_toArray_fn = ObjectFactory::create_native_function("toArray",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* iter = ctx.get_this_binding();
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("toArray on non-object"); return Value(); }
             Value next_method = iter->get_property("next");
             if (ctx.has_exception()) return Value();
@@ -627,8 +627,8 @@ void register_iterator_constructor(Context& ctx) {
 
     // forEach
     auto iter_forEach_fn = ObjectFactory::create_native_function("forEach",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("forEach on non-object"); return Value(); }
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("forEach requires a callable");
@@ -653,8 +653,8 @@ void register_iterator_constructor(Context& ctx) {
 
     // reduce
     auto iter_reduce_fn = ObjectFactory::create_native_function("reduce",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("reduce on non-object"); return Value(); }
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("reduce requires a callable");
@@ -683,8 +683,8 @@ void register_iterator_constructor(Context& ctx) {
 
     // some
     auto iter_some_fn = ObjectFactory::create_native_function("some",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("some on non-object"); return Value(); }
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("some requires a callable");
@@ -710,8 +710,8 @@ void register_iterator_constructor(Context& ctx) {
 
     // every
     auto iter_every_fn = ObjectFactory::create_native_function("every",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("every on non-object"); return Value(); }
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("every requires a callable");
@@ -737,8 +737,8 @@ void register_iterator_constructor(Context& ctx) {
 
     // find
     auto iter_find_fn = ObjectFactory::create_native_function("find",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("find on non-object"); return Value(); }
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("find requires a callable");
@@ -766,8 +766,8 @@ void register_iterator_constructor(Context& ctx) {
     Object* iterator_proto_ptr = iterator_prototype.get();
 
     auto iter_map_fn = ObjectFactory::create_native_function("map",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("map called on non-object"); return Value(); }
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("map requires a callable");
@@ -787,8 +787,8 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_internal_slot("__ih_counter__", Value(0.0));
 
             auto next_fn = ObjectFactory::create_native_function("next",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     Value mapper_val = self->get_internal_slot("__ih_fn__");
                     Value iter_val = self->get_internal_slot("__ih_iter__");
                     Value next_method = self->get_internal_slot("__ih_next__");
@@ -809,8 +809,8 @@ void register_iterator_constructor(Context& ctx) {
     { PropertyDescriptor _d(Value(iter_map_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("map", _d); }
 
     auto iter_filter_fn = ObjectFactory::create_native_function("filter",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("filter called on non-object"); return Value(); }
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("filter requires a callable");
@@ -830,8 +830,8 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_internal_slot("__ih_counter__", Value(0.0));
 
             auto next_fn = ObjectFactory::create_native_function("next",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     Value pred_val = self->get_internal_slot("__ih_fn__");
                     Value iter_val = self->get_internal_slot("__ih_iter__");
                     Value next_method = self->get_internal_slot("__ih_next__");
@@ -854,8 +854,8 @@ void register_iterator_constructor(Context& ctx) {
     { PropertyDescriptor _d(Value(iter_filter_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("filter", _d); }
 
     auto iter_take_fn = ObjectFactory::create_native_function("take",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("take called on non-object"); return Value(); }
             double num_limit = args.empty() ? std::nan("") : args[0].to_number();
             if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
@@ -882,8 +882,8 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_internal_slot("__ih_remaining__", Value(limit));
 
             auto next_fn = ObjectFactory::create_native_function("next",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     Value iter_val = self->get_internal_slot("__ih_iter__");
                     double remaining = self->get_internal_slot("__ih_remaining__").to_number();
                     if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
@@ -900,8 +900,8 @@ void register_iterator_constructor(Context& ctx) {
     { PropertyDescriptor _d(Value(iter_take_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("take", _d); }
 
     auto iter_drop_fn = ObjectFactory::create_native_function("drop",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("drop called on non-object"); return Value(); }
             double num_limit = args.empty() ? std::nan("") : args[0].to_number();
             if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
@@ -928,8 +928,8 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_internal_slot("__ih_remaining__", Value(limit));
 
             auto next_fn = ObjectFactory::create_native_function("next",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     Value iter_val = self->get_internal_slot("__ih_iter__");
                     Value next_method = self->get_internal_slot("__ih_next__");
                     double remaining = self->get_internal_slot("__ih_remaining__").to_number();
@@ -952,8 +952,8 @@ void register_iterator_constructor(Context& ctx) {
     { PropertyDescriptor _d(Value(iter_drop_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("drop", _d); }
 
     auto iter_flatMap_fn = ObjectFactory::create_native_function("flatMap",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
-            Object* iter = ctx.get_this_binding();
+        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("flatMap called on non-object"); return Value(); }
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("flatMap requires a callable");
@@ -975,8 +975,8 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_internal_slot("__ih_inner_next__", Value());
 
             auto next_fn = ObjectFactory::create_native_function("next",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     Value mapper_val = self->get_internal_slot("__ih_fn__");
                     Value iter_val = self->get_internal_slot("__ih_iter__");
                     Value outer_next = self->get_internal_slot("__ih_next__");
@@ -1046,15 +1046,15 @@ void register_iterator_constructor(Context& ctx) {
         Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
         if (iter_sym) {
             auto self_iter = ObjectFactory::create_native_function("[Symbol.iterator]",
-                [](Context& ctx, std::span<const Value> args) -> Value {
+                [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)args;
                     // Spec: return the raw this value.
-                    Value prim = ctx.get_this_value();
+                    Value prim = receiver;
                     if (prim.is_number() || prim.is_string() || prim.is_boolean() ||
                         prim.is_bigint() || prim.is_symbol()) return prim;
-                    if (ctx.original_this_was_nullish()) return Value();
-                    try { return ctx.get_binding("this"); } catch (...) {}
-                    Object* self = ctx.get_this_binding();
+                    if (receiver.is_nullish()) return Value();
+                    try { return receiver; } catch (...) {}
+                    Object* self = receiver.as_object_or_null();
                     return self ? Value(self) : Value();
                 });
             PropertyDescriptor sym_iter_desc(Value(self_iter.release()), PropertyAttributes::BuiltinFunction);
@@ -1068,12 +1068,12 @@ void register_iterator_constructor(Context& ctx) {
         if (tag_sym) {
             Object* iter_proto_home = iterator_prototype.get();
             auto tag_get = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
-                [](Context& ctx, std::span<const Value>) -> Value { (void)ctx; return Value(std::string("Iterator")); }, 0);
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value { (void)ctx; return Value(std::string("Iterator")); }, 0);
             std::string tag_key = tag_sym->to_property_key();
             auto tag_set = ObjectFactory::create_native_function("set [Symbol.toStringTag]",
-                [iter_proto_home, tag_key](Context& ctx, std::span<const Value> args) -> Value {
-                    Object* self = ctx.get_this_binding();
-                    if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
+                [iter_proto_home, tag_key](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
+                    if (!self || receiver.is_nullish() || (!receiver.is_nullish() && !receiver.is_object_like())) {
                         ctx.throw_type_error("[Symbol.toStringTag] setter: this is not an object"); return Value();
                     }
                     if (self == iter_proto_home || self == Iterator::s_iterator_prototype_) {
@@ -1101,13 +1101,13 @@ void register_iterator_constructor(Context& ctx) {
         Object* iter_ctor_raw = iterator_constructor.get();
         Object* iter_proto_home = iterator_prototype.get();
         auto ctor_get = ObjectFactory::create_native_function("get constructor",
-            [iter_ctor_raw](Context& ctx, std::span<const Value>) -> Value {
+            [iter_ctor_raw](Context& ctx, std::span<const Value>, Value receiver) -> Value {
                 (void)ctx; return Value(iter_ctor_raw);
             }, 0);
         auto ctor_set = ObjectFactory::create_native_function("set constructor",
-            [iter_proto_home](Context& ctx, std::span<const Value> args) -> Value {
-                Object* self = ctx.get_this_binding();
-                if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
+            [iter_proto_home](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* self = receiver.as_object_or_null();
+                if (!self || receiver.is_nullish() || (!receiver.is_nullish() && !receiver.is_object_like())) {
                     ctx.throw_type_error("constructor setter: this is not an object"); return Value();
                 }
                 if (self == iter_proto_home || self == Iterator::s_iterator_prototype_) {
@@ -1143,8 +1143,8 @@ void register_iterator_constructor(Context& ctx) {
     // WrapForValidIteratorPrototype.next: delegates to stored __wfvi_next__ called with __wfvi_iter__.
     {
         auto wfvi_next = ObjectFactory::create_native_function("next",
-            [](Context& ctx, std::span<const Value>) -> Value {
-                Object* self = ctx.get_this_binding();
+            [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                Object* self = receiver.as_object_or_null();
                 if (!self) { ctx.throw_type_error("next on non-object"); return Value(); }
                 Value iter = self->get_internal_slot("__wfvi_iter__");
                 Value nxt = self->get_internal_slot("__wfvi_next__");
@@ -1159,8 +1159,8 @@ void register_iterator_constructor(Context& ctx) {
     // WrapForValidIteratorPrototype.return: reads "return" from inner at call time (GetMethod per call).
     {
         auto wfvi_return = ObjectFactory::create_native_function("return",
-            [wrap_proto_raw](Context& ctx, std::span<const Value>) -> Value {
-                Object* self = ctx.get_this_binding();
+            [wrap_proto_raw](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                Object* self = receiver.as_object_or_null();
                 // Validate receiver: must be an instance whose prototype IS %WrapForValidIteratorPrototype%.
                 if (!self || self->get_prototype() != wrap_proto_raw) {
                     ctx.throw_type_error("Iterator.from return: incompatible receiver");
@@ -1184,7 +1184,7 @@ void register_iterator_constructor(Context& ctx) {
 
     // Static Iterator.from ( O )
     auto iterator_from = ObjectFactory::create_native_function("from",
-        [wrap_proto_raw, iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value { (void)iterator_proto_ptr;
+        [wrap_proto_raw, iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value { (void)iterator_proto_ptr;
             Value O = args.empty() ? Value() : args[0];
 
             // Primitives except String → TypeError.
@@ -1297,7 +1297,7 @@ void register_iterator_constructor(Context& ctx) {
     // Static Iterator.concat(...items): lazily exhausts each item in turn; [Symbol.iterator] is
     // resolved eagerly per item but only called once that item is reached.
     auto iterator_concat = ObjectFactory::create_native_function("concat",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value { (void)iterator_proto_ptr;
+        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value { (void)iterator_proto_ptr;
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
             auto items = ObjectFactory::create_array();
             auto methods = ObjectFactory::create_array();
@@ -1326,8 +1326,8 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_internal_slot("__ic_running__", Value(false));
 
             auto next_fn = ObjectFactory::create_native_function("next",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
                     if (self->get_internal_slot("__ic_running__").to_boolean()) {
                         ctx.throw_type_error("Iterator.concat helper is already running");
@@ -1370,8 +1370,8 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_property("next", Value(next_fn.release()));
 
             auto return_fn = ObjectFactory::create_native_function("return",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     if (self) {
                         // A reentrant return() (e.g. from the inner iterator's own
                         // return) sees the generator in the executing state.
@@ -1403,7 +1403,7 @@ void register_iterator_constructor(Context& ctx) {
     // stepping is lazy. "padding" (mode "longest") is read once into a fixed per-column array,
     // not re-read per row.
     auto iterator_zip = ObjectFactory::create_native_function("zip",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
+        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
             Value iterables_val = args.empty() ? Value() : args[0];
             if (!iterables_val.is_object() && !iterables_val.is_function()) { ctx.throw_type_error("Iterator.zip: iterables must be an object"); return Value(); }
@@ -1566,7 +1566,7 @@ void register_iterator_constructor(Context& ctx) {
     // Static Iterator.zipKeyed: like zip, but columns come from iterables' own enumerable keys
     // and each row is a null-prototype object keyed the same way.
     auto iterator_zipKeyed = ObjectFactory::create_native_function("zipKeyed",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
+        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
             Value iterables_val = args.empty() ? Value() : args[0];
             if (!iterables_val.is_object() && !iterables_val.is_function()) { ctx.throw_type_error("Iterator.zipKeyed: iterables must be an object"); return Value(); }

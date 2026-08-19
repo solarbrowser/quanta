@@ -1979,11 +1979,11 @@ Value AwaitExpression::evaluate(Context& ctx) {
             auto wrapped_obj = ObjectFactory::create_promise(gctx);
             Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
             auto res_fn = ObjectFactory::create_native_function("",
-                [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+                [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                     wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
                 }, 1);
             auto rej_fn = ObjectFactory::create_native_function("",
-                [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+                [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                     wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                 }, 1);
             wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
@@ -2015,13 +2015,13 @@ Value AwaitExpression::evaluate(Context& ctx) {
         if (is_pending) {
             auto self = async_gen;
             auto on_f = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, std::span<const Value> args) -> Value {
+                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                     Value val = args.empty() ? Value() : args[0];
                     self->resume_from_await(val, false);
                     return Value();
                 });
             auto on_r = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, std::span<const Value> args) -> Value {
+                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                     Value reason = args.empty() ? Value() : args[0];
                     self->resume_from_await(reason, true);
                     return Value();
@@ -2098,11 +2098,11 @@ Value AwaitExpression::evaluate(Context& ctx) {
             auto wrapped_obj = ObjectFactory::create_promise(gctx);
             Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
             auto res_fn = ObjectFactory::create_native_function("",
-                [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+                [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                     wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
                 });
             auto rej_fn = ObjectFactory::create_native_function("",
-                [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+                [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                     wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                 });
             wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
@@ -2135,13 +2135,13 @@ Value AwaitExpression::evaluate(Context& ctx) {
         if (is_pending) {
             auto self = exec->shared_from_this();
             auto on_f = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, std::span<const Value> args) -> Value {
+                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                     Value val = args.empty() ? Value() : args[0];
                     self->resume(val, false);
                     return Value();
                 });
             auto on_r = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, std::span<const Value> args) -> Value {
+                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                     Value reason = args.empty() ? Value() : args[0];
                     self->resume(reason, true);
                     return Value();
@@ -2325,11 +2325,11 @@ Value YieldExpression::evaluate(Context& ctx) {
                         auto wrapped_obj = ObjectFactory::create_promise(gctx);
                         Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
                         auto res_fn = ObjectFactory::create_native_function("",
-                            [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                                 wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
                             }, 1);
                         auto rej_fn = ObjectFactory::create_native_function("",
-                            [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                             }, 1);
                         wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
@@ -2369,13 +2369,13 @@ Value YieldExpression::evaluate(Context& ctx) {
                     return true;
                 }
                 auto on_f = ObjectFactory::create_native_function("",
-                    [async_gen, gctx](Context&, std::span<const Value> args) -> Value {
+                    [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                         Value val = args.empty() ? Value() : args[0];
                         async_gen->resume_from_await(val, false);
                         return Value();
                     });
                 auto on_r = ObjectFactory::create_native_function("",
-                    [async_gen, gctx](Context&, std::span<const Value> args) -> Value {
+                    [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                         Value reason = args.empty() ? Value() : args[0];
                         async_gen->resume_from_await(reason, true);
                         return Value();
@@ -2544,13 +2544,13 @@ Value YieldExpression::evaluate(Context& ctx) {
                             async_gen->await_result_ = Value();
                         } else {
                             auto on_f2 = ObjectFactory::create_native_function("",
-                                [async_gen, gctx](Context&, std::span<const Value> args) -> Value {
+                                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                                     Value val = args.empty() ? Value() : args[0];
                                     async_gen->resume_from_await(val, false);
                                     return Value();
                                 });
                             auto on_r2 = ObjectFactory::create_native_function("",
-                                [async_gen, gctx](Context&, std::span<const Value> args) -> Value {
+                                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                                     Value reason = args.empty() ? Value() : args[0];
                                     async_gen->resume_from_await(reason, true);
                                     return Value();
@@ -2582,13 +2582,13 @@ Value YieldExpression::evaluate(Context& ctx) {
                         if (ctx.has_exception()) return Value();
                         if (rr_then.is_function()) {
                             auto on_f3 = ObjectFactory::create_native_function("",
-                                [async_gen, gctx](Context&, std::span<const Value> args) -> Value {
+                                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                                     Value val = args.empty() ? Value() : args[0];
                                     async_gen->resume_from_await(val, false);
                                     return Value();
                                 });
                             auto on_r3 = ObjectFactory::create_native_function("",
-                                [async_gen, gctx](Context&, std::span<const Value> args) -> Value {
+                                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                                     Value reason = args.empty() ? Value() : args[0];
                                     async_gen->resume_from_await(reason, true);
                                     return Value();
@@ -3068,11 +3068,11 @@ Value YieldExpression::evaluate(Context& ctx) {
                         auto wrapped_obj = ObjectFactory::create_promise(gctx);
                         Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
                         auto res_fn = ObjectFactory::create_native_function("",
-                            [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                                 wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
                             }, 1);
                         auto rej_fn = ObjectFactory::create_native_function("",
-                            [wrapped_raw](Context&, std::span<const Value> args) -> Value {
+                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
                                 wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
                             }, 1);
                         wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
@@ -3113,13 +3113,13 @@ Value YieldExpression::evaluate(Context& ctx) {
                     async_gen->await_result_ = Value();
                 } else {
                     auto on_f = ObjectFactory::create_native_function("",
-                        [async_gen, gctx](Context&, std::span<const Value> args) -> Value {
+                        [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                             Value val = args.empty() ? Value() : args[0];
                             async_gen->resume_from_await(val, false);
                             return Value();
                         });
                     auto on_r = ObjectFactory::create_native_function("",
-                        [async_gen, gctx](Context&, std::span<const Value> args) -> Value {
+                        [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
                             Value reason = args.empty() ? Value() : args[0];
                             async_gen->resume_from_await(reason, true);
                             return Value();

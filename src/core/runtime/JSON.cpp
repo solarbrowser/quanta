@@ -120,7 +120,7 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
     return reviver->call(ctx, reviver_args, Value(holder));
 }
 
-Value JSON::js_parse(Context& ctx, std::span<const Value> args) {
+Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty()) {
         ctx.throw_syntax_error("JSON.parse requires at least 1 argument");
         return Value();
@@ -205,7 +205,7 @@ Value JSON::js_parse(Context& ctx, std::span<const Value> args) {
     }
 }
 
-Value JSON::js_stringify(Context& ctx, std::span<const Value> args) {
+Value JSON::js_stringify(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty()) {
         return Value();
     }

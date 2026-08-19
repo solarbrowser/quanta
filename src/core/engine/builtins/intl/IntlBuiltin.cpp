@@ -16,12 +16,12 @@ void register_intl_builtins(Context& ctx) {
     auto intl_object = ObjectFactory::create_object();
 
     auto intl_datetimeformat = ObjectFactory::create_native_constructor("DateTimeFormat",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx; (void)args;
             auto formatter = ObjectFactory::create_object();
 
             auto format_fn = ObjectFactory::create_native_function("format",
-                [](Context& ctx, std::span<const Value> args) -> Value {
+                [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) {
                         return Value(std::string("Invalid Date"));
@@ -35,12 +35,12 @@ void register_intl_builtins(Context& ctx) {
     intl_object->set_property("DateTimeFormat", Value(intl_datetimeformat.release()));
 
     auto intl_numberformat = ObjectFactory::create_native_constructor("NumberFormat",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx; (void)args;
             auto formatter = ObjectFactory::create_object();
 
             auto format_fn = ObjectFactory::create_native_function("format",
-                [](Context& ctx, std::span<const Value> args) -> Value {
+                [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) {
                         return Value(std::string("0"));
@@ -54,12 +54,12 @@ void register_intl_builtins(Context& ctx) {
     intl_object->set_property("NumberFormat", Value(intl_numberformat.release()));
 
     auto intl_collator = ObjectFactory::create_native_constructor("Collator",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx; (void)args;
             auto collator = ObjectFactory::create_object();
 
             auto compare_fn = ObjectFactory::create_native_function("compare",
-                [](Context& ctx, std::span<const Value> args) -> Value {
+                [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.size() < 2) return Value(0.0);
                     std::string a = args[0].to_string();

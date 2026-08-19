@@ -307,7 +307,7 @@ double dataview_to_index(Context& ctx, const Value& v) {
 
 }
 
-Value DataView::constructor(Context& ctx, std::span<const Value> args) {
+Value DataView::constructor(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty() || !args[0].is_object()) {
         ctx.throw_type_error("DataView constructor requires an ArrayBuffer");
         return Value();
@@ -407,8 +407,8 @@ bool dataview_check_in_bounds(Context& ctx, DataView* dv, double offset, size_t 
     return true;
 }
 
-DataView* dataview_require_this(Context& ctx, const char* method_name) {
-    Object* this_obj = ctx.get_this_binding();
+DataView* dataview_require_this(Context& ctx, const Value& receiver, const char* method_name) {
+    Object* this_obj = receiver.as_object_or_null();
     if (!this_obj || !this_obj->is_data_view()) {
         ctx.throw_type_error(std::string(method_name) + " called on non-DataView object");
         return nullptr;
@@ -473,8 +473,8 @@ Value dataview_to_bigint(Context& ctx, const Value& value) {
 
 }
 
-Value DataView::js_get_int8(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getInt8");
+Value DataView::js_get_int8(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getInt8");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -482,8 +482,8 @@ Value DataView::js_get_int8(Context& ctx, std::span<const Value> args) {
     return dv->get_int8(static_cast<size_t>(offset));
 }
 
-Value DataView::js_get_uint8(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getUint8");
+Value DataView::js_get_uint8(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getUint8");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -491,8 +491,8 @@ Value DataView::js_get_uint8(Context& ctx, std::span<const Value> args) {
     return dv->get_uint8(static_cast<size_t>(offset));
 }
 
-Value DataView::js_get_int16(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getInt16");
+Value DataView::js_get_int16(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getInt16");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -501,8 +501,8 @@ Value DataView::js_get_int16(Context& ctx, std::span<const Value> args) {
     return dv->get_int16(static_cast<size_t>(offset), little_endian);
 }
 
-Value DataView::js_get_uint16(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getUint16");
+Value DataView::js_get_uint16(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getUint16");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -511,8 +511,8 @@ Value DataView::js_get_uint16(Context& ctx, std::span<const Value> args) {
     return dv->get_uint16(static_cast<size_t>(offset), little_endian);
 }
 
-Value DataView::js_get_int32(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getInt32");
+Value DataView::js_get_int32(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getInt32");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -521,8 +521,8 @@ Value DataView::js_get_int32(Context& ctx, std::span<const Value> args) {
     return dv->get_int32(static_cast<size_t>(offset), little_endian);
 }
 
-Value DataView::js_get_uint32(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getUint32");
+Value DataView::js_get_uint32(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getUint32");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -571,8 +571,8 @@ uint16_t double_to_half_bits(double x) {
 
 }
 
-Value DataView::js_get_float16(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getFloat16");
+Value DataView::js_get_float16(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getFloat16");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -582,8 +582,8 @@ Value DataView::js_get_float16(Context& ctx, std::span<const Value> args) {
     return Value(half_bits_to_double(bits));
 }
 
-Value DataView::js_set_float16(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setFloat16");
+Value DataView::js_set_float16(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setFloat16");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -597,8 +597,8 @@ Value DataView::js_set_float16(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_get_float32(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getFloat32");
+Value DataView::js_get_float32(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getFloat32");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -607,8 +607,8 @@ Value DataView::js_get_float32(Context& ctx, std::span<const Value> args) {
     return dv->get_float32(static_cast<size_t>(offset), little_endian);
 }
 
-Value DataView::js_get_float64(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getFloat64");
+Value DataView::js_get_float64(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getFloat64");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -617,8 +617,8 @@ Value DataView::js_get_float64(Context& ctx, std::span<const Value> args) {
     return dv->get_float64(static_cast<size_t>(offset), little_endian);
 }
 
-Value DataView::js_set_int8(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setInt8");
+Value DataView::js_set_int8(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setInt8");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -631,8 +631,8 @@ Value DataView::js_set_int8(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_set_uint8(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setUint8");
+Value DataView::js_set_uint8(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setUint8");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -645,8 +645,8 @@ Value DataView::js_set_uint8(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_set_int16(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setInt16");
+Value DataView::js_set_int16(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setInt16");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -660,8 +660,8 @@ Value DataView::js_set_int16(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_set_uint16(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setUint16");
+Value DataView::js_set_uint16(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setUint16");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -675,8 +675,8 @@ Value DataView::js_set_uint16(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_set_int32(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setInt32");
+Value DataView::js_set_int32(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setInt32");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -690,8 +690,8 @@ Value DataView::js_set_int32(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_set_uint32(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setUint32");
+Value DataView::js_set_uint32(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setUint32");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -705,8 +705,8 @@ Value DataView::js_set_uint32(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_set_float32(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setFloat32");
+Value DataView::js_set_float32(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setFloat32");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -720,8 +720,8 @@ Value DataView::js_set_float32(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_set_float64(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setFloat64");
+Value DataView::js_set_float64(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setFloat64");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -735,8 +735,8 @@ Value DataView::js_set_float64(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_get_bigint64(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getBigInt64");
+Value DataView::js_get_bigint64(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getBigInt64");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -746,8 +746,8 @@ Value DataView::js_get_bigint64(Context& ctx, std::span<const Value> args) {
     return Value(new BigInt(val));
 }
 
-Value DataView::js_set_bigint64(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setBigInt64");
+Value DataView::js_set_bigint64(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setBigInt64");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -760,8 +760,8 @@ Value DataView::js_set_bigint64(Context& ctx, std::span<const Value> args) {
     return Value();
 }
 
-Value DataView::js_get_biguint64(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "getBigUint64");
+Value DataView::js_get_biguint64(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "getBigUint64");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
@@ -771,8 +771,8 @@ Value DataView::js_get_biguint64(Context& ctx, std::span<const Value> args) {
     return Value(new BigInt(std::to_string(val)));
 }
 
-Value DataView::js_set_biguint64(Context& ctx, std::span<const Value> args) {
-    DataView* dv = dataview_require_this(ctx, "setBigUint64");
+Value DataView::js_set_biguint64(Context& ctx, std::span<const Value> args, Value receiver) {
+    DataView* dv = dataview_require_this(ctx, receiver, "setBigUint64");
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();

@@ -50,9 +50,9 @@ public:
     IteratorResult next();
 
 
-    static Value iterator_next(Context& ctx, std::span<const Value> args);
-    static Value iterator_return(Context& ctx, std::span<const Value> args);
-    static Value iterator_throw(Context& ctx, std::span<const Value> args);
+    static Value iterator_next(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value iterator_return(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value iterator_throw(Context& ctx, std::span<const Value> args, Value receiver);
 
     static void setup_iterator_prototype(Context& ctx);
 

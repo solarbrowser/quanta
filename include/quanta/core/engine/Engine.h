@@ -183,7 +183,7 @@ private:
  */
 class NativeFunction {
 public:
-    using FunctionType = std::function<Value(Context&, std::span<const Value>)>;
+    using FunctionType = std::function<Value(Context&, std::span<const Value>, Value receiver)>;
     
 private:
     FunctionType function_;
@@ -193,7 +193,7 @@ private:
 public:
     NativeFunction(const std::string& name, FunctionType func, size_t arity = 0);
     
-    Value call(Context& ctx, std::span<const Value> args);
+    Value call(Context& ctx, std::span<const Value> args, Value receiver);
     const std::string& get_name() const { return name_; }
     size_t get_arity() const { return arity_; }
 };

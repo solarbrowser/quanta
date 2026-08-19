@@ -189,9 +189,9 @@ public:
     State get_state() const { return state_; }
     bool is_done() const { return state_ == State::Completed; }
 
-    static Value async_generator_next(Context& ctx, std::span<const Value> args);
-    static Value async_generator_return(Context& ctx, std::span<const Value> args);
-    static Value async_generator_throw(Context& ctx, std::span<const Value> args);
+    static Value async_generator_next(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value async_generator_return(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value async_generator_throw(Context& ctx, std::span<const Value> args, Value receiver);
 
     static void setup_async_generator_prototype(Context& ctx);
     // Thread-local: each agent owns its own intrinsics.
@@ -280,9 +280,9 @@ public:
     std::unique_ptr<Promise> return_value(const Value& value);
     std::unique_ptr<Promise> throw_exception(const Value& exception);
     
-    static Value async_iterator_next(Context& ctx, std::span<const Value> args);
-    static Value async_iterator_return(Context& ctx, std::span<const Value> args);
-    static Value async_iterator_throw(Context& ctx, std::span<const Value> args);
+    static Value async_iterator_next(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value async_iterator_return(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value async_iterator_throw(Context& ctx, std::span<const Value> args, Value receiver);
     
     static void setup_async_iterator_prototype(Context& ctx);
 };

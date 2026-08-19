@@ -597,7 +597,7 @@ static Value construct_typed_array_generic(Context& ctx, std::span<const Value> 
 
 void register_typed_array_builtins(Context& ctx) {
     auto uint8array_constructor = ObjectFactory::create_native_constructor("Uint8Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT8, 1);
         }, 3);
@@ -614,7 +614,7 @@ void register_typed_array_builtins(Context& ctx) {
         };
 
         auto fromHex_fn = ObjectFactory::create_native_function("fromHex",
-            [make_result](Context& ctx, std::span<const Value> args) -> Value {
+            [make_result](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("fromHex requires a string"); return Value(); }
                 auto result = Base64Codec::decode_hex(args[0].as_string()->str(), SIZE_MAX);
                 if (result.error) { ctx.throw_syntax_error("Uint8Array.fromHex: invalid hex string"); return Value(); }
@@ -623,7 +623,7 @@ void register_typed_array_builtins(Context& ctx) {
         uint8array_constructor->set_property("fromHex", Value(fromHex_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto fromBase64_fn = ObjectFactory::create_native_function("fromBase64",
-            [make_result](Context& ctx, std::span<const Value> args) -> Value {
+            [make_result](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("fromBase64 requires a string"); return Value(); }
                 bool url_safe = false;
                 Base64Codec::LastChunkHandling mode = Base64Codec::LastChunkHandling::Loose;
@@ -647,21 +647,21 @@ void register_typed_array_builtins(Context& ctx) {
     ctx.register_built_in_object("Uint8Array", uint8array_constructor.release());
 
     auto uint8clampedarray_constructor = ObjectFactory::create_native_constructor("Uint8ClampedArray",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT8_CLAMPED, 1);
         }, 3);
     ctx.register_built_in_object("Uint8ClampedArray", uint8clampedarray_constructor.release());
 
     auto float32array_constructor = ObjectFactory::create_native_constructor("Float32Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::FLOAT32, 4);
         }, 3);
     ctx.register_built_in_object("Float32Array", float32array_constructor.release());
 
     auto typedarray_constructor = ObjectFactory::create_native_function("TypedArray",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             ctx.throw_type_error("Abstract class TypedArray not intended to be instantiated directly");
             return Value();
@@ -679,8 +679,8 @@ void register_typed_array_builtins(Context& ctx) {
 
     {
         auto ta_abstract_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-            [](Context& ctx, std::span<const Value>) -> Value {
-                return Value(ctx.get_this_binding());
+            [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                return Value(receiver.as_object_or_null());
             }, 0);
         PropertyDescriptor ta_abstract_species_desc;
         ta_abstract_species_desc.set_getter(ta_abstract_species_getter.release());
@@ -699,8 +699,8 @@ void register_typed_array_builtins(Context& ctx) {
         Symbol* ta_tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
         if (ta_tag_sym) {
             auto ta_tag_getter = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Object* self = ctx.get_this_binding();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
                     if (!self || !self->is_typed_array()) return Value();
                     TypedArrayBase* ta = static_cast<TypedArrayBase*>(self);
                     return Value(std::string(TypedArrayBase::array_type_to_string(ta->get_array_type())));
@@ -715,9 +715,9 @@ void register_typed_array_builtins(Context& ctx) {
 
 
     auto buffer_getter = ObjectFactory::create_native_function("get buffer",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) {
                 ctx.throw_type_error("TypedArray.prototype.buffer called on non-TypedArray");
                 return Value();
@@ -739,9 +739,9 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_prototype->set_property_descriptor("buffer", buffer_desc);
 
     auto byteLength_getter = ObjectFactory::create_native_function("get byteLength",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) {
                 ctx.throw_type_error("TypedArray.prototype.byteLength called on non-TypedArray");
                 return Value();
@@ -756,9 +756,9 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_prototype->set_property_descriptor("byteLength", byteLength_desc);
 
     auto byteOffset_getter = ObjectFactory::create_native_function("get byteOffset",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) {
                 ctx.throw_type_error("TypedArray.prototype.byteOffset called on non-TypedArray");
                 return Value();
@@ -774,9 +774,9 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_prototype->set_property_descriptor("byteOffset", byteOffset_desc);
 
     auto length_getter = ObjectFactory::create_native_function("get length",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) {
                 ctx.throw_type_error("TypedArray.prototype.length called on non-TypedArray");
                 return Value();
@@ -794,8 +794,8 @@ void register_typed_array_builtins(Context& ctx) {
 
 
     auto typedarray_at_fn = ObjectFactory::create_native_function("at",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             // len is captured before coercion; the coercion can resize the buffer.
             double len = static_cast<double>(ta->length());
@@ -817,15 +817,15 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("at", typedarray_at_desc);
 
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("forEach requires a callback function"); return Value(); }
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
                 callback->call(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
             }
@@ -836,8 +836,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("forEach", forEach_desc);
 
     auto map_fn = ObjectFactory::create_native_function("map",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) {
                 ctx.throw_type_error("TypedArray.prototype.map called on non-TypedArray");
                 return Value();
@@ -875,8 +875,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("map", map_desc);
 
     auto filter_fn = ObjectFactory::create_native_function("filter",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) {
                 ctx.throw_type_error("TypedArray.prototype.filter called on non-TypedArray");
                 return Value();
@@ -926,15 +926,15 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("filter", filter_desc);
 
     auto every_fn = ObjectFactory::create_native_function("every",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
             Function* cb = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
                 Value r = cb->call(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (!r.to_boolean()) return Value(false);
@@ -944,15 +944,15 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("every", PropertyDescriptor(Value(every_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto some_fn = ObjectFactory::create_native_function("some",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
             Function* cb = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
                 Value r = cb->call(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (r.to_boolean()) return Value(true);
@@ -962,8 +962,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("some", PropertyDescriptor(Value(some_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto find_fn = ObjectFactory::create_native_function("find",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
             Function* cb = args[0].as_function();
@@ -971,7 +971,7 @@ void register_typed_array_builtins(Context& ctx) {
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
                 Value el = ta->get_element(i);
-                std::vector<Value> cb_args = { el, Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                std::vector<Value> cb_args = { el, Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
                 Value r = cb->call(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (r.to_boolean()) return el;
@@ -981,15 +981,15 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("find", PropertyDescriptor(Value(find_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto findIndex_fn = ObjectFactory::create_native_function("findIndex",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
             Function* cb = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
                 Value r = cb->call(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (r.to_boolean()) return Value(static_cast<double>(i));
@@ -999,8 +999,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("findIndex", PropertyDescriptor(Value(findIndex_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto findLast_fn = ObjectFactory::create_native_function("findLast",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
@@ -1017,8 +1017,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("findLast", PropertyDescriptor(Value(findLast_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto findLastIndex_fn = ObjectFactory::create_native_function("findLastIndex",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
@@ -1034,8 +1034,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("findLastIndex", PropertyDescriptor(Value(findLastIndex_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto indexOf_fn = ObjectFactory::create_native_function("indexOf",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             double len = static_cast<double>(ta->length());
             if (args.empty() || len == 0) return Value(-1.0);
@@ -1056,8 +1056,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("indexOf", PropertyDescriptor(Value(indexOf_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             double len = static_cast<double>(ta->length());
             if (args.empty() || len == 0) return Value(-1.0);
@@ -1078,8 +1078,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("lastIndexOf", PropertyDescriptor(Value(lastIndexOf_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto reduce_fn = ObjectFactory::create_native_function("reduce",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
             Function* cb = args[0].as_function();
@@ -1089,7 +1089,7 @@ void register_typed_array_builtins(Context& ctx) {
                 acc = ta->get_element(static_cast<size_t>(0)); k = 1;
             }
             for (; k < len; k++) {
-                std::vector<Value> cb_args = { acc, ta->get_element(k), Value(static_cast<double>(k)), Value(ctx.get_this_binding()) };
+                std::vector<Value> cb_args = { acc, ta->get_element(k), Value(static_cast<double>(k)), Value(receiver.as_object_or_null()) };
                 acc = cb->call(ctx, cb_args, Value());
                 if (ctx.has_exception()) return Value();
             }
@@ -1098,8 +1098,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("reduce", PropertyDescriptor(Value(reduce_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto reduceRight_fn = ObjectFactory::create_native_function("reduceRight",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
             Function* cb = args[0].as_function();
@@ -1109,7 +1109,7 @@ void register_typed_array_builtins(Context& ctx) {
                 acc = ta->get_element(static_cast<size_t>(k)); k--;
             }
             for (; k >= 0; k--) {
-                std::vector<Value> cb_args = { acc, ta->get_element(static_cast<size_t>(k)), Value(static_cast<double>(k)), Value(ctx.get_this_binding()) };
+                std::vector<Value> cb_args = { acc, ta->get_element(static_cast<size_t>(k)), Value(static_cast<double>(k)), Value(receiver.as_object_or_null()) };
                 acc = cb->call(ctx, cb_args, Value());
                 if (ctx.has_exception()) return Value();
             }
@@ -1118,8 +1118,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("reduceRight", PropertyDescriptor(Value(reduceRight_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_join_fn = ObjectFactory::create_native_function("join",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             // Spec order: length is captured before ToString(separator), which can resize the buffer.
             size_t len = ta->length();
@@ -1151,9 +1151,9 @@ void register_typed_array_builtins(Context& ctx) {
     }
 
     auto ta_tolocalestring_fn = ObjectFactory::create_native_function("toLocaleString",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             size_t len = ta->length();
             if (len == 0) return Value(std::string(""));
@@ -1200,10 +1200,10 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("toLocaleString", PropertyDescriptor(Value(ta_tolocalestring_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_sort_fn = ObjectFactory::create_native_function("sort",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!args.empty() && !args[0].is_undefined() && !args[0].is_function()) {
                 ctx.throw_type_error("TypedArray.prototype.sort: comparefn must be callable or undefined");
                 return Value();
@@ -1241,11 +1241,11 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("sort", PropertyDescriptor(Value(ta_sort_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_reverse_fn = ObjectFactory::create_native_function("reverse",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             size_t len = ta->length();
             for (size_t i = 0; i < len / 2; i++) { Value t = ta->get_element(i); ta->set_element(i, ta->get_element(len - 1 - i)); ta->set_element(len - 1 - i, t); }
             return Value(this_obj);
@@ -1253,8 +1253,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("reverse", PropertyDescriptor(Value(ta_reverse_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_slice_fn = ObjectFactory::create_native_function("slice",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             int64_t len = ta->length(), start = 0, end = len;
             if (!args.empty()) {
@@ -1290,8 +1290,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("slice", PropertyDescriptor(Value(ta_slice_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_fill_fn = ObjectFactory::create_native_function("fill",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             double len = static_cast<double>(ta->length());
 
@@ -1323,13 +1323,13 @@ void register_typed_array_builtins(Context& ctx) {
                 ta->set_element(static_cast<size_t>(k), fill_val);
                 if (ctx.has_exception()) return Value();
             }
-            return Value(ctx.get_this_binding());
+            return Value(receiver.as_object_or_null());
         }, 1);
     typedarray_proto_ptr->set_property_descriptor("fill", PropertyDescriptor(Value(ta_fill_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_copyWithin_fn = ObjectFactory::create_native_function("copyWithin",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             double orig_len = static_cast<double>(ta->length());
 
@@ -1353,7 +1353,7 @@ void register_typed_array_builtins(Context& ctx) {
             to    = std::min(to,    cur_len);
             from  = std::min(from,  cur_len);
             count = std::min(count, cur_len - to);
-            if (count <= 0) return Value(ctx.get_this_binding());
+            if (count <= 0) return Value(receiver.as_object_or_null());
 
             // Snapshot source range first (handles overlap); skip write if source index was OOB
             // (buffer may have shrunk during coercions, leaving the tail of count OOB).
@@ -1368,13 +1368,13 @@ void register_typed_array_builtins(Context& ctx) {
             for (size_t i = 0; i < cnt; i++) {
                 if (valid[i]) ta->set_element(static_cast<size_t>(to) + i, tmp[i]);
             }
-            return Value(ctx.get_this_binding());
+            return Value(receiver.as_object_or_null());
         }, 2);
     typedarray_proto_ptr->set_property_descriptor("copyWithin", PropertyDescriptor(Value(ta_copyWithin_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_with_fn = ObjectFactory::create_native_function("with",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             int64_t len = static_cast<int64_t>(ta->length());
             double rel = args.empty() ? 0.0 : to_number_throwing(ctx, args[0]);
@@ -1405,12 +1405,12 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("with", PropertyDescriptor(Value(ta_with_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_toSorted_fn = ObjectFactory::create_native_function("toSorted",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!args.empty() && !args[0].is_undefined() && !args[0].is_function()) {
                 ctx.throw_type_error("comparefn must be a function or undefined");
                 return Value();
             }
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             size_t len = ta->length();
             Function* cmp = (!args.empty() && args[0].is_function()) ? args[0].as_function() : nullptr;
@@ -1433,9 +1433,9 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("toSorted", PropertyDescriptor(Value(ta_toSorted_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_toReversed_fn = ObjectFactory::create_native_function("toReversed",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             size_t len = ta->length();
             TypedArrayBase* r = create_same_type_typed_array(ctx, ta, len);
@@ -1446,16 +1446,16 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("toReversed", PropertyDescriptor(Value(ta_toReversed_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_entries_fn = ObjectFactory::create_native_function("entries",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            (void)args; Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            (void)args; Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
-            auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a) -> Value {
+            auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
-                (void)a; Object* it = ctx.get_this_binding();
+                (void)a; Object* it = receiver.as_object_or_null();
                 Value arr_val = it->get_property("__arr");
                 auto res = ObjectFactory::create_object();
                 // An exhausted iterator stays done regardless of later buffer resizes.
@@ -1473,16 +1473,16 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("entries", PropertyDescriptor(Value(ta_entries_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_keys_fn = ObjectFactory::create_native_function("keys",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            (void)args; Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            (void)args; Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
-            auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a) -> Value {
+            auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
-                (void)a; Object* it = ctx.get_this_binding();
+                (void)a; Object* it = receiver.as_object_or_null();
                 Value arr_val = it->get_property("__arr");
                 auto res = ObjectFactory::create_object();
                 if (!arr_val.is_object()) { res->set_property("done", Value(true)); res->set_property("value", Value()); return Value(res.release()); }
@@ -1498,16 +1498,16 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("keys", PropertyDescriptor(Value(ta_keys_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_values_fn = ObjectFactory::create_native_function("values",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            (void)args; Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            (void)args; Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
-            auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a) -> Value {
+            auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
-                (void)a; Object* it = ctx.get_this_binding();
+                (void)a; Object* it = receiver.as_object_or_null();
                 Value arr_val = it->get_property("__arr");
                 auto res = ObjectFactory::create_object();
                 if (!arr_val.is_object()) { res->set_property("done", Value(true)); res->set_property("value", Value()); return Value(res.release()); }
@@ -1530,8 +1530,8 @@ void register_typed_array_builtins(Context& ctx) {
     }
 
     auto ta_subarray_fn = ObjectFactory::create_native_function("subarray",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             double len = static_cast<double>(ta->length());
@@ -1560,8 +1560,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("subarray", PropertyDescriptor(Value(ta_subarray_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_set_fn = ObjectFactory::create_native_function("set",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* target = static_cast<TypedArrayBase*>(this_obj);
 
@@ -1653,8 +1653,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_proto_ptr->set_property_descriptor("set", PropertyDescriptor(Value(ta_set_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_includes_fn = ObjectFactory::create_native_function("includes",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, receiver.as_object_or_null());
             if (!ta) return Value();
             double len = static_cast<double>(ta->length());
             Value search = args.empty() ? Value() : args[0];
@@ -1683,8 +1683,8 @@ void register_typed_array_builtins(Context& ctx) {
 
 
     auto typedarray_from = ObjectFactory::create_native_function("from",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             Function* ctor = this_obj ? as_function(this_obj) : nullptr;
             if (!ctor || !ctor->is_constructor()) {
                 ctx.throw_type_error("TypedArray.from must be called on a concrete TypedArray constructor");
@@ -1811,8 +1811,8 @@ void register_typed_array_builtins(Context& ctx) {
     typedarray_constructor->set_property_descriptor("from", from_desc);
 
     auto typedarray_of = ObjectFactory::create_native_function("of",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             Function* ctor = this_obj ? as_function(this_obj) : nullptr;
             if (!ctor) {
                 ctx.throw_type_error("TypedArray.of must be called on a concrete TypedArray constructor");
@@ -1854,56 +1854,56 @@ void register_typed_array_builtins(Context& ctx) {
     ctx.register_built_in_object("TypedArray", typedarray_constructor.release());
 
     auto int8array_constructor = ObjectFactory::create_native_constructor("Int8Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::INT8, 1);
         }, 3);
     ctx.register_built_in_object("Int8Array", int8array_constructor.release());
 
     auto uint16array_constructor = ObjectFactory::create_native_constructor("Uint16Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT16, 2);
         }, 3);
     ctx.register_built_in_object("Uint16Array", uint16array_constructor.release());
 
     auto int16array_constructor = ObjectFactory::create_native_constructor("Int16Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::INT16, 2);
         }, 3);
     ctx.register_built_in_object("Int16Array", int16array_constructor.release());
 
     auto uint32array_constructor = ObjectFactory::create_native_constructor("Uint32Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT32, 4);
         }, 3);
     ctx.register_built_in_object("Uint32Array", uint32array_constructor.release());
 
     auto int32array_constructor = ObjectFactory::create_native_constructor("Int32Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::INT32, 4);
         }, 3);
     ctx.register_built_in_object("Int32Array", int32array_constructor.release());
 
     auto float64array_constructor = ObjectFactory::create_native_constructor("Float64Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::FLOAT64, 8);
         }, 3);
     ctx.register_built_in_object("Float64Array", float64array_constructor.release());
 
     auto bigint64array_constructor = ObjectFactory::create_native_constructor("BigInt64Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::BIGINT64, 8);
         }, 3);
     ctx.register_built_in_object("BigInt64Array", bigint64array_constructor.release());
 
     auto biguint64array_constructor = ObjectFactory::create_native_constructor("BigUint64Array",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::BIGUINT64, 8);
         }, 3);
@@ -1928,8 +1928,8 @@ void register_typed_array_builtins(Context& ctx) {
             }
             if (ta_species_sym) {
                 auto getter = ObjectFactory::create_native_function("get [Symbol.species]",
-                    [](Context& ctx, std::span<const Value>) -> Value {
-                        return Value(ctx.get_this_binding());
+                    [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                        return Value(receiver.as_object_or_null());
                     }, 0);
                 PropertyDescriptor species_desc;
                 species_desc.set_getter(getter.release());
@@ -1963,9 +1963,9 @@ void register_typed_array_builtins(Context& ctx) {
     Object* dataview_proto_ptr = dataview_prototype.get();
 
     auto dataview_constructor = ObjectFactory::create_native_constructor("DataView",
-        [dataview_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
+        [dataview_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
-            Value result = DataView::constructor(ctx, args);
+            Value result = DataView::constructor(ctx, args, receiver);
             if (!result.is_object()) return result;
 
             // GetPrototypeFromConstructor runs after offset/length validation,
@@ -2079,15 +2079,15 @@ void register_typed_array_builtins(Context& ctx) {
     dataview_prototype->set_property_descriptor("Symbol.toStringTag", dataview_tag_desc);
 
     // Accessor properties on DataView.prototype: buffer, byteLength, byteOffset
-    auto dv_check = [](Context& ctx) -> DataView* {
-        Object* obj = ctx.get_this_binding();
+    auto dv_check = [](Context& ctx, const Value& receiver) -> DataView* {
+        Object* obj = receiver.as_object_or_null();
         if (!obj || !obj->is_data_view()) { ctx.throw_type_error("DataView accessor called on non-DataView"); return nullptr; }
         return static_cast<DataView*>(obj);
     };
     {
         auto g = ObjectFactory::create_native_function("get buffer",
-            [dv_check](Context& ctx, std::span<const Value> args) -> Value {
-                (void)args; DataView* dv = dv_check(ctx); if (!dv) return Value();
+            [dv_check](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                (void)args; DataView* dv = dv_check(ctx, receiver); if (!dv) return Value();
                 return Value(dv->buffer());
             }, 0);
         PropertyDescriptor d; d.set_getter(g.release()); d.set_enumerable(false); d.set_configurable(true);
@@ -2095,8 +2095,8 @@ void register_typed_array_builtins(Context& ctx) {
     }
     {
         auto g = ObjectFactory::create_native_function("get byteLength",
-            [dv_check](Context& ctx, std::span<const Value> args) -> Value {
-                (void)args; DataView* dv = dv_check(ctx); if (!dv) return Value();
+            [dv_check](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                (void)args; DataView* dv = dv_check(ctx, receiver); if (!dv) return Value();
                 if (dv->is_out_of_bounds()) { ctx.throw_type_error("DataView is out of bounds of its buffer"); return Value(); }
                 return Value(static_cast<double>(dv->current_byte_length()));
             }, 0);
@@ -2105,8 +2105,8 @@ void register_typed_array_builtins(Context& ctx) {
     }
     {
         auto g = ObjectFactory::create_native_function("get byteOffset",
-            [dv_check](Context& ctx, std::span<const Value> args) -> Value {
-                (void)args; DataView* dv = dv_check(ctx); if (!dv) return Value();
+            [dv_check](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                (void)args; DataView* dv = dv_check(ctx, receiver); if (!dv) return Value();
                 if (dv->is_out_of_bounds()) { ctx.throw_type_error("DataView is out of bounds of its buffer"); return Value(); }
                 return Value(static_cast<double>(dv->byte_offset()));
             }, 0);
@@ -2170,8 +2170,8 @@ static void register_uint8array_base64_hex(Context& ctx) {
 
     // Callers read options (firing any getter) before calling this, so a detach
     // triggered from within an option getter is caught here.
-    auto validate_uint8array = [](Context& ctx, const char* name) -> TypedArrayBase* {
-        Object* obj = ctx.get_this_binding();
+    auto validate_uint8array = [](Context& ctx, const Value& receiver, const char* name) -> TypedArrayBase* {
+        Object* obj = receiver.as_object_or_null();
         if (!obj || !obj->is_typed_array() || static_cast<TypedArrayBase*>(obj)->get_array_type() != TypedArrayBase::ArrayType::UINT8) {
             ctx.throw_type_error(std::string(name) + " requires a Uint8Array this");
             return nullptr;
@@ -2182,9 +2182,9 @@ static void register_uint8array_base64_hex(Context& ctx) {
     };
 
     proto->set_property("toHex", Value(ObjectFactory::create_native_function("toHex",
-        [validate_uint8array](Context& ctx, std::span<const Value> args) -> Value {
+        [validate_uint8array](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            TypedArrayBase* ta = validate_uint8array(ctx, "toHex");
+            TypedArrayBase* ta = validate_uint8array(ctx, receiver, "toHex");
             if (!ta) return Value();
             std::string result;
             size_t n = ta->length();
@@ -2195,8 +2195,8 @@ static void register_uint8array_base64_hex(Context& ctx) {
         }, 0).release()), PropertyAttributes::BuiltinFunction);
 
     proto->set_property("toBase64", Value(ObjectFactory::create_native_function("toBase64",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* obj = receiver.as_object_or_null();
             if (!obj || !obj->is_typed_array() || static_cast<TypedArrayBase*>(obj)->get_array_type() != TypedArrayBase::ArrayType::UINT8) {
                 ctx.throw_type_error("toBase64 requires a Uint8Array this");
                 return Value();
@@ -2226,9 +2226,9 @@ static void register_uint8array_base64_hex(Context& ctx) {
         }, 0).release()), PropertyAttributes::BuiltinFunction);
 
     proto->set_property("setFromHex", Value(ObjectFactory::create_native_function("setFromHex",
-        [validate_uint8array](Context& ctx, std::span<const Value> args) -> Value {
+        [validate_uint8array](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("setFromHex requires a string"); return Value(); }
-            TypedArrayBase* ta = validate_uint8array(ctx, "setFromHex");
+            TypedArrayBase* ta = validate_uint8array(ctx, receiver, "setFromHex");
             if (!ta) return Value();
             auto result = Base64Codec::decode_hex(args[0].as_string()->str(), ta->length());
             for (size_t i = 0; i < result.bytes.size(); i++) ta->set_element(i, Value(static_cast<double>(result.bytes[i])));
@@ -2240,9 +2240,9 @@ static void register_uint8array_base64_hex(Context& ctx) {
         }, 1).release()), PropertyAttributes::BuiltinFunction);
 
     proto->set_property("setFromBase64", Value(ObjectFactory::create_native_function("setFromBase64",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("setFromBase64 requires a string"); return Value(); }
-            Object* obj = ctx.get_this_binding();
+            Object* obj = receiver.as_object_or_null();
             if (!obj || !obj->is_typed_array() || static_cast<TypedArrayBase*>(obj)->get_array_type() != TypedArrayBase::ArrayType::UINT8) {
                 ctx.throw_type_error("setFromBase64 requires a Uint8Array this");
                 return Value();

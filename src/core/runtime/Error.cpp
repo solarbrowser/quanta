@@ -199,7 +199,7 @@ const char* JavaScriptException::what() const noexcept {
 }
 
 
-Value Error::isError(Context& ctx, std::span<const Value> args) {
+Value Error::isError(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)ctx;
     
     if (args.empty()) {

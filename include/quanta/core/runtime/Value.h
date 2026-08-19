@@ -273,6 +273,10 @@ public:
     inline bool is_numeric() const { return is_number() || is_bigint(); }
     
     inline bool is_object_like() const { return is_object() || is_function(); }
+    // The value as an object, or null when it is a primitive. This is the
+    // shape a receiver is wanted in by most builtins, which used to ask the
+    // context for it before the receiver started travelling with the call.
+    inline Object* as_object_or_null() const { return is_object_like() ? as_object() : nullptr; }
 
     Type get_type() const;
 

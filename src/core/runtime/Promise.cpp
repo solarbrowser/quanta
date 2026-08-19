@@ -113,12 +113,12 @@ void Promise::fulfill(const Value& value) {
             // Inner promise is pending -- chain callbacks
             Promise* self = this;
             auto res_fn = ObjectFactory::create_native_function("",
-                [self](Context&, std::span<const Value> args) -> Value {
+                [self](Context&, std::span<const Value> args, Value receiver) -> Value {
                     self->fulfill(args.empty() ? Value() : args[0]);
                     return Value();
                 });
             auto rej_fn = ObjectFactory::create_native_function("",
-                [self](Context&, std::span<const Value> args) -> Value {
+                [self](Context&, std::span<const Value> args, Value receiver) -> Value {
                     self->reject(args.empty() ? Value() : args[0]);
                     return Value();
                 });
@@ -166,14 +166,14 @@ void Promise::fulfill(const Value& value) {
                     // Same AlreadyResolved rationale as the constructor's resolve/reject pair.
                     auto already_called = std::make_shared<bool>(false);
                     auto res_fn = ObjectFactory::create_native_function("",
-                        [self, already_called](Context&, std::span<const Value> args) -> Value {
+                        [self, already_called](Context&, std::span<const Value> args, Value receiver) -> Value {
                             if (*already_called) return Value();
                             *already_called = true;
                             self->fulfill(args.empty() ? Value() : args[0]);
                             return Value();
                         });
                     auto rej_fn = ObjectFactory::create_native_function("",
-                        [self, already_called](Context&, std::span<const Value> args) -> Value {
+                        [self, already_called](Context&, std::span<const Value> args, Value receiver) -> Value {
                             if (*already_called) return Value();
                             *already_called = true;
                             self->reject(args.empty() ? Value() : args[0]);
@@ -467,7 +467,7 @@ void Promise::execute_handlers() {
     }
 }
 
-Value Promise::withResolvers(Context& ctx, std::span<const Value> args) {
+Value Promise::withResolvers(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)ctx; (void)args;
 
     auto promise_obj = ObjectFactory::create_promise(Object::current_context_);
@@ -475,7 +475,7 @@ Value Promise::withResolvers(Context& ctx, std::span<const Value> args) {
     auto result_obj = ObjectFactory::create_object();
 
     auto resolve_fn = ObjectFactory::create_native_function("resolve",
-        [promise](Context& ctx, std::span<const Value> args) -> Value {
+        [promise](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;
             Value resolve_value = args.empty() ? Value() : args[0];
             promise->fulfill(resolve_value);
@@ -483,7 +483,7 @@ Value Promise::withResolvers(Context& ctx, std::span<const Value> args) {
         });
 
     auto reject_fn = ObjectFactory::create_native_function("reject",
-        [promise](Context& ctx, std::span<const Value> args) -> Value {
+        [promise](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;
             Value reject_value = args.empty() ? Value(std::string("Promise rejected")) : args[0];
             promise->reject(reject_value);
@@ -497,7 +497,7 @@ Value Promise::withResolvers(Context& ctx, std::span<const Value> args) {
     return Value(result_obj.release());
 }
 
-Value Promise::try_method(Context& ctx, std::span<const Value> args) {
+Value Promise::try_method(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty() || !args[0].is_function()) {
         ctx.throw_exception(Value(std::string("Promise.try requires a function argument")));
         return Value();
@@ -532,7 +532,7 @@ void Promise::setup_promise_methods(Promise* promise) {
     if (!promise) return;
 
     auto then_method = ObjectFactory::create_native_function("then",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             if (args.size() > 0 && args[0].is_function()) {
@@ -552,7 +552,7 @@ void Promise::setup_promise_methods(Promise* promise) {
     promise->set_property("then", Value(then_method.release()));
 
     auto catch_method = ObjectFactory::create_native_function("catch",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             new_promise->fulfill(Value(std::string("catch_resolved")));
@@ -561,7 +561,7 @@ void Promise::setup_promise_methods(Promise* promise) {
     promise->set_property("catch", Value(catch_method.release()));
 
     auto finally_method = ObjectFactory::create_native_function("finally",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             new_promise->fulfill(Value(std::string("finally_resolved")));

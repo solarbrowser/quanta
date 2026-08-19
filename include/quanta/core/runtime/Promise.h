@@ -63,8 +63,8 @@ public:
     static Promise* all(const std::vector<Promise*>& promises);
     static Promise* race(const std::vector<Promise*>& promises);
     
-    static Value withResolvers(Context& ctx, std::span<const Value> args);
-    static Value try_method(Context& ctx, std::span<const Value> args);
+    static Value withResolvers(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value try_method(Context& ctx, std::span<const Value> args, Value receiver);
     
     PromiseState get_state() const { return state_; }
     const Value& get_value() const { return value_; }

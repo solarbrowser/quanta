@@ -143,7 +143,7 @@ Symbol* Symbol::find_by_property_key(const std::string& key) {
     return nullptr;
 }
 
-Value Symbol::symbol_constructor(Context& ctx, std::span<const Value> args) {
+Value Symbol::symbol_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)ctx;
     std::string description = "";
     if (!args.empty() && !args[0].is_undefined()) {
@@ -154,7 +154,7 @@ Value Symbol::symbol_constructor(Context& ctx, std::span<const Value> args) {
     return Value(symbol.release());
 }
 
-Value Symbol::symbol_for(Context& ctx, std::span<const Value> args) {
+Value Symbol::symbol_for(Context& ctx, std::span<const Value> args, Value receiver) {
     Value key_val = args.empty() ? Value() : args[0];
     // Spec: ToString(key) -- unlike ToPropertyKey, a Symbol argument must throw TypeError.
     if (key_val.is_symbol()) {
@@ -167,7 +167,7 @@ Value Symbol::symbol_for(Context& ctx, std::span<const Value> args) {
     return Value(symbol);
 }
 
-Value Symbol::symbol_key_for(Context& ctx, std::span<const Value> args) {
+Value Symbol::symbol_key_for(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty() || !args[0].is_symbol()) {
         ctx.throw_type_error("Symbol.keyFor requires a symbol argument");
         return Value();
@@ -181,10 +181,10 @@ Value Symbol::symbol_key_for(Context& ctx, std::span<const Value> args) {
     return Value(key);
 }
 
-Value Symbol::symbol_to_string(Context& ctx, std::span<const Value> args) {
+Value Symbol::symbol_to_string(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     
-    Value this_value = ctx.get_binding("this");
+    Value this_value = receiver;
     if (!this_value.is_symbol()) {
         ctx.throw_exception(Value(std::string("Symbol.prototype.toString called on non-symbol")));
         return Value();
@@ -194,10 +194,10 @@ Value Symbol::symbol_to_string(Context& ctx, std::span<const Value> args) {
     return Value(symbol->to_string());
 }
 
-Value Symbol::symbol_value_of(Context& ctx, std::span<const Value> args) {
+Value Symbol::symbol_value_of(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     
-    Value this_value = ctx.get_binding("this");
+    Value this_value = receiver;
     if (!this_value.is_symbol()) {
         ctx.throw_exception(Value(std::string("Symbol.prototype.valueOf called on non-symbol")));
         return Value();

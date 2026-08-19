@@ -94,14 +94,14 @@ public:
     void unregister_view(TypedArrayBase* view);
     void detach_all_views();
     
-    static Value constructor(Context& ctx, std::span<const Value> args);
-    static Value prototype_slice(Context& ctx, std::span<const Value> args);
-    static Value prototype_resize(Context& ctx, std::span<const Value> args);
-    static Value get_byteLength(Context& ctx, std::span<const Value> args);
-    static Value get_maxByteLength(Context& ctx, std::span<const Value> args);
-    static Value get_resizable(Context& ctx, std::span<const Value> args);
+    static Value constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value prototype_slice(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value prototype_resize(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value get_byteLength(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value get_maxByteLength(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value get_resizable(Context& ctx, std::span<const Value> args, Value receiver);
     
-    static Value isView(Context& ctx, std::span<const Value> args);
+    static Value isView(Context& ctx, std::span<const Value> args, Value receiver);
     
     // No longer virtual on Object -- see Object::get_property()'s own
     // switch-based dispatch in Object.cpp.

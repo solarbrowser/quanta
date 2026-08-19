@@ -189,7 +189,7 @@ AsyncFunction::AsyncFunction(const std::string& name,
     set_function_kind(FunctionKind::Async);
 }
 
-Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value this_value) {
+Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value receiver) {
     // The body runs synchronously up to the first await inside this call
     // (executor->run() below), so this frame makes CallStack::top() the real
     // declaring function while the prefix executes -- without it, private-field
@@ -223,7 +223,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value this_
 
     // Bind 'this' (arrow uses captured __arrow_this__; sloppy-mode undefined/null -> global)
     // Use presence (has_property), not is_undefined(), since a captured this can legitimately BE undefined.
-    Value bound_this = this_value;
+    Value bound_this = receiver;
     bool has_arrow_this = is_arrow() && this->has_arrow_this();
     Value arrow_this_val = has_arrow_this ? this->arrow_this() : Value();
     if (has_arrow_this) {
@@ -645,7 +645,7 @@ void AsyncGenerator::process_next_request() {
                     pending_promise_ = p;
                     Value gen_val(static_cast<Object*>(this));
                     auto on_ok = ObjectFactory::create_native_function("",
-                        [gen_val](Context&, std::span<const Value> a) -> Value {
+                        [gen_val](Context&, std::span<const Value> a, Value receiver) -> Value {
                             auto* gen = static_cast<AsyncGenerator*>(gen_val.as_object());
                             Promise* settled = gen->pending_promise_;
                             if (settled) {
@@ -658,7 +658,7 @@ void AsyncGenerator::process_next_request() {
                             return Value();
                         }, 1);
                     auto on_err = ObjectFactory::create_native_function("",
-                        [gen_val](Context&, std::span<const Value> a) -> Value {
+                        [gen_val](Context&, std::span<const Value> a, Value receiver) -> Value {
                             auto* gen = static_cast<AsyncGenerator*>(gen_val.as_object());
                             Promise* settled = gen->pending_promise_;
                             if (settled) settled->reject(a.empty() ? Value() : a[0]);
@@ -792,7 +792,7 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
 
     // AsyncGeneratorFunction constructor
     auto async_generator_function_constructor = ObjectFactory::create_native_constructor("AsyncGeneratorFunction",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             std::vector<std::string> param_names;
             std::string body_str = "";
 
@@ -884,8 +884,8 @@ static Value reject_bad_generator(Context& ctx, const std::string& msg) {
     return Value(p);
 }
 
-Value AsyncGenerator::async_generator_next(Context& ctx, std::span<const Value> args) {
-    Value this_value = ctx.get_binding("this");
+Value AsyncGenerator::async_generator_next(Context& ctx, std::span<const Value> args, Value receiver) {
+    Value this_value = receiver;
     AsyncGenerator* async_gen = this_value.is_object() ? as_async_generator(this_value.as_object()) : nullptr;
     if (!async_gen) {
         return reject_bad_generator(ctx, "AsyncGenerator.prototype.next called on incompatible receiver");
@@ -897,8 +897,8 @@ Value AsyncGenerator::async_generator_next(Context& ctx, std::span<const Value> 
     return Value(result.promise.release());
 }
 
-Value AsyncGenerator::async_generator_return(Context& ctx, std::span<const Value> args) {
-    Value this_value = ctx.get_binding("this");
+Value AsyncGenerator::async_generator_return(Context& ctx, std::span<const Value> args, Value receiver) {
+    Value this_value = receiver;
     AsyncGenerator* async_gen = this_value.is_object() ? as_async_generator(this_value.as_object()) : nullptr;
     if (!async_gen) {
         return reject_bad_generator(ctx, "AsyncGenerator.prototype.return called on incompatible receiver");
@@ -910,8 +910,8 @@ Value AsyncGenerator::async_generator_return(Context& ctx, std::span<const Value
     return Value(result.promise.release());
 }
 
-Value AsyncGenerator::async_generator_throw(Context& ctx, std::span<const Value> args) {
-    Value this_value = ctx.get_binding("this");
+Value AsyncGenerator::async_generator_throw(Context& ctx, std::span<const Value> args, Value receiver) {
+    Value this_value = receiver;
     AsyncGenerator* async_gen = this_value.is_object() ? as_async_generator(this_value.as_object()) : nullptr;
     if (!async_gen) {
         return reject_bad_generator(ctx, "AsyncGenerator.prototype.throw called on incompatible receiver");
@@ -980,9 +980,9 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
     Symbol* async_iterator_symbol = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
     if (async_iterator_symbol) {
         auto self_async_iterator_fn = ObjectFactory::create_native_function("[Symbol.asyncIterator]",
-            [](Context& ctx, std::span<const Value> args) -> Value {
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 (void)args;
-                return ctx.get_binding("this");
+                return receiver;
             }, 0);
         async_iterator_prototype->set_property(async_iterator_symbol->to_property_key(),
             Value(self_async_iterator_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -993,7 +993,7 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
     Symbol* async_dispose_symbol = Symbol::get_well_known(Symbol::ASYNC_DISPOSE);
     if (async_dispose_symbol) {
         auto async_dispose_fn = ObjectFactory::create_native_function("[Symbol.asyncDispose]",
-            [](Context& ctx, std::span<const Value> args) -> Value {
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 (void)args;
                 auto cap_obj = ObjectFactory::create_promise(&ctx);
                 Promise* cap = static_cast<Promise*>(cap_obj.release());
@@ -1003,7 +1003,7 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
                     cap->reject(e);
                     return Value(cap);
                 };
-                Object* obj = ctx.get_this_binding();
+                Object* obj = receiver.as_object_or_null();
                 if (!obj) {
                     ctx.throw_type_error("Symbol.asyncDispose requires an object this");
                     return reject_pending();
@@ -1025,12 +1025,12 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
                     : Promise::resolve(result);
                 Value cap_val(static_cast<Object*>(cap));
                 auto on_ok = ObjectFactory::create_native_function("",
-                    [cap_val](Context&, std::span<const Value>) -> Value {
+                    [cap_val](Context&, std::span<const Value>, Value receiver) -> Value {
                         static_cast<Promise*>(cap_val.as_object())->fulfill(Value());
                         return Value();
                     }, 1);
                 auto on_err = ObjectFactory::create_native_function("",
-                    [cap_val](Context&, std::span<const Value> a) -> Value {
+                    [cap_val](Context&, std::span<const Value> a, Value receiver) -> Value {
                         static_cast<Promise*>(cap_val.as_object())->reject(a.empty() ? Value() : a[0]);
                         return Value();
                     }, 1);
@@ -1054,8 +1054,8 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
     ctx.create_binding("AsyncIteratorPrototype", Value(async_iterator_prototype.release()));
 }
 
-Value AsyncIterator::async_iterator_next(Context& ctx, std::span<const Value> /* args */) {
-    Value this_value = ctx.get_binding("this");
+Value AsyncIterator::async_iterator_next(Context& ctx, std::span<const Value> /* args */, Value receiver) {
+    Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("AsyncIterator.next called on non-object");
         return Value();
@@ -1072,8 +1072,8 @@ Value AsyncIterator::async_iterator_next(Context& ctx, std::span<const Value> /*
     return Value(promise.release());
 }
 
-Value AsyncIterator::async_iterator_return(Context& ctx, std::span<const Value> args) {
-    Value this_value = ctx.get_binding("this");
+Value AsyncIterator::async_iterator_return(Context& ctx, std::span<const Value> args, Value receiver) {
+    Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("AsyncIterator.return called on non-object");
         return Value();
@@ -1091,8 +1091,8 @@ Value AsyncIterator::async_iterator_return(Context& ctx, std::span<const Value> 
     return Value(promise.release());
 }
 
-Value AsyncIterator::async_iterator_throw(Context& ctx, std::span<const Value> args) {
-    Value this_value = ctx.get_binding("this");
+Value AsyncIterator::async_iterator_throw(Context& ctx, std::span<const Value> args, Value receiver) {
+    Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("AsyncIterator.throw called on non-object");
         return Value();
@@ -1176,7 +1176,7 @@ std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
             Function* then_fn = then_method.as_function();
             
             auto resolve_fn = ObjectFactory::create_native_function("resolve", 
-                [promise_ptr = promise.get()](Context& ctx, std::span<const Value> args) -> Value {
+                [promise_ptr = promise.get()](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     Value resolve_value = args.empty() ? Value() : args[0];
                     promise_ptr->fulfill(resolve_value);
@@ -1184,7 +1184,7 @@ std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
                 });
                 
             auto reject_fn = ObjectFactory::create_native_function("reject",
-                [promise_ptr = promise.get()](Context& ctx, std::span<const Value> args) -> Value {
+                [promise_ptr = promise.get()](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     Value reject_reason = args.empty() ? Value() : args[0];
                     promise_ptr->reject(reject_reason);
@@ -1229,14 +1229,14 @@ void setup_async_functions(Context& ctx) {
         Function* promise_fn = promise_constructor.as_function();
         
         auto resolve_fn = ObjectFactory::create_native_function("resolve", 
-            [](Context& ctx, std::span<const Value> args) -> Value {
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 Value value = args.empty() ? Value() : args[0];
                 auto promise = promise_resolve(value, ctx);
                 return Value(promise.release());
             });
         
         auto reject_fn = ObjectFactory::create_native_function("reject", 
-            [](Context& ctx, std::span<const Value> args) -> Value {
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 Value reason = args.empty() ? Value() : args[0];
                 auto promise = promise_reject(reason, ctx);
                 return Value(promise.release());
@@ -1247,7 +1247,7 @@ void setup_async_functions(Context& ctx) {
     }
 
     auto async_function_constructor = ObjectFactory::create_native_constructor("AsyncFunction",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             std::string params_str = "";
             std::string body_str = "";
 
@@ -1518,7 +1518,7 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
     }
 }
 
-Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Value this_value) {
+Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Value receiver) {
     auto gen_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
     ExecContextScope gc_frame(gen_ctx.get());
     // See ContextSurvivorGuard's doc comment: no-op once gen_ctx is moved
@@ -1528,7 +1528,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
 
     if (is_strict()) gen_ctx->set_strict_mode(true);
 
-    Value bound_this = this_value;
+    Value bound_this = receiver;
     if (is_arrow() && has_arrow_this()) {
         bound_this = arrow_this();
     } else if (!gen_ctx->is_strict_mode()) {

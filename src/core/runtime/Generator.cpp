@@ -274,8 +274,8 @@ void Generator::complete_generator(const Value& value) {
     release_fiber();
 }
 
-Value Generator::generator_next(Context& ctx, std::span<const Value> args) {
-    Object* this_obj = ctx.get_this_binding();
+Value Generator::generator_next(Context& ctx, std::span<const Value> args, Value receiver) {
+    Object* this_obj = receiver.as_object_or_null();
     if (!this_obj) {
         ctx.throw_type_error("Generator.prototype.next requires a generator this");
         return Value();
@@ -310,8 +310,8 @@ Value Generator::generator_next(Context& ctx, std::span<const Value> args) {
     return Value(result_obj.release());
 }
 
-Value Generator::generator_return(Context& ctx, std::span<const Value> args) {
-    Value this_value = ctx.get_binding("this");
+Value Generator::generator_return(Context& ctx, std::span<const Value> args, Value receiver) {
+    Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("Generator.prototype.return called on non-object");
         return Value();
@@ -344,8 +344,8 @@ Value Generator::generator_return(Context& ctx, std::span<const Value> args) {
     return Value(result_obj.release());
 }
 
-Value Generator::generator_throw(Context& ctx, std::span<const Value> args) {
-    Value this_value = ctx.get_binding("this");
+Value Generator::generator_throw(Context& ctx, std::span<const Value> args, Value receiver) {
+    Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("Generator.prototype.throw called on non-object");
         return Value();
@@ -406,9 +406,9 @@ void Generator::setup_generator_prototype(Context& ctx) {
     Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (iter_sym) {
         auto iter_fn = ObjectFactory::create_native_function("@@iterator",
-            [](Context& ctx, std::span<const Value> args) -> Value {
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 (void)args;
-                return ctx.get_binding("this");
+                return receiver;
             });
         gen_prototype->set_property(iter_sym->to_property_key(), Value(iter_fn.release()));
     }
@@ -440,7 +440,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
 
     // GeneratorFunction constructor
     auto generator_function_constructor = ObjectFactory::create_native_constructor("GeneratorFunction",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             std::vector<std::string> param_names;
             std::string body_str = "";
 
@@ -600,12 +600,12 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     }
 }
 
-Value GeneratorFunction::call(Context& ctx, std::span<const Value> args, Value this_value) {
-    auto generator = create_generator(ctx, args, this_value);
+Value GeneratorFunction::call(Context& ctx, std::span<const Value> args, Value receiver) {
+    auto generator = create_generator(ctx, args, receiver);
     return Value(generator.release());
 }
 
-std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std::span<const Value> args, Value this_value) {
+std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std::span<const Value> args, Value receiver) {
     // Use proper function context with lexical environment (same as Function::call)
     auto gen_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
     ExecContextScope gc_frame(gen_context_ptr.get());
@@ -619,7 +619,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     if (is_strict()) gen_context.set_strict_mode(true);
 
     // Bind 'this' with sloppy-mode global coercion
-    Value bound_this_g = this_value;
+    Value bound_this_g = receiver;
     if (is_arrow() && has_arrow_this()) {
         bound_this_g = arrow_this();
     } else if (!gen_context.is_strict_mode()) {

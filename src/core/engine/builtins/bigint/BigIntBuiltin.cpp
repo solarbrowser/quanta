@@ -115,7 +115,7 @@ static std::unique_ptr<BigInt> to_bigint(Context& ctx, Value v) {
 
 void register_bigint_builtins(Context& ctx) {
     auto bigint_constructor = ObjectFactory::create_native_constructor("BigInt",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value prim = to_primitive_number(ctx, args.empty() ? Value() : args[0]);
             if (ctx.has_exception()) return Value();
 
@@ -163,7 +163,7 @@ void register_bigint_builtins(Context& ctx) {
         };
 
         auto asIntN_fn = ObjectFactory::create_native_function("asIntN",
-            [as_n_common](Context& ctx, std::span<const Value> args) -> Value {
+            [as_n_common](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 BigInt mod, two_pow;
                 uint64_t bits;
                 if (!as_n_common(ctx, args, mod, two_pow, bits)) return Value();
@@ -175,7 +175,7 @@ void register_bigint_builtins(Context& ctx) {
         bigint_constructor->set_property("asIntN", Value(asIntN_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto asUintN_fn = ObjectFactory::create_native_function("asUintN",
-            [as_n_common](Context& ctx, std::span<const Value> args) -> Value {
+            [as_n_common](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 BigInt mod, two_pow;
                 uint64_t bits;
                 if (!as_n_common(ctx, args, mod, two_pow, bits)) return Value();
@@ -186,8 +186,8 @@ void register_bigint_builtins(Context& ctx) {
     // BigInt.prototype.toString([radix])
     {
         auto bigint_toString = ObjectFactory::create_native_function("toString",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                Value this_val = ctx.get_binding("this");
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Value this_val = receiver;
                 BigInt* bi = nullptr;
                 if (this_val.is_bigint()) bi = this_val.as_bigint();
                 else if (this_val.is_object()) {
@@ -230,8 +230,8 @@ void register_bigint_builtins(Context& ctx) {
     // BigInt.prototype.valueOf()
     {
         auto bigint_valueOf = ObjectFactory::create_native_function("valueOf",
-            [](Context& ctx, std::span<const Value>) -> Value {
-                Value this_val = ctx.get_binding("this");
+            [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                Value this_val = receiver;
                 if (this_val.is_bigint()) return this_val;
                 if (this_val.is_object()) {
                     Value pv = this_val.as_object()->get_property("[[PrimitiveValue]]");

@@ -18,12 +18,12 @@ namespace Quanta {
 
 void register_boolean_builtins(Context& ctx) {
     auto boolean_constructor = ObjectFactory::create_native_constructor("Boolean",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             bool value = args.empty() ? false : args[0].to_boolean();
 
             // Return an ObjectType::Boolean-tagged wrapper so Object.prototype.toString
             // sees the correct internal-slot tag (generic Function::construct gives Ordinary).
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (this_obj) {
                 auto bool_obj = ObjectFactory::create_boolean(value);
                 bool_obj->set_prototype(this_obj->get_prototype());
@@ -39,10 +39,10 @@ void register_boolean_builtins(Context& ctx) {
     boolean_prototype->set_property("[[PrimitiveValue]]", Value(false), PropertyAttributes::Writable);
 
     auto boolean_valueOf = ObjectFactory::create_native_function("valueOf",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             try {
-                Value this_val = ctx.get_binding("this");
+                Value this_val = receiver;
                 if (this_val.is_boolean()) {
                     return this_val;
                 }
@@ -76,10 +76,10 @@ void register_boolean_builtins(Context& ctx) {
     boolean_valueOf->set_property_descriptor("length", boolean_valueOf_length_desc);
 
     auto boolean_toString = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             try {
-                Value this_val = ctx.get_binding("this");
+                Value this_val = receiver;
                 if (this_val.is_boolean()) {
                     return Value(this_val.to_boolean() ? "true" : "false");
                 }

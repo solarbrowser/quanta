@@ -167,7 +167,7 @@ void register_arraybuffer_builtins(Context& ctx) {
     Object* arraybuffer_proto_ptr = arraybuffer_prototype.get();
 
     auto arraybuffer_constructor = ObjectFactory::create_native_constructor("ArrayBuffer",
-        [arraybuffer_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
+        [arraybuffer_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
 
             double byte_length_d = to_index_checked(ctx, args.empty() ? Value() : args[0]);
@@ -217,7 +217,7 @@ void register_arraybuffer_builtins(Context& ctx) {
         }, 1);
     
     auto arraybuffer_isView = ObjectFactory::create_native_function("isView",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;
             if (args.empty() || !args[0].is_object()) {
                 return Value(false);
@@ -244,9 +244,9 @@ void register_arraybuffer_builtins(Context& ctx) {
     arraybuffer_constructor->set_property("isView", Value(arraybuffer_isView.release()), PropertyAttributes::BuiltinFunction);
 
     auto byteLength_getter = ObjectFactory::create_native_function("get byteLength",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.byteLength called on non-ArrayBuffer");
                 return Value();
@@ -262,9 +262,9 @@ void register_arraybuffer_builtins(Context& ctx) {
     arraybuffer_prototype->set_property_descriptor("byteLength", byteLength_desc);
 
     auto detached_getter = ObjectFactory::create_native_function("get detached",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.detached called on non-ArrayBuffer");
                 return Value();
@@ -280,8 +280,8 @@ void register_arraybuffer_builtins(Context& ctx) {
     arraybuffer_prototype->set_property_descriptor("detached", detached_desc);
 
     auto ab_slice_fn = ObjectFactory::create_native_function("slice",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_array_buffer()) { ctx.throw_type_error("ArrayBuffer.prototype.slice called on non-ArrayBuffer"); return Value(); }
             if (this_obj->is_shared_array_buffer()) { ctx.throw_type_error("ArrayBuffer.prototype.slice called on a SharedArrayBuffer"); return Value(); }
             ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
@@ -318,8 +318,8 @@ void register_arraybuffer_builtins(Context& ctx) {
     arraybuffer_prototype->set_property("slice", Value(ab_slice_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_resize_fn = ObjectFactory::create_native_function("resize",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.resize called on non-ArrayBuffer");
                 return Value();
@@ -349,17 +349,17 @@ void register_arraybuffer_builtins(Context& ctx) {
     arraybuffer_prototype->set_property("resize", Value(ab_resize_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_transfer_fn = ObjectFactory::create_native_function("transfer",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            return array_buffer_copy_and_detach(ctx, ctx.get_this_binding(), args, true);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return array_buffer_copy_and_detach(ctx, receiver.as_object_or_null(), args, true);
         }, 0);
 
     ab_transfer_fn->set_property("name", Value(std::string("transfer")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     arraybuffer_prototype->set_property("transfer", Value(ab_transfer_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_maxByteLength_fn = ObjectFactory::create_native_function("get maxByteLength",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.maxByteLength called on non-ArrayBuffer");
                 return Value();
@@ -376,9 +376,9 @@ void register_arraybuffer_builtins(Context& ctx) {
     arraybuffer_prototype->set_property_descriptor("maxByteLength", maxByteLength_desc);
 
     auto ab_resizable_fn = ObjectFactory::create_native_function("get resizable",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
+            Object* this_obj = receiver.as_object_or_null();
             if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.resizable called on non-ArrayBuffer");
                 return Value();
@@ -393,8 +393,8 @@ void register_arraybuffer_builtins(Context& ctx) {
     arraybuffer_prototype->set_property_descriptor("resizable", resizable_desc);
 
     auto ab_transferToFixedLength_fn = ObjectFactory::create_native_function("transferToFixedLength",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            return array_buffer_copy_and_detach(ctx, ctx.get_this_binding(), args, false);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return array_buffer_copy_and_detach(ctx, receiver.as_object_or_null(), args, false);
         }, 0);
 
     ab_transferToFixedLength_fn->set_property("name", Value(std::string("transferToFixedLength")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -415,8 +415,8 @@ void register_arraybuffer_builtins(Context& ctx) {
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
         if (species_sym) {
             auto getter = ObjectFactory::create_native_function("get [Symbol.species]",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    return Value(ctx.get_this_binding());
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    return Value(receiver.as_object_or_null());
                 }, 0);
             PropertyDescriptor desc;
             desc.set_getter(getter.release());
@@ -438,7 +438,7 @@ void register_arraybuffer_builtins(Context& ctx) {
         Object* sab_proto_ptr = sab_prototype.get();
 
         auto sab_constructor = ObjectFactory::create_native_constructor("SharedArrayBuffer",
-            [sab_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
+            [sab_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
 
                 double byte_length_d = to_index_checked(ctx, args.empty() ? Value() : args[0]);
@@ -486,8 +486,8 @@ void register_arraybuffer_builtins(Context& ctx) {
             }, 1);
 
         // RequireInternalSlot(this, [[ArrayBufferData]]) + IsSharedArrayBuffer.
-        auto require_sab = [](Context& ctx, const char* name) -> SharedArrayBuffer* {
-            Object* obj = ctx.get_this_binding();
+        auto require_sab = [](Context& ctx, const Value& receiver, const char* name) -> SharedArrayBuffer* {
+            Object* obj = receiver.as_object_or_null();
             if (!obj || !obj->is_array_buffer() || !obj->is_shared_array_buffer()) {
                 ctx.throw_type_error(std::string(name) + " requires a SharedArrayBuffer this");
                 return nullptr;
@@ -496,8 +496,8 @@ void register_arraybuffer_builtins(Context& ctx) {
         };
 
         auto byte_length_getter = ObjectFactory::create_native_function("get byteLength",
-            [require_sab](Context& ctx, std::span<const Value>) -> Value {
-                ArrayBuffer* ab = require_sab(ctx, "byteLength");
+            [require_sab](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                ArrayBuffer* ab = require_sab(ctx, receiver, "byteLength");
                 if (!ab) return Value();
                 return Value(static_cast<double>(ab->byte_length()));
             }, 0);
@@ -508,8 +508,8 @@ void register_arraybuffer_builtins(Context& ctx) {
         sab_prototype->set_property_descriptor("byteLength", bl_desc);
 
         auto growable_getter = ObjectFactory::create_native_function("get growable",
-            [require_sab](Context& ctx, std::span<const Value>) -> Value {
-                ArrayBuffer* ab = require_sab(ctx, "growable");
+            [require_sab](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                ArrayBuffer* ab = require_sab(ctx, receiver, "growable");
                 if (!ab) return Value();
                 return Value(ab->is_resizable());
             }, 0);
@@ -520,8 +520,8 @@ void register_arraybuffer_builtins(Context& ctx) {
         sab_prototype->set_property_descriptor("growable", growable_desc);
 
         auto max_byte_length_getter = ObjectFactory::create_native_function("get maxByteLength",
-            [require_sab](Context& ctx, std::span<const Value>) -> Value {
-                ArrayBuffer* ab = require_sab(ctx, "maxByteLength");
+            [require_sab](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                ArrayBuffer* ab = require_sab(ctx, receiver, "maxByteLength");
                 if (!ab) return Value();
                 return Value(static_cast<double>(ab->is_resizable() ? ab->max_byte_length() : ab->byte_length()));
             }, 0);
@@ -532,8 +532,8 @@ void register_arraybuffer_builtins(Context& ctx) {
         sab_prototype->set_property_descriptor("maxByteLength", mbl_desc);
 
         auto sab_grow = ObjectFactory::create_native_function("grow",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                Object* obj = ctx.get_this_binding();
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* obj = receiver.as_object_or_null();
                 if (!obj || !obj->is_array_buffer() || !static_cast<ArrayBuffer*>(obj)->is_resizable()) {
                     ctx.throw_type_error("grow requires a growable SharedArrayBuffer this");
                     return Value();
@@ -555,8 +555,8 @@ void register_arraybuffer_builtins(Context& ctx) {
             PropertyDescriptor(Value(sab_grow.release()), PropertyAttributes::BuiltinFunction));
 
         auto sab_slice = ObjectFactory::create_native_function("slice",
-            [](Context& ctx, std::span<const Value> args) -> Value {
-                Object* this_obj = ctx.get_this_binding();
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* this_obj = receiver.as_object_or_null();
                 if (!this_obj || !this_obj->is_array_buffer() || !this_obj->is_shared_array_buffer()) {
                     ctx.throw_type_error("SharedArrayBuffer.prototype.slice called on non-SharedArrayBuffer");
                     return Value();
@@ -606,8 +606,8 @@ void register_arraybuffer_builtins(Context& ctx) {
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
         if (species_sym) {
             auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    return Value(ctx.get_this_binding());
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    return Value(receiver.as_object_or_null());
                 }, 0);
             PropertyDescriptor species_desc;
             species_desc.set_getter(species_getter.release());

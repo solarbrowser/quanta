@@ -913,7 +913,7 @@ PropertyDescriptor Proxy::get_property_descriptor(const std::string& key) const 
 }
 
 
-Value Proxy::proxy_constructor(Context& ctx, std::span<const Value> args) {
+Value Proxy::proxy_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
     if (!ctx.is_in_constructor_call()) {
         ctx.throw_type_error("Constructor Proxy requires 'new'");
         return Value();
@@ -935,7 +935,7 @@ Value Proxy::proxy_constructor(Context& ctx, std::span<const Value> args) {
     return Value(proxy.release());
 }
 
-Value Proxy::proxy_revocable(Context& ctx, std::span<const Value> args) {
+Value Proxy::proxy_revocable(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.size() < 2) {
         ctx.throw_type_error("Proxy.revocable requires target and handler arguments");
         return Value();
@@ -954,7 +954,7 @@ Value Proxy::proxy_revocable(Context& ctx, std::span<const Value> args) {
     
     // Proxy revocation functions are anonymous (name: "").
     auto revoke_fn = ObjectFactory::create_native_function("",
-        [proxy_ptr](Context& ctx, std::span<const Value> args) -> Value {
+        [proxy_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)ctx;
             (void)args;
             proxy_ptr->revoke();
@@ -980,7 +980,7 @@ void Proxy::setup_proxy(Context& ctx) {
 }
 
 
-Value Reflect::reflect_get(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_get(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.get requires at least one argument");
         return Value();
@@ -993,21 +993,21 @@ Value Reflect::reflect_get(Context& ctx, std::span<const Value> args) {
     
     std::string key = args.size() > 1 ? to_property_key(args[1]) : "";
     if (ctx.has_exception()) return Value();
-    Value receiver = args.size() > 2 ? args[2] : args[0];
+    Value reflect_receiver = args.size() > 2 ? args[2] : args[0];
 
     // Walk the prototype chain of target to find an accessor; if found, call the getter
-    // with `receiver` as `this` (spec OrdinaryGet with explicit receiver).
+    // with the Reflect receiver as `this` (spec OrdinaryGet with explicit receiver).
     Object* current = target;
     while (current) {
         if (current->get_type() == Object::ObjectType::Proxy) {
-            return static_cast<Proxy*>(current)->get_trap(Value(key), receiver);
+            return static_cast<Proxy*>(current)->get_trap(Value(key), reflect_receiver);
         }
         PropertyDescriptor desc = current->get_property_descriptor(key);
         if (desc.is_accessor_descriptor()) {
             if (!desc.has_getter()) return Value();
             Function* getter_fn = as_function(desc.get_getter());
             if (!getter_fn) return Value();
-            return getter_fn->call(ctx, {}, receiver);
+            return getter_fn->call(ctx, {}, reflect_receiver);
         }
         if (desc.has_value()) return desc.get_value();
         current = current->get_prototype();
@@ -1120,7 +1120,7 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
     return receiver->set_property_descriptor(key, new_desc);
 }
 
-Value Reflect::reflect_set(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_set(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.set requires at least two arguments");
         return Value();
@@ -1136,7 +1136,7 @@ Value Reflect::reflect_set(Context& ctx, std::span<const Value> args) {
     Value value = args.size() > 2 ? args[2] : Value();
     // Receiver need not be an Object -- a non-object receiver just makes [[Set]] return false.
     Value receiver_value = args.size() > 3 ? args[3] : Value(static_cast<Object*>(target));
-    Object* receiver = receiver_value.is_function() ? static_cast<Object*>(receiver_value.as_function())
+    Object* reflect_receiver = receiver_value.is_function() ? static_cast<Object*>(receiver_value.as_function())
                       : receiver_value.is_object() ? receiver_value.as_object() : nullptr;
 
     bool result;
@@ -1144,13 +1144,13 @@ Value Reflect::reflect_set(Context& ctx, std::span<const Value> args) {
         result = static_cast<Proxy*>(target)->set_trap(Value(key), value, receiver_value);
         if (ctx.has_exception()) return Value();
     } else {
-        result = ordinary_set_with_receiver(target, key, value, receiver, ctx);
+        result = ordinary_set_with_receiver(target, key, value, reflect_receiver, ctx);
         if (ctx.has_exception()) return Value();
     }
     return Value(result);
 }
 
-Value Reflect::reflect_has(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_has(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.has requires two arguments");
         return Value();
@@ -1166,7 +1166,7 @@ Value Reflect::reflect_has(Context& ctx, std::span<const Value> args) {
     return Value(target->has_property(key));
 }
 
-Value Reflect::reflect_delete_property(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_delete_property(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.deleteProperty requires two arguments");
         return Value();
@@ -1193,7 +1193,7 @@ static bool is_array_index_key(const std::string& key, uint32_t* index) {
     return true;
 }
 
-Value Reflect::reflect_own_keys(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_own_keys(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.ownKeys requires one argument");
         return Value();
@@ -1272,7 +1272,7 @@ Value Reflect::reflect_own_keys(Context& ctx, std::span<const Value> args) {
     return Value(result_array.release());
 }
 
-Value Reflect::reflect_get_prototype_of(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_get_prototype_of(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.getPrototypeOf requires one argument");
         return Value();
@@ -1287,7 +1287,7 @@ Value Reflect::reflect_get_prototype_of(Context& ctx, std::span<const Value> arg
     return proto ? Value(proto) : Value::null();
 }
 
-Value Reflect::reflect_set_prototype_of(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_set_prototype_of(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.setPrototypeOf requires two arguments");
         return Value();
@@ -1312,7 +1312,7 @@ Value Reflect::reflect_set_prototype_of(Context& ctx, std::span<const Value> arg
     return Value(ordinary_set_prototype_of(target, proto));
 }
 
-Value Reflect::reflect_is_extensible(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_is_extensible(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.isExtensible requires one argument");
         return Value();
@@ -1331,7 +1331,7 @@ Value Reflect::reflect_is_extensible(Context& ctx, std::span<const Value> args) 
     return Value(target->is_extensible());
 }
 
-Value Reflect::reflect_prevent_extensions(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_prevent_extensions(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.preventExtensions requires one argument");
         return Value();
@@ -1358,7 +1358,7 @@ static bool is_callable_value(const Value& value) {
            static_cast<Proxy*>(value.as_object())->target_was_callable();
 }
 
-Value Reflect::reflect_apply(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_apply(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.size() < 3) {
         ctx.throw_type_error("Reflect.apply requires three arguments");
         return Value();
@@ -1399,7 +1399,7 @@ static bool is_constructor_value(const Value& value) {
            object_is_constructor(value.as_object());
 }
 
-Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.construct requires at least two arguments");
         return Value();
@@ -1498,7 +1498,7 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args) {
     return Value(new_object.release());
 }
 
-Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.getOwnPropertyDescriptor requires two arguments");
         return Value();
@@ -1520,7 +1520,7 @@ Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const
     return from_property_descriptor(desc);
 }
 
-Value Reflect::reflect_define_property(Context& ctx, std::span<const Value> args) {
+Value Reflect::reflect_define_property(Context& ctx, std::span<const Value> args, Value receiver) {
     Object* target = to_object(args.empty() ? Value() : args[0], ctx);
     if (!target) return Value(false);
 

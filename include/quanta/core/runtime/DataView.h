@@ -88,32 +88,32 @@ public:
 
     std::string to_string() const;
     
-    static Value constructor(Context& ctx, std::span<const Value> args);
+    static Value constructor(Context& ctx, std::span<const Value> args, Value receiver);
     
-    static Value js_get_int8(Context& ctx, std::span<const Value> args);
-    static Value js_get_uint8(Context& ctx, std::span<const Value> args);
-    static Value js_get_int16(Context& ctx, std::span<const Value> args);
-    static Value js_get_uint16(Context& ctx, std::span<const Value> args);
-    static Value js_get_int32(Context& ctx, std::span<const Value> args);
-    static Value js_get_uint32(Context& ctx, std::span<const Value> args);
-    static Value js_get_float16(Context& ctx, std::span<const Value> args);
-    static Value js_get_float32(Context& ctx, std::span<const Value> args);
-    static Value js_get_float64(Context& ctx, std::span<const Value> args);
+    static Value js_get_int8(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_uint8(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_int16(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_uint16(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_int32(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_uint32(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_float16(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_float32(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_float64(Context& ctx, std::span<const Value> args, Value receiver);
     
-    static Value js_set_int8(Context& ctx, std::span<const Value> args);
-    static Value js_set_uint8(Context& ctx, std::span<const Value> args);
-    static Value js_set_int16(Context& ctx, std::span<const Value> args);
-    static Value js_set_uint16(Context& ctx, std::span<const Value> args);
-    static Value js_set_int32(Context& ctx, std::span<const Value> args);
-    static Value js_set_uint32(Context& ctx, std::span<const Value> args);
-    static Value js_set_float16(Context& ctx, std::span<const Value> args);
-    static Value js_set_float32(Context& ctx, std::span<const Value> args);
-    static Value js_set_float64(Context& ctx, std::span<const Value> args);
+    static Value js_set_int8(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_uint8(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_int16(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_uint16(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_int32(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_uint32(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_float16(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_float32(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_float64(Context& ctx, std::span<const Value> args, Value receiver);
 
-    static Value js_get_bigint64(Context& ctx, std::span<const Value> args);
-    static Value js_set_bigint64(Context& ctx, std::span<const Value> args);
-    static Value js_get_biguint64(Context& ctx, std::span<const Value> args);
-    static Value js_set_biguint64(Context& ctx, std::span<const Value> args);
+    static Value js_get_bigint64(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_bigint64(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_get_biguint64(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value js_set_biguint64(Context& ctx, std::span<const Value> args, Value receiver);
 };
 
 /**

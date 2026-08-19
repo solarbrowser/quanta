@@ -222,7 +222,7 @@ Function::Function(const std::string& name,
 }
 
 Function::Function(const std::string& name,
-                   std::function<Value(Context&, std::span<const Value>)> native_fn,
+                   std::function<Value(Context&, std::span<const Value>, Value)> native_fn,
                    bool create_prototype)
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
@@ -241,7 +241,7 @@ Function::Function(const std::string& name,
 }
 
 Function::Function(const std::string& name,
-                   std::function<Value(Context&, std::span<const Value>)> native_fn,
+                   std::function<Value(Context&, std::span<const Value>, Value)> native_fn,
                    uint32_t arity,
                    bool create_prototype)
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
@@ -290,7 +290,7 @@ void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> ar
         if (!param_gets_mapped_accessor(parameter_objects_, mi)) continue;
         auto name = std::make_shared<std::string>(parameter_objects_[mi]->get_name()->get_name());
         auto getter_fn = ObjectFactory::create_native_function("get",
-            [env_ptr, name](Context& ctx, std::span<const Value>) -> Value {
+            [env_ptr, name](Context& ctx, std::span<const Value>, Value) -> Value {
                 (void)ctx;
                 return env_ptr ? env_ptr->get_binding(*name) : Value();
             });
@@ -301,7 +301,7 @@ void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> ar
         // accessor (or, via Function.prototype, onto every function at once).
         getter_fn->is_mapped_arguments_accessor_ = true;
         auto setter_fn = ObjectFactory::create_native_function("set",
-            [env_ptr, name](Context& ctx, std::span<const Value> a) -> Value {
+            [env_ptr, name](Context& ctx, std::span<const Value> a, Value this_value) -> Value {
                 (void)ctx;
                 if (!a.empty() && env_ptr) env_ptr->set_binding(*name, a[0]);
                 return Value();
@@ -376,7 +376,7 @@ void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> a
     if (fn_ctx.is_strict_mode()) {
         if (!Function::s_throw_type_error_) {
             auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                [](Context& ctx, std::span<const Value> args) -> Value {
+                [](Context& ctx, std::span<const Value> args, Value this_value) -> Value {
                     (void)args;
                     ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
                     return Value();
@@ -730,33 +730,13 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     }
     CheckedDepthFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
-    Value old_this_value = ctx.get_this_value();
-
-    // Annex B's sloppy-mode null/undefined-this-becomes-global substitution only
-    // applies to ECMAScript function code, never to native functions -- they must see
-    // the real this_value (e.g. Object.prototype.toString branches on it).
-    Value actual_this = this_value;
-
-    // Preserve caller's "this" for direct eval inside native functions.
-    // Native function call sets "this" to the native's receiver, but eval must
-    // inherit the calling function's "this" (the value that existed before this overwrite).
+    // A native is handed its receiver, so the context's `this` is left alone:
+    // it still holds the caller's, which is what a direct eval inside a native
+    // has to inherit.
     bool saved_caller_this = false;
-    if (UNLIKELY_NATIVE(is_eval_native_ && !old_this_value.is_undefined())) {
-        saved_caller_this = save_eval_caller_this(ctx, old_this_value);
+    if (UNLIKELY_NATIVE(is_eval_native_ && !ctx.get_this_value().is_undefined())) {
+        saved_caller_this = save_eval_caller_this(ctx, ctx.get_this_value());
     }
-
-    // One write covers the receiver in every form -- object, primitive or
-    // nullish -- where an Object* field and a parallel binding were both
-    // being maintained before.
-    ctx.set_this_value(actual_this);
-
-    uint8_t this_kind = Context::kThisReference;
-    if (!this_value.is_object() && !this_value.is_function()) {
-        this_kind = (this_value.is_null() || this_value.is_undefined())
-            ? Context::kThisNullish : Context::kThisPrimitive;
-    }
-    const uint8_t prev_this_kind = ctx.original_this_kind();
-    ctx.set_original_this_kind(this_kind);
 
     // A plain call (not this construct invocation) must see new.target == undefined --
     // ctx is shared with the caller here since native calls don't get their own
@@ -781,13 +761,11 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     Context* prev_context = Object::current_context_;
     Object::current_context_ = &ctx;
     // A native takes a view of the arguments wherever they already are.
-    Value result = native_data()->fn(ctx, args);
+    Value result = native_data()->fn(ctx, args, this_value);
     Object::current_context_ = prev_context;
-    ctx.set_original_this_kind(prev_this_kind);
 
     if (restore_new_target) ctx.set_new_target(saved_new_target);
 
-    ctx.set_this_value(old_this_value);
 
     if (UNLIKELY_NATIVE(saved_caller_this)) drop_eval_caller_this(ctx);
 
@@ -1901,7 +1879,7 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
 }
 
 std::unique_ptr<Function> create_native_function(const std::string& name,
-                                                 std::function<Value(Context&, std::span<const Value>)> fn) {
+                                                 std::function<Value(Context&, std::span<const Value>, Value)> fn) {
     auto func = std::make_unique<Function>(name, fn, false);
     Object* func_proto = get_function_prototype();
     if (func_proto) {
@@ -1912,7 +1890,7 @@ std::unique_ptr<Function> create_native_function(const std::string& name,
 }
 
 std::unique_ptr<Function> create_native_function(const std::string& name,
-                                                 std::function<Value(Context&, std::span<const Value>)> fn,
+                                                 std::function<Value(Context&, std::span<const Value>, Value)> fn,
                                                  uint32_t arity) {
     auto func = std::make_unique<Function>(name, fn, arity, false);
     Object* func_proto = get_function_prototype();
@@ -1924,7 +1902,7 @@ std::unique_ptr<Function> create_native_function(const std::string& name,
 }
 
 std::unique_ptr<Function> create_native_constructor(const std::string& name,
-                                                    std::function<Value(Context&, std::span<const Value>)> fn,
+                                                    std::function<Value(Context&, std::span<const Value>, Value)> fn,
                                                     uint32_t arity) {
     auto func = std::make_unique<Function>(name, fn, arity, true);
     Object* func_proto = get_function_prototype();

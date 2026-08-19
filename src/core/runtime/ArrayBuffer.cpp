@@ -248,7 +248,7 @@ void ArrayBuffer::mark_references() const {
 }
 
 
-Value ArrayBuffer::constructor(Context& ctx, std::span<const Value> args) {
+Value ArrayBuffer::constructor(Context& ctx, std::span<const Value> args, Value receiver) {
     double length_double = 0.0;
 
     if (!args.empty()) {
@@ -302,8 +302,8 @@ Value ArrayBuffer::constructor(Context& ctx, std::span<const Value> args) {
     }
 }
 
-Value ArrayBuffer::prototype_slice(Context& ctx, std::span<const Value> args) {
-    Value this_val = ctx.get_binding("this");
+Value ArrayBuffer::prototype_slice(Context& ctx, std::span<const Value> args, Value receiver) {
+    Value this_val = receiver;
     if (!this_val.is_object()) {
         ctx.throw_error("ArrayBuffer.prototype.slice called on non-object");
         return Value();
@@ -341,9 +341,9 @@ Value ArrayBuffer::prototype_slice(Context& ctx, std::span<const Value> args) {
     return Value(new_buffer.release());
 }
 
-Value ArrayBuffer::get_byteLength(Context& ctx, std::span<const Value> args) {
+Value ArrayBuffer::get_byteLength(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    Value this_val = ctx.get_binding("this");
+    Value this_val = receiver;
     if (!this_val.is_object()) {
         return Value(0.0);
     }
@@ -357,7 +357,7 @@ Value ArrayBuffer::get_byteLength(Context& ctx, std::span<const Value> args) {
     return Value(0.0);
 }
 
-Value ArrayBuffer::isView(Context& ctx, std::span<const Value> args) {
+Value ArrayBuffer::isView(Context& ctx, std::span<const Value> args, Value receiver) {
     if (args.empty()) {
         return Value(false);
     }

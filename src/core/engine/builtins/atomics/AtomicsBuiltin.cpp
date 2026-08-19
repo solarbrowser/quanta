@@ -285,7 +285,7 @@ Value atomic_read_modify_write(Context& ctx, std::span<const Value> args, RmwOp 
     });
 }
 
-Value atomics_compare_exchange(Context& ctx, std::span<const Value> args) {
+Value atomics_compare_exchange(Context& ctx, std::span<const Value> args, Value receiver) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], false);
     if (!ta) return Value();
     double idx_d = validate_atomic_access(ctx, ta, args.size() > 1 ? args[1] : Value());
@@ -316,7 +316,7 @@ Value atomics_compare_exchange(Context& ctx, std::span<const Value> args) {
     });
 }
 
-Value atomics_load(Context& ctx, std::span<const Value> args) {
+Value atomics_load(Context& ctx, std::span<const Value> args, Value receiver) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], false);
     if (!ta) return Value();
     double idx_d = validate_atomic_access(ctx, ta, args.size() > 1 ? args[1] : Value());
@@ -331,7 +331,7 @@ Value atomics_load(Context& ctx, std::span<const Value> args) {
     });
 }
 
-Value atomics_store(Context& ctx, std::span<const Value> args) {
+Value atomics_store(Context& ctx, std::span<const Value> args, Value receiver) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], false);
     if (!ta) return Value();
     double idx_d = validate_atomic_access(ctx, ta, args.size() > 1 ? args[1] : Value());
@@ -359,13 +359,13 @@ Value atomics_store(Context& ctx, std::span<const Value> args) {
     return coerced;
 }
 
-Value atomics_is_lock_free(Context& ctx, std::span<const Value> args) {
+Value atomics_is_lock_free(Context& ctx, std::span<const Value> args, Value receiver) {
     double n = to_integer_or_infinity(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
     return Value(n == 1.0 || n == 2.0 || n == 4.0 || n == 8.0);
 }
 
-Value atomics_wait(Context& ctx, std::span<const Value> args) {
+Value atomics_wait(Context& ctx, std::span<const Value> args, Value receiver) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], true);
     if (!ta) return Value();
     if (!ta->buffer() || !ta->buffer()->is_shared_array_buffer()) {
@@ -414,7 +414,7 @@ Value atomics_wait(Context& ctx, std::span<const Value> args) {
 
 // Atomics.notify: wakes up to `count` blocked waits (any agent), then up to
 // the remainder of `count` same-agent waitAsync promises, at this address.
-Value atomics_notify(Context& ctx, std::span<const Value> args) {
+Value atomics_notify(Context& ctx, std::span<const Value> args, Value receiver) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], true);
     if (!ta) return Value();
     double idx_d = validate_atomic_access(ctx, ta, args.size() > 1 ? args[1] : Value());
@@ -455,7 +455,7 @@ Value atomics_notify(Context& ctx, std::span<const Value> args) {
 
 // Atomics.waitAsync: sync {value:"not-equal"} on mismatch, sync {value:"timed-out"} when
 // timeout <= 0, otherwise a pending promise resolvable by a same-agent notify() (see above).
-Value atomics_wait_async(Context& ctx, std::span<const Value> args) {
+Value atomics_wait_async(Context& ctx, std::span<const Value> args, Value receiver) {
     TypedArrayBase* ta = validate_integer_typed_array(ctx, args.empty() ? Value() : args[0], true);
     if (!ta) return Value();
     if (!ta->buffer() || !ta->buffer()->is_shared_array_buffer()) {
@@ -499,7 +499,7 @@ Value atomics_wait_async(Context& ctx, std::span<const Value> args) {
     return Value(result.release());
 }
 
-Value atomics_pause(Context& ctx, std::span<const Value> args) {
+Value atomics_pause(Context& ctx, std::span<const Value> args, Value receiver) {
     if (!args.empty() && !args[0].is_undefined()) {
         if (!args[0].is_number()) { ctx.throw_type_error("Atomics.pause: iterationNumber must be a Number"); return Value(); }
         double n = args[0].as_number();
@@ -524,7 +524,7 @@ void register_atomics_builtins(Context& ctx) {
 
     struct Entry {
         const char* name;
-        Value (*fn)(Context&, std::span<const Value>);
+        Value (*fn)(Context&, std::span<const Value>, Value receiver);
         uint32_t arity;
     };
 
@@ -545,7 +545,7 @@ void register_atomics_builtins(Context& ctx) {
 
     auto add_rmw = [&](const char* name, RmwOp op) {
         auto fn = ObjectFactory::create_native_function(name,
-            [op](Context& ctx, std::span<const Value> args) -> Value {
+            [op](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 return atomic_read_modify_write(ctx, args, op);
             }, 3);
         atomics_obj->set_property(name, Value(fn.release()), PropertyAttributes::BuiltinFunction);

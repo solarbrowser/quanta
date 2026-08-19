@@ -825,7 +825,7 @@ Value MemberExpression::evaluate(Context& ctx) {
 
         if (prop_name == "charAt") {
             auto char_at_fn = ObjectFactory::create_native_function("charAt",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(std::string(""));
                     int index = static_cast<int>(args[0].to_number());
@@ -839,7 +839,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "indexOf") {
             auto index_of_fn = ObjectFactory::create_native_function("indexOf",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(-1.0);
                     std::string search = args[0].to_string();
@@ -851,7 +851,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "toUpperCase") {
             auto upper_fn = ObjectFactory::create_native_function("toUpperCase",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     std::string result = str_value;
                     std::transform(result.begin(), result.end(), result.begin(), ::toupper);
@@ -862,7 +862,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "toLowerCase") {
             auto lower_fn = ObjectFactory::create_native_function("toLowerCase",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     std::string result = str_value;
                     std::transform(result.begin(), result.end(), result.begin(), ::tolower);
@@ -873,7 +873,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "substring") {
             auto substring_fn = ObjectFactory::create_native_function("substring",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(str_value);
                     int start = static_cast<int>(args[0].to_number());
@@ -888,7 +888,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "substr") {
             auto substr_fn = ObjectFactory::create_native_function("substr",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(str_value);
 
@@ -944,7 +944,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "slice") {
             auto slice_fn = ObjectFactory::create_native_function("slice",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(str_value);
                     int start = static_cast<int>(args[0].to_number());
@@ -961,7 +961,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "split") {
             auto split_fn = ObjectFactory::create_native_function("split",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     std::string separator = args.empty() ? "" : args[0].to_string();
                     
@@ -996,7 +996,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "replace") {
             auto replace_fn = ObjectFactory::create_native_function("replace",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.size() < 2) return Value(str_value);
                     
@@ -1016,7 +1016,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "startsWith") {
             auto starts_with_fn = ObjectFactory::create_native_function("startsWith",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(false);
 
@@ -1052,7 +1052,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "endsWith") {
             auto ends_with_fn = ObjectFactory::create_native_function("endsWith",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(false);
 
@@ -1084,7 +1084,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "includes") {
             auto includes_fn = ObjectFactory::create_native_function("includes",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(false);
 
@@ -1118,7 +1118,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "repeat") {
             auto repeat_fn = ObjectFactory::create_native_function("repeat",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) {
                         return Value(std::string(""));
@@ -1144,7 +1144,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "trim") {
             auto trim_fn = ObjectFactory::create_native_function("trim",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     (void)args;
                     std::string result = str_value;
@@ -1157,7 +1157,7 @@ Value MemberExpression::evaluate(Context& ctx) {
 
         if (prop_name == "concat") {
             auto concat_fn = ObjectFactory::create_native_function("concat",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     std::string result = str_value;
                     for (const auto& arg : args) {
@@ -1170,7 +1170,7 @@ Value MemberExpression::evaluate(Context& ctx) {
 
         if (prop_name == "padStart") {
             auto pad_start_fn = ObjectFactory::create_native_function("padStart",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(str_value);
                     
@@ -1203,7 +1203,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "padEnd") {
             auto pad_end_fn = ObjectFactory::create_native_function("padEnd",
-                [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(str_value);
                     
@@ -1244,7 +1244,7 @@ Value MemberExpression::evaluate(Context& ctx) {
 
                 if (iterator_symbol && prop_symbol->equals(iterator_symbol)) {
                     auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
-                        [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                        [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                             (void)ctx;
                             (void)args;
                             auto iterator = std::make_unique<StringIterator>(str_value);
@@ -1288,7 +1288,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "toString") {
             auto to_string_fn = ObjectFactory::create_native_function("toString",
-                [bool_value](Context& ctx, std::span<const Value> args) -> Value {
+                [bool_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     return Value(bool_value ? "true" : "false");
                 });
@@ -1297,7 +1297,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         
         if (prop_name == "valueOf") {
             auto value_of_fn = ObjectFactory::create_native_function("valueOf",
-                [bool_value](Context& ctx, std::span<const Value> args) -> Value {
+                [bool_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)ctx;
                     return Value(bool_value);
                 });
@@ -1379,7 +1379,7 @@ Value MemberExpression::evaluate(Context& ctx) {
 
             if (prop_name == "charAt") {
                 auto char_at_fn = ObjectFactory::create_native_function("charAt",
-                    [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                    [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         (void)ctx;
                         if (args.empty()) return Value(std::string(""));
                         int index = static_cast<int>(args[0].to_number());
@@ -1393,7 +1393,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             
             if (prop_name == "indexOf") {
                 auto index_of_fn = ObjectFactory::create_native_function("indexOf",
-                    [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                    [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         (void)ctx;
                         if (args.empty()) return Value(-1.0);
                         std::string search = args[0].to_string();
@@ -1405,7 +1405,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             
             if (prop_name == "split") {
                 auto split_fn = ObjectFactory::create_native_function("split",
-                    [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                    [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         (void)ctx;
                         std::string separator = args.empty() ? "" : args[0].to_string();
                         
@@ -1439,7 +1439,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             
             if (prop_name == "startsWith") {
                 auto starts_with_fn = ObjectFactory::create_native_function("startsWith",
-                    [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                    [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         (void)ctx; (void)args;
                         return Value(true);
                     });
@@ -1448,7 +1448,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             
             if (prop_name == "endsWith") {
                 auto ends_with_fn = ObjectFactory::create_native_function("endsWith",
-                    [str_value](Context& ctx, std::span<const Value> args) -> Value {
+                    [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         (void)ctx;
                         if (args.empty()) return Value(false);
                         std::string search = args[0].to_string();

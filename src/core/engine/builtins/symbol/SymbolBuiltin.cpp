@@ -54,7 +54,7 @@ static std::string symbol_to_string_coerce(Context& ctx, const Value& v) {
 
 void register_symbol_builtins(Context& ctx) {
     auto symbol_constructor = ObjectFactory::create_native_constructor("Symbol",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (ctx.is_in_constructor_call()) {
                 ctx.throw_type_error("Symbol is not a constructor");
                 return Value();
@@ -67,14 +67,14 @@ void register_symbol_builtins(Context& ctx) {
         }, 0);
     
     auto symbol_for_fn = ObjectFactory::create_native_function("for",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            return Symbol::symbol_for(ctx, args);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return Symbol::symbol_for(ctx, args, receiver);
         }, 1);
     symbol_constructor->set_property("for", Value(symbol_for_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto symbol_key_for_fn = ObjectFactory::create_native_function("keyFor",
-        [](Context& ctx, std::span<const Value> args) -> Value {
-            return Symbol::symbol_key_for(ctx, args);
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return Symbol::symbol_key_for(ctx, args, receiver);
         }, 1);
     symbol_constructor->set_property("keyFor", Value(symbol_key_for_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -162,12 +162,12 @@ void register_symbol_builtins(Context& ctx) {
             sym_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
         }
         auto desc_getter = ObjectFactory::create_native_function("get description",
-            [](Context& ctx, std::span<const Value>) -> Value {
+            [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
                 // Primitive symbol this
-                Value prim = ctx.get_this_value();
+                Value prim = receiver;
                 if (prim.is_symbol()) return prim.as_symbol()->get_has_description() ? Value(prim.as_symbol()->get_description()) : Value();
                 // Symbol wrapper object this (e.g. Object(sym))
-                Object* obj = ctx.get_this_binding();
+                Object* obj = receiver.as_object_or_null();
                 if (obj) {
                     Value inner = obj->get_property("[[PrimitiveValue]]");
                     if (inner.is_symbol()) return inner.as_symbol()->get_has_description() ? Value(inner.as_symbol()->get_description()) : Value();
@@ -182,10 +182,10 @@ void register_symbol_builtins(Context& ctx) {
         sym_proto->set_property_descriptor("description", desc_prop);
 
         auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
-            [](Context& ctx, std::span<const Value>) -> Value {
-                Value prim = ctx.get_this_value();
+            [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                Value prim = receiver;
                 if (prim.is_symbol()) return prim;
-                Object* obj = ctx.get_this_binding();
+                Object* obj = receiver.as_object_or_null();
                 if (obj) {
                     Value inner = obj->get_property("[[PrimitiveValue]]");
                     if (inner.is_symbol()) return inner;
@@ -199,10 +199,10 @@ void register_symbol_builtins(Context& ctx) {
         sym_proto->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto toString_fn = ObjectFactory::create_native_function("toString",
-            [](Context& ctx, std::span<const Value>) -> Value {
-                Value prim = ctx.get_this_value();
+            [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                Value prim = receiver;
                 if (prim.is_symbol()) return Value(prim.as_symbol()->to_string());
-                Object* obj = ctx.get_this_binding();
+                Object* obj = receiver.as_object_or_null();
                 if (obj) {
                     Value inner = obj->get_property("[[PrimitiveValue]]");
                     if (inner.is_symbol()) return Value(inner.as_symbol()->to_string());
@@ -217,10 +217,10 @@ void register_symbol_builtins(Context& ctx) {
         Symbol* toPrim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
         if (toPrim_sym) {
             auto sym_toPrimitive = ObjectFactory::create_native_function("[Symbol.toPrimitive]",
-                [](Context& ctx, std::span<const Value>) -> Value {
-                    Value prim = ctx.get_this_value();
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Value prim = receiver;
                     if (prim.is_symbol()) return prim;
-                    Object* obj = ctx.get_this_binding();
+                    Object* obj = receiver.as_object_or_null();
                     if (obj) {
                         Value inner = obj->get_property("[[PrimitiveValue]]");
                         if (inner.is_symbol()) return inner;

@@ -46,8 +46,8 @@ public:
     // new_target defaults to this proxy; Reflect.construct may pass a different one.
     Value construct_trap(std::span<const Value> args, Object* new_target = nullptr);
     
-    static Value proxy_constructor(Context& ctx, std::span<const Value> args);
-    static Value proxy_revocable(Context& ctx, std::span<const Value> args);
+    static Value proxy_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value proxy_revocable(Context& ctx, std::span<const Value> args, Value receiver);
     
     static void setup_proxy(Context& ctx);
     
@@ -91,19 +91,19 @@ inline const Proxy* as_proxy(const Object* obj) {
  */
 class Reflect {
 public:
-    static Value reflect_get(Context& ctx, std::span<const Value> args);
-    static Value reflect_set(Context& ctx, std::span<const Value> args);
-    static Value reflect_has(Context& ctx, std::span<const Value> args);
-    static Value reflect_delete_property(Context& ctx, std::span<const Value> args);
-    static Value reflect_own_keys(Context& ctx, std::span<const Value> args);
-    static Value reflect_get_prototype_of(Context& ctx, std::span<const Value> args);
-    static Value reflect_set_prototype_of(Context& ctx, std::span<const Value> args);
-    static Value reflect_is_extensible(Context& ctx, std::span<const Value> args);
-    static Value reflect_prevent_extensions(Context& ctx, std::span<const Value> args);
-    static Value reflect_get_own_property_descriptor(Context& ctx, std::span<const Value> args);
-    static Value reflect_define_property(Context& ctx, std::span<const Value> args);
-    static Value reflect_apply(Context& ctx, std::span<const Value> args);
-    static Value reflect_construct(Context& ctx, std::span<const Value> args);
+    static Value reflect_get(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_set(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_has(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_delete_property(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_own_keys(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_get_prototype_of(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_set_prototype_of(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_is_extensible(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_prevent_extensions(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_get_own_property_descriptor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_define_property(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_apply(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value reflect_construct(Context& ctx, std::span<const Value> args, Value receiver);
     
     static void setup_reflect(Context& ctx);
     

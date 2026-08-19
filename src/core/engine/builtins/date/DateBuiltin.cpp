@@ -19,8 +19,8 @@ void register_date_builtins(Context& ctx) {
     Object* date_proto_ptr = date_prototype.get();
 
     auto date_constructor_fn = ObjectFactory::create_native_constructor("Date",
-        [date_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
-            Value result = Date::date_constructor(ctx, args);
+        [date_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Value result = Date::date_constructor(ctx, args, receiver);
             if (!result.is_object()) return result;
 
             // OrdinaryCreateFromConstructor: prototype comes from new.target,
@@ -41,7 +41,7 @@ void register_date_builtins(Context& ctx) {
 
     struct Entry {
         const char* name;
-        Value (*fn)(Context&, std::span<const Value>);
+        Value (*fn)(Context&, std::span<const Value>, Value receiver);
         uint32_t arity;
     };
 

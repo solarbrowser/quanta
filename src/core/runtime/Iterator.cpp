@@ -67,10 +67,10 @@ Iterator::IteratorResult Iterator::next_default() {
     return result;
 }
 
-Value Iterator::iterator_next(Context& ctx, std::span<const Value> args) {
+Value Iterator::iterator_next(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
     
-    Value this_value = ctx.get_binding("this");
+    Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("Iterator.prototype.next called on non-object");
         return Value();
@@ -98,10 +98,10 @@ Value Iterator::iterator_next(Context& ctx, std::span<const Value> args) {
     return create_iterator_result(result.value, result.done);
 }
 
-Value Iterator::iterator_return(Context& ctx, std::span<const Value> args) {
+Value Iterator::iterator_return(Context& ctx, std::span<const Value> args, Value receiver) {
     Value return_value = args.empty() ? Value() : args[0];
     
-    Value this_value = ctx.get_binding("this");
+    Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("Iterator.prototype.return called on non-object");
         return Value();
@@ -119,10 +119,10 @@ Value Iterator::iterator_return(Context& ctx, std::span<const Value> args) {
     return create_iterator_result(return_value, true);
 }
 
-Value Iterator::iterator_throw(Context& ctx, std::span<const Value> args) {
+Value Iterator::iterator_throw(Context& ctx, std::span<const Value> args, Value receiver) {
     Value exception = args.empty() ? Value() : args[0];
     
-    Value this_value = ctx.get_binding("this");
+    Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("Iterator.prototype.throw called on non-object");
         return Value();
@@ -153,18 +153,18 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (iter_sym) {
         auto self_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-            [](Context& ctx, std::span<const Value> args) -> Value {
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 (void)args;
                 // Spec: return the this value (primitives included, same as Symbol.prototype.valueOf).
-                Value prim = ctx.get_this_value();
+                Value prim = receiver;
                 if (prim.is_number() || prim.is_string() || prim.is_boolean() ||
                     prim.is_bigint() || prim.is_symbol()) return prim;
-                if (ctx.original_this_was_nullish()) {
-                    try { Value v = ctx.get_binding("this"); if (v.is_null()) return Value::null(); } catch(...) {}
+                if (receiver.is_nullish()) {
+                    try { Value v = receiver; if (v.is_null()) return Value::null(); } catch(...) {}
                     return Value();
                 }
-                try { return ctx.get_binding("this"); } catch (...) {}
-                Object* self = ctx.get_this_binding();
+                try { return receiver; } catch (...) {}
+                Object* self = receiver.as_object_or_null();
                 return self ? Value(self) : Value();
             });
         PropertyDescriptor sym_iter_d(Value(self_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -174,14 +174,14 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
     if (tag_sym) {
         auto tag_getter = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
-            [](Context&, std::span<const Value>) -> Value {
+            [](Context&, std::span<const Value>, Value receiver) -> Value {
                 return Value(std::string("Iterator"));
             }, 0);
         Object* iter_proto_raw = iter_proto.get();
         auto tag_setter = ObjectFactory::create_native_function("set [Symbol.toStringTag]",
-            [iter_proto_raw](Context& ctx, std::span<const Value> args) -> Value {
-                Object* self = ctx.get_this_binding();
-                if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
+            [iter_proto_raw](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                Object* self = receiver.as_object_or_null();
+                if (!self || receiver.is_nullish() || (!receiver.is_nullish() && !receiver.is_object_like())) {
                     ctx.throw_type_error("Iterator.prototype[Symbol.toStringTag] setter: this is not an object");
                     return Value();
                 }
@@ -544,28 +544,28 @@ void setup_array_iterator_methods(Context& ctx) {
     Object* array_proto = array_prototype.as_object();
     
     auto keys_fn = ObjectFactory::create_native_function("keys",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.keys called on null or undefined"); return Value(); }
-            Object* array = ctx.get_this_binding();
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array.prototype.keys called on null or undefined"); return Value(); }
+            Object* array = receiver.as_object_or_null();
             auto iterator = ArrayIterator::create_keys_iterator(array);
             return Value(iterator.release());
         });
     
     auto values_fn = ObjectFactory::create_native_function("values",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.values called on null or undefined"); return Value(); }
-            Object* array = ctx.get_this_binding();
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array.prototype.values called on null or undefined"); return Value(); }
+            Object* array = receiver.as_object_or_null();
             auto iterator = ArrayIterator::create_values_iterator(array);
             return Value(iterator.release());
         });
     
     auto entries_fn = ObjectFactory::create_native_function("entries",
-        [](Context& ctx, std::span<const Value> args) -> Value {
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.entries called on null or undefined"); return Value(); }
-            Object* array = ctx.get_this_binding();
+            if (receiver.is_nullish()) { ctx.throw_type_error("Array.prototype.entries called on null or undefined"); return Value(); }
+            Object* array = receiver.as_object_or_null();
             auto iterator = ArrayIterator::create_entries_iterator(array);
             return Value(iterator.release());
         });
@@ -599,10 +599,10 @@ void setup_string_iterator_methods(Context& ctx) {
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
         auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-            [](Context& ctx, std::span<const Value> args) -> Value {
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 (void)args;
-                if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-                Value this_value = ctx.get_binding("this");
+                if (receiver.is_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
+                Value this_value = receiver;
                 if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
                 std::string str;
                 if (this_value.is_object() || this_value.is_function()) {
