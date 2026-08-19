@@ -595,7 +595,7 @@ Object::Object(Object* prototype, ObjectType type) : Object(type) {
     // mark `prototype` used_as_prototype(), which the transition-cache relies on
     // for every object ever installed as a prototype, including via this
     // constructor (Object.create(proto), Error-hierarchy bootstrap).
-    if (prototype) initialize_prototype(prototype);
+    if (prototype) initialize_prototype_of_new(prototype);
 }
 
 void Object::initialize_prototype(Object* prototype) {
@@ -3587,7 +3587,7 @@ std::unique_ptr<Object> create_object_with_slots(uint32_t slots) {
     void* cell = Object::operator new(sizeof(Object), Object::inline_butterfly_bytes(slots));
     Object* obj = ::new (cell) Object(Object::ObjectType::Ordinary);
     obj->adopt_inline_butterfly(sizeof(Object), slots);
-    if (Object* obj_proto = get_object_prototype()) obj->initialize_prototype(obj_proto);
+    if (Object* obj_proto = get_object_prototype()) obj->initialize_prototype_of_new(obj_proto);
     return std::unique_ptr<Object>(obj);
 }
 
@@ -3595,7 +3595,7 @@ std::unique_ptr<Object> get_pooled_object() {
     auto obj = std::make_unique<Object>(Object::ObjectType::Ordinary);
     Object* obj_proto = get_object_prototype();
     if (obj_proto) {
-        obj->initialize_prototype(obj_proto);
+        obj->initialize_prototype_of_new(obj_proto);
     }
     return obj;
 }
@@ -3604,7 +3604,7 @@ std::unique_ptr<Object> get_pooled_array() {
     auto array = std::make_unique<Object>(Object::ObjectType::Array);
     Object* array_proto = get_array_prototype();
     if (array_proto) {
-        array->initialize_prototype(array_proto);
+        array->initialize_prototype_of_new(array_proto);
     }
     return array;
 }

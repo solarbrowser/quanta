@@ -1682,20 +1682,9 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         return Value();
     }
 
-    // The hint is what the last object this constructor built ended up
-    // needing, so the cell can be asked for room to hold it and the object
-    // never reaches for a butterfly block of its own. Zero on the first
-    // construction, which is where the hint is learned.
-    uint32_t construct_slot_hint = get_construct_slot_hint();
-    std::unique_ptr<Object> new_object;
-    if (construct_slot_hint <= 4) {
-        new_object = ObjectFactory::create_object_with_slots(4);
-    } else {
-        new_object = ObjectFactory::create_object();
-        new_object->reserve_property_slots(construct_slot_hint);
-    }
-    Value this_value(new_object.get());
-
+    // The prototype is resolved before the object exists, so nothing runs
+    // between allocating it and giving it one -- which is what lets the
+    // install below skip a barrier it could have nothing to do.
     Value constructor_prototype = this->constructor_prototype();
     // GetPrototypeFromConstructor: initial prototype comes from new.target, which may already differ from `this`.
     Value initial_proto = constructor_prototype;
@@ -1708,14 +1697,29 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
             if (nt_proto.is_object() || nt_proto.is_function()) initial_proto = nt_proto;
         }
     }
+    Object* pending_proto = nullptr;
     if (initial_proto.is_object() || initial_proto.is_function()) {
         Object* proto_obj = initial_proto.is_function()
             ? static_cast<Object*>(initial_proto.as_function())
             : initial_proto.as_object();
-        // Allocated a few lines up, constructor body not run yet.
-        new_object->initialize_prototype(proto_obj);
+        pending_proto = proto_obj;
     }
     
+    // The hint is what the last object this constructor built ended up
+    // needing, so the cell can be asked for room to hold it and the object
+    // never reaches for a butterfly block of its own. Zero on the first
+    // construction, which is where the hint is learned.
+    uint32_t construct_slot_hint = get_construct_slot_hint();
+    std::unique_ptr<Object> new_object;
+    if (construct_slot_hint <= 4) {
+        new_object = ObjectFactory::create_object_with_slots(4);
+    } else {
+        new_object = ObjectFactory::create_object();
+        new_object->reserve_property_slots(construct_slot_hint);
+    }
+    if (pending_proto) new_object->initialize_prototype_of_new(pending_proto);
+    Value this_value(new_object.get());
+
     Function* super_constructor_fn = super_constructor();
     bool default_ctor = is_default_ctor();
 

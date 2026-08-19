@@ -385,6 +385,17 @@ public:
     // can have cached a lookup through a chain no one has seen, so this skips
     // the proto_epoch bump. Only call it before the object escapes.
     void initialize_prototype(Object* prototype);
+    // The same, for an object that has only just been allocated and has not
+    // been handed to anything yet, so the insertion barrier has nothing to do:
+    // a cell comes off the allocator unmarked (free_cell and retire_cell both
+    // clear the bit, a new block starts zeroed), and only a collection marks
+    // one, which runs at an interpreter safepoint and so cannot have run
+    // between that allocation and this. Looking the cell up to learn that is
+    // most of what installing a prototype costs.
+    void initialize_prototype_of_new(Object* prototype) {
+        proto_ = prototype;
+        if (prototype) prototype->mark_used_as_prototype();
+    }
     bool has_prototype(Object* prototype) const;
     
     // Non-virtual: switch on get_type() dispatches to TypedArray/Proxy/Custom
