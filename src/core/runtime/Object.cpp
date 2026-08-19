@@ -1507,6 +1507,23 @@ bool Object::ordinary_set(const std::string& key, const Value& value) {
             }
             if (cur->has_own_property(key)) {
                 PropertyDescriptor desc = cur->get_property_descriptor(key);
+                // OrdinarySetWithOwnDescriptor: an inherited accessor's setter
+                // runs with this object as the receiver, and no own property is
+                // created. set_property below reaches that on its own for a
+                // named key, but its index branch answers straight out of the
+                // element storage without asking the chain -- deliberately, as
+                // object literals build themselves through the same call and
+                // have to create rather than assign. This is the assignment
+                // entry, so the question belongs here.
+                if (desc.is_accessor_descriptor()) {
+                    Object* setter = desc.get_setter();
+                    if (!setter) return false;
+                    if (current_context_) {
+                        Function* setter_fn = as_function(setter);
+                        if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
+                    }
+                    return true;
+                }
                 if (desc.is_data_descriptor() && !desc.is_writable()) {
                     return false;
                 }
