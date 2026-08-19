@@ -87,6 +87,13 @@ public:
     // every post-construction write of a traced field or property slot;
     // no-op for young cells since a minor trace reaches them anyway.
     static void write_barrier(const void* cell);
+    // The same barrier, for a caller that knows which value it is storing.
+    // Incremental marking needs the new edge not to be missed, and there are
+    // two ways to get that: re-trace the container, or shade the target. The
+    // first costs every edge the container holds, which for a large array is
+    // its whole length -- and an array being filled hits it on every append.
+    // The second is one edge. Callers that have the value in hand use this.
+    static void write_barrier_value(const void* cell, const Value& value);
     // Same for environments (not cells; flag-deduped per cycle).
     static void write_barrier_env(Environment* env);
     // The barrier for a slot store, where the value decides whether there is

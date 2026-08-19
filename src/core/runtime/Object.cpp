@@ -1690,7 +1690,7 @@ void Object::copy_elements_reversed_from(const Object& src, uint32_t count) {
 }
 
 bool Object::set_element(uint32_t index, const Value& value) {
-    Collector::write_barrier(this);
+    Collector::write_barrier_value(this, value);
     // Same dispatch problem as get_element: TypedArrayBase::set_element(size_t) doesn't
     // override this uint32_t signature, so generic Array.prototype methods called via
     // .call()/.apply() on a typed array must be routed there explicitly.

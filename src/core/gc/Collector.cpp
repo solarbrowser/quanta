@@ -1344,6 +1344,21 @@ void Collector::write_barrier(const void* cell) {
     if (Collector::major_in_progress_) mark_visitor().push_remembered(p);
 }
 
+void Collector::write_barrier_value(const void* cell, const Value& value) {
+    if (barriers_disabled() || !cell) return;
+    // Shade the target first, and unconditionally: this is the half that
+    // keeps an in-progress mark from losing the edge, and it has to happen on
+    // every write, not just the first one that dirties this container.
+    if (Collector::major_in_progress_) mark_visitor().visit(value);
+    // The generational half is unchanged -- the container still has to be
+    // findable by the next minor collection, and once recorded it stays
+    // recorded for the cycle.
+    Heap::ProbeResult p = Heap::exact_cell_base(cell);
+    if (!p.cell || !Heap::test_mark(p)) return;
+    if (Heap::test_and_set_remembered(p)) return;
+    remembered_cells().push_back(p);
+}
+
 void Collector::write_barrier_env_for(Environment* env, const Value& value) {
     if (value.is_object() || value.is_function() || value.is_string() ||
         value.is_symbol() || value.is_bigint()) {
