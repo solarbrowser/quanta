@@ -632,6 +632,11 @@ MarkVisitor& mark_visitor() {
     return v;
 }
 
+std::vector<const BytecodeChunk*>& chunk_roots() {
+    static thread_local std::vector<const BytecodeChunk*> roots;
+    return roots;
+}
+
 std::vector<const std::vector<Value>*>& value_vector_roots() {
     static thread_local std::vector<const std::vector<Value>*> roots;
     return roots;
@@ -906,6 +911,7 @@ void run_minor_collection() {
         for (const Value& val : *vec) v.visit(val);
     for (const FixedArray<Value>* arr : value_array_roots())
         for (const Value& val : *arr) v.visit(val);
+    for (const BytecodeChunk* chunk : chunk_roots()) chunk->trace(v);
     Symbol::gc_trace_roots(v);
     String::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
@@ -1042,6 +1048,7 @@ void scan_major_roots(MarkVisitor& v) {
         for (const Value& val : *vec) v.visit(val);
     for (const FixedArray<Value>* arr : value_array_roots())
         for (const Value& val : *arr) v.visit(val);
+    for (const BytecodeChunk* chunk : chunk_roots()) chunk->trace(v);
     Symbol::gc_trace_roots(v);
     String::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
@@ -1509,6 +1516,17 @@ void Collector::safepoint_slow() {
 
 const Collector::CycleStats& Collector::last_cycle() {
     return g_last_cycle;
+}
+
+void Collector::push_chunk(const BytecodeChunk* chunk) {
+    chunk_roots().push_back(chunk);
+}
+
+void Collector::pop_chunk(const BytecodeChunk* chunk) {
+    auto& roots = chunk_roots();
+    for (size_t i = roots.size(); i-- > 0;) {
+        if (roots[i] == chunk) { roots.erase(roots.begin() + static_cast<long>(i)); return; }
+    }
 }
 
 void Collector::push_value_vector(const std::vector<Value>* vec) {

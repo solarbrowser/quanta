@@ -115,7 +115,7 @@ void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index,
 
 // Mirrors MemberExpression::evaluate's primitive-receiver branch.
 Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name,
-                           FeedbackSlot* fb, Function* owner) {
+                           FeedbackSlot* fb, Function* owner, bool rooted) {
     if (prim.is_string()) {
         // Straight off the String, not through to_string(): that returns by
         // value, so every `.length` read used to copy the whole buffer before
@@ -188,7 +188,7 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     PropertyDescriptor desc = proto_obj->get_property_descriptor(name);
     // Learn from what that call produced, rather than from the descriptor it
     // read: only this value has been through whatever the call does on the way.
-    if (fb && owner && (desc.is_accessor_descriptor() || desc.has_value())) {
+    if (fb && rooted && (desc.is_accessor_descriptor() || desc.has_value())) {
         Collector::write_barrier(owner);
         fb->prim_proto = proto_obj;
         fb->prim_is_getter = desc.is_accessor_descriptor();
@@ -357,13 +357,13 @@ inline void write_barrier_for(Object* obj, const Value& value) {
 // entry matches, so it's checked once per call (in `cacheable`) rather than
 // once per scanned entry.
 Value get_named(Context& ctx, const Value& receiver, const std::string& name,
-                 FeedbackSlot* fb, Function* owner) {
+                 FeedbackSlot* fb, Function* owner, bool rooted) {
     if (receiver.is_null() || receiver.is_undefined()) {
         ctx.throw_type_error("Cannot read property of null or undefined");
         return Value();
     }
     Object* obj = as_object_like(receiver);
-    if (!obj) return get_primitive_named(ctx, receiver, name, fb, owner);
+    if (!obj) return get_primitive_named(ctx, receiver, name, fb, owner, rooted);
 
     // Array.length is always live-computed from elements_ (never reliably
     // mirrored in a shape slot -- push/index-growth never syncs one, only
@@ -404,7 +404,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     const bool exotic_proto_ok =
         obj->get_type() == Object::ObjectType::Array &&
         name != "length" && !(!name.empty() && name[0] >= '0' && name[0] <= '9');
-    if (owner && fb && !fb->proto_mega &&
+    if (rooted && fb && !fb->proto_mega &&
         (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
         !obj->has_descriptor_override(name)) {
         Shape* shape = obj->get_shape();
@@ -530,7 +530,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             // Learn only what the descriptor map itself answered. A shape-slot
             // value belongs to the entries above, which track it through shape
             // changes this entry knows nothing about.
-            else if (override_desc && fb && owner) {
+            else if (override_desc && fb && rooted) {
                 Collector::write_barrier(owner);
                 fb->own_desc_receiver = obj;
                 fb->own_desc_value = desc.get_value();
@@ -576,7 +576,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                     // no own override for the key (established above), and
                     // desc_epoch retires the entry if the accessor is
                     // redefined.
-                    if (owner && fb && !fb->proto_mega && getter_fn && obj->get_shape() &&
+                    if (rooted && fb && !fb->proto_mega && getter_fn && obj->get_shape() &&
                         obj->get_type() == Object::ObjectType::Ordinary &&
                         proto->get_type() == Object::ObjectType::Ordinary &&
                         !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
@@ -603,7 +603,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                         (proto->get_type() == Object::ObjectType::Array &&
                          name != "length" &&
                          !(!name.empty() && name[0] >= '0' && name[0] <= '9'));
-                    if (owner && fb && !fb->proto_mega &&
+                    if (rooted && fb && !fb->proto_mega &&
                         (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
                         holder_ok) {
                         Shape* hs = proto->get_shape();
@@ -657,7 +657,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 //  - a digit-leading key is refused, because an exotic object
                 //    on the chain can answer one out of its elements, and an
                 //    element write does not move proto_epoch.
-                if (owner && fb && !fb->proto_mega && obj->get_shape() &&
+                if (rooted && fb && !fb->proto_mega && obj->get_shape() &&
                     !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
                     learn_proto(fb, obj->get_shape(), obj->get_prototype(), nullptr, 0,
                                 Object::proto_epoch(), owner, /*from_descriptor=*/false,
@@ -683,7 +683,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // else first, and there are exactly two it does: `name`, which it takes
     // from the function's own name field, and `length`, which falls back to
     // the arity. Those two are refused rather than tracked.
-    if (own_descriptor && fb && owner &&
+    if (own_descriptor && fb && rooted &&
         obj->get_type() == Object::ObjectType::Function &&
         name != "name" && name != "length") {
         Collector::write_barrier(owner);
@@ -981,7 +981,7 @@ Value get_keyed(Context& ctx, const Value& receiver, const std::string& key, Key
             }
         }
     }
-    Value result = get_named(ctx, receiver, key, nullptr, nullptr);
+    Value result = get_named(ctx, receiver, key, nullptr, nullptr, false);
     if (!ctx.has_exception() && obj && fb && !fb->mega &&
         obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
         Shape* s = obj->get_shape();
@@ -1190,6 +1190,12 @@ struct Frame {
     Context& ctx;
     std::span<const Value> args;
     Function* owner;
+    // Whether this frame's inline caches may hold cells: true when a function
+    // owns the chunk and traces it, and true for the top-level script, whose
+    // chunk run_script roots for the duration. Separate from `owner`, which
+    // also decides ROUTING -- a chunk shared across instances needs each
+    // instance's own lookup/private caches, and only a function has those.
+    bool feedback_rooted;
     Value* regs;
     Environment** env_saves;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data;
@@ -2533,7 +2539,7 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner);
+                acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner, f.feedback_rooted);
                 CHECK_EXC();
                 break;
             }
@@ -4938,7 +4944,7 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner);
+                acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner, f.feedback_rooted);
                 CHECK_EXC();
                 break;
             }
@@ -5052,7 +5058,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             // one paid the generated handler's prologue and a rescan from
             // scratch. The own-descriptor guard is the whole-object form
             // rather than the keyed one: strictly stronger, and O(1).
-            if (f.owner && !fb.proto_mega && fb.proto_count > 0 &&
+            if (f.feedback_rooted && !fb.proto_mega && fb.proto_count > 0 &&
                 !obj->has_any_descriptor_override()) {
                 Shape* rs = obj->get_shape();
                 Object* p0 = obj->get_prototype();
@@ -6132,7 +6138,11 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     // loop's state in registers, and a landing pad in the same function does
     // that even with the try hoisted out of the loop itself. Recovery
     // re-enters run_dispatch with frame.pc moved instead of continuing.
-    Frame frame{chunk, ctx, args, owner, regs, env_saves, lookup_cache_data,
+    // compile_script is reached from run_script alone, and that is where the
+    // chunk gets its root -- so script_mode is exactly "this chunk's caches
+    // are traced".
+    const bool feedback_rooted = owner != nullptr || chunk.script_mode;
+    Frame frame{chunk, ctx, args, owner, feedback_rooted, regs, env_saves, lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
                 this_value, Value(), 0, 0, 0, this_resolved};
 
@@ -6210,6 +6220,10 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
         std::fprintf(stderr, "%s", disassemble_chunk(*chunk, "<script>").c_str());
     }
     ValueArrayRoot const_root(&chunk->constants);
+    // The caches this chunk learns hold real cells and nothing else keeps them
+    // alive: no function owns this chunk. Rooted for the run, they work here
+    // the same as they do inside a function.
+    ChunkFeedbackRoot feedback_root(chunk.get());
     Value global_this = ctx.get_global_object()
         ? Value(ctx.get_global_object()) : Value();
     return run(*chunk, ctx, {}, &global_this);

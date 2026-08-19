@@ -136,6 +136,8 @@ public:
     // reallocates after BytecodeCompiler freezes it, but it's still
     // re-scanned each collection the same way, for symmetry/simplicity.
     static void push_value_array(const FixedArray<Value>* arr);
+    static void push_chunk(const class BytecodeChunk* chunk);
+    static void pop_chunk(const class BytecodeChunk* chunk);
     static void pop_value_array(const FixedArray<Value>* arr);
 };
 
@@ -152,6 +154,24 @@ public:
 
 private:
     const std::vector<Value>* vec_;
+};
+
+// A chunk whose inline caches hold real cells -- a prototype, a holder, a
+// cached getter -- with nothing else keeping them alive. A compiled function
+// reaches its chunk through its executable, so its caches are traced for it;
+// the top-level script's chunk belongs to no function, which is why its caches
+// were left inert. Rooting it for as long as it runs is what lets them work.
+class ChunkFeedbackRoot {
+public:
+    explicit ChunkFeedbackRoot(const class BytecodeChunk* chunk) : chunk_(chunk) {
+        Collector::push_chunk(chunk_);
+    }
+    ~ChunkFeedbackRoot() { Collector::pop_chunk(chunk_); }
+    ChunkFeedbackRoot(const ChunkFeedbackRoot&) = delete;
+    ChunkFeedbackRoot& operator=(const ChunkFeedbackRoot&) = delete;
+
+private:
+    const class BytecodeChunk* chunk_;
 };
 
 // Same as ValueVectorRoot, for a FixedArray<Value> (BytecodeChunk::constants).
