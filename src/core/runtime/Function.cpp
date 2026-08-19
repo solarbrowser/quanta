@@ -1682,9 +1682,16 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         return Value();
     }
 
-    auto new_object = ObjectFactory::create_object();
+    // The hint is what the last object this constructor built ended up
+    // needing, so the cell can be asked for room to hold it and the object
+    // never reaches for a butterfly block of its own. Zero on the first
+    // construction, which is where the hint is learned.
     uint32_t construct_slot_hint = get_construct_slot_hint();
-    if (construct_slot_hint > 0) {
+    std::unique_ptr<Object> new_object;
+    if (construct_slot_hint <= 4) {
+        new_object = ObjectFactory::create_object_with_slots(4);
+    } else {
+        new_object = ObjectFactory::create_object();
         new_object->reserve_property_slots(construct_slot_hint);
     }
     Value this_value(new_object.get());
@@ -1804,8 +1811,20 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         new_object.release();
         return final_result;
     } else {
+        learn_construct_slot_hint(new_object.get());
         return Value(new_object.release());
     }
+}
+
+// What this constructor's object ended up holding, so the next one it builds
+// can be given a cell that already has room. Only ever raised: a constructor
+// with a conditional property would otherwise flip the hint back and forth.
+void Function::learn_construct_slot_hint(const Object* built) {
+    if (!built) return;
+    Shape* shape = built->get_shape();
+    if (!shape) return;
+    const uint32_t slots = shape->slot_count();
+    if (slots > get_construct_slot_hint()) set_construct_slot_hint(slots);
 }
 
 std::string Function::to_string() const {

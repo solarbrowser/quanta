@@ -5743,7 +5743,7 @@ Value h_gen_CreateObject(Frame& f, uint32_t pc, Value acc) {
                 // is asked for room to hold them and the object never reaches
                 // for a butterfly block of its own.
                 Object* obj;
-                if (slot_hint >= 1 && slot_hint <= 4) {
+                if (slot_hint <= 4) {
                     obj = ObjectFactory::create_object_with_slots(4).release();
                 } else {
                     obj = ObjectFactory::create_object().release();
