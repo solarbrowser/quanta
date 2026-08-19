@@ -738,21 +738,6 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
         saved_caller_this = save_eval_caller_this(ctx, ctx.get_this_value());
     }
 
-    // A plain call (not this construct invocation) must see new.target == undefined --
-    // ctx is shared with the caller here since native calls don't get their own
-    // Context. Only a construct invocation ever puts anything there, so an
-    // ordinary call almost always finds it already undefined, and then there is
-    // nothing to clear and nothing to put back.
-    Value saved_new_target;
-    bool restore_new_target = false;
-    if (!is_construct_invocation) {
-        saved_new_target = ctx.get_new_target();
-        if (!saved_new_target.is_undefined()) {
-            ctx.set_new_target(Value());
-            restore_new_target = true;
-        }
-    }
-
     // ctx is reused as-is (no fresh Context for natives) -- if native_data()->fn
     // stashes current_context_ somewhere long-lived (Promise's own ctor,
     // setTimeout), it's THIS context that would leak. ContextSurvivorGuard
@@ -761,10 +746,24 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     Context* prev_context = Object::current_context_;
     Object::current_context_ = &ctx;
     // A native takes a view of the arguments wherever they already are.
-    Value result = native_data()->fn(ctx, args, this_value);
+    //
+    // A plain call has to see new.target as undefined, and the context is
+    // shared with the caller, so a native invoked from inside a constructor
+    // body would otherwise inherit that constructor's. Only a construct
+    // invocation ever puts anything there, so an ordinary call finds it
+    // already undefined and has nothing to clear -- and nothing that has to
+    // survive the call in order to be put back.
+    Value result;
+    if (UNLIKELY_NATIVE(!is_construct_invocation && !ctx.get_new_target().is_undefined())) {
+        const Value caller_new_target = ctx.get_new_target();
+        ctx.set_new_target(Value());
+        result = native_data()->fn(ctx, args, this_value);
+        ctx.set_new_target(caller_new_target);
+    } else {
+        result = native_data()->fn(ctx, args, this_value);
+    }
     Object::current_context_ = prev_context;
 
-    if (restore_new_target) ctx.set_new_target(saved_new_target);
 
 
     if (UNLIKELY_NATIVE(saved_caller_this)) drop_eval_caller_this(ctx);
