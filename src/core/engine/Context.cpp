@@ -212,68 +212,17 @@ Context::Context(Engine* engine, Context* parent, Type type)
     builtins_root_ = parent ? (parent->builtins_root_ ? parent->builtins_root_ : parent) : nullptr;
 }
 
-void Context::reset_for_call(Engine* engine, Context* parent) {
-    type_ = Type::Function;
-    state_ = State::Running;
-    has_exception_ = false; has_return_value_ = false; has_break_ = false;
-    has_continue_ = false; is_in_constructor_call_ = false; super_called_ = false;
-    this_needs_super_ = false; exposed_to_escape_ = false;
-    pending_construct_call_ = false; strict_mode_ = false; in_param_eval_ = false;
-    is_direct_eval_call_ = false; eval_arguments_conflict_ = false;
-    is_arrow_function_context_ = false; in_class_field_init_ = false;
-    this_value_ = parent->this_value_;
-    global_object_ = parent->global_object_;
-    current_exception_ = Value();
-    return_value_ = Value();
-    new_target_ = Value();
-    import_meta_ = Value();
-    engine_ = engine;
-    current_filename_ = parent->current_filename_;
-    builtins_root_ = parent->builtins_root_ ? parent->builtins_root_ : parent;
-}
 
-namespace {
-// A plain array rather than a vector, because the cap is fixed and release()
-// already refuses anything past it. A thread_local with a non-trivial
-// destructor has to be guarded on every access so its constructor can run
-// once per thread; these two are trivially constructible, so the guard, the
-// at-exit registration and the end-minus-begin size computation all go away
-// -- and this pool is touched twice on every call.
-constexpr size_t kCallContextPoolCap = 64;
-thread_local Context* g_call_context_pool[kCallContextPoolCap];
-constinit thread_local size_t g_call_context_pool_len = 0;
-}
-
-Context* CallContextPool::acquire(Engine* engine, Context* parent) {
-    if (g_call_context_pool_len > 0) {
-        Context* c = g_call_context_pool[--g_call_context_pool_len];
-        c->reset_for_call(engine, parent);
-        return c;
-    }
+Context* CallContextPool::make_context(Engine* engine, Context* parent) {
     return new Context(engine, parent, Context::Type::Function);
 }
 
-void CallContextPool::release(Context* ctx, Engine* engine) {
-    if (!ctx) return;
-    // Exactly ContextSurvivorGuard's condition: anything that could still be
-    // reached from elsewhere is handed over instead of reused.
-    if (ctx->exposed_to_escape() ||
-        (ctx->get_owned_env() && ctx->get_owned_env()->is_escaped())) {
-        if (engine) engine->add_survivor_context(ctx);
-        else delete ctx;
-        return;
-    }
-    // Owning an environment is what kept a call like this out of the pool.
-    // Nothing captured it -- that was the question just answered above -- so
-    // handing it back here is exactly what the destructor was about to do,
-    // and leaves a context the next call can take as-is.
-    ctx->release_owned_env();
-    if (ctx->is_pristine() && g_call_context_pool_len < kCallContextPoolCap) {
-        g_call_context_pool[g_call_context_pool_len++] = ctx;
-        return;
-    }
-    delete ctx;
+void CallContextPool::hand_to_survivors(Context* ctx, Engine* engine) {
+    if (engine) engine->add_survivor_context(ctx);
+    else delete ctx;
 }
+
+void CallContextPool::destroy(Context* ctx) { delete ctx; }
 
 void CallContextPool::drain() {
     for (size_t i = 0; i < g_call_context_pool_len; ++i) delete g_call_context_pool[i];

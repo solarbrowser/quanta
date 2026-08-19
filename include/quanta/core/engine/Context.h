@@ -207,7 +207,29 @@ public:
     // The fields a call can observe, back to what the constructor would have
     // produced. Mirrors Context(Engine*, Context*, Type::Function) exactly;
     // the two must be changed together.
-    void reset_for_call(Engine* engine, Context* parent);
+    // Inline, and the pool below with it: consecutive calls differ in only
+    // what this writes, and reaching it in another translation unit cost a
+    // call each way on every JS call for a body the compiler can fold into
+    // the caller.
+    void reset_for_call(Engine* engine, Context* parent) {
+        type_ = Type::Function;
+        state_ = State::Running;
+        has_exception_ = false; has_return_value_ = false; has_break_ = false;
+        has_continue_ = false; is_in_constructor_call_ = false; super_called_ = false;
+        this_needs_super_ = false; exposed_to_escape_ = false;
+        pending_construct_call_ = false; strict_mode_ = false; in_param_eval_ = false;
+        is_direct_eval_call_ = false; eval_arguments_conflict_ = false;
+        is_arrow_function_context_ = false; in_class_field_init_ = false;
+        this_value_ = parent->this_value_;
+        global_object_ = parent->global_object_;
+        current_exception_ = Value();
+        return_value_ = Value();
+        new_target_ = Value();
+        import_meta_ = Value();
+        engine_ = engine;
+        current_filename_ = parent->current_filename_;
+        builtins_root_ = parent->builtins_root_ ? parent->builtins_root_ : parent;
+    }
     Engine* get_engine() const { return engine_; }
 
     // Microtask queue (Promise async support)
@@ -1048,13 +1070,54 @@ namespace ContextFactory {
 // Only a context that is provably done can be reused -- see is_pristine() --
 // and only one that provably cannot be reached from anywhere else, which is
 // the exact condition ContextSurvivorGuard already decides.
+// A plain array rather than a vector, because the cap is fixed and release()
+// already refuses anything past it. Trivially constructible, so no per-access
+// guard, no at-exit registration and no end-minus-begin size computation --
+// and this pool is touched twice on every call.
+inline constexpr size_t kCallContextPoolCap = 64;
+inline constinit thread_local Context* g_call_context_pool[kCallContextPoolCap] = {};
+inline constinit thread_local size_t g_call_context_pool_len = 0;
+
 class CallContextPool {
 public:
     // Constructed and reset, ready for a call whose parent is `parent`.
-    static Context* acquire(Engine* engine, Context* parent);
+    static Context* acquire(Engine* engine, Context* parent) {
+        if (g_call_context_pool_len > 0) {
+            Context* c = g_call_context_pool[--g_call_context_pool_len];
+            c->reset_for_call(engine, parent);
+            return c;
+        }
+        return make_context(engine, parent);
+    }
+    // The pool being empty is a cold start, so building one stays out of line.
+    static Context* make_context(Engine* engine, Context* parent);
     // Takes the context back if it can, destroys or hands it to the engine's
-    // survivor pool if it cannot.
-    static void release(Context* ctx, Engine* engine);
+    // survivor pool if it cannot. Inline for the same reason acquire is: this
+    // runs on every call, and both branches it cannot take inline -- Engine is
+    // only forward-declared here, and destroying a Context needs its
+    // destructor -- are the ones a returning call almost never reaches.
+    static void release(Context* ctx, Engine* engine) {
+        if (!ctx) return;
+        // Exactly ContextSurvivorGuard's condition: anything that could still
+        // be reached from elsewhere is handed over instead of reused.
+        Environment* owned = ctx->get_owned_env();
+        if (ctx->exposed_to_escape() || (owned && owned->is_escaped())) {
+            hand_to_survivors(ctx, engine);
+            return;
+        }
+        // Owning an environment is what kept a call like this out of the pool.
+        // Nothing captured it -- that was the question just answered above --
+        // so handing it back here is exactly what the destructor was about to
+        // do, and leaves a context the next call can take as-is.
+        if (owned) ctx->release_owned_env();
+        if (ctx->is_pristine() && g_call_context_pool_len < kCallContextPoolCap) {
+            g_call_context_pool[g_call_context_pool_len++] = ctx;
+            return;
+        }
+        destroy(ctx);
+    }
+    static void hand_to_survivors(Context* ctx, Engine* engine);
+    static void destroy(Context* ctx);
     static void drain();   // engine teardown
 };
 
