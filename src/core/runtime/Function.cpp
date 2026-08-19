@@ -1672,6 +1672,10 @@ bool Function::set_property(const std::string& key, const Value& value, Property
 
 Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     ValueVectorRoot args_root(&args);
+    return construct(ctx, std::span<const Value>(args));
+}
+
+Value Function::construct(Context& ctx, std::span<const Value> args) {
     // Check if this function is a constructor
     if (!is_constructor_) {
         ctx.throw_exception(Value("TypeError: " + get_name() + " is not a constructor"));
@@ -1725,7 +1729,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
             // whose own implicit super(...args) only runs inside construct().
             super_result = super_constructor->construct(ctx, args);
         } else {
-            super_result = super_constructor->call(ctx, args, this_value);
+            super_result = super_constructor->call_register_args(ctx, args, this_value);
         }
         ctx.set_super_called(true);
         if (ctx.has_exception()) {
@@ -1749,7 +1753,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 
     ctx.set_last_super_override(nullptr);
     ctx.set_pending_construct_call(true);
-    Value result = call(ctx, args, this_value);
+    Value result = call_register_args(ctx, args, this_value);
     bool super_was_called = ctx.was_super_called();
     ctx.set_in_constructor_call(false);
     ctx.set_new_target(old_new_target);

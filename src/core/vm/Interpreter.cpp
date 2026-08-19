@@ -4569,7 +4569,7 @@ Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 3);
                 pc += 5;
                 const Value& callee = regs[callee_reg];
-                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
+                std::span<const Value> call_args(regs + args_start, argc);
                 if (callee.is_function()) {
                     // A literal `new X()` targets X regardless of any ambient
                     // new.target from an enclosing constructor call.

@@ -1545,6 +1545,11 @@ public:
         if (is_native_) return call_native(ctx, args, this_value);
         return call_default_impl(ctx, args, this_value, nullptr);
     }
+    // Arguments that live in the caller's VM registers, on the same terms
+    // call_register_args states: already GC roots, and valid for the whole call.
+    Value construct(Context& ctx, std::span<const Value> args);
+    // For a caller that arrived with a vector: its storage is malloc'd and
+    // invisible to the stack scan, so it is rooted for the duration.
     Value construct(Context& ctx, const std::vector<Value>& args);
     
     // None of these seven are virtual on Object anymore -- Object's own

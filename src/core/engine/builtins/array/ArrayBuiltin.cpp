@@ -722,7 +722,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                         // Spec: Construct(C) happens BEFORE GetIterator (calling iter_method).
                         Object* res = nullptr;
                         if (ctor) {
-                            Value rv = ctor->construct(ctx, {});
+                            Value rv = ctor->construct(ctx, std::span<const Value>{});
                             if (ctx.has_exception()) return Value();
                             res = rv.is_object() ? rv.as_object()
                                 : rv.is_function() ? static_cast<Object*>(rv.as_function()) : nullptr;
