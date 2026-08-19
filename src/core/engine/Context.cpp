@@ -218,7 +218,7 @@ void Context::reset_for_call(Engine* engine, Context* parent) {
     has_exception_ = false; has_return_value_ = false; has_break_ = false;
     has_continue_ = false; is_in_constructor_call_ = false; super_called_ = false;
     this_needs_super_ = false; exposed_to_escape_ = false;
-    original_this_was_nullish_ = false; original_this_was_primitive_ = false;
+    original_this_kind_ = kThisReference;
     pending_construct_call_ = false; strict_mode_ = false; in_param_eval_ = false;
     is_direct_eval_call_ = false; eval_arguments_conflict_ = false;
     is_arrow_function_context_ = false; in_class_field_init_ = false;

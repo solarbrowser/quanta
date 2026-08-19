@@ -23,6 +23,8 @@
 #include <chrono>
 #include <unordered_set>
 
+#define UNLIKELY_NATIVE(x) (__builtin_expect(!!(x), 0))
+
 #ifdef _MSC_VER
 #include <xmmintrin.h>
 #endif
@@ -665,6 +667,23 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
 }
 
 // Out of line for the same reason as call_tree_walker below.
+namespace {
+
+// Only an eval native takes these, and each one builds a std::string and can
+// throw. Left inline they hand every builtin call the stack layout and the
+// unwind edges that work needs, for a branch it does not take.
+[[gnu::noinline, gnu::cold]] bool save_eval_caller_this(Context& ctx, const Value& caller_this) {
+    if (ctx.has_binding("__eval_caller_this__")) return false;
+    ctx.create_binding("__eval_caller_this__", caller_this, true);
+    return true;
+}
+
+[[gnu::noinline, gnu::cold]] void drop_eval_caller_this(Context& ctx) {
+    try { ctx.delete_binding("__eval_caller_this__"); } catch (...) {}
+}
+
+}
+
 [[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
                                               Value this_value, const std::vector<Value>* args_vec,
                                               bool is_construct_invocation) {
@@ -679,10 +698,8 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // Native function call sets "this" to the native's receiver, but eval must
     // inherit the calling function's "this" (the value that existed before this overwrite).
     bool saved_caller_this = false;
-    if (is_eval_native_ && !old_this_value.is_undefined() &&
-        !ctx.has_binding("__eval_caller_this__")) {
-        ctx.create_binding("__eval_caller_this__", old_this_value, true);
-        saved_caller_this = true;
+    if (UNLIKELY_NATIVE(is_eval_native_ && !old_this_value.is_undefined())) {
+        saved_caller_this = save_eval_caller_this(ctx, old_this_value);
     }
 
     // One write covers the receiver in every form -- object, primitive or
@@ -690,12 +707,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // being maintained before.
     ctx.set_this_value(actual_this);
 
-    bool was_nullish = this_value.is_null() || this_value.is_undefined();
-    bool was_primitive = !was_nullish && !this_value.is_object() && !this_value.is_function();
-    bool prev_nullish = ctx.original_this_was_nullish();
-    bool prev_primitive = ctx.original_this_was_primitive();
-    ctx.set_original_this_nullish(was_nullish);
-    ctx.set_original_this_primitive(was_primitive);
+    uint8_t this_kind = Context::kThisReference;
+    if (!this_value.is_object() && !this_value.is_function()) {
+        this_kind = (this_value.is_null() || this_value.is_undefined())
+            ? Context::kThisNullish : Context::kThisPrimitive;
+    }
+    const uint8_t prev_this_kind = ctx.original_this_kind();
+    ctx.set_original_this_kind(this_kind);
 
     // A plain call (not this construct invocation) must see new.target == undefined --
     // ctx is shared with the caller here since native calls don't get their own
@@ -723,18 +741,14 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // caller's registers, or the vector a non-register call arrived with.
     Value result = native_data()->fn(ctx, args_vec ? std::span<const Value>(*args_vec) : args);
     Object::current_context_ = prev_context;
-    ctx.set_original_this_nullish(prev_nullish);
-    ctx.set_original_this_primitive(prev_primitive);
+    ctx.set_original_this_kind(prev_this_kind);
 
     if (restore_new_target) ctx.set_new_target(saved_new_target);
 
     ctx.set_this_value(old_this_value);
 
-    if (saved_caller_this) {
-        try { ctx.delete_binding("__eval_caller_this__"); } catch (...) {}
-    }
+    if (UNLIKELY_NATIVE(saved_caller_this)) drop_eval_caller_this(ctx);
 
-    return result;
     return result;
 }
 

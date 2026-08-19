@@ -70,8 +70,7 @@ private:
     // call and still reach this context" answer -- see ContextSurvivorGuard's
     // doc comment.
     bool exposed_to_escape_ : 1 = false;
-    bool original_this_was_nullish_ : 1 = false;
-    bool original_this_was_primitive_ : 1 = false; // set when native call had a non-null/undefined primitive thisArg
+
     // Set by Function::construct() right before it calls Function::call() on the same
     // function, so call() can tell "I'm the construct invocation" apart from a plain call
     // made from inside that constructor's body (which must see new.target == undefined).
@@ -90,6 +89,15 @@ private:
     // only ever read as "reached", which keeps a context that could have been
     // freed and never frees one that is still held.
     uint8_t gc_major_epoch_ = 0;
+
+    // What kind of receiver the innermost native call was handed. A builtin
+    // that has to reject a nullish or a primitive `this` asks about this after
+    // the receiver has already been coerced -- Array's generics box a
+    // primitive one and write the box back over the context's this -- so it
+    // cannot be re-derived from there. Held as one value rather than as two
+    // adjacent bits: every native call reads it, overwrites it and puts it
+    // back, which as bitfields was six read-modify-writes of the same byte.
+    uint8_t original_this_kind_ = 0;
 
     Environment* lexical_environment_;
     Environment* variable_environment_;
@@ -243,10 +251,11 @@ public:
     
     bool is_strict_mode() const { return strict_mode_; }
     void set_strict_mode(bool strict) { strict_mode_ = strict; }
-    bool original_this_was_nullish() const { return original_this_was_nullish_; }
-    void set_original_this_nullish(bool v) { original_this_was_nullish_ = v; }
-    bool original_this_was_primitive() const { return original_this_was_primitive_; }
-    void set_original_this_primitive(bool v) { original_this_was_primitive_ = v; }
+    enum OriginalThisKind : uint8_t { kThisReference = 0, kThisNullish = 1, kThisPrimitive = 2 };
+    bool original_this_was_nullish() const { return original_this_kind_ == kThisNullish; }
+    bool original_this_was_primitive() const { return original_this_kind_ == kThisPrimitive; }
+    uint8_t original_this_kind() const { return original_this_kind_; }
+    void set_original_this_kind(uint8_t k) { original_this_kind_ = k; }
 
     Object* get_global_object() const { return global_object_; }
     void set_global_object(Object* global);
