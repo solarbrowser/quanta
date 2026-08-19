@@ -467,6 +467,8 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
     // Class constructors must be called with new
+    // Only a class declaration's constructor carries this, and that is always
+    // compiled function code, so the native entry has no reason to ask.
     if (is_class_constructor_ && !ctx.is_in_constructor_call()) {
         ctx.throw_exception(Value("TypeError: Class constructor " + get_name() + " cannot be invoked without 'new'"));
         return Value();
@@ -726,11 +728,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
         const char probe = 0;
         if (&probe < floor) return throw_call_stack_exceeded(ctx);
     }
-    CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
-
-    if (UNLIKELY_NATIVE(is_class_constructor_ && !ctx.is_in_constructor_call())) {
-        return throw_class_ctor_without_new(ctx, get_name());
-    }
+    CheckedDepthFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
     Value old_this_value = ctx.get_this_value();
 

@@ -86,9 +86,20 @@ public:
         ++depth_;
     }
 
+    // For a caller that has already refused the call past MAX_STACK_DEPTH:
+    // the bound is established before this runs, and the matching pop knows a
+    // frame is there because this put one there.
+    void push_frame_unchecked(const std::string* filename, Function* function_ptr) {
+        frames_[depth_].filename = filename;
+        frames_[depth_].function_ptr = function_ptr;
+        ++depth_;
+    }
+
     void pop_frame() {
         if (depth_) --depth_;
     }
+
+    void pop_frame_unchecked() { --depth_; }
 
     void clear();
     
@@ -116,6 +127,20 @@ private:
 /**
  * RAII helper for managing stack frames
  */
+// Pairs with push_frame_unchecked: for a call site that tested the depth
+// itself, which is every site that has to report the overflow as a RangeError
+// rather than let the push quietly drop the frame.
+class CheckedDepthFrameGuard {
+public:
+    CheckedDepthFrameGuard(CallStack& stack, const std::string* filename, Function* function_ptr)
+        : stack_(stack) { stack_.push_frame_unchecked(filename, function_ptr); }
+    ~CheckedDepthFrameGuard() { stack_.pop_frame_unchecked(); }
+    CheckedDepthFrameGuard(const CheckedDepthFrameGuard&) = delete;
+    CheckedDepthFrameGuard& operator=(const CheckedDepthFrameGuard&) = delete;
+private:
+    CallStack& stack_;
+};
+
 class CallStackFrameGuard {
 private:
     CallStack& stack_;

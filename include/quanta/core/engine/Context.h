@@ -411,9 +411,11 @@ public:
 
     void set_pending_construct_call(bool v) { pending_construct_call_ = v; }
     bool consume_pending_construct_call() {
-        bool v = pending_construct_call_;
+        // Only Function::construct ever sets this, so nearly every call finds
+        // it already false and the clear is a write for nothing.
+        if (!pending_construct_call_) return false;
         pending_construct_call_ = false;
-        return v;
+        return true;
     }
 
     void register_built_in_object(const std::string& name, Object* object);
