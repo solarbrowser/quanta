@@ -691,11 +691,6 @@ struct NativeArgDepthScope {
 [[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
                                               Value this_value, const std::vector<Value>* args_vec,
                                               bool is_construct_invocation) {
-    if (!ctx.check_execution_depth()) {
-        ctx.throw_exception(Value(std::string("call stack size exceeded")));
-        return Value();
-    }
-    
     Value old_this_value = ctx.get_this_value();
 
     // Annex B's sloppy-mode null/undefined-this-becomes-global substitution only
@@ -726,9 +721,19 @@ struct NativeArgDepthScope {
     ctx.set_original_this_primitive(was_primitive);
 
     // A plain call (not this construct invocation) must see new.target == undefined --
-    // ctx is shared with the caller here since native calls don't get their own Context.
-    Value saved_new_target = ctx.get_new_target();
-    if (!is_construct_invocation) ctx.set_new_target(Value());
+    // ctx is shared with the caller here since native calls don't get their own
+    // Context. Only a construct invocation ever puts anything there, so an
+    // ordinary call almost always finds it already undefined, and then there is
+    // nothing to clear and nothing to put back.
+    Value saved_new_target;
+    bool restore_new_target = false;
+    if (!is_construct_invocation) {
+        saved_new_target = ctx.get_new_target();
+        if (!saved_new_target.is_undefined()) {
+            ctx.set_new_target(Value());
+            restore_new_target = true;
+        }
+    }
 
     // ctx is reused as-is (no fresh Context for natives) -- if native_data()->fn
     // stashes current_context_ somewhere long-lived (Promise's own ctor,
@@ -754,7 +759,7 @@ struct NativeArgDepthScope {
     ctx.set_original_this_nullish(prev_nullish);
     ctx.set_original_this_primitive(prev_primitive);
 
-    if (!is_construct_invocation) ctx.set_new_target(saved_new_target);
+    if (restore_new_target) ctx.set_new_target(saved_new_target);
 
     ctx.set_this_value(old_this_value);
 
