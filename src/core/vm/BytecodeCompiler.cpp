@@ -5602,10 +5602,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             using Elem = TemplateLiteral::Element;
             int result_reg = alloc_temp();
             if (failed_) return false;
-            emit(Op::LdaConst);
-            emit_u16(add_constant(Value(std::string())));
-            emit(Op::Star);
-            emit_u8(static_cast<uint8_t>(result_reg));
+            // The first piece is the result so far -- it does not need adding
+            // to anything. Seeding with an empty string instead cost every
+            // template literal one whole addition, and an addition here is
+            // the general one, with both operands' types to work out first.
+            bool seeded = false;
             for (const auto& el : elements) {
                 if (el.type == Elem::Type::TEXT) {
                     if (el.text.empty()) continue;
@@ -5615,8 +5616,18 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     if (!compile_expression(el.expression.get())) return false;
                     emit(Op::ToTemplateString);
                 }
-                emit(Op::Add);
+                if (seeded) {
+                    emit(Op::Add);
+                    emit_u8(static_cast<uint8_t>(result_reg));
+                }
+                emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(result_reg));
+                seeded = true;
+            }
+            // Nothing but empty text: the result is the empty string.
+            if (!seeded) {
+                emit(Op::LdaConst);
+                emit_u16(add_constant(Value(std::string())));
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(result_reg));
             }
