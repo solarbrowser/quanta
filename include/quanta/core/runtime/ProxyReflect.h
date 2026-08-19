@@ -7,6 +7,7 @@
 #pragma once
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include <memory>
 
@@ -41,12 +42,12 @@ public:
     bool prevent_extensions_trap();
     PropertyDescriptor get_own_property_descriptor_trap(const Value& key);
     bool define_property_trap(const Value& key, const PropertyDescriptor& desc);
-    Value apply_trap(const std::vector<Value>& args, const Value& this_value);
+    Value apply_trap(std::span<const Value> args, const Value& this_value);
     // new_target defaults to this proxy; Reflect.construct may pass a different one.
-    Value construct_trap(const std::vector<Value>& args, Object* new_target = nullptr);
+    Value construct_trap(std::span<const Value> args, Object* new_target = nullptr);
     
-    static Value proxy_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value proxy_revocable(Context& ctx, const std::vector<Value>& args);
+    static Value proxy_constructor(Context& ctx, std::span<const Value> args);
+    static Value proxy_revocable(Context& ctx, std::span<const Value> args);
     
     static void setup_proxy(Context& ctx);
     
@@ -90,19 +91,19 @@ inline const Proxy* as_proxy(const Object* obj) {
  */
 class Reflect {
 public:
-    static Value reflect_get(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_set(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_has(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_delete_property(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_own_keys(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_get_prototype_of(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_set_prototype_of(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_is_extensible(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_prevent_extensions(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_get_own_property_descriptor(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_define_property(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_apply(Context& ctx, const std::vector<Value>& args);
-    static Value reflect_construct(Context& ctx, const std::vector<Value>& args);
+    static Value reflect_get(Context& ctx, std::span<const Value> args);
+    static Value reflect_set(Context& ctx, std::span<const Value> args);
+    static Value reflect_has(Context& ctx, std::span<const Value> args);
+    static Value reflect_delete_property(Context& ctx, std::span<const Value> args);
+    static Value reflect_own_keys(Context& ctx, std::span<const Value> args);
+    static Value reflect_get_prototype_of(Context& ctx, std::span<const Value> args);
+    static Value reflect_set_prototype_of(Context& ctx, std::span<const Value> args);
+    static Value reflect_is_extensible(Context& ctx, std::span<const Value> args);
+    static Value reflect_prevent_extensions(Context& ctx, std::span<const Value> args);
+    static Value reflect_get_own_property_descriptor(Context& ctx, std::span<const Value> args);
+    static Value reflect_define_property(Context& ctx, std::span<const Value> args);
+    static Value reflect_apply(Context& ctx, std::span<const Value> args);
+    static Value reflect_construct(Context& ctx, std::span<const Value> args);
     
     static void setup_reflect(Context& ctx);
     

@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/MapSet.h"
+#include <span>
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
@@ -262,7 +263,7 @@ std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) con
                     [](const MapEntry& e) -> const Value& { return e.key; });
 }
 
-Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
+Value Map::map_constructor(Context& ctx, std::span<const Value> args) {
     if (!ctx.is_in_constructor_call()) {
         ctx.throw_type_error("Constructor Map requires 'new'");
         return Value();
@@ -337,7 +338,7 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
     return Value(map_obj);
 }
 
-Value Map::map_set(Context& ctx, const std::vector<Value>& args) {
+Value Map::map_set(Context& ctx, std::span<const Value> args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
         ctx.throw_type_error("Map.prototype.set called on non-object");
@@ -356,7 +357,7 @@ Value Map::map_set(Context& ctx, const std::vector<Value>& args) {
     return Value(obj);
 }
 
-Value Map::map_get(Context& ctx, const std::vector<Value>& args) {
+Value Map::map_get(Context& ctx, std::span<const Value> args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
         ctx.throw_type_error("Map.prototype.get called on non-object");
@@ -373,7 +374,7 @@ Value Map::map_get(Context& ctx, const std::vector<Value>& args) {
     return map->get(key);
 }
 
-Value Map::map_has(Context& ctx, const std::vector<Value>& args) {
+Value Map::map_has(Context& ctx, std::span<const Value> args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
         ctx.throw_type_error("Map.prototype.has called on non-object");
@@ -390,7 +391,7 @@ Value Map::map_has(Context& ctx, const std::vector<Value>& args) {
     return Value(map->has(key));
 }
 
-Value Map::map_delete(Context& ctx, const std::vector<Value>& args) {
+Value Map::map_delete(Context& ctx, std::span<const Value> args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
         ctx.throw_type_error("Map.prototype.delete called on non-object");
@@ -409,7 +410,7 @@ Value Map::map_delete(Context& ctx, const std::vector<Value>& args) {
     return Value(map->delete_key(key));
 }
 
-Value Map::map_clear(Context& ctx, const std::vector<Value>& args) {
+Value Map::map_clear(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Value this_value = ctx.get_binding("this");
@@ -429,7 +430,7 @@ Value Map::map_clear(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-Value Map::map_size_getter(Context& ctx, const std::vector<Value>& args) {
+Value Map::map_size_getter(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Object* obj = ctx.get_this_binding();
@@ -446,7 +447,7 @@ Value Map::map_size_getter(Context& ctx, const std::vector<Value>& args) {
     return Value(static_cast<double>(map->size()));
 }
 
-Value Map::map_iterator_method(Context& ctx, const std::vector<Value>& args) {
+Value Map::map_iterator_method(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Object* obj = ctx.get_this_binding();
@@ -497,7 +498,7 @@ void Map::setup_map_prototype(Context& ctx) {
 
     // forEach method
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Map) {
                 ctx.throw_type_error("Map.prototype.forEach called on non-Map");
@@ -524,7 +525,7 @@ void Map::setup_map_prototype(Context& ctx) {
 
     // keys method
     auto keys_fn = ObjectFactory::create_native_function("keys",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Map) {
@@ -540,7 +541,7 @@ void Map::setup_map_prototype(Context& ctx) {
 
     // values method
     auto values_fn = ObjectFactory::create_native_function("values",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Map) {
@@ -568,7 +569,7 @@ void Map::setup_map_prototype(Context& ctx) {
     }
 
     auto map_getOrInsert_fn = ObjectFactory::create_native_function("getOrInsert",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Map) { ctx.throw_type_error("Map.prototype.getOrInsert"); return Value(); }
             Map* m = static_cast<Map*>(obj);
@@ -582,7 +583,7 @@ void Map::setup_map_prototype(Context& ctx) {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto map_getOrInsertComputed_fn = ObjectFactory::create_native_function("getOrInsertComputed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Map) { ctx.throw_type_error("Map.prototype.getOrInsertComputed"); return Value(); }
             if (args.size() < 2 || !args[1].is_function()) { ctx.throw_type_error("callbackFn is not a function"); return Value(); }
@@ -605,7 +606,7 @@ void Map::setup_map_prototype(Context& ctx) {
     Map::prototype_object = map_prototype.get();
 
     auto map_groupBy_fn = ObjectFactory::create_native_function("groupBy",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 2 || !args[1].is_function()) {
                 ctx.throw_type_error("Map.groupBy requires a callback function");
                 return Value();
@@ -704,7 +705,7 @@ void Map::setup_map_prototype(Context& ctx) {
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
         if (species_sym) {
             auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     (void)args;
                     Object* self = ctx.get_this_binding();
                     return self ? Value(self) : Value();
@@ -811,7 +812,7 @@ std::vector<Set::SetEntry>::const_iterator Set::find_value(const Value& value) c
                     [](const SetEntry& e) -> const Value& { return e.value; });
 }
 
-Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
+Value Set::set_constructor(Context& ctx, std::span<const Value> args) {
     if (!ctx.is_in_constructor_call()) {
         ctx.throw_type_error("Constructor Set requires 'new'");
         return Value();
@@ -877,7 +878,7 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
     return Value(set_obj);
 }
 
-Value Set::set_add(Context& ctx, const std::vector<Value>& args) {
+Value Set::set_add(Context& ctx, std::span<const Value> args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
         ctx.throw_type_error("Set.prototype.add called on non-object");
@@ -895,7 +896,7 @@ Value Set::set_add(Context& ctx, const std::vector<Value>& args) {
     return Value(obj);
 }
 
-Value Set::set_has(Context& ctx, const std::vector<Value>& args) {
+Value Set::set_has(Context& ctx, std::span<const Value> args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
         ctx.throw_type_error("Set.prototype.has called on non-object");
@@ -912,7 +913,7 @@ Value Set::set_has(Context& ctx, const std::vector<Value>& args) {
     return Value(set->has(value));
 }
 
-Value Set::set_delete(Context& ctx, const std::vector<Value>& args) {
+Value Set::set_delete(Context& ctx, std::span<const Value> args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
         ctx.throw_type_error("Set.prototype.delete called on non-object");
@@ -929,7 +930,7 @@ Value Set::set_delete(Context& ctx, const std::vector<Value>& args) {
     return Value(set->delete_value(value));
 }
 
-Value Set::set_clear(Context& ctx, const std::vector<Value>& args) {
+Value Set::set_clear(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Object* obj = ctx.get_this_binding();
@@ -947,7 +948,7 @@ Value Set::set_clear(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-Value Set::set_size_getter(Context& ctx, const std::vector<Value>& args) {
+Value Set::set_size_getter(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Object* obj = ctx.get_this_binding();
@@ -964,7 +965,7 @@ Value Set::set_size_getter(Context& ctx, const std::vector<Value>& args) {
     return Value(static_cast<double>(set->size()));
 }
 
-Value Set::set_iterator_method(Context& ctx, const std::vector<Value>& args) {
+Value Set::set_iterator_method(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Object* obj = ctx.get_this_binding();
@@ -1012,7 +1013,7 @@ void Set::setup_set_prototype(Context& ctx) {
     
     // forEach method
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) {
                 ctx.throw_type_error("Set.prototype.forEach called on non-Set");
@@ -1040,7 +1041,7 @@ void Set::setup_set_prototype(Context& ctx) {
 
     // values method
     auto values_fn = ObjectFactory::create_native_function("values",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) {
@@ -1060,7 +1061,7 @@ void Set::setup_set_prototype(Context& ctx) {
 
     // entries method
     auto entries_fn = ObjectFactory::create_native_function("entries",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) {
@@ -1185,7 +1186,7 @@ void Set::setup_set_prototype(Context& ctx) {
     };
 
     auto union_fn = ObjectFactory::create_native_function("union",
-        [validate_set_like, iterate_keys, normalize_zero](Context& ctx, const std::vector<Value>& args) -> Value {
+        [validate_set_like, iterate_keys, normalize_zero](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.union"); return Value(); }
             Set* self = static_cast<Set*>(obj);
@@ -1206,7 +1207,7 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("union", Value(union_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto intersection_fn = ObjectFactory::create_native_function("intersection",
-        [call_has, iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, iterate_keys, validate_set_like](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.intersection"); return Value(); }
             Set* self = static_cast<Set*>(obj);
@@ -1236,7 +1237,7 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("intersection", Value(intersection_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto difference_fn = ObjectFactory::create_native_function("difference",
-        [call_has, iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, iterate_keys, validate_set_like](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.difference"); return Value(); }
             Set* self = static_cast<Set*>(obj);
@@ -1266,7 +1267,7 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("difference", Value(difference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto symmetricDifference_fn = ObjectFactory::create_native_function("symmetricDifference",
-        [iterate_keys, validate_set_like, normalize_zero](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterate_keys, validate_set_like, normalize_zero](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.symmetricDifference"); return Value(); }
             Set* self = static_cast<Set*>(obj);
@@ -1292,7 +1293,7 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("symmetricDifference", Value(symmetricDifference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isSubsetOf_fn = ObjectFactory::create_native_function("isSubsetOf",
-        [call_has, validate_set_like, iterate_self_live](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, validate_set_like, iterate_self_live](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isSubsetOf"); return Value(); }
             Set* self = static_cast<Set*>(obj);
@@ -1321,7 +1322,7 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("isSubsetOf", Value(isSubsetOf_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isSupersetOf_fn = ObjectFactory::create_native_function("isSupersetOf",
-        [iterate_keys_lazy, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterate_keys_lazy, validate_set_like](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isSupersetOf"); return Value(); }
             Set* self = static_cast<Set*>(obj);
@@ -1342,7 +1343,7 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("isSupersetOf", Value(isSupersetOf_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isDisjointFrom_fn = ObjectFactory::create_native_function("isDisjointFrom",
-        [call_has, iterate_keys_lazy, validate_set_like, iterate_self_live](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, iterate_keys_lazy, validate_set_like, iterate_self_live](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isDisjointFrom"); return Value(); }
             Set* self = static_cast<Set*>(obj);
@@ -1391,7 +1392,7 @@ void Set::setup_set_prototype(Context& ctx) {
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
         if (species_sym) {
             auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     (void)args;
                     Object* self = ctx.get_this_binding();
                     return self ? Value(self) : Value();
@@ -1485,7 +1486,7 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
     };
 
     auto wm_getOrInsert_fn = ObjectFactory::create_native_function("getOrInsert",
-        [can_hold_weakly](Context& ctx, const std::vector<Value>& args) -> Value {
+        [can_hold_weakly](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::WeakMap) { ctx.throw_type_error("WeakMap.prototype.getOrInsert"); return Value(); }
             WeakMap* wm = static_cast<WeakMap*>(obj);
@@ -1507,7 +1508,7 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto wm_getOrInsertComputed_fn = ObjectFactory::create_native_function("getOrInsertComputed",
-        [can_hold_weakly](Context& ctx, const std::vector<Value>& args) -> Value {
+        [can_hold_weakly](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::WeakMap) { ctx.throw_type_error("WeakMap.prototype.getOrInsertComputed"); return Value(); }
             WeakMap* wm = static_cast<WeakMap*>(obj);
@@ -1613,7 +1614,7 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
     ctx.register_built_in_object("WeakSet", weakset_constructor_fn.release());
 }
 
-Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args) {
+Value WeakMap::weakmap_constructor(Context& ctx, std::span<const Value> args) {
     if (!ctx.is_in_constructor_call()) {
         ctx.throw_type_error("Constructor WeakMap requires 'new'");
         return Value();
@@ -1664,7 +1665,7 @@ Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args)
     return Value(wm_obj);
 }
 
-Value WeakMap::weakmap_set(Context& ctx, const std::vector<Value>& args) {
+Value WeakMap::weakmap_set(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("WeakMap.prototype.set requires 2 arguments");
         return Value();
@@ -1696,7 +1697,7 @@ Value WeakMap::weakmap_set(Context& ctx, const std::vector<Value>& args) {
     }
 }
 
-Value WeakMap::weakmap_get(Context& ctx, const std::vector<Value>& args) {
+Value WeakMap::weakmap_get(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value();
     }
@@ -1722,7 +1723,7 @@ Value WeakMap::weakmap_get(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-Value WeakMap::weakmap_has(Context& ctx, const std::vector<Value>& args) {
+Value WeakMap::weakmap_has(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(false);
     }
@@ -1748,7 +1749,7 @@ Value WeakMap::weakmap_has(Context& ctx, const std::vector<Value>& args) {
     return Value(false);
 }
 
-Value WeakMap::weakmap_delete(Context& ctx, const std::vector<Value>& args) {
+Value WeakMap::weakmap_delete(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(false);
     }
@@ -1774,7 +1775,7 @@ Value WeakMap::weakmap_delete(Context& ctx, const std::vector<Value>& args) {
     return Value(false);
 }
 
-Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args) {
+Value WeakSet::weakset_constructor(Context& ctx, std::span<const Value> args) {
     if (!ctx.is_in_constructor_call()) {
         ctx.throw_type_error("Constructor WeakSet requires 'new'");
         return Value();
@@ -1813,7 +1814,7 @@ Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args)
     return Value(ws_obj);
 }
 
-Value WeakSet::weakset_add(Context& ctx, const std::vector<Value>& args) {
+Value WeakSet::weakset_add(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("WeakSet.prototype.add requires an argument");
         return Value();
@@ -1845,7 +1846,7 @@ Value WeakSet::weakset_add(Context& ctx, const std::vector<Value>& args) {
     }
 }
 
-Value WeakSet::weakset_has(Context& ctx, const std::vector<Value>& args) {
+Value WeakSet::weakset_has(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(false);
     }
@@ -1871,7 +1872,7 @@ Value WeakSet::weakset_has(Context& ctx, const std::vector<Value>& args) {
     return Value(false);
 }
 
-Value WeakSet::weakset_delete(Context& ctx, const std::vector<Value>& args) {
+Value WeakSet::weakset_delete(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(false);
     }
@@ -1920,7 +1921,7 @@ Value WeakRef::deref() const {
     return Value();
 }
 
-Value WeakRef::weakref_constructor(Context& ctx, const std::vector<Value>& args) {
+Value WeakRef::weakref_constructor(Context& ctx, std::span<const Value> args) {
     if (!ctx.is_in_constructor_call()) {
         ctx.throw_type_error("Constructor WeakRef requires 'new'");
         return Value();
@@ -1948,7 +1949,7 @@ Value WeakRef::weakref_constructor(Context& ctx, const std::vector<Value>& args)
     return Value(weakref.release());
 }
 
-Value WeakRef::weakref_deref(Context& ctx, const std::vector<Value>& args) {
+Value WeakRef::weakref_deref(Context& ctx, std::span<const Value> args) {
     (void)args;
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj || this_obj->get_type() != Object::ObjectType::WeakRef) {
@@ -2035,7 +2036,7 @@ void FinalizationRegistry::enqueue_cleanup_job() {
     }, {Value(self)});
 }
 
-Value FinalizationRegistry::fr_constructor(Context& ctx, const std::vector<Value>& args) {
+Value FinalizationRegistry::fr_constructor(Context& ctx, std::span<const Value> args) {
     if (!ctx.is_in_constructor_call()) {
         ctx.throw_type_error("Constructor FinalizationRegistry requires 'new'");
         return Value();
@@ -2060,7 +2061,7 @@ Value FinalizationRegistry::fr_constructor(Context& ctx, const std::vector<Value
     return Value(registry.release());
 }
 
-Value FinalizationRegistry::fr_register(Context& ctx, const std::vector<Value>& args) {
+Value FinalizationRegistry::fr_register(Context& ctx, std::span<const Value> args) {
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj || this_obj->get_type() != Object::ObjectType::FinalizationRegistry) {
         ctx.throw_type_error("FinalizationRegistry.prototype.register requires a FinalizationRegistry this");
@@ -2095,7 +2096,7 @@ Value FinalizationRegistry::fr_register(Context& ctx, const std::vector<Value>& 
     return Value();
 }
 
-Value FinalizationRegistry::fr_unregister(Context& ctx, const std::vector<Value>& args) {
+Value FinalizationRegistry::fr_unregister(Context& ctx, std::span<const Value> args) {
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj || this_obj->get_type() != Object::ObjectType::FinalizationRegistry) {
         ctx.throw_type_error("FinalizationRegistry.prototype.unregister requires a FinalizationRegistry this");

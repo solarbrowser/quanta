@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/gc/FiberRegistry.h"
+#include <span>
 #include "quanta/parser/AST.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/vm/Interpreter.h"
@@ -1446,7 +1447,7 @@ bool ForOfStatement::get_iterator(Context& ctx, const Value& iterable, Value& ou
         if (iterator_symbol) {
             std::string str_value = iterable.to_string();
             auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
-                [str_value](Context&, const std::vector<Value>&) -> Value {
+                [str_value](Context&, std::span<const Value>) -> Value {
                     auto iterator = std::make_unique<StringIterator>(str_value);
                     return Value(iterator.release());
                 });
@@ -1771,13 +1772,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         is_pending = true;
                         auto self = async_gen;
                         auto on_f = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            [self, gctx](Context&, std::span<const Value> args) -> Value {
                                 Value val = args.empty() ? Value() : args[0];
                                 self->resume_from_await(val, false);
                                 return Value();
                             });
                         auto on_r = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            [self, gctx](Context&, std::span<const Value> args) -> Value {
                                 Value reason = args.empty() ? Value() : args[0];
                                 self->resume_from_await(reason, true);
                                 return Value();
@@ -1889,7 +1890,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                     if (value_wrapper) {
                         auto unwrap_f = ObjectFactory::create_native_function("",
-                            [next_result_promise, sync_done](Context&, const std::vector<Value>& args) -> Value {
+                            [next_result_promise, sync_done](Context&, std::span<const Value> args) -> Value {
                                 Value val = args.empty() ? Value() : args[0];
                                 auto res_obj = ObjectFactory::create_object();
                                 res_obj->set_property("value", val);
@@ -1898,7 +1899,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 return Value();
                             });
                         auto unwrap_r = ObjectFactory::create_native_function("",
-                            [next_result_promise, sync_done, iterator_val, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            [next_result_promise, sync_done, iterator_val, gctx](Context&, std::span<const Value> args) -> Value {
                                 Value reason = args.empty() ? Value() : args[0];
                                 // closeOnRejection: a rejected value closes the sync iterator
                                 // before the rejection propagates; close failures are swallowed.
@@ -1929,13 +1930,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     is_pending = true;
                     auto self = exec->shared_from_this();
                     auto on_f2 = ObjectFactory::create_native_function("",
-                        [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                        [self, gctx](Context&, std::span<const Value> args) -> Value {
                             Value val = args.empty() ? Value() : args[0];
                             self->resume(val, false);
                             return Value();
                         });
                     auto on_r2 = ObjectFactory::create_native_function("",
-                        [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                        [self, gctx](Context&, std::span<const Value> args) -> Value {
                             Value reason = args.empty() ? Value() : args[0];
                             self->resume(reason, true);
                             return Value();
@@ -1968,13 +1969,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         is_pending = true;
                         auto self = exec->shared_from_this();
                         auto on_f = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            [self, gctx](Context&, std::span<const Value> args) -> Value {
                                 Value val = args.empty() ? Value() : args[0];
                                 self->resume(val, false);
                                 return Value();
                             });
                         auto on_r = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            [self, gctx](Context&, std::span<const Value> args) -> Value {
                                 Value reason = args.empty() ? Value() : args[0];
                                 self->resume(reason, true);
                                 return Value();
@@ -2062,13 +2063,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             v_is_pending = true;
                             auto self = async_gen;
                             auto on_f = ObjectFactory::create_native_function("",
-                                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                [self, gctx](Context&, std::span<const Value> args) -> Value {
                                     Value val = args.empty() ? Value() : args[0];
                                     self->resume_from_await(val, false);
                                     return Value();
                                 });
                             auto on_r = ObjectFactory::create_native_function("",
-                                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                [self, gctx](Context&, std::span<const Value> args) -> Value {
                                     Value reason = args.empty() ? Value() : args[0];
                                     self->resume_from_await(reason, true);
                                     return Value();
@@ -2194,7 +2195,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
             if (iterator_symbol) {
                 std::string str_value = iterable.to_string();
                 auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
-                    [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [str_value](Context& ctx, std::span<const Value> args) -> Value {
                         (void)ctx; (void)args;
                         auto iterator = std::make_unique<StringIterator>(str_value);
                         return Value(iterator.release());

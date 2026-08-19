@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/GlobalsBuiltin.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include <memory>
@@ -255,7 +256,7 @@ void register_global_builtins(Context& ctx) {
     };
 
     auto parseInt_fn = ObjectFactory::create_native_function("parseInt",
-        [js_trim](Context& ctx, const std::vector<Value>& args) -> Value {
+        [js_trim](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value::nan();
 
             std::string str = js_trim(args[0].to_property_key());
@@ -317,7 +318,7 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("parseInt", Value(parseInt_fn.release()), true, true, false);
 
     auto parseFloat_fn = ObjectFactory::create_native_function("parseFloat",
-        [js_trim](Context& ctx, const std::vector<Value>& args) -> Value {
+        [js_trim](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value::nan();
 
             // ToString via the string-hinted ToPrimitive path (toString before valueOf).
@@ -374,7 +375,7 @@ void register_global_builtins(Context& ctx) {
     }
 
     auto isNaN_global_fn = ObjectFactory::create_native_function("isNaN",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Global isNaN: coerce to number first, then check if NaN
             if (args.empty()) return Value(true);
 
@@ -390,7 +391,7 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("isNaN", Value(isNaN_global_fn.release()), true, true, false);
 
     auto isFinite_global_fn = ObjectFactory::create_native_function("isFinite",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value(false);
             double num = args[0].to_number();
             return Value(std::isfinite(num));
@@ -398,7 +399,7 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("isFinite", Value(isFinite_global_fn.release()), true, true, false);
 
     auto eval_fn = ObjectFactory::create_native_function("eval",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value();
             if (!args[0].is_string()) return args[0];
 
@@ -774,7 +775,7 @@ void register_global_builtins(Context& ctx) {
         auto test262_host = ObjectFactory::create_object();
 
         auto detach_fn = ObjectFactory::create_native_function("detachArrayBuffer",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [](Context& ctx, std::span<const Value> args) -> Value {
                 if (args.empty() || !args[0].is_object() || !args[0].as_object()->is_array_buffer()) {
                     ctx.throw_type_error("detachArrayBuffer requires an ArrayBuffer argument");
                     return Value();
@@ -785,9 +786,9 @@ void register_global_builtins(Context& ctx) {
         test262_host->set_property("detachArrayBuffer", Value(detach_fn.release()), PropertyAttributes::BuiltinFunction);
 
         // createRealm: spawn a new Engine with its own intrinsics; return {global, eval, createRealm}
-        using RealmFn = std::function<Value(Context&, const std::vector<Value>&)>;
+        using RealmFn = std::function<Value(Context&, std::span<const Value>)>;
         auto make_realm_fn = std::make_shared<RealmFn>();
-        *make_realm_fn = [make_realm_fn](Context& caller_ctx, const std::vector<Value>&) -> Value {
+        *make_realm_fn = [make_realm_fn](Context& caller_ctx, std::span<const Value>) -> Value {
             Engine* new_engine = new Engine(); // intentionally leaked -- consistent with engine memory model
             if (!new_engine) { caller_ctx.throw_type_error("createRealm: failed to create engine"); return Value(); }
             if (!new_engine->initialize()) { caller_ctx.throw_type_error("createRealm: failed to initialize engine"); return Value(); }
@@ -800,7 +801,7 @@ void register_global_builtins(Context& ctx) {
             realm_obj->set_property("global", Value(new_global));
 
             auto eval_fn = ObjectFactory::create_native_function("eval",
-                [new_engine](Context& ctx, const std::vector<Value>& args) -> Value {
+                [new_engine](Context& ctx, std::span<const Value> args) -> Value {
                     if (args.empty()) return Value();
                     auto result = new_engine->evaluate(args[0].to_string());
                     if (!result.success) {
@@ -815,7 +816,7 @@ void register_global_builtins(Context& ctx) {
             realm_obj->set_property("evalScript", realm_obj->get_property("eval"));
 
             auto sub_create = ObjectFactory::create_native_function("createRealm",
-                [make_realm_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+                [make_realm_fn](Context& ctx, std::span<const Value> args) -> Value {
                     return (*make_realm_fn)(ctx, args);
                 }, 0);
             realm_obj->set_property("createRealm", Value(sub_create.release()), PropertyAttributes::BuiltinFunction);
@@ -825,7 +826,7 @@ void register_global_builtins(Context& ctx) {
         };
 
         auto createRealm_fn = ObjectFactory::create_native_function("createRealm",
-            [make_realm_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+            [make_realm_fn](Context& ctx, std::span<const Value> args) -> Value {
                 return (*make_realm_fn)(ctx, args);
             }, 0);
         test262_host->set_property("createRealm", Value(createRealm_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -834,7 +835,7 @@ void register_global_builtins(Context& ctx) {
         // getter reads a [[ModuleSourceClassName]] slot that no object carries yet.
         {
             auto ams_ctor = ObjectFactory::create_native_function("AbstractModuleSource",
-                [](Context& ctx, const std::vector<Value>&) -> Value {
+                [](Context& ctx, std::span<const Value>) -> Value {
                     ctx.throw_type_error("%AbstractModuleSource% is not constructible");
                     return Value();
                 }, 0);
@@ -843,7 +844,7 @@ void register_global_builtins(Context& ctx) {
             Symbol* ams_tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
             if (ams_tag_sym) {
                 auto tag_getter = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
-                    [](Context&, const std::vector<Value>&) -> Value { return Value(); }, 0);
+                    [](Context&, std::span<const Value>) -> Value { return Value(); }, 0);
                 PropertyDescriptor tag_desc;
                 tag_desc.set_getter(tag_getter.release());
                 tag_desc.set_enumerable(false);
@@ -891,7 +892,7 @@ void register_global_builtins(Context& ctx) {
     };
 
     auto encode_uri_fn = ObjectFactory::create_native_function("encodeURI",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             std::string input;
             if (!args.empty() && !uri_arg_to_string(ctx, args[0], input)) return Value();
             if (args.empty()) input = "undefined";
@@ -902,7 +903,7 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("encodeURI", Value(encode_uri_fn.release()), true, true, false);
 
     auto decode_uri_fn = ObjectFactory::create_native_function("decodeURI",
-        [is_uri_reserved](Context& ctx, const std::vector<Value>& args) -> Value {
+        [is_uri_reserved](Context& ctx, std::span<const Value> args) -> Value {
             std::string input;
             if (!args.empty() && !uri_arg_to_string(ctx, args[0], input)) return Value();
             if (args.empty()) input = "undefined";
@@ -913,7 +914,7 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("decodeURI", Value(decode_uri_fn.release()), true, true, false);
 
     auto encode_uri_component_fn = ObjectFactory::create_native_function("encodeURIComponent",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             std::string input;
             if (!args.empty() && !uri_arg_to_string(ctx, args[0], input)) return Value();
             if (args.empty()) input = "undefined";
@@ -924,7 +925,7 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("encodeURIComponent", Value(encode_uri_component_fn.release()), true, true, false);
 
     auto decode_uri_component_fn = ObjectFactory::create_native_function("decodeURIComponent",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             std::string input;
             if (!args.empty() && !uri_arg_to_string(ctx, args[0], input)) return Value();
             if (args.empty()) input = "undefined";
@@ -935,7 +936,7 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("decodeURIComponent", Value(decode_uri_component_fn.release()), true, true, false);
     
     auto bigint_fn = ObjectFactory::create_native_function("BigInt",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) {
                 ctx.throw_type_error("BigInt constructor requires an argument");
                 return Value();
@@ -971,7 +972,7 @@ void register_global_builtins(Context& ctx) {
             return Value();
         });
     auto asIntN_fn = ObjectFactory::create_native_function("asIntN",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 2) { ctx.throw_type_error("BigInt.asIntN requires 2 arguments"); return Value(); }
             // ToIndex(bits): Symbol/BigInt → TypeError, negative → RangeError
             if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
@@ -1013,7 +1014,7 @@ void register_global_builtins(Context& ctx) {
     bigint_fn->set_property("asIntN", Value(asIntN_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto asUintN_fn = ObjectFactory::create_native_function("asUintN",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 2) { ctx.throw_type_error("BigInt.asUintN requires 2 arguments"); return Value(); }
             if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
             double n_raw2 = args[0].to_number();
@@ -1052,7 +1053,7 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("BigInt", Value(bigint_fn.release()), false);
 
     auto escape_fn = ObjectFactory::create_native_function("escape",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) {
                 return Value(std::string("undefined"));
             }
@@ -1147,7 +1148,7 @@ void register_global_builtins(Context& ctx) {
     escape_fn.release();
 
     auto unescape_fn = ObjectFactory::create_native_function("unescape",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) {
                 return Value(std::string("undefined"));
             }
@@ -1260,7 +1261,7 @@ void register_global_builtins(Context& ctx) {
 
     auto console_obj = ObjectFactory::create_object();
     auto console_log_fn = ObjectFactory::create_native_function("log", 
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             for (size_t i = 0; i < args.size(); i++) {
                 if (i > 0) std::cout << " ";
                 std::cout << args[i].to_string();
@@ -1269,7 +1270,7 @@ void register_global_builtins(Context& ctx) {
             return Value();
         }, 1);
     auto console_error_fn = ObjectFactory::create_native_function("error",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             for (size_t i = 0; i < args.size(); i++) {
                 if (i > 0) std::cerr << " ";
                 std::cerr << args[i].to_string();
@@ -1278,7 +1279,7 @@ void register_global_builtins(Context& ctx) {
             return Value();
         });
     auto console_warn_fn = ObjectFactory::create_native_function("warn",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             for (size_t i = 0; i < args.size(); i++) {
                 if (i > 0) std::cout << " ";
                 std::cout << args[i].to_string();
@@ -1295,7 +1296,7 @@ void register_global_builtins(Context& ctx) {
 
     // Dynamic import() -- module loading with ES module namespace object
     auto import_fn = ObjectFactory::create_native_function("import",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             auto* promise = Quanta::as_promise(promise_obj.get());
             if (!promise) return Value(promise_obj.release());
@@ -1376,7 +1377,7 @@ void register_global_builtins(Context& ctx) {
     // Step 6: ToString(specifier) -- IfAbruptRejectPromise if it throws.
     // Step 9: HostLoadImportedModule -> GetModuleSource -> always SyntaxError for SourceTextModuleRecord.
     auto import_source_fn = ObjectFactory::create_native_function("__import_source__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             auto* promise = Quanta::as_promise(promise_obj.get());
             if (!promise) return Value(promise_obj.release());
@@ -1414,14 +1415,14 @@ void register_global_builtins(Context& ctx) {
     // Class field init context flags -- set/clear in_class_field_init_ around each field initializer
     // so that direct eval inside a class field initializer enforces the ContainsArguments early error.
     auto cfi_enter_fn = ObjectFactory::create_native_function("__cfi_enter__",
-        [](Context& ctx, const std::vector<Value>&) -> Value {
+        [](Context& ctx, std::span<const Value>) -> Value {
             ctx.set_in_class_field_init(true);
             return Value();
         }, 0);
     ctx.get_global_object()->set_internal_slot("__cfi_enter__", Value(cfi_enter_fn.release()));
 
     auto cfi_exit_fn = ObjectFactory::create_native_function("__cfi_exit__",
-        [](Context& ctx, const std::vector<Value>&) -> Value {
+        [](Context& ctx, std::span<const Value>) -> Value {
             ctx.set_in_class_field_init(false);
             return Value();
         }, 0);
@@ -1430,7 +1431,7 @@ void register_global_builtins(Context& ctx) {
     // __pfadd__(obj, name [, value]): PrivateFieldAdd - adds a private field slot to obj.
     // Used by class field declarations so the slot exists before user assignments check it.
     auto pfadd_fn = ObjectFactory::create_native_function("__pfadd__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 2 || !args[0].is_object()) return Value();
             Object* obj = args[0].as_object();
             std::string name = args[1].to_string();
@@ -1447,7 +1448,7 @@ void register_global_builtins(Context& ctx) {
     // treatment (not generic member assignment), so it's applied explicitly here
     // rather than folded into AssignmentExpression's identifier-only naming check.
     auto setfnname_fn = ObjectFactory::create_native_function("__setfnname__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             if (args.empty()) return Value();
             if (args.size() >= 2 && args[0].is_function()) {
@@ -1464,7 +1465,7 @@ void register_global_builtins(Context& ctx) {
     // CreateDataPropertyOrThrow defines an OWN data property directly and must NOT walk the
     // prototype chain for an inherited setter (unlike a normal `this.x = value` assignment).
     auto deffield_fn = ObjectFactory::create_native_function("__deffield__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 3 || !args[0].is_object()) return Value();
             Object* obj = args[0].as_object();
             std::string key = args[1].to_string();
@@ -1484,7 +1485,7 @@ void register_global_builtins(Context& ctx) {
 
     // print()
     auto print_fn = ObjectFactory::create_native_function("print",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             for (size_t i = 0; i < args.size(); i++) {
                 if (i > 0) std::cout << " ";
                 std::cout << args[i].to_string();
@@ -1498,7 +1499,7 @@ void register_global_builtins(Context& ctx) {
     auto gc_obj = ObjectFactory::create_object();
 
     auto gc_obj_stats_fn = ObjectFactory::create_native_function("stats",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Heap* heap = ctx.get_engine() ? ctx.get_engine()->get_heap() : nullptr;
             auto stats_obj = ObjectFactory::create_object();
@@ -1517,21 +1518,21 @@ void register_global_builtins(Context& ctx) {
         }, 0);
 
     auto gc_obj_collect_fn = ObjectFactory::create_native_function("collect",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx; (void)args;
             Collector::collect();
             return Value();
         }, 0);
 
     auto gc_obj_minor_fn = ObjectFactory::create_native_function("minor",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx; (void)args;
             Collector::collect_minor();
             return Value();
         }, 0);
 
     auto gc_obj_heap_size_fn = ObjectFactory::create_native_function("heapSize",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Heap* heap = ctx.get_engine() ? ctx.get_engine()->get_heap() : nullptr;
             if (!heap) return Value();
@@ -1548,7 +1549,7 @@ void register_global_builtins(Context& ctx) {
 
 
     auto force_gc_fn = ObjectFactory::create_native_function("forceGC",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (ctx.get_engine()) {
                 ctx.get_engine()->force_gc();
                 std::cout << "Garbage collection forced" << std::endl;
@@ -1566,7 +1567,7 @@ void register_global_builtins(Context& ctx) {
         ctx.get_lexical_environment()->create_binding("Date", Value(ctx.get_built_in_object("Date")), false);
     }
     
-    auto schedule_timer_fn = [](Context& ctx, const std::vector<Value>& args, bool repeating) -> Value {
+    auto schedule_timer_fn = [](Context& ctx, std::span<const Value> args, bool repeating) -> Value {
         if (args.empty() || !args[0].is_function()) {
             // Non-callable first arg: HTML-spec-leniency no-op rather than throw.
             return Value(static_cast<double>(0));
@@ -1579,14 +1580,14 @@ void register_global_builtins(Context& ctx) {
         return Value(static_cast<double>(id));
     };
     auto setTimeout_fn = ObjectFactory::create_native_function("setTimeout",
-        [schedule_timer_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+        [schedule_timer_fn](Context& ctx, std::span<const Value> args) -> Value {
             return schedule_timer_fn(ctx, args, false);
         });
     auto setInterval_fn = ObjectFactory::create_native_function("setInterval",
-        [schedule_timer_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+        [schedule_timer_fn](Context& ctx, std::span<const Value> args) -> Value {
             return schedule_timer_fn(ctx, args, true);
         });
-    auto clear_timer_fn = [](Context& ctx, const std::vector<Value>& args) -> Value {
+    auto clear_timer_fn = [](Context& ctx, std::span<const Value> args) -> Value {
         if (!args.empty()) {
             EventLoop::instance().clear_timer(static_cast<int64_t>(args[0].to_number()));
         }
@@ -1602,7 +1603,7 @@ void register_global_builtins(Context& ctx) {
 
     // setImmediate/clearImmediate: a zero-delay, one-shot timer (Node API, not in any web spec).
     auto setImmediate_fn = ObjectFactory::create_native_function("setImmediate",
-        [schedule_timer_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+        [schedule_timer_fn](Context& ctx, std::span<const Value> args) -> Value {
             std::vector<Value> shifted;
             shifted.push_back(args.empty() ? Value() : args[0]);
             shifted.push_back(Value(0.0));
@@ -1616,7 +1617,7 @@ void register_global_builtins(Context& ctx) {
     // queueMicrotask: unlike setTimeout, a non-callable callback is a TypeError, not a silent no-op.
     // Exceptions are reported as uncaught, not propagated, since the caller's turn already ended.
     auto queueMicrotask_fn = ObjectFactory::create_native_function("queueMicrotask",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("queueMicrotask: callback must be a function");
                 return Value();
@@ -1706,7 +1707,7 @@ void register_global_builtins(Context& ctx) {
 
 void register_test262_builtins(Context& ctx) {
     auto testWithTypedArrayConstructors = ObjectFactory::create_native_function("testWithTypedArrayConstructors",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("testWithTypedArrayConstructors requires a function argument");
                 return Value();
@@ -1742,7 +1743,7 @@ void register_test262_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("testWithTypedArrayConstructors", Value(testWithTypedArrayConstructors.release()), false);
 
     auto buildString = ObjectFactory::create_native_function("buildString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty() || !args[0].is_object()) {
                 ctx.throw_type_error("buildString requires an object argument");
                 return Value();

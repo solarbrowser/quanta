@@ -8,6 +8,7 @@
 #define QUANTA_JSON_H
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include <string>
 #include <memory>
@@ -53,8 +54,8 @@ public:
         std::string& out_root_source);
     static std::string stringify(const Value& value, const StringifyOptions& options = StringifyOptions());
     
-    static Value js_parse(Context& ctx, const std::vector<Value>& args);
-    static Value js_stringify(Context& ctx, const std::vector<Value>& args);
+    static Value js_parse(Context& ctx, std::span<const Value> args);
+    static Value js_stringify(Context& ctx, std::span<const Value> args);
     
     static std::unique_ptr<Object> create_json_object();
 

@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/StackFloor.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/engine/Context.h"
@@ -21,7 +22,6 @@
 #include <iostream>
 #include <chrono>
 #include <unordered_set>
-#include <deque>
 
 #ifdef _MSC_VER
 #include <xmmintrin.h>
@@ -220,7 +220,7 @@ Function::Function(const std::string& name,
 }
 
 Function::Function(const std::string& name,
-                   std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+                   std::function<Value(Context&, std::span<const Value>)> native_fn,
                    bool create_prototype)
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
@@ -239,7 +239,7 @@ Function::Function(const std::string& name,
 }
 
 Function::Function(const std::string& name,
-                   std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+                   std::function<Value(Context&, std::span<const Value>)> native_fn,
                    uint32_t arity,
                    bool create_prototype)
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
@@ -288,7 +288,7 @@ void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> ar
         if (!param_gets_mapped_accessor(parameter_objects_, mi)) continue;
         auto name = std::make_shared<std::string>(parameter_objects_[mi]->get_name()->get_name());
         auto getter_fn = ObjectFactory::create_native_function("get",
-            [env_ptr, name](Context& ctx, const std::vector<Value>&) -> Value {
+            [env_ptr, name](Context& ctx, std::span<const Value>) -> Value {
                 (void)ctx;
                 return env_ptr ? env_ptr->get_binding(*name) : Value();
             });
@@ -299,7 +299,7 @@ void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> ar
         // accessor (or, via Function.prototype, onto every function at once).
         getter_fn->is_mapped_arguments_accessor_ = true;
         auto setter_fn = ObjectFactory::create_native_function("set",
-            [env_ptr, name](Context& ctx, const std::vector<Value>& a) -> Value {
+            [env_ptr, name](Context& ctx, std::span<const Value> a) -> Value {
                 (void)ctx;
                 if (!a.empty() && env_ptr) env_ptr->set_binding(*name, a[0]);
                 return Value();
@@ -374,7 +374,7 @@ void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> a
     if (fn_ctx.is_strict_mode()) {
         if (!Function::s_throw_type_error_) {
             auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     (void)args;
                     ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
                     return Value();
@@ -665,29 +665,6 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
 }
 
 // Out of line for the same reason as call_tree_walker below.
-namespace {
-
-// Every native builtin takes its arguments as a vector, but a register-mode
-// call has them in a span, so one has to be built for the callee. Doing that
-// with a fresh vector spends a malloc and a free on every builtin invocation.
-// These buffers are recycled instead, keeping their capacity between calls.
-// Natives nest -- a builtin can call back into JS, which calls another
-// builtin -- so each depth keeps its own buffer, and a deque is used because
-// growing it must not move the buffers the outer levels are still holding.
-std::deque<std::vector<Value>>& native_arg_buffers() {
-    static thread_local std::deque<std::vector<Value>> buffers;
-    return buffers;
-}
-
-thread_local size_t native_arg_depth = 0;
-
-struct NativeArgDepthScope {
-    bool taken = false;
-    ~NativeArgDepthScope() { if (taken) --native_arg_depth; }
-};
-
-}
-
 [[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
                                               Value this_value, const std::vector<Value>* args_vec,
                                               bool is_construct_invocation) {
@@ -742,19 +719,9 @@ struct NativeArgDepthScope {
     if (native_captures_ctx_) ctx.mark_exposed_to_escape();
     Context* prev_context = Object::current_context_;
     Object::current_context_ = &ctx;
-    // The native signature demands a vector; borrow a recycled one only when
-    // the caller did not already have one.
-    NativeArgDepthScope arg_scope;
-    if (!args_vec) {
-        auto& buffers = native_arg_buffers();
-        const size_t slot = native_arg_depth++;
-        arg_scope.taken = true;
-        if (slot >= buffers.size()) buffers.resize(slot + 1);
-        std::vector<Value>& borrowed = buffers[slot];
-        borrowed.assign(args.begin(), args.end());
-        args_vec = &borrowed;
-    }
-    Value result = native_data()->fn(ctx, *args_vec);
+    // A native takes a view of the arguments wherever they already are: the
+    // caller's registers, or the vector a non-register call arrived with.
+    Value result = native_data()->fn(ctx, args_vec ? std::span<const Value>(*args_vec) : args);
     Object::current_context_ = prev_context;
     ctx.set_original_this_nullish(prev_nullish);
     ctx.set_original_this_primitive(prev_primitive);
@@ -1878,7 +1845,7 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
 }
 
 std::unique_ptr<Function> create_native_function(const std::string& name,
-                                                 std::function<Value(Context&, const std::vector<Value>&)> fn) {
+                                                 std::function<Value(Context&, std::span<const Value>)> fn) {
     auto func = std::make_unique<Function>(name, fn, false);
     Object* func_proto = get_function_prototype();
     if (func_proto) {
@@ -1889,7 +1856,7 @@ std::unique_ptr<Function> create_native_function(const std::string& name,
 }
 
 std::unique_ptr<Function> create_native_function(const std::string& name,
-                                                 std::function<Value(Context&, const std::vector<Value>&)> fn,
+                                                 std::function<Value(Context&, std::span<const Value>)> fn,
                                                  uint32_t arity) {
     auto func = std::make_unique<Function>(name, fn, arity, false);
     Object* func_proto = get_function_prototype();
@@ -1901,7 +1868,7 @@ std::unique_ptr<Function> create_native_function(const std::string& name,
 }
 
 std::unique_ptr<Function> create_native_constructor(const std::string& name,
-                                                    std::function<Value(Context&, const std::vector<Value>&)> fn,
+                                                    std::function<Value(Context&, std::span<const Value>)> fn,
                                                     uint32_t arity) {
     auto func = std::make_unique<Function>(name, fn, arity, true);
     Object* func_proto = get_function_prototype();

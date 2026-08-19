@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Error.h"
+#include <span>
 #include "quanta/core/engine/CallStack.h"
 #include <sstream>
 #include <iostream>
@@ -198,7 +199,7 @@ const char* JavaScriptException::what() const noexcept {
 }
 
 
-Value Error::isError(Context& ctx, const std::vector<Value>& args) {
+Value Error::isError(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     
     if (args.empty()) {

@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/ObjectBuiltin.h"
+#include <span>
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/Parser.h"
@@ -266,7 +267,7 @@ Object* to_object_or_throw(Context& ctx, const Value& this_val) {
 
 void register_object_builtins(Context& ctx) {
     auto object_constructor = ObjectFactory::create_native_constructor("Object",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Spec: if NewTarget is neither undefined nor the active function, return OrdinaryCreateFromConstructor.
             Value new_target = ctx.get_new_target();
             Object* active_object_ctor = ctx.get_built_in_object("Object");
@@ -298,7 +299,7 @@ void register_object_builtins(Context& ctx) {
         });
     
     auto keys_fn = ObjectFactory::create_native_function("keys", 
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() == 0) {
                 ctx.throw_type_error("Object.keys requires at least 1 argument");
                 return Value();
@@ -376,7 +377,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("keys", Value(keys_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto values_fn = ObjectFactory::create_native_function("values",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
 
@@ -422,7 +423,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("values", Value(values_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto entries_fn = ObjectFactory::create_native_function("entries",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
 
@@ -466,7 +467,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("entries", Value(entries_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto is_fn = ObjectFactory::create_native_function("is",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
 
             Value x = args.size() > 0 ? args[0] : Value();
@@ -482,7 +483,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("is", Value(is_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto fromEntries_fn = ObjectFactory::create_native_function("fromEntries",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty() || args[0].is_null() || args[0].is_undefined()) {
                 ctx.throw_type_error("Object.fromEntries requires an iterable argument");
                 return Value();
@@ -571,7 +572,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("fromEntries", Value(fromEntries_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto create_fn = ObjectFactory::create_native_function("create",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() == 0) {
                 ctx.throw_type_error("Object.create requires at least 1 argument");
                 return Value();
@@ -685,7 +686,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("create", Value(create_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto assign_fn = ObjectFactory::create_native_function("assign",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) {
                 ctx.throw_type_error("Object.assign requires at least one argument");
                 return Value();
@@ -764,7 +765,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("assign", Value(assign_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getPrototypeOf_fn = ObjectFactory::create_native_function("getPrototypeOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) {
                 ctx.throw_type_error("Object.getPrototypeOf requires an argument");
                 return Value();
@@ -838,7 +839,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("getPrototypeOf", Value(getPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto setPrototypeOf_fn = ObjectFactory::create_native_function("setPrototypeOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 2) {
                 ctx.throw_type_error("Object.setPrototypeOf requires 2 arguments");
                 return Value();
@@ -888,7 +889,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("setPrototypeOf", Value(setPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyDescriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 2) {
                 ctx.throw_type_error("Object.getOwnPropertyDescriptor requires 2 arguments");
                 return Value();
@@ -967,7 +968,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("getOwnPropertyDescriptor", Value(getOwnPropertyDescriptor_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto defineProperty_fn = ObjectFactory::create_native_function("defineProperty",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 3) {
                 ctx.throw_type_error("Object.defineProperty requires 3 arguments");
                 return Value();
@@ -1135,7 +1136,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("defineProperty", Value(defineProperty_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyNames_fn = ObjectFactory::create_native_function("getOwnPropertyNames",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
             auto result = ObjectFactory::create_array();
@@ -1166,7 +1167,7 @@ void register_object_builtins(Context& ctx) {
 
     // ES6: Object.getOwnPropertySymbols
     auto getOwnPropertySymbols_fn = ObjectFactory::create_native_function("getOwnPropertySymbols",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
             auto result = ObjectFactory::create_array();
@@ -1192,7 +1193,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("getOwnPropertySymbols", Value(getOwnPropertySymbols_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto defineProperties_fn = ObjectFactory::create_native_function("defineProperties",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 2) {
                 ctx.throw_type_error("Object.defineProperties requires 2 arguments");
                 return Value();
@@ -1309,7 +1310,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("defineProperties", Value(defineProperties_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyDescriptors_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptors",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
             auto result = ObjectFactory::create_object();
@@ -1382,7 +1383,7 @@ void register_object_builtins(Context& ctx) {
     };
 
     auto seal_fn = ObjectFactory::create_native_function("seal",
-        [rejects_prevent_extensions](Context& ctx, const std::vector<Value>& args) -> Value {
+        [rejects_prevent_extensions](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value();
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
@@ -1412,7 +1413,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("seal", Value(seal_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto freeze_fn = ObjectFactory::create_native_function("freeze",
-        [rejects_prevent_extensions](Context& ctx, const std::vector<Value>& args) -> Value {
+        [rejects_prevent_extensions](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value();
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
@@ -1446,7 +1447,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("freeze", Value(freeze_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto preventExtensions_fn = ObjectFactory::create_native_function("preventExtensions",
-        [rejects_prevent_extensions](Context& ctx, const std::vector<Value>& args) -> Value {
+        [rejects_prevent_extensions](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             if (args.empty()) return Value();
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
@@ -1469,7 +1470,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("preventExtensions", Value(preventExtensions_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isSealed_fn = ObjectFactory::create_native_function("isSealed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value(true);
             if (!args[0].is_object() && !args[0].is_function()) return Value(true);
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
@@ -1492,7 +1493,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("isSealed", Value(isSealed_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isFrozen_fn = ObjectFactory::create_native_function("isFrozen",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value(true);
             if (!args[0].is_object() && !args[0].is_function()) return Value(true);
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
@@ -1516,7 +1517,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("isFrozen", Value(isFrozen_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isExtensible_fn = ObjectFactory::create_native_function("isExtensible",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             if (args.empty()) return Value(false);
             Object* obj = nullptr;
@@ -1531,7 +1532,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("isExtensible", Value(isExtensible_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto hasOwn_fn = ObjectFactory::create_native_function("hasOwn",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
 
@@ -1552,7 +1553,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("hasOwn", Value(hasOwn_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto groupBy_fn = ObjectFactory::create_native_function("groupBy",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.size() < 2 || !args[1].is_function()) {
                 ctx.throw_type_error("Object.groupBy requires a callback function");
                 return Value();
@@ -1668,7 +1669,7 @@ void register_object_builtins(Context& ctx) {
     auto object_prototype = ObjectFactory::create_object();
 
     auto proto_toString_fn = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             return object_prototype_to_string(ctx, get_actual_this(ctx));
         });
@@ -1683,7 +1684,7 @@ void register_object_builtins(Context& ctx) {
     proto_toString_fn->set_property_descriptor("length", toString_length_desc);
 
     auto proto_hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Spec: ToPropertyKey(P) happens BEFORE ToObject(this).
             std::string prop_name = (args.empty() ? Value() : args[0]).to_property_key();
             if (ctx.has_exception()) return Value();
@@ -1707,7 +1708,7 @@ void register_object_builtins(Context& ctx) {
     proto_hasOwnProperty_fn->set_property_descriptor("length", hasOwnProperty_length_desc);
 
     auto proto_isPrototypeOf_fn = ObjectFactory::create_native_function("isPrototypeOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Spec step 1: if V is not an Object, return false BEFORE ToObject(this).
             if (args.empty() || !args[0].is_object_like()) {
                 return Value(false);
@@ -1745,7 +1746,7 @@ void register_object_builtins(Context& ctx) {
     proto_isPrototypeOf_fn->set_property_descriptor("length", isPrototypeOf_length_desc);
 
     auto proto_propertyIsEnumerable_fn = ObjectFactory::create_native_function("propertyIsEnumerable",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) {
                 return Value(false);
             }
@@ -1785,7 +1786,7 @@ void register_object_builtins(Context& ctx) {
     proto_propertyIsEnumerable_fn->set_property_descriptor("length", propertyIsEnumerable_length_desc);
 
     auto proto_valueOf_fn = ObjectFactory::create_native_function("valueOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
             if (!this_obj) return Value();
@@ -1802,7 +1803,7 @@ void register_object_builtins(Context& ctx) {
     object_prototype->set_property("propertyIsEnumerable", Value(proto_propertyIsEnumerable_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto obj_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             // Invoke(O, "toString"): GetV boxes only for the method lookup; Call binds
             // `this` to the ORIGINAL value O (e.g. a primitive boolean), not the boxed copy --
@@ -1828,7 +1829,7 @@ void register_object_builtins(Context& ctx) {
 
     // ES6 Annex B: Object.prototype.__proto__ accessor property
     auto proto_getter = ObjectFactory::create_native_function("get __proto__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
             if (!this_obj) return Value();
@@ -1836,7 +1837,7 @@ void register_object_builtins(Context& ctx) {
             return proto ? Value(proto) : Value::null();
         }, 0);
     auto proto_setter = ObjectFactory::create_native_function("set __proto__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value this_val = get_actual_this(ctx);
             if (this_val.is_undefined() || this_val.is_null()) {
                 ctx.throw_type_error("Cannot set __proto__ on undefined or null");
@@ -1870,7 +1871,7 @@ void register_object_builtins(Context& ctx) {
 
     // ES2017 Annex B: Object.prototype.__defineGetter__ / __defineSetter__
     auto define_getter_fn = ObjectFactory::create_native_function("__defineGetter__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // get_this_binding() returns nullptr when this was null/undefined (see Function::call)
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
@@ -1895,7 +1896,7 @@ void register_object_builtins(Context& ctx) {
         }, 2);
 
     auto define_setter_fn = ObjectFactory::create_native_function("__defineSetter__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // get_this_binding() returns nullptr when this was null/undefined (see Function::call)
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
@@ -1928,7 +1929,7 @@ void register_object_builtins(Context& ctx) {
 
     // ES2017 Annex B: Object.prototype.__lookupGetter__ / __lookupSetter__
     auto lookup_getter_fn = ObjectFactory::create_native_function("__lookupGetter__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = to_object_or_throw(ctx, get_actual_this(ctx));
             if (!obj) return Value();
             if (args.empty()) return Value();
@@ -1952,7 +1953,7 @@ void register_object_builtins(Context& ctx) {
             return Value();
         }, 1);
     auto lookup_setter_fn = ObjectFactory::create_native_function("__lookupSetter__",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = to_object_or_throw(ctx, get_actual_this(ctx));
             if (!obj) return Value();
             if (args.empty()) return Value();

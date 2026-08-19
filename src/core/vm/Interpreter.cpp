@@ -48,7 +48,7 @@ Value build_rest_object(Context& ctx, const Value& source_value, Object* source_
 Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl);
 Value declare_function(Context& ctx, const ClosureTemplate& tpl);
 // And from call.cpp, backing Op::SuperCall.
-Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values, bool super_already_called);
+Value perform_super_call(Context& ctx, std::span<const Value> arg_values, bool super_already_called);
 // And from member.cpp, backing the Op::GetSuper family.
 Object* resolve_super_base(Context& ctx);
 Value super_get(Context& ctx, const std::string& prop_name);

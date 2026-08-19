@@ -8,6 +8,7 @@
 #define QUANTA_ARRAY_BUFFER_H
 
 #include "quanta/core/runtime/Object.h"
+#include <span>
 #include "quanta/core/runtime/Value.h"
 #include <atomic>
 #include <vector>
@@ -93,14 +94,14 @@ public:
     void unregister_view(TypedArrayBase* view);
     void detach_all_views();
     
-    static Value constructor(Context& ctx, const std::vector<Value>& args);
-    static Value prototype_slice(Context& ctx, const std::vector<Value>& args);
-    static Value prototype_resize(Context& ctx, const std::vector<Value>& args);
-    static Value get_byteLength(Context& ctx, const std::vector<Value>& args);
-    static Value get_maxByteLength(Context& ctx, const std::vector<Value>& args);
-    static Value get_resizable(Context& ctx, const std::vector<Value>& args);
+    static Value constructor(Context& ctx, std::span<const Value> args);
+    static Value prototype_slice(Context& ctx, std::span<const Value> args);
+    static Value prototype_resize(Context& ctx, std::span<const Value> args);
+    static Value get_byteLength(Context& ctx, std::span<const Value> args);
+    static Value get_maxByteLength(Context& ctx, std::span<const Value> args);
+    static Value get_resizable(Context& ctx, std::span<const Value> args);
     
-    static Value isView(Context& ctx, const std::vector<Value>& args);
+    static Value isView(Context& ctx, std::span<const Value> args);
     
     // No longer virtual on Object -- see Object::get_property()'s own
     // switch-based dispatch in Object.cpp.

@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/DisposableBuiltin.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Promise.h"
@@ -169,7 +170,7 @@ void async_dispose_step(Context& ctx, Object* state);
 Function* make_step_handler(Object* state, bool is_rejection) {
     Value state_val(state);
     auto fn = ObjectFactory::create_native_function("",
-        [state_val, is_rejection](Context& ctx, const std::vector<Value>& args) -> Value {
+        [state_val, is_rejection](Context& ctx, std::span<const Value> args) -> Value {
             Object* st = state_val.as_object();
             if (is_rejection) {
                 Value new_error = args.empty() ? Value() : args[0];
@@ -274,7 +275,7 @@ void register_stack(Context& ctx, bool async) {
     };
 
     auto constructor = ObjectFactory::create_native_constructor(ctor_name,
-        [proto_ptr, make_stack_object, ctor_name](Context& ctx, const std::vector<Value>& args) -> Value {
+        [proto_ptr, make_stack_object, ctor_name](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             if (!ctx.is_in_constructor_call()) {
                 ctx.throw_type_error(std::string(ctor_name) + " requires 'new'");
@@ -286,7 +287,7 @@ void register_stack(Context& ctx, bool async) {
         }, 0);
 
     auto add_method = [&](const char* name, uint32_t arity,
-                          Value (*fn)(Context&, const std::vector<Value>&)) -> Function* {
+                          Value (*fn)(Context&, std::span<const Value>)) -> Function* {
         auto f = ObjectFactory::create_native_function(name, fn, arity);
         Function* raw = f.get();
         prototype->set_property_descriptor(name,
@@ -296,14 +297,14 @@ void register_stack(Context& ctx, bool async) {
 
     Function* dispose_fn_raw;
     if (!async) {
-        dispose_fn_raw = add_method("dispose", 0, [](Context& ctx, const std::vector<Value>&) -> Value {
+        dispose_fn_raw = add_method("dispose", 0, [](Context& ctx, std::span<const Value>) -> Value {
             Object* obj = require_stack_this(ctx, kSyncState, kSyncStack, "dispose");
             if (!obj) return Value();
             if (is_disposed(obj, kSyncState)) return Value();
             return dispose_sync_stack(ctx, obj);
         });
     } else {
-        dispose_fn_raw = add_method("disposeAsync", 0, [](Context& ctx, const std::vector<Value>&) -> Value {
+        dispose_fn_raw = add_method("disposeAsync", 0, [](Context& ctx, std::span<const Value>) -> Value {
             // Abrupt this-validation rejects the returned promise instead of throwing.
             Object* obj = ctx.get_this_binding();
             if (!obj || ctx.original_this_was_primitive() || ctx.original_this_was_nullish() ||
@@ -317,12 +318,12 @@ void register_stack(Context& ctx, bool async) {
 
     {
         auto getter = ObjectFactory::create_native_function("get disposed",
-            async ? +[](Context& ctx, const std::vector<Value>&) -> Value {
+            async ? +[](Context& ctx, std::span<const Value>) -> Value {
                         Object* obj = require_stack_this(ctx, kAsyncState, kAsyncStack, "disposed");
                         if (!obj) return Value();
                         return Value(is_disposed(obj, kAsyncState));
                     }
-                  : +[](Context& ctx, const std::vector<Value>&) -> Value {
+                  : +[](Context& ctx, std::span<const Value>) -> Value {
                         Object* obj = require_stack_this(ctx, kSyncState, kSyncStack, "disposed");
                         if (!obj) return Value();
                         return Value(is_disposed(obj, kSyncState));
@@ -335,7 +336,7 @@ void register_stack(Context& ctx, bool async) {
     }
 
     if (!async) {
-        add_method("use", 1, [](Context& ctx, const std::vector<Value>& args) -> Value {
+        add_method("use", 1, [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = require_stack_this(ctx, kSyncState, kSyncStack, "use");
             if (!obj) return Value();
             if (is_disposed(obj, kSyncState)) { ctx.throw_reference_error("DisposableStack already disposed"); return Value(); }
@@ -348,7 +349,7 @@ void register_stack(Context& ctx, bool async) {
             push_entry(obj, kSyncStack, make_entry(method, value, kUse, Value(), false));
             return value;
         });
-        add_method("adopt", 2, [](Context& ctx, const std::vector<Value>& args) -> Value {
+        add_method("adopt", 2, [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = require_stack_this(ctx, kSyncState, kSyncStack, "adopt");
             if (!obj) return Value();
             if (is_disposed(obj, kSyncState)) { ctx.throw_reference_error("DisposableStack already disposed"); return Value(); }
@@ -358,7 +359,7 @@ void register_stack(Context& ctx, bool async) {
             push_entry(obj, kSyncStack, make_entry(on_dispose, Value(), kAdopt, value, false));
             return value;
         });
-        add_method("defer", 1, [](Context& ctx, const std::vector<Value>& args) -> Value {
+        add_method("defer", 1, [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = require_stack_this(ctx, kSyncState, kSyncStack, "defer");
             if (!obj) return Value();
             if (is_disposed(obj, kSyncState)) { ctx.throw_reference_error("DisposableStack already disposed"); return Value(); }
@@ -368,7 +369,7 @@ void register_stack(Context& ctx, bool async) {
             return Value();
         });
     } else {
-        add_method("use", 1, [](Context& ctx, const std::vector<Value>& args) -> Value {
+        add_method("use", 1, [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = require_stack_this(ctx, kAsyncState, kAsyncStack, "use");
             if (!obj) return Value();
             if (is_disposed(obj, kAsyncState)) { ctx.throw_reference_error("AsyncDisposableStack already disposed"); return Value(); }
@@ -385,7 +386,7 @@ void register_stack(Context& ctx, bool async) {
             push_entry(obj, kAsyncStack, make_entry(method, value, kUse, Value(), wrapped_sync));
             return value;
         });
-        add_method("adopt", 2, [](Context& ctx, const std::vector<Value>& args) -> Value {
+        add_method("adopt", 2, [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = require_stack_this(ctx, kAsyncState, kAsyncStack, "adopt");
             if (!obj) return Value();
             if (is_disposed(obj, kAsyncState)) { ctx.throw_reference_error("AsyncDisposableStack already disposed"); return Value(); }
@@ -395,7 +396,7 @@ void register_stack(Context& ctx, bool async) {
             push_entry(obj, kAsyncStack, make_entry(on_dispose, Value(), kAdopt, value, false));
             return value;
         });
-        add_method("defer", 1, [](Context& ctx, const std::vector<Value>& args) -> Value {
+        add_method("defer", 1, [](Context& ctx, std::span<const Value> args) -> Value {
             Object* obj = require_stack_this(ctx, kAsyncState, kAsyncStack, "defer");
             if (!obj) return Value();
             if (is_disposed(obj, kAsyncState)) { ctx.throw_reference_error("AsyncDisposableStack already disposed"); return Value(); }
@@ -411,7 +412,7 @@ void register_stack(Context& ctx, bool async) {
         // (OrdinaryCreateFromConstructor(%...%)), never through the constructor.
         Value proto_holder(proto_ptr);
         auto move_fn = ObjectFactory::create_native_function("move",
-            [proto_holder, state_key, stack_key, make_stack_object, ctor_name](Context& ctx, const std::vector<Value>&) -> Value {
+            [proto_holder, state_key, stack_key, make_stack_object, ctor_name](Context& ctx, std::span<const Value>) -> Value {
                 Object* obj = require_stack_this(ctx, state_key, stack_key, "move");
                 if (!obj) return Value();
                 if (is_disposed(obj, state_key)) {

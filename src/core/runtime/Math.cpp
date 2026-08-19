@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Math.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/parser/AST.h"
@@ -72,7 +73,7 @@ std::unique_ptr<Object> Math::create_math_object() {
 }
 
 
-Value Math::abs(Context& ctx, const std::vector<Value>& args) {
+Value Math::abs(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -84,7 +85,7 @@ Value Math::abs(Context& ctx, const std::vector<Value>& args) {
     return Value(std::abs(value));
 }
 
-Value Math::acos(Context& ctx, const std::vector<Value>& args) {
+Value Math::acos(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -93,7 +94,7 @@ Value Math::acos(Context& ctx, const std::vector<Value>& args) {
     return Value(std::acos(value));
 }
 
-Value Math::asin(Context& ctx, const std::vector<Value>& args) {
+Value Math::asin(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -102,7 +103,7 @@ Value Math::asin(Context& ctx, const std::vector<Value>& args) {
     return Value(std::asin(value));
 }
 
-Value Math::atan(Context& ctx, const std::vector<Value>& args) {
+Value Math::atan(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -111,7 +112,7 @@ Value Math::atan(Context& ctx, const std::vector<Value>& args) {
     return Value(std::atan(value));
 }
 
-Value Math::atan2(Context& ctx, const std::vector<Value>& args) {
+Value Math::atan2(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -121,7 +122,7 @@ Value Math::atan2(Context& ctx, const std::vector<Value>& args) {
     return Value(std::atan2(y, x));
 }
 
-Value Math::ceil(Context& ctx, const std::vector<Value>& args) {
+Value Math::ceil(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -130,7 +131,7 @@ Value Math::ceil(Context& ctx, const std::vector<Value>& args) {
     return Value(std::ceil(value));
 }
 
-Value Math::cos(Context& ctx, const std::vector<Value>& args) {
+Value Math::cos(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -139,7 +140,7 @@ Value Math::cos(Context& ctx, const std::vector<Value>& args) {
     return Value(std::cos(value));
 }
 
-Value Math::exp(Context& ctx, const std::vector<Value>& args) {
+Value Math::exp(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -148,7 +149,7 @@ Value Math::exp(Context& ctx, const std::vector<Value>& args) {
     return Value(std::exp(value));
 }
 
-Value Math::floor(Context& ctx, const std::vector<Value>& args) {
+Value Math::floor(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -157,7 +158,7 @@ Value Math::floor(Context& ctx, const std::vector<Value>& args) {
     return Value(std::floor(value));
 }
 
-Value Math::log(Context& ctx, const std::vector<Value>& args) {
+Value Math::log(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -166,7 +167,7 @@ Value Math::log(Context& ctx, const std::vector<Value>& args) {
     return Value(std::log(value));
 }
 
-Value Math::max(Context& ctx, const std::vector<Value>& args) {
+Value Math::max(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value::negative_infinity();
     }
@@ -185,7 +186,7 @@ Value Math::max(Context& ctx, const std::vector<Value>& args) {
     return Value(result);
 }
 
-Value Math::min(Context& ctx, const std::vector<Value>& args) {
+Value Math::min(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value::positive_infinity();
     }
@@ -204,7 +205,7 @@ Value Math::min(Context& ctx, const std::vector<Value>& args) {
     return Value(result);
 }
 
-Value Math::pow(Context& ctx, const std::vector<Value>& args) {
+Value Math::pow(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -214,7 +215,7 @@ Value Math::pow(Context& ctx, const std::vector<Value>& args) {
     return Value(std::pow(base, exponent));
 }
 
-Value Math::random(Context& ctx, const std::vector<Value>& args) {
+Value Math::random(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     (void)args;
     
@@ -229,7 +230,7 @@ Value Math::random(Context& ctx, const std::vector<Value>& args) {
     return Value(dis(gen));
 }
 
-Value Math::round(Context& ctx, const std::vector<Value>& args) {
+Value Math::round(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -238,7 +239,7 @@ Value Math::round(Context& ctx, const std::vector<Value>& args) {
     return Value(std::round(value));
 }
 
-Value Math::sin(Context& ctx, const std::vector<Value>& args) {
+Value Math::sin(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -247,7 +248,7 @@ Value Math::sin(Context& ctx, const std::vector<Value>& args) {
     return Value(std::sin(value));
 }
 
-Value Math::sqrt(Context& ctx, const std::vector<Value>& args) {
+Value Math::sqrt(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -256,7 +257,7 @@ Value Math::sqrt(Context& ctx, const std::vector<Value>& args) {
     return Value(std::sqrt(value));
 }
 
-Value Math::tan(Context& ctx, const std::vector<Value>& args) {
+Value Math::tan(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -266,7 +267,7 @@ Value Math::tan(Context& ctx, const std::vector<Value>& args) {
 }
 
 
-Value Math::trunc(Context& ctx, const std::vector<Value>& args) {
+Value Math::trunc(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -275,7 +276,7 @@ Value Math::trunc(Context& ctx, const std::vector<Value>& args) {
     return Value(std::trunc(value));
 }
 
-Value Math::sign(Context& ctx, const std::vector<Value>& args) {
+Value Math::sign(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -287,7 +288,7 @@ Value Math::sign(Context& ctx, const std::vector<Value>& args) {
     return Value(value);
 }
 
-Value Math::cbrt(Context& ctx, const std::vector<Value>& args) {
+Value Math::cbrt(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -296,7 +297,7 @@ Value Math::cbrt(Context& ctx, const std::vector<Value>& args) {
     return Value(std::cbrt(value));
 }
 
-Value Math::hypot(Context& ctx, const std::vector<Value>& args) {
+Value Math::hypot(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(0.0);
     }
@@ -315,7 +316,7 @@ Value Math::hypot(Context& ctx, const std::vector<Value>& args) {
     return Value(std::sqrt(sum));
 }
 
-Value Math::clz32(Context& ctx, const std::vector<Value>& args) {
+Value Math::clz32(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(32.0);
     }
@@ -334,7 +335,7 @@ Value Math::clz32(Context& ctx, const std::vector<Value>& args) {
     return Value(static_cast<double>(count));
 }
 
-Value Math::imul(Context& ctx, const std::vector<Value>& args) {
+Value Math::imul(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         return Value(0.0);
     }
@@ -346,7 +347,7 @@ Value Math::imul(Context& ctx, const std::vector<Value>& args) {
 }
 
 
-Value Math::sumPrecise(Context& ctx, const std::vector<Value>& args) {
+Value Math::sumPrecise(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(0.0);
@@ -387,7 +388,7 @@ Value Math::sumPrecise(Context& ctx, const std::vector<Value>& args) {
     return Value(sum);
 }
 
-Value Math::f16round(Context& ctx, const std::vector<Value>& args) {
+Value Math::f16round(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -402,7 +403,7 @@ Value Math::f16round(Context& ctx, const std::vector<Value>& args) {
     return Value(static_cast<double>(f16_val));
 }
 
-Value Math::log10(Context& ctx, const std::vector<Value>& args) {
+Value Math::log10(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -412,7 +413,7 @@ Value Math::log10(Context& ctx, const std::vector<Value>& args) {
     return Value(std::log10(value));
 }
 
-Value Math::log2(Context& ctx, const std::vector<Value>& args) {
+Value Math::log2(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -422,7 +423,7 @@ Value Math::log2(Context& ctx, const std::vector<Value>& args) {
     return Value(std::log2(value));
 }
 
-Value Math::log1p(Context& ctx, const std::vector<Value>& args) {
+Value Math::log1p(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -432,7 +433,7 @@ Value Math::log1p(Context& ctx, const std::vector<Value>& args) {
     return Value(std::log1p(value));
 }
 
-Value Math::expm1(Context& ctx, const std::vector<Value>& args) {
+Value Math::expm1(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -442,7 +443,7 @@ Value Math::expm1(Context& ctx, const std::vector<Value>& args) {
     return Value(std::expm1(value));
 }
 
-Value Math::acosh(Context& ctx, const std::vector<Value>& args) {
+Value Math::acosh(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -452,7 +453,7 @@ Value Math::acosh(Context& ctx, const std::vector<Value>& args) {
     return Value(std::acosh(value));
 }
 
-Value Math::asinh(Context& ctx, const std::vector<Value>& args) {
+Value Math::asinh(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -462,7 +463,7 @@ Value Math::asinh(Context& ctx, const std::vector<Value>& args) {
     return Value(std::asinh(value));
 }
 
-Value Math::atanh(Context& ctx, const std::vector<Value>& args) {
+Value Math::atanh(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -472,7 +473,7 @@ Value Math::atanh(Context& ctx, const std::vector<Value>& args) {
     return Value(std::atanh(value));
 }
 
-Value Math::cosh(Context& ctx, const std::vector<Value>& args) {
+Value Math::cosh(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -482,7 +483,7 @@ Value Math::cosh(Context& ctx, const std::vector<Value>& args) {
     return Value(std::cosh(value));
 }
 
-Value Math::sinh(Context& ctx, const std::vector<Value>& args) {
+Value Math::sinh(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
@@ -492,7 +493,7 @@ Value Math::sinh(Context& ctx, const std::vector<Value>& args) {
     return Value(std::sinh(value));
 }
 
-Value Math::tanh(Context& ctx, const std::vector<Value>& args) {
+Value Math::tanh(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());

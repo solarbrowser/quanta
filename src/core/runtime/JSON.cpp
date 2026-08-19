@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/JSON.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Error.h"
@@ -119,7 +120,7 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
     return reviver->call(ctx, reviver_args, Value(holder));
 }
 
-Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
+Value JSON::js_parse(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_syntax_error("JSON.parse requires at least 1 argument");
         return Value();
@@ -204,7 +205,7 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
     }
 }
 
-Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
+Value JSON::js_stringify(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value();
     }

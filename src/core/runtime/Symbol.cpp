@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Symbol.h"
+#include <span>
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/engine/Context.h"
@@ -142,7 +143,7 @@ Symbol* Symbol::find_by_property_key(const std::string& key) {
     return nullptr;
 }
 
-Value Symbol::symbol_constructor(Context& ctx, const std::vector<Value>& args) {
+Value Symbol::symbol_constructor(Context& ctx, std::span<const Value> args) {
     (void)ctx;
     std::string description = "";
     if (!args.empty() && !args[0].is_undefined()) {
@@ -153,7 +154,7 @@ Value Symbol::symbol_constructor(Context& ctx, const std::vector<Value>& args) {
     return Value(symbol.release());
 }
 
-Value Symbol::symbol_for(Context& ctx, const std::vector<Value>& args) {
+Value Symbol::symbol_for(Context& ctx, std::span<const Value> args) {
     Value key_val = args.empty() ? Value() : args[0];
     // Spec: ToString(key) -- unlike ToPropertyKey, a Symbol argument must throw TypeError.
     if (key_val.is_symbol()) {
@@ -166,7 +167,7 @@ Value Symbol::symbol_for(Context& ctx, const std::vector<Value>& args) {
     return Value(symbol);
 }
 
-Value Symbol::symbol_key_for(Context& ctx, const std::vector<Value>& args) {
+Value Symbol::symbol_key_for(Context& ctx, std::span<const Value> args) {
     if (args.empty() || !args[0].is_symbol()) {
         ctx.throw_type_error("Symbol.keyFor requires a symbol argument");
         return Value();
@@ -180,7 +181,7 @@ Value Symbol::symbol_key_for(Context& ctx, const std::vector<Value>& args) {
     return Value(key);
 }
 
-Value Symbol::symbol_to_string(Context& ctx, const std::vector<Value>& args) {
+Value Symbol::symbol_to_string(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Value this_value = ctx.get_binding("this");
@@ -193,7 +194,7 @@ Value Symbol::symbol_to_string(Context& ctx, const std::vector<Value>& args) {
     return Value(symbol->to_string());
 }
 
-Value Symbol::symbol_value_of(Context& ctx, const std::vector<Value>& args) {
+Value Symbol::symbol_value_of(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Value this_value = ctx.get_binding("this");

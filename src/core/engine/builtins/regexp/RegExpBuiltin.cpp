@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/RegExpBuiltin.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
@@ -244,7 +245,7 @@ void register_regexp_builtins(Context& ctx) {
 
     // Annex B compile - delegates to [[compile]] (mirrors exec/[[exec]]) so it actually recompiles.
     auto compile_fn = ObjectFactory::create_native_function("compile",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!RegExpObject::from(this_obj)) {
                 ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
@@ -269,7 +270,7 @@ void register_regexp_builtins(Context& ctx) {
     Object* regexp_proto_ptr = regexp_prototype.get();
 
     auto regexp_constructor = ObjectFactory::create_native_constructor("RegExp",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // ES6: Check IsRegExp(pattern) via Symbol.match
             bool pattern_is_regexp = false;
             std::string pattern = "";
@@ -398,7 +399,7 @@ void register_regexp_builtins(Context& ctx) {
 
     // ES6: RegExp.prototype.toString is generic - works on any object with source/flags
     auto regexp_toString = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
@@ -422,7 +423,7 @@ void register_regexp_builtins(Context& ctx) {
         using FlagReader = bool (*)(const RegExp&);
         auto make_flag_getter = [regexp_proto_ptr](const char* getter_name, FlagReader read) {
             return ObjectFactory::create_native_function(getter_name,
-                [regexp_proto_ptr, read](Context& ctx, const std::vector<Value>&) -> Value {
+                [regexp_proto_ptr, read](Context& ctx, std::span<const Value>) -> Value {
                     Object* self = ctx.get_this_binding();
                     if (!self) { ctx.throw_type_error("RegExp flag getter requires a RegExp"); return Value(); }
                     if (self == regexp_proto_ptr) return Value(); // spec: return undefined for RegExp.prototype
@@ -448,7 +449,7 @@ void register_regexp_builtins(Context& ctx) {
         // source accessor: empty pattern renders as "(?:)" and slashes in pattern are escaped.
         regexp_prototype->set_property_descriptor("source", make_flag_desc(
             ObjectFactory::create_native_function("get source",
-                [regexp_proto_ptr](Context& ctx, const std::vector<Value>&) -> Value {
+                [regexp_proto_ptr](Context& ctx, std::span<const Value>) -> Value {
                     Object* self = ctx.get_this_binding();
                     if (!self) { ctx.throw_type_error("get source requires a RegExp"); return Value(); }
                     if (self == regexp_proto_ptr) return Value(std::string("(?:)")); // spec: return "(?:)" for RegExp.prototype
@@ -479,7 +480,7 @@ void register_regexp_builtins(Context& ctx) {
     // ES2022: RegExp.prototype.flags accessor (reads flag props via get_property for Proxy support)
     {
         auto flags_getter_fn = ObjectFactory::create_native_function("get flags",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [](Context& ctx, std::span<const Value> args) -> Value {
                 (void)args;
                 Value raw_this_fl = ctx.get_binding("this");
                 if (!raw_this_fl.is_object() && !raw_this_fl.is_function()) {
@@ -519,7 +520,7 @@ void register_regexp_builtins(Context& ctx) {
     // ES2024: RegExp.prototype.unicodeSets accessor (regexp-v-flag)
     {
         auto unicode_sets_getter_fn = ObjectFactory::create_native_function("get unicodeSets",
-            [regexp_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            [regexp_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
                 (void)args;
                 Object* this_obj = ctx.get_this_binding();
                 if (!this_obj) {
@@ -543,7 +544,7 @@ void register_regexp_builtins(Context& ctx) {
 
     // RegExp.prototype.exec - delegates to the instance's [[exec]] internal slot
     auto regexp_exec_proto_fn = ObjectFactory::create_native_function("exec",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!RegExpObject::from(this_obj)) {
                 ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
@@ -572,7 +573,7 @@ void register_regexp_builtins(Context& ctx) {
 
     // ES6: RegExp.prototype.test - generic function that calls this.exec
     auto regexp_test_fn = ObjectFactory::create_native_function("test",
-        [builtin_regexp_exec](Context& ctx, const std::vector<Value>& args) -> Value {
+        [builtin_regexp_exec](Context& ctx, std::span<const Value> args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!RegExpObject::from(this_obj)) {
                 ctx.throw_type_error("RegExp.prototype.test called on incompatible receiver");
@@ -607,7 +608,7 @@ void register_regexp_builtins(Context& ctx) {
 
     // ES6: RegExp.prototype[Symbol.match/replace/search/split]
     auto regexp_sym_match = ObjectFactory::create_native_function("[Symbol.match]",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this_m = ctx.get_binding("this");
             if (!raw_this_m.is_object() && !raw_this_m.is_function()) {
                 ctx.throw_type_error("RegExp.prototype[Symbol.match] called on non-object");
@@ -709,7 +710,7 @@ void register_regexp_builtins(Context& ctx) {
     regexp_prototype->set_property("Symbol.match", Value(regexp_sym_match.release()), PropertyAttributes::BuiltinFunction);
 
     auto regexp_sym_replace = ObjectFactory::create_native_function("[Symbol.replace]",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this_r = ctx.get_binding("this");
             if (!raw_this_r.is_object() && !raw_this_r.is_function()) {
                 ctx.throw_type_error("RegExp.prototype[Symbol.replace] called on non-object");
@@ -930,7 +931,7 @@ void register_regexp_builtins(Context& ctx) {
     regexp_prototype->set_property("Symbol.replace", Value(regexp_sym_replace.release()), PropertyAttributes::BuiltinFunction);
 
     auto regexp_sym_search = ObjectFactory::create_native_function("[Symbol.search]",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Step 1: If Type(rx) is not Object, throw TypeError
             Value raw_this_s = ctx.get_binding("this");
             if (!raw_this_s.is_object() && !raw_this_s.is_function()) {
@@ -991,7 +992,7 @@ void register_regexp_builtins(Context& ctx) {
     regexp_prototype->set_property("Symbol.search", Value(regexp_sym_search.release()), PropertyAttributes::BuiltinFunction);
 
     auto regexp_sym_split = ObjectFactory::create_native_function("[Symbol.split]",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this_sp = ctx.get_binding("this");
             if (!raw_this_sp.is_object() && !raw_this_sp.is_function()) {
                 ctx.throw_type_error("RegExp.prototype[Symbol.split] called on non-object");
@@ -1160,7 +1161,7 @@ void register_regexp_builtins(Context& ctx) {
             proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
         }
         auto next_fn = ObjectFactory::create_native_function("next",
-            [](Context& ctx, const std::vector<Value>&) -> Value {
+            [](Context& ctx, std::span<const Value>) -> Value {
                 Object* self = ctx.get_this_binding();
                 if (!self || !self->has_own_property("[[RegExpStringIteratorRegExp]]")) {
                     ctx.throw_type_error("%RegExpStringIteratorPrototype%.next called on incompatible receiver");
@@ -1232,7 +1233,7 @@ void register_regexp_builtins(Context& ctx) {
     // RegExp.prototype[Symbol.matchAll]: per-spec, creates a matcher via SpeciesConstructor then returns iterator.
     {
         auto regexp_sym_matchAll = ObjectFactory::create_native_function("[Symbol.matchAll]",
-            [regexp_string_iter_proto](Context& ctx, const std::vector<Value>& args) -> Value {
+            [regexp_string_iter_proto](Context& ctx, std::span<const Value> args) -> Value {
                 // Step 1: If Type(R) is not Object, throw TypeError.
                 Value raw_this_ma = ctx.get_binding("this");
                 if (!raw_this_ma.is_object() && !raw_this_ma.is_function()) {
@@ -1334,7 +1335,7 @@ void register_regexp_builtins(Context& ctx) {
     // ES2025 RegExp.escape: only accepts strings, no coercion.
     {
         auto escape_fn = ObjectFactory::create_native_function("escape",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [](Context& ctx, std::span<const Value> args) -> Value {
                 Value arg = args.empty() ? Value() : args[0];
                 if (!arg.is_string()) {
                     ctx.throw_type_error("RegExp.escape requires a string argument");
@@ -1349,7 +1350,7 @@ void register_regexp_builtins(Context& ctx) {
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
         if (species_sym) {
             auto regexp_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     (void)args;
                     Object* self = ctx.get_this_binding();
                     return self ? Value(self) : Value();

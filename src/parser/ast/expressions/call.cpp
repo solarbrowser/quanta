@@ -156,7 +156,7 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
 // Shared by the tree-walker below and Op::SuperCall. The caller evaluates the
 // arguments and samples `super_already_called` beforehand, because BindThisValue's
 // "called twice" check must see the state from before they ran (`super(super())`).
-Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values,
+Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
                          bool super_already_called) {
     // Note: NO already-called check here -- spec order for a second super()
     // is args evaluated, parent [[Construct]] runs again, and only then
@@ -201,14 +201,17 @@ Value perform_super_call(Context& ctx, const std::vector<Value>& arg_values,
 
             ctx.set_pending_construct_call(true);
             Value result;
+            // call() and construct() still take a vector; a super call is not
+            // a hot path, so the arguments are materialized here.
+            const std::vector<Value> parent_args(arg_values.begin(), arg_values.end());
             // A default-ctor parent's own implicit super(...args) only runs via construct().
             if (!parent_func->is_native() && parent_func->is_default_ctor()) {
-                result = parent_func->construct(ctx, arg_values);
+                result = parent_func->construct(ctx, parent_args);
             } else if (this_obj) {
                 Value this_value(this_obj);
-                result = parent_func->call(ctx, arg_values, this_value);
+                result = parent_func->call(ctx, parent_args, this_value);
             } else {
-                result = parent_func->call(ctx, arg_values);
+                result = parent_func->call(ctx, parent_args);
             }
             ctx.clear_return_value();
             if (ctx.has_exception()) return Value();

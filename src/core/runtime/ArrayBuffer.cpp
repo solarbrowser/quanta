@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/ArrayBuffer.h"
+#include <span>
 #include <cstdio>
 #include <cstdlib>
 #include "quanta/core/engine/Context.h"
@@ -247,7 +248,7 @@ void ArrayBuffer::mark_references() const {
 }
 
 
-Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
+Value ArrayBuffer::constructor(Context& ctx, std::span<const Value> args) {
     double length_double = 0.0;
 
     if (!args.empty()) {
@@ -301,7 +302,7 @@ Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
     }
 }
 
-Value ArrayBuffer::prototype_slice(Context& ctx, const std::vector<Value>& args) {
+Value ArrayBuffer::prototype_slice(Context& ctx, std::span<const Value> args) {
     Value this_val = ctx.get_binding("this");
     if (!this_val.is_object()) {
         ctx.throw_error("ArrayBuffer.prototype.slice called on non-object");
@@ -340,7 +341,7 @@ Value ArrayBuffer::prototype_slice(Context& ctx, const std::vector<Value>& args)
     return Value(new_buffer.release());
 }
 
-Value ArrayBuffer::get_byteLength(Context& ctx, const std::vector<Value>& args) {
+Value ArrayBuffer::get_byteLength(Context& ctx, std::span<const Value> args) {
     (void)args;
     Value this_val = ctx.get_binding("this");
     if (!this_val.is_object()) {
@@ -356,7 +357,7 @@ Value ArrayBuffer::get_byteLength(Context& ctx, const std::vector<Value>& args) 
     return Value(0.0);
 }
 
-Value ArrayBuffer::isView(Context& ctx, const std::vector<Value>& args) {
+Value ArrayBuffer::isView(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         return Value(false);
     }

@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/StringBuiltin.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
@@ -174,7 +175,7 @@ static std::string get_string_this(Context& ctx, bool& ok) {
 
 void register_string_builtins(Context& ctx) {
     auto string_constructor = ObjectFactory::create_native_constructor("String",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             std::string str_value;
             if (args.empty()) {
                 str_value = "";
@@ -218,7 +219,7 @@ void register_string_builtins(Context& ctx) {
                 }
 
                 auto toString_fn = ObjectFactory::create_native_function("toString",
-                    [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [](Context& ctx, std::span<const Value> args) -> Value {
                         (void)args;
                         Object* this_binding = ctx.get_this_binding();
                         if (this_binding && this_binding->has_property("[[PrimitiveValue]]")) {
@@ -245,7 +246,7 @@ void register_string_builtins(Context& ctx) {
     }
 
     auto padStart_fn = ObjectFactory::create_native_function("padStart",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             
             if (args.empty()) return Value(str);
@@ -299,7 +300,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("padStart", padStart_desc);
 
     auto padEnd_fn = ObjectFactory::create_native_function("padEnd",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             if (args.empty()) return Value(str);
             double tl = args[0].to_number();
@@ -394,7 +395,7 @@ void register_string_builtins(Context& ctx) {
     };
 
     auto str_includes_fn = ObjectFactory::create_native_function("includes",
-        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
 
             if (args.empty()) return Value(false);
@@ -449,7 +450,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("includes", string_includes_desc);
 
     auto startsWith_fn = ObjectFactory::create_native_function("startsWith",
-        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             bool this_ok;
             std::string str = get_string_this(ctx, this_ok);
             if (!this_ok) return Value();
@@ -504,7 +505,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("startsWith", startsWith_desc);
 
     auto endsWith_fn = ObjectFactory::create_native_function("endsWith",
-        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             bool this_ok;
             std::string str = get_string_this(ctx, this_ok);
             if (!this_ok) return Value();
@@ -570,7 +571,7 @@ void register_string_builtins(Context& ctx) {
     };
 
     auto match_fn = ObjectFactory::create_native_function("match",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Spec: GetMethod(regexp, @@match) is checked, and called with the RAW (not yet
             // ToString'd) `this` value, before this value is ever coerced -- so a poisoned
             // this.toString must not run if regexp[Symbol.match] short-circuits first.
@@ -614,7 +615,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("match", match_desc);
 
     auto matchAll_fn = ObjectFactory::create_native_function("matchAll",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             Value this_value = ctx.get_binding("this");
 
@@ -692,7 +693,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("matchAll", matchAll_desc);
 
     auto search_fn = ObjectFactory::create_native_function("search",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Spec: GetMethod(regexp, @@search) is checked, and called with the RAW `this`
             // value, before this value is ever coerced.
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
@@ -732,7 +733,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("search", search_desc);
 
     auto replace_fn = ObjectFactory::create_native_function("replace",
-        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             // Spec: GetMethod(searchValue, @@replace) must happen BEFORE ToString(this).
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             Value this_value = ctx.get_binding("this");
@@ -799,7 +800,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("replace", replace_desc);
 
     auto replaceAll_fn = ObjectFactory::create_native_function("replaceAll",
-        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             // Spec order matters: RequireObjectCoercible(this) only checks nullish here --
             // ToString(this) must NOT run yet, since the IsRegExp/flags validation below has
             // to happen first and can throw before `this` or replaceValue are ever coerced.
@@ -913,7 +914,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("replaceAll", replaceAll_desc);
 
     auto trim_fn = ObjectFactory::create_native_function("trim",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             return Value(unicode_trim(str));
@@ -923,7 +924,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("trim", trim_desc);
 
     auto trimStart_fn = ObjectFactory::create_native_function("trimStart",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             size_t start = 0;
@@ -936,7 +937,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("trimLeft", trimStart_desc);
 
     auto trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             size_t end = str.size();
@@ -955,7 +956,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("trimRight", trimEnd_desc);
 
     auto codePointAt_fn = ObjectFactory::create_native_function("codePointAt",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             bool this_ok;
             std::string str = get_string_this(ctx, this_ok);
             if (!this_ok) return Value();
@@ -979,7 +980,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("codePointAt", codePointAt_desc);
 
     auto localeCompare_fn = ObjectFactory::create_native_function("localeCompare",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             bool this_ok;
             std::string str = get_string_this(ctx, this_ok);
             if (!this_ok) return Value();
@@ -995,7 +996,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("localeCompare", localeCompare_desc);
 
     auto charAt_fn = ObjectFactory::create_native_function("charAt",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             // Read in place when the receiver is already a String -- see
             // charCodeAt for why the copy mattered.
@@ -1026,7 +1027,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("charAt", charAt_desc);
 
     auto string_at_fn = ObjectFactory::create_native_function("at",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             std::string str = this_value.to_string();
@@ -1058,7 +1059,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("at", string_at_desc);
 
     auto charCodeAt_fn = ObjectFactory::create_native_function("charCodeAt",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             // A String receiver is read in place. toString_helper returns by
             // value, so this used to copy the whole receiver on every call --
@@ -1096,7 +1097,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("charCodeAt", charCodeAt_desc);
 
     auto str_indexOf_fn = ObjectFactory::create_native_function("indexOf",
-        [toString_helper, obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
 
@@ -1133,7 +1134,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("indexOf", string_indexOf_desc);
 
     auto str_split_fn = ObjectFactory::create_native_function("split",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Spec: GetMethod(separator, @@split) before ToString(this); call with (O, limit).
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             Value this_value = ctx.get_binding("this");
@@ -1359,7 +1360,7 @@ void register_string_builtins(Context& ctx) {
     };
 
     auto toLowerCase_fn = ObjectFactory::create_native_function("toLowerCase",
-        [toString_helper, unicode_case_convert](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
@@ -1370,7 +1371,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("toLowerCase", toLowerCase_desc);
 
     auto str_concat_fn = ObjectFactory::create_native_function("concat",
-        [toString_helper, obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string result = toString_helper(ctx, this_value);
             if (ctx.has_exception()) return Value();
@@ -1388,7 +1389,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("concat", str_concat_desc);
 
     auto toUpperCase_fn = ObjectFactory::create_native_function("toUpperCase",
-        [toString_helper, unicode_case_convert](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
@@ -1399,7 +1400,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("toUpperCase", toUpperCase_desc);
 
     auto toLocaleLowerCase_fn = ObjectFactory::create_native_function("toLocaleLowerCase",
-        [toString_helper, unicode_case_convert](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
@@ -1410,7 +1411,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("toLocaleLowerCase", toLocaleLowerCase_desc);
 
     auto toLocaleUpperCase_fn = ObjectFactory::create_native_function("toLocaleUpperCase",
-        [toString_helper, unicode_case_convert](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
@@ -1421,7 +1422,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("toLocaleUpperCase", toLocaleUpperCase_desc);
 
     auto str_slice_fn = ObjectFactory::create_native_function("slice",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             // Borrowed when the receiver is already a String, so slicing does
             // not copy the whole source per call, and the UTF-16 length and
@@ -1477,7 +1478,7 @@ void register_string_builtins(Context& ctx) {
 
     // ES1: 15.5.4.7 String.prototype.lastIndexOf(searchString, position)
     auto str_lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
-        [toString_helper, obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
 
@@ -1528,7 +1529,7 @@ void register_string_builtins(Context& ctx) {
 
     // ES1: 15.5.4.10 String.prototype.substring(start, end)
     auto str_substring_fn = ObjectFactory::create_native_function("substring",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
 
@@ -1577,7 +1578,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("substring", str_substring_desc);
 
     auto string_concat_static = ObjectFactory::create_native_function("concat",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             std::string result = "";
             for (const auto& arg : args) {
                 result += arg.to_string();
@@ -1598,7 +1599,7 @@ void register_string_builtins(Context& ctx) {
     };
 
     auto anchor_fn = ObjectFactory::create_native_function("anchor",
-        [html_escape_attr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [html_escape_attr](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
 
             // RequireObjectCoercible
@@ -1616,7 +1617,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("anchor", anchor_desc);
 
     auto big_fn = ObjectFactory::create_native_function("big",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1631,7 +1632,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("big", big_desc);
 
     auto blink_fn = ObjectFactory::create_native_function("blink",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1646,7 +1647,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("blink", blink_desc);
 
     auto bold_fn = ObjectFactory::create_native_function("bold",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1661,7 +1662,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("bold", bold_desc);
 
     auto fixed_fn = ObjectFactory::create_native_function("fixed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1676,7 +1677,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("fixed", fixed_desc);
 
     auto fontcolor_fn = ObjectFactory::create_native_function("fontcolor",
-        [html_escape_attr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [html_escape_attr](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
                 ctx.throw_type_error("Cannot call method on null or undefined");
@@ -1691,7 +1692,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("fontcolor", fontcolor_desc);
 
     auto fontsize_fn = ObjectFactory::create_native_function("fontsize",
-        [html_escape_attr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [html_escape_attr](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
                 ctx.throw_type_error("Cannot call method on null or undefined");
@@ -1706,7 +1707,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("fontsize", fontsize_desc);
 
     auto italics_fn = ObjectFactory::create_native_function("italics",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1721,7 +1722,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("italics", italics_desc);
 
     auto link_fn = ObjectFactory::create_native_function("link",
-        [html_escape_attr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [html_escape_attr](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
                 ctx.throw_type_error("Cannot call method on null or undefined");
@@ -1736,7 +1737,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("link", link_desc);
 
     auto small_fn = ObjectFactory::create_native_function("small",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1751,7 +1752,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("small", small_desc);
 
     auto strike_fn = ObjectFactory::create_native_function("strike",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1766,7 +1767,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("strike", strike_desc);
 
     auto sub_fn = ObjectFactory::create_native_function("sub",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1781,7 +1782,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("sub", sub_desc);
 
     auto sup_fn = ObjectFactory::create_native_function("sup",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             if (this_value.is_null() || this_value.is_undefined()) {
@@ -1797,7 +1798,7 @@ void register_string_builtins(Context& ctx) {
 
     // AnnexB: String.prototype.substr(start, length)
     auto substr_fn = ObjectFactory::create_native_function("substr",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value this_value = ctx.get_binding("this");
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             std::string str = this_value.to_string();
@@ -1860,7 +1861,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("substr", substr_desc);
 
     auto isWellFormed_fn = ObjectFactory::create_native_function("isWellFormed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             bool this_ok;
             std::string str = get_string_this(ctx, this_ok);
@@ -1872,7 +1873,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("isWellFormed", isWellFormed_desc);
 
     auto toWellFormed_fn = ObjectFactory::create_native_function("toWellFormed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             bool this_ok;
             std::string str = get_string_this(ctx, this_ok);
@@ -1884,7 +1885,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("toWellFormed", toWellFormed_desc);
 
     auto repeat_fn = ObjectFactory::create_native_function("repeat",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             if (args.empty()) return Value(std::string(""));
             double count_d = args[0].to_number();
@@ -1907,7 +1908,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("repeat", repeat_desc);
 
     auto normalize_fn = ObjectFactory::create_native_function("normalize",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             bool this_ok;
             std::string str = get_string_this(ctx, this_ok);
             if (!this_ok) return Value();
@@ -1952,7 +1953,7 @@ void register_string_builtins(Context& ctx) {
 
     // ES6: String.prototype[Symbol.iterator] - iterates by Unicode codepoints
     auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             bool this_ok;
             std::string str = get_string_this(ctx, this_ok);
@@ -1964,7 +1965,7 @@ void register_string_builtins(Context& ctx) {
             struct StringIterState { std::string str; size_t index = 0; };
             auto state = std::make_shared<StringIterState>(StringIterState{str, 0});
             auto next_fn = ObjectFactory::create_native_function("next",
-                [state](Context& ctx, const std::vector<Value>& args) -> Value {
+                [state](Context& ctx, std::span<const Value> args) -> Value {
                     (void)ctx; (void)args;
                     auto result = ObjectFactory::create_object();
                     if (state->index >= state->str.length()) {
@@ -1994,7 +1995,7 @@ void register_string_builtins(Context& ctx) {
     proto_ptr->set_property("constructor", Value(string_constructor.get()), PropertyAttributes::BuiltinFunction);
 
     auto string_raw_fn = ObjectFactory::create_native_function("raw",
-        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) {
                 ctx.throw_type_error("String.raw requires at least 1 argument");
                 return Value();
@@ -2050,7 +2051,7 @@ void register_string_builtins(Context& ctx) {
     string_constructor->set_property("raw", Value(string_raw_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto fromCharCode_fn = ObjectFactory::create_native_function("fromCharCode",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             // Every argument is coerced first, in order: the surrogate pairing
             // below needs to look at the next unit, and coercing it twice would
@@ -2096,7 +2097,7 @@ void register_string_builtins(Context& ctx) {
     string_constructor->set_property("fromCharCode", Value(fromCharCode_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto fromCodePoint_fn = ObjectFactory::create_native_function("fromCodePoint",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             std::string result;
             for (const auto& arg : args) {
                 double num = arg.to_number();
@@ -2137,7 +2138,7 @@ void register_string_builtins(Context& ctx) {
             Object* global_prototype = prototype_val.as_object();
 
             auto global_includes_fn = ObjectFactory::create_native_function("includes",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
                     if (args.empty()) return Value(false);
                     // ES6: throw TypeError if argument is a regexp (has Symbol.match truthy)
@@ -2195,7 +2196,7 @@ void register_string_builtins(Context& ctx) {
             global_prototype->set_property("includes", Value(global_includes_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_valueOf_fn = ObjectFactory::create_native_function("valueOf",
-                [](Context& ctx, const std::vector<Value>&) -> Value {
+                [](Context& ctx, std::span<const Value>) -> Value {
                     Value this_val = ctx.get_binding("this");
                     if (this_val.is_string()) return this_val;
                     if (this_val.is_object() || this_val.is_function()) {
@@ -2224,7 +2225,7 @@ void register_string_builtins(Context& ctx) {
             global_prototype->set_property("valueOf", Value(string_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_toString_fn = ObjectFactory::create_native_function("toString",
-                [](Context& ctx, const std::vector<Value>&) -> Value {
+                [](Context& ctx, std::span<const Value>) -> Value {
                     Value this_val = ctx.get_binding("this");
                     if (this_val.is_string()) return this_val;
                     if (this_val.is_object() || this_val.is_function()) {
@@ -2250,7 +2251,7 @@ void register_string_builtins(Context& ctx) {
             global_prototype->set_property("toString", Value(string_toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_trim_fn = ObjectFactory::create_native_function("trim",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     (void)args;
                     bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
                     return Value(unicode_trim(str));
@@ -2258,7 +2259,7 @@ void register_string_builtins(Context& ctx) {
             global_prototype->set_property("trim", Value(string_trim_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_trimStart_fn = ObjectFactory::create_native_function("trimStart",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     (void)args;
                     bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
                     size_t start = 0;
@@ -2270,7 +2271,7 @@ void register_string_builtins(Context& ctx) {
             global_prototype->set_property("trimLeft", Value(trimStart_raw), PropertyAttributes::BuiltinFunction);
 
             auto string_trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     (void)args;
                     bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
                     size_t end = str.size();

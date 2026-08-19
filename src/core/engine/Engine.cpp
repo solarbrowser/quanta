@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/Engine.h"
+#include <span>
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/runtime/Object.h"
@@ -314,9 +315,11 @@ void Engine::register_function(const std::string& name, std::function<Value(cons
     if (!global_context_) return;
     
     auto native_func = ObjectFactory::create_native_function(name, 
-        [func](Context& ctx, const std::vector<Value>& args) -> Value {
+        [func](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
-            return func(args);
+            // The embedder API takes a vector; this is the one place that
+            // still has to build one, and it is not on any hot path.
+            return func(std::vector<Value>(args.begin(), args.end()));
         });
     
     set_global_property(name, Value(native_func.release()));

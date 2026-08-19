@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/builtins/ErrorBuiltin.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
@@ -116,7 +117,7 @@ void register_error_builtins(Context& ctx) {
 
     // Add Error.prototype.toString method
     auto error_proto_toString = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
@@ -175,7 +176,7 @@ void register_error_builtins(Context& ctx) {
     Object* error_prototype_ptr = error_prototype.get();
 
     auto error_constructor = ObjectFactory::create_native_constructor("Error",
-        [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [error_prototype_ptr](Context& ctx, std::span<const Value> args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
@@ -207,7 +208,7 @@ void register_error_builtins(Context& ctx) {
 
     {
         auto stack_get = ObjectFactory::create_native_function("get stack",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [](Context& ctx, std::span<const Value> args) -> Value {
                 (void)args;
                 Object* self = ctx.get_this_binding();
                 if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
@@ -222,7 +223,7 @@ void register_error_builtins(Context& ctx) {
                 return Value(static_cast<Error*>(self)->get_stack_trace());
             }, 0);
         auto stack_set = ObjectFactory::create_native_function("set stack",
-            [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            [error_prototype_ptr](Context& ctx, std::span<const Value> args) -> Value {
                 Object* self = ctx.get_this_binding();
                 if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
                     ctx.throw_type_error("Error.prototype.stack setter: this is not an object");
@@ -292,7 +293,7 @@ void register_error_builtins(Context& ctx) {
     Object* type_error_proto_ptr = type_error_prototype.get();
 
     auto type_error_constructor = ObjectFactory::create_native_constructor("TypeError",
-        [type_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [type_error_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
@@ -341,7 +342,7 @@ void register_error_builtins(Context& ctx) {
     Object* reference_error_proto_ptr = reference_error_prototype.get();
 
     auto reference_error_constructor = ObjectFactory::create_native_constructor("ReferenceError",
-        [reference_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [reference_error_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
@@ -389,7 +390,7 @@ void register_error_builtins(Context& ctx) {
     Object* syntax_error_proto_ptr = syntax_error_prototype.get();
 
     auto syntax_error_constructor = ObjectFactory::create_native_constructor("SyntaxError",
-        [syntax_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [syntax_error_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
@@ -437,7 +438,7 @@ void register_error_builtins(Context& ctx) {
     Object* range_error_proto_ptr = range_error_prototype.get();
 
     auto range_error_constructor = ObjectFactory::create_native_constructor("RangeError",
-        [range_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [range_error_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
@@ -486,7 +487,7 @@ void register_error_builtins(Context& ctx) {
     Object* uri_error_proto_ptr = uri_error_prototype.get();
 
     auto uri_error_constructor = ObjectFactory::create_native_constructor("URIError",
-        [uri_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [uri_error_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
@@ -527,7 +528,7 @@ void register_error_builtins(Context& ctx) {
     Object* eval_error_proto_ptr = eval_error_prototype.get();
 
     auto eval_error_constructor = ObjectFactory::create_native_constructor("EvalError",
-        [eval_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [eval_error_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
@@ -569,7 +570,7 @@ void register_error_builtins(Context& ctx) {
     Object* agg_error_proto_ptr = aggregate_error_prototype.get();
 
     auto aggregate_error_constructor = ObjectFactory::create_native_constructor("AggregateError",
-        [agg_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [agg_error_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
             // Spec order: message ToString before errors iteration (order-of-args-evaluation).
             Value message_arg = args.size() > 1 ? args[1] : Value();
             bool has_message = !message_arg.is_undefined();
@@ -648,7 +649,7 @@ void register_error_builtins(Context& ctx) {
     Object* suppressed_proto_ptr = suppressed_error_prototype.get();
 
     auto suppressed_error_constructor = ObjectFactory::create_native_constructor("SuppressedError",
-        [suppressed_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [suppressed_proto_ptr](Context& ctx, std::span<const Value> args) -> Value {
             Value message_arg = args.size() > 2 ? args[2] : Value();
             bool has_message = !message_arg.is_undefined();
             std::string message;

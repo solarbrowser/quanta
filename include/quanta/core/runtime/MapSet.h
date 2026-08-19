@@ -7,6 +7,7 @@
 #pragma once
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -67,18 +68,18 @@ public:
     std::vector<Value> values() const;
     std::vector<std::pair<Value, Value>> entries() const;
     
-    static Value map_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value map_set(Context& ctx, const std::vector<Value>& args);
-    static Value map_get(Context& ctx, const std::vector<Value>& args);
-    static Value map_has(Context& ctx, const std::vector<Value>& args);
-    static Value map_delete(Context& ctx, const std::vector<Value>& args);
-    static Value map_clear(Context& ctx, const std::vector<Value>& args);
-    static Value map_size_getter(Context& ctx, const std::vector<Value>& args);
-    static Value map_keys(Context& ctx, const std::vector<Value>& args);
-    static Value map_values(Context& ctx, const std::vector<Value>& args);
-    static Value map_entries(Context& ctx, const std::vector<Value>& args);
-    static Value map_forEach(Context& ctx, const std::vector<Value>& args);
-    static Value map_iterator_method(Context& ctx, const std::vector<Value>& args);
+    static Value map_constructor(Context& ctx, std::span<const Value> args);
+    static Value map_set(Context& ctx, std::span<const Value> args);
+    static Value map_get(Context& ctx, std::span<const Value> args);
+    static Value map_has(Context& ctx, std::span<const Value> args);
+    static Value map_delete(Context& ctx, std::span<const Value> args);
+    static Value map_clear(Context& ctx, std::span<const Value> args);
+    static Value map_size_getter(Context& ctx, std::span<const Value> args);
+    static Value map_keys(Context& ctx, std::span<const Value> args);
+    static Value map_values(Context& ctx, std::span<const Value> args);
+    static Value map_entries(Context& ctx, std::span<const Value> args);
+    static Value map_forEach(Context& ctx, std::span<const Value> args);
+    static Value map_iterator_method(Context& ctx, std::span<const Value> args);
     
     static void setup_map_prototype(Context& ctx);
     
@@ -129,17 +130,17 @@ public:
     std::vector<Value> values() const;
     std::vector<std::pair<Value, Value>> entries() const;
     
-    static Value set_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value set_add(Context& ctx, const std::vector<Value>& args);
-    static Value set_has(Context& ctx, const std::vector<Value>& args);
-    static Value set_delete(Context& ctx, const std::vector<Value>& args);
-    static Value set_clear(Context& ctx, const std::vector<Value>& args);
-    static Value set_size_getter(Context& ctx, const std::vector<Value>& args);
-    static Value set_values(Context& ctx, const std::vector<Value>& args);
-    static Value set_keys(Context& ctx, const std::vector<Value>& args);
-    static Value set_entries(Context& ctx, const std::vector<Value>& args);
-    static Value set_forEach(Context& ctx, const std::vector<Value>& args);
-    static Value set_iterator_method(Context& ctx, const std::vector<Value>& args);
+    static Value set_constructor(Context& ctx, std::span<const Value> args);
+    static Value set_add(Context& ctx, std::span<const Value> args);
+    static Value set_has(Context& ctx, std::span<const Value> args);
+    static Value set_delete(Context& ctx, std::span<const Value> args);
+    static Value set_clear(Context& ctx, std::span<const Value> args);
+    static Value set_size_getter(Context& ctx, std::span<const Value> args);
+    static Value set_values(Context& ctx, std::span<const Value> args);
+    static Value set_keys(Context& ctx, std::span<const Value> args);
+    static Value set_entries(Context& ctx, std::span<const Value> args);
+    static Value set_forEach(Context& ctx, std::span<const Value> args);
+    static Value set_iterator_method(Context& ctx, std::span<const Value> args);
     
     static void setup_set_prototype(Context& ctx);
     
@@ -184,11 +185,11 @@ public:
     std::unordered_map<Object*, Value>& raw_entries() { return entries_; }
     std::unordered_map<class Symbol*, Value>* raw_symbol_entries() { return symbol_entries_.get(); }
 
-    static Value weakmap_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value weakmap_set(Context& ctx, const std::vector<Value>& args);
-    static Value weakmap_get(Context& ctx, const std::vector<Value>& args);
-    static Value weakmap_has(Context& ctx, const std::vector<Value>& args);
-    static Value weakmap_delete(Context& ctx, const std::vector<Value>& args);
+    static Value weakmap_constructor(Context& ctx, std::span<const Value> args);
+    static Value weakmap_set(Context& ctx, std::span<const Value> args);
+    static Value weakmap_get(Context& ctx, std::span<const Value> args);
+    static Value weakmap_has(Context& ctx, std::span<const Value> args);
+    static Value weakmap_delete(Context& ctx, std::span<const Value> args);
 
     static void setup_weakmap_prototype(Context& ctx);
 
@@ -223,10 +224,10 @@ public:
     std::unordered_set<Object*>& raw_values() { return values_; }
     std::unordered_set<class Symbol*>* raw_symbol_values() { return symbol_values_.get(); }
 
-    static Value weakset_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value weakset_add(Context& ctx, const std::vector<Value>& args);
-    static Value weakset_has(Context& ctx, const std::vector<Value>& args);
-    static Value weakset_delete(Context& ctx, const std::vector<Value>& args);
+    static Value weakset_constructor(Context& ctx, std::span<const Value> args);
+    static Value weakset_add(Context& ctx, std::span<const Value> args);
+    static Value weakset_has(Context& ctx, std::span<const Value> args);
+    static Value weakset_delete(Context& ctx, std::span<const Value> args);
 
     static void setup_weakset_prototype(Context& ctx);
 
@@ -256,8 +257,8 @@ public:
     // before its cell is swept.
     void clear_target() { target_object_ = nullptr; target_symbol_ = nullptr; }
 
-    static Value weakref_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value weakref_deref(Context& ctx, const std::vector<Value>& args);
+    static Value weakref_constructor(Context& ctx, std::span<const Value> args);
+    static Value weakref_deref(Context& ctx, std::span<const Value> args);
 
     static void setup_weakref_prototype(Context& ctx);
 
@@ -302,9 +303,9 @@ public:
     // marked cleared, removing each as its callback returns.
     void enqueue_cleanup_job();
 
-    static Value fr_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value fr_register(Context& ctx, const std::vector<Value>& args);
-    static Value fr_unregister(Context& ctx, const std::vector<Value>& args);
+    static Value fr_constructor(Context& ctx, std::span<const Value> args);
+    static Value fr_register(Context& ctx, std::span<const Value> args);
+    static Value fr_unregister(Context& ctx, std::span<const Value> args);
 
     static void setup_finalization_registry_prototype(Context& ctx);
 

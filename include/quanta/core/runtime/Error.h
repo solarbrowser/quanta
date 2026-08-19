@@ -8,6 +8,7 @@
 #define QUANTA_ERROR_H
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/CallStack.h"
 #include <string>
@@ -92,7 +93,7 @@ public:
     
     static std::string type_to_name(Type type);
     
-    static Value isError(Context& ctx, const std::vector<Value>& args);
+    static Value isError(Context& ctx, std::span<const Value> args);
     
 private:
     void initialize_properties();

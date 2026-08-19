@@ -8,6 +8,7 @@
 #define QUANTA_ENGINE_H
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/modules/ModuleLoader.h"
@@ -182,7 +183,7 @@ private:
  */
 class NativeFunction {
 public:
-    using FunctionType = std::function<Value(Context&, const std::vector<Value>&)>;
+    using FunctionType = std::function<Value(Context&, std::span<const Value>)>;
     
 private:
     FunctionType function_;
@@ -192,7 +193,7 @@ private:
 public:
     NativeFunction(const std::string& name, FunctionType func, size_t arity = 0);
     
-    Value call(Context& ctx, const std::vector<Value>& args);
+    Value call(Context& ctx, std::span<const Value> args);
     const std::string& get_name() const { return name_; }
     size_t get_arity() const { return arity_; }
 };

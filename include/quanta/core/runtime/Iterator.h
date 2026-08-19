@@ -7,6 +7,7 @@
 #pragma once
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include <memory>
 #include <vector>
@@ -49,9 +50,9 @@ public:
     IteratorResult next();
 
 
-    static Value iterator_next(Context& ctx, const std::vector<Value>& args);
-    static Value iterator_return(Context& ctx, const std::vector<Value>& args);
-    static Value iterator_throw(Context& ctx, const std::vector<Value>& args);
+    static Value iterator_next(Context& ctx, std::span<const Value> args);
+    static Value iterator_return(Context& ctx, std::span<const Value> args);
+    static Value iterator_throw(Context& ctx, std::span<const Value> args);
 
     static void setup_iterator_prototype(Context& ctx);
 

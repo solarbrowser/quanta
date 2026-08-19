@@ -7,6 +7,7 @@
 #pragma once
 
 #include <string>
+#include <span>
 #include <vector>
 #include <unordered_map>
 #include <memory>
@@ -67,11 +68,11 @@ public:
     // Find a user-created symbol by its property key (e.g., "@@sym:5")
     static Symbol* find_by_property_key(const std::string& key);
     
-    static Value symbol_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value symbol_for(Context& ctx, const std::vector<Value>& args);
-    static Value symbol_key_for(Context& ctx, const std::vector<Value>& args);
-    static Value symbol_to_string(Context& ctx, const std::vector<Value>& args);
-    static Value symbol_value_of(Context& ctx, const std::vector<Value>& args);
+    static Value symbol_constructor(Context& ctx, std::span<const Value> args);
+    static Value symbol_for(Context& ctx, std::span<const Value> args);
+    static Value symbol_key_for(Context& ctx, std::span<const Value> args);
+    static Value symbol_to_string(Context& ctx, std::span<const Value> args);
+    static Value symbol_value_of(Context& ctx, std::span<const Value> args);
     
     static const std::string ITERATOR;
     static const std::string ASYNC_ITERATOR;

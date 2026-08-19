@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/builtins/BooleanBuiltin.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
@@ -17,7 +18,7 @@ namespace Quanta {
 
 void register_boolean_builtins(Context& ctx) {
     auto boolean_constructor = ObjectFactory::create_native_constructor("Boolean",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             bool value = args.empty() ? false : args[0].to_boolean();
 
             // Return an ObjectType::Boolean-tagged wrapper so Object.prototype.toString
@@ -38,7 +39,7 @@ void register_boolean_builtins(Context& ctx) {
     boolean_prototype->set_property("[[PrimitiveValue]]", Value(false), PropertyAttributes::Writable);
 
     auto boolean_valueOf = ObjectFactory::create_native_function("valueOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             try {
                 Value this_val = ctx.get_binding("this");
@@ -75,7 +76,7 @@ void register_boolean_builtins(Context& ctx) {
     boolean_valueOf->set_property_descriptor("length", boolean_valueOf_length_desc);
 
     auto boolean_toString = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             try {
                 Value this_val = ctx.get_binding("this");

@@ -7,6 +7,7 @@
 #pragma once
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include <cstdint>
 #include <memory>
@@ -130,11 +131,11 @@ public:
 
     Context* get_context() const { return generator_context_; }
 
-    static Value generator_next(Context& ctx, const std::vector<Value>& args);
-    static Value generator_return(Context& ctx, const std::vector<Value>& args);
-    static Value generator_throw(Context& ctx, const std::vector<Value>& args);
+    static Value generator_next(Context& ctx, std::span<const Value> args);
+    static Value generator_return(Context& ctx, std::span<const Value> args);
+    static Value generator_throw(Context& ctx, std::span<const Value> args);
     
-    static Value generator_function_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value generator_function_constructor(Context& ctx, std::span<const Value> args);
     
     static void setup_generator_prototype(Context& ctx);
     
@@ -182,9 +183,9 @@ public:
                      ExecutableRef<const class FunctionExecutable> executable,
                      Context* closure_context);
 
-    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    Value call(Context& ctx, std::span<const Value> args, Value this_value = Value());
 
-    std::unique_ptr<Generator> create_generator(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    std::unique_ptr<Generator> create_generator(Context& ctx, std::span<const Value> args, Value this_value = Value());
 
     // Compiles on first call and caches; permanently null if the body or the
     // captured scope chain (a `with`) is incompatible.

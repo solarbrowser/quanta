@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/FunctionBuiltin.h"
+#include <span>
 #include "quanta/core/engine/builtins/ArrayBuiltin.h"
 #include "quanta/core/engine/builtins/StringBuiltin.h"
 #include "quanta/core/engine/Context.h"
@@ -20,7 +21,7 @@ namespace Quanta {
 
 void register_function_builtins(Context& ctx) {
     auto function_constructor = ObjectFactory::create_native_constructor("Function",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             std::string params = "";
             std::string body = "";
 
@@ -178,7 +179,7 @@ void register_function_builtins(Context& ctx) {
     // NOTE: create_native_function checks get_function_prototype() which is null at this point,
     // so the proto of function_prototype won't be set here; it will be set later (Object.prototype).
     auto function_prototype_fn = ObjectFactory::create_native_function("",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx; (void)args; return Value();
         });
     auto function_prototype = std::unique_ptr<Object>(static_cast<Object*>(function_prototype_fn.release()));
@@ -236,7 +237,7 @@ void register_function_builtins(Context& ctx) {
     }
 
     auto call_fn = ObjectFactory::create_native_function("call",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* function_obj = ctx.get_this_binding();
             Value this_arg = args.size() > 0 ? args[0] : Value();
             std::vector<Value> call_args;
@@ -266,7 +267,7 @@ void register_function_builtins(Context& ctx) {
     function_prototype->set_property("call", Value(call_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto apply_fn = ObjectFactory::create_native_function("apply",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* function_obj = ctx.get_this_binding();
             bool is_proxy = function_obj && function_obj->get_type() == Object::ObjectType::Proxy;
             Function* func = (function_obj && function_obj->is_function()) ? static_cast<Function*>(function_obj) : nullptr;
@@ -311,7 +312,7 @@ void register_function_builtins(Context& ctx) {
     function_prototype->set_property("apply", Value(apply_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto bind_fn = ObjectFactory::create_native_function("bind",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Check the raw this value (get_this_binding returns stale Object* for primitive this).
             Value raw_this = ctx.get_binding("this");
             if (!raw_this.is_object() && !raw_this.is_function()) {
@@ -367,7 +368,7 @@ void register_function_builtins(Context& ctx) {
             // new.target is stored as VALUE_OBJECT, so compare via raw Object* pointer
             auto self_ptr = std::make_shared<Function*>(nullptr);
             auto bound_function = ObjectFactory::create_native_function(bound_name,
-                [target_func, bound_this, bound_args, self_ptr](Context& ctx, const std::vector<Value>& call_args) -> Value {
+                [target_func, bound_this, bound_args, self_ptr](Context& ctx, std::span<const Value> call_args) -> Value {
                     std::vector<Value> final_args = bound_args;
                     final_args.insert(final_args.end(), call_args.begin(), call_args.end());
 
@@ -420,7 +421,7 @@ void register_function_builtins(Context& ctx) {
     function_prototype->set_property("bind", Value(bind_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto function_toString_fn = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* function_obj = ctx.get_this_binding();
             if (function_obj && function_obj->get_type() == Object::ObjectType::Proxy) {
@@ -459,7 +460,7 @@ void register_function_builtins(Context& ctx) {
         Symbol* has_inst_sym = Symbol::get_well_known(Symbol::HAS_INSTANCE);
         if (has_inst_sym) {
             auto has_inst_fn = ObjectFactory::create_native_function("[Symbol.hasInstance]",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                [](Context& ctx, std::span<const Value> args) -> Value {
                     Value raw_this = ctx.get_binding("this");
                     // OrdinaryHasInstance step 1: IsCallable(C) == false → return false
                     if (!raw_this.is_function() && !raw_this.is_object()) return Value(false);
@@ -501,7 +502,7 @@ void register_function_builtins(Context& ctx) {
             return nullptr;
         };
         auto thrower_fn = ObjectFactory::create_native_function("ThrowTypeError",
-            [get_this_fn, function_proto_ptr](Context& ctx, const std::vector<Value>&) -> Value {
+            [get_this_fn, function_proto_ptr](Context& ctx, std::span<const Value>) -> Value {
                 Function* fn = get_this_fn(ctx);
                 // Function.prototype always throws (no legacy non-strict caller/arguments shadowing for it).
                 if (fn && fn != function_proto_ptr) {

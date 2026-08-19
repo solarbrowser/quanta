@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Iterator.h"
+#include <span>
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -66,7 +67,7 @@ Iterator::IteratorResult Iterator::next_default() {
     return result;
 }
 
-Value Iterator::iterator_next(Context& ctx, const std::vector<Value>& args) {
+Value Iterator::iterator_next(Context& ctx, std::span<const Value> args) {
     (void)args;
     
     Value this_value = ctx.get_binding("this");
@@ -97,7 +98,7 @@ Value Iterator::iterator_next(Context& ctx, const std::vector<Value>& args) {
     return create_iterator_result(result.value, result.done);
 }
 
-Value Iterator::iterator_return(Context& ctx, const std::vector<Value>& args) {
+Value Iterator::iterator_return(Context& ctx, std::span<const Value> args) {
     Value return_value = args.empty() ? Value() : args[0];
     
     Value this_value = ctx.get_binding("this");
@@ -118,7 +119,7 @@ Value Iterator::iterator_return(Context& ctx, const std::vector<Value>& args) {
     return create_iterator_result(return_value, true);
 }
 
-Value Iterator::iterator_throw(Context& ctx, const std::vector<Value>& args) {
+Value Iterator::iterator_throw(Context& ctx, std::span<const Value> args) {
     Value exception = args.empty() ? Value() : args[0];
     
     Value this_value = ctx.get_binding("this");
@@ -152,7 +153,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (iter_sym) {
         auto self_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [](Context& ctx, std::span<const Value> args) -> Value {
                 (void)args;
                 // Spec: return the this value (primitives included, same as Symbol.prototype.valueOf).
                 Value prim = ctx.get_this_value();
@@ -173,12 +174,12 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
     if (tag_sym) {
         auto tag_getter = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
-            [](Context&, const std::vector<Value>&) -> Value {
+            [](Context&, std::span<const Value>) -> Value {
                 return Value(std::string("Iterator"));
             }, 0);
         Object* iter_proto_raw = iter_proto.get();
         auto tag_setter = ObjectFactory::create_native_function("set [Symbol.toStringTag]",
-            [iter_proto_raw](Context& ctx, const std::vector<Value>& args) -> Value {
+            [iter_proto_raw](Context& ctx, std::span<const Value> args) -> Value {
                 Object* self = ctx.get_this_binding();
                 if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
                     ctx.throw_type_error("Iterator.prototype[Symbol.toStringTag] setter: this is not an object");
@@ -543,7 +544,7 @@ void setup_array_iterator_methods(Context& ctx) {
     Object* array_proto = array_prototype.as_object();
     
     auto keys_fn = ObjectFactory::create_native_function("keys",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.keys called on null or undefined"); return Value(); }
             Object* array = ctx.get_this_binding();
@@ -552,7 +553,7 @@ void setup_array_iterator_methods(Context& ctx) {
         });
     
     auto values_fn = ObjectFactory::create_native_function("values",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.values called on null or undefined"); return Value(); }
             Object* array = ctx.get_this_binding();
@@ -561,7 +562,7 @@ void setup_array_iterator_methods(Context& ctx) {
         });
     
     auto entries_fn = ObjectFactory::create_native_function("entries",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.entries called on null or undefined"); return Value(); }
             Object* array = ctx.get_this_binding();
@@ -598,7 +599,7 @@ void setup_string_iterator_methods(Context& ctx) {
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
         auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [](Context& ctx, std::span<const Value> args) -> Value {
                 (void)args;
                 if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
                 Value this_value = ctx.get_binding("this");

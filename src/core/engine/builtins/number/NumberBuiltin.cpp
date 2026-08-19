@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/builtins/NumberBuiltin.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/parser/AST.h"
@@ -68,7 +69,7 @@ static std::string round_half_up_fixed(double abs_num, int frac_digits) {
 
 void register_number_builtins(Context& ctx) {
     auto number_constructor = ObjectFactory::create_native_constructor("Number",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Number() uses ToNumeric (not ToNumber): BigInt is explicitly convertible.
             double num_value = 0.0;
             if (!args.empty()) {
@@ -107,7 +108,7 @@ void register_number_builtins(Context& ctx) {
     number_constructor->set_property_descriptor("MIN_SAFE_INTEGER", min_safe_desc);
     
     auto isInteger_fn = ObjectFactory::create_native_function("isInteger",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value(false);
             if (!args[0].is_number()) return Value(false);
             double num = args[0].to_number();
@@ -116,7 +117,7 @@ void register_number_builtins(Context& ctx) {
     number_constructor->set_property("isInteger", Value(isInteger_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto numberIsNaN_fn = ObjectFactory::create_native_function("isNaN",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             // ES6 Number.isNaN: only returns true for actual NaN values (no type coercion)
             if (args.empty()) return Value(false);
@@ -127,7 +128,7 @@ void register_number_builtins(Context& ctx) {
     number_constructor->set_property("isNaN", Value(numberIsNaN_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto numberIsFinite_fn = ObjectFactory::create_native_function("isFinite",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value(false);
             
             if (!args[0].is_number()) return Value(false);
@@ -142,7 +143,7 @@ void register_number_builtins(Context& ctx) {
     number_constructor->set_property("isFinite", Value(numberIsFinite_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isSafeInteger_fn = ObjectFactory::create_native_function("isSafeInteger",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) return Value(false);
             if (!args[0].is_number()) return Value(false);
             double num = args[0].to_number();
@@ -159,7 +160,7 @@ void register_number_builtins(Context& ctx) {
     number_prototype->set_property("[[PrimitiveValue]]", Value(0.0));
 
     auto number_valueOf = ObjectFactory::create_native_function("valueOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             try {
                 Value this_val = ctx.get_binding("this");
@@ -196,7 +197,7 @@ void register_number_builtins(Context& ctx) {
     number_valueOf->set_property_descriptor("length", number_valueOf_length_desc);
 
     auto number_toString = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             try {
                 Value this_val = ctx.get_binding("this");
                 double num = 0.0;
@@ -378,7 +379,7 @@ void register_number_builtins(Context& ctx) {
     number_prototype->set_property_descriptor("toString", number_toString_desc);
 
     auto toExponential_fn = ObjectFactory::create_native_function("toExponential",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value this_val = ctx.get_binding("this");
             double num;
             if (this_val.is_number()) {
@@ -461,7 +462,7 @@ void register_number_builtins(Context& ctx) {
     number_prototype->set_property_descriptor("toExponential", toExponential_desc);
 
     auto toFixed_fn = ObjectFactory::create_native_function("toFixed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value this_val = ctx.get_binding("this");
             double num = this_val.to_number();
 
@@ -503,7 +504,7 @@ void register_number_builtins(Context& ctx) {
     number_prototype->set_property_descriptor("toFixed", toFixed_desc);
 
     auto toPrecision_fn = ObjectFactory::create_native_function("toPrecision",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value this_val = ctx.get_binding("this");
             double num;
             if (this_val.is_number()) { num = this_val.as_number(); }
@@ -569,7 +570,7 @@ void register_number_builtins(Context& ctx) {
     number_prototype->set_property_descriptor("toPrecision", toPrecision_desc);
 
     auto number_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value this_val = ctx.get_binding("this");
             double num;
@@ -599,7 +600,7 @@ void register_number_builtins(Context& ctx) {
     number_prototype->set_property_descriptor("constructor", number_constructor_desc);
 
     auto isNaN_fn2 = ObjectFactory::create_native_function("isNaN",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             // ES6 Number.isNaN: only returns true for actual NaN values (no type coercion)
             if (args.empty()) return Value(false);
@@ -610,7 +611,7 @@ void register_number_builtins(Context& ctx) {
     number_constructor->set_property("isNaN", Value(isNaN_fn2.release()), PropertyAttributes::BuiltinFunction);
 
     auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             if (args.empty() || !args[0].is_number()) return Value(false);
             return Value(std::isfinite(args[0].to_number()));

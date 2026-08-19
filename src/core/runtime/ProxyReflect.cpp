@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/ProxyReflect.h"
+#include <span>
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/TypedArray.h"
@@ -711,7 +712,7 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
     return target_->set_property_descriptor(key.to_string(), desc);
 }
 
-Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value) {
+Value Proxy::apply_trap(std::span<const Value> args, const Value& this_value) {
     if (is_revoked()) {
         if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'apply' on a proxy that has been revoked");
         throw std::runtime_error("TypeError: Proxy has been revoked");
@@ -741,7 +742,9 @@ Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value)
         return static_cast<Proxy*>(target_)->apply_trap(args, this_value);
     }
     Function* func = static_cast<Function*>(target_);
-    return func->call(*ctx, args, this_value);
+    // Function::call still takes a vector -- a trap is not a hot path, so the
+    // arguments are materialized here rather than widening that signature.
+    return func->call(*ctx, std::vector<Value>(args.begin(), args.end()), this_value);
 }
 
 // IsConstructor(obj): recurses through nested Proxy targets to the underlying Function.
@@ -752,7 +755,7 @@ static bool object_is_constructor(Object* obj) {
     return obj->is_function() && static_cast<Function*>(obj)->is_constructor();
 }
 
-Value Proxy::construct_trap(const std::vector<Value>& args, Object* new_target) {
+Value Proxy::construct_trap(std::span<const Value> args, Object* new_target) {
     if (is_revoked()) {
         if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'construct' on a proxy that has been revoked");
         throw std::runtime_error("TypeError: Proxy has been revoked");
@@ -830,7 +833,8 @@ Value Proxy::construct_trap(const std::vector<Value>& args, Object* new_target) 
     ctx->set_new_target(nt_value);
     // Tells Function::call's native path this is a construct invocation, so it won't reset new.target to undefined.
     ctx->set_pending_construct_call(true);
-    Value result = target_fn->call(*ctx, args, this_value);
+    const std::vector<Value> args_vec(args.begin(), args.end());
+    Value result = target_fn->call(*ctx, args_vec, this_value);
     bool super_was_called = ctx->was_super_called();
     ctx->set_in_constructor_call(false);
     ctx->set_new_target(Value());
@@ -841,7 +845,7 @@ Value Proxy::construct_trap(const std::vector<Value>& args, Object* new_target) 
         ctx->set_in_constructor_call(true);
         ctx->set_new_target(nt_value);
         ctx->set_pending_construct_call(true);
-        Value super_result = super_ctor->call(*ctx, args, this_value);
+        Value super_result = super_ctor->call(*ctx, args_vec, this_value);
         ctx->set_in_constructor_call(false);
         ctx->set_new_target(Value());
         if (!super_result.is_undefined()) result = super_result;
@@ -909,7 +913,7 @@ PropertyDescriptor Proxy::get_property_descriptor(const std::string& key) const 
 }
 
 
-Value Proxy::proxy_constructor(Context& ctx, const std::vector<Value>& args) {
+Value Proxy::proxy_constructor(Context& ctx, std::span<const Value> args) {
     if (!ctx.is_in_constructor_call()) {
         ctx.throw_type_error("Constructor Proxy requires 'new'");
         return Value();
@@ -931,7 +935,7 @@ Value Proxy::proxy_constructor(Context& ctx, const std::vector<Value>& args) {
     return Value(proxy.release());
 }
 
-Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
+Value Proxy::proxy_revocable(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Proxy.revocable requires target and handler arguments");
         return Value();
@@ -950,7 +954,7 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
     
     // Proxy revocation functions are anonymous (name: "").
     auto revoke_fn = ObjectFactory::create_native_function("",
-        [proxy_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [proxy_ptr](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             (void)args;
             proxy_ptr->revoke();
@@ -976,7 +980,7 @@ void Proxy::setup_proxy(Context& ctx) {
 }
 
 
-Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_get(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.get requires at least one argument");
         return Value();
@@ -1116,7 +1120,7 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
     return receiver->set_property_descriptor(key, new_desc);
 }
 
-Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_set(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.set requires at least two arguments");
         return Value();
@@ -1146,7 +1150,7 @@ Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
     return Value(result);
 }
 
-Value Reflect::reflect_has(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_has(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.has requires two arguments");
         return Value();
@@ -1162,7 +1166,7 @@ Value Reflect::reflect_has(Context& ctx, const std::vector<Value>& args) {
     return Value(target->has_property(key));
 }
 
-Value Reflect::reflect_delete_property(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_delete_property(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.deleteProperty requires two arguments");
         return Value();
@@ -1189,7 +1193,7 @@ static bool is_array_index_key(const std::string& key, uint32_t* index) {
     return true;
 }
 
-Value Reflect::reflect_own_keys(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_own_keys(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.ownKeys requires one argument");
         return Value();
@@ -1268,7 +1272,7 @@ Value Reflect::reflect_own_keys(Context& ctx, const std::vector<Value>& args) {
     return Value(result_array.release());
 }
 
-Value Reflect::reflect_get_prototype_of(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_get_prototype_of(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.getPrototypeOf requires one argument");
         return Value();
@@ -1283,7 +1287,7 @@ Value Reflect::reflect_get_prototype_of(Context& ctx, const std::vector<Value>& 
     return proto ? Value(proto) : Value::null();
 }
 
-Value Reflect::reflect_set_prototype_of(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_set_prototype_of(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.setPrototypeOf requires two arguments");
         return Value();
@@ -1308,7 +1312,7 @@ Value Reflect::reflect_set_prototype_of(Context& ctx, const std::vector<Value>& 
     return Value(ordinary_set_prototype_of(target, proto));
 }
 
-Value Reflect::reflect_is_extensible(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_is_extensible(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.isExtensible requires one argument");
         return Value();
@@ -1327,7 +1331,7 @@ Value Reflect::reflect_is_extensible(Context& ctx, const std::vector<Value>& arg
     return Value(target->is_extensible());
 }
 
-Value Reflect::reflect_prevent_extensions(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_prevent_extensions(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Reflect.preventExtensions requires one argument");
         return Value();
@@ -1354,7 +1358,7 @@ static bool is_callable_value(const Value& value) {
            static_cast<Proxy*>(value.as_object())->target_was_callable();
 }
 
-Value Reflect::reflect_apply(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_apply(Context& ctx, std::span<const Value> args) {
     if (args.size() < 3) {
         ctx.throw_type_error("Reflect.apply requires three arguments");
         return Value();
@@ -1395,7 +1399,7 @@ static bool is_constructor_value(const Value& value) {
            object_is_constructor(value.as_object());
 }
 
-Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.construct requires at least two arguments");
         return Value();
@@ -1494,7 +1498,7 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
     return Value(new_object.release());
 }
 
-Value Reflect::reflect_get_own_property_descriptor(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Reflect.getOwnPropertyDescriptor requires two arguments");
         return Value();
@@ -1516,7 +1520,7 @@ Value Reflect::reflect_get_own_property_descriptor(Context& ctx, const std::vect
     return from_property_descriptor(desc);
 }
 
-Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& args) {
+Value Reflect::reflect_define_property(Context& ctx, std::span<const Value> args) {
     Object* target = to_object(args.empty() ? Value() : args[0], ctx);
     if (!target) return Value(false);
 

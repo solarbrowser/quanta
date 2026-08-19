@@ -7,6 +7,7 @@
 #pragma once
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Promise.h"
 #include <memory>
@@ -92,7 +93,7 @@ public:
                   ExecutableRef<const class FunctionExecutable> executable,
                   Context* closure_context);
 
-    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    Value call(Context& ctx, std::span<const Value> args, Value this_value = Value());
 
     const BytecodeChunk* get_suspendable_chunk(Context& ctx);
     void trace(Visitor& v);
@@ -188,9 +189,9 @@ public:
     State get_state() const { return state_; }
     bool is_done() const { return state_ == State::Completed; }
 
-    static Value async_generator_next(Context& ctx, const std::vector<Value>& args);
-    static Value async_generator_return(Context& ctx, const std::vector<Value>& args);
-    static Value async_generator_throw(Context& ctx, const std::vector<Value>& args);
+    static Value async_generator_next(Context& ctx, std::span<const Value> args);
+    static Value async_generator_return(Context& ctx, std::span<const Value> args);
+    static Value async_generator_throw(Context& ctx, std::span<const Value> args);
 
     static void setup_async_generator_prototype(Context& ctx);
     // Thread-local: each agent owns its own intrinsics.
@@ -255,7 +256,7 @@ public:
                            ExecutableRef<const class FunctionExecutable> executable,
                            Context* closure_context);
 
-    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    Value call(Context& ctx, std::span<const Value> args, Value this_value = Value());
 
     const BytecodeChunk* get_suspendable_chunk(Context& ctx);
     void trace(Visitor& v);
@@ -279,9 +280,9 @@ public:
     std::unique_ptr<Promise> return_value(const Value& value);
     std::unique_ptr<Promise> throw_exception(const Value& exception);
     
-    static Value async_iterator_next(Context& ctx, const std::vector<Value>& args);
-    static Value async_iterator_return(Context& ctx, const std::vector<Value>& args);
-    static Value async_iterator_throw(Context& ctx, const std::vector<Value>& args);
+    static Value async_iterator_next(Context& ctx, std::span<const Value> args);
+    static Value async_iterator_return(Context& ctx, std::span<const Value> args);
+    static Value async_iterator_throw(Context& ctx, std::span<const Value> args);
     
     static void setup_async_iterator_prototype(Context& ctx);
 };

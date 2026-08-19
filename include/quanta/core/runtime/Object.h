@@ -1203,7 +1203,7 @@ private:
     // default from -- natives never share, so there's no sharing benefit to
     // a separate override).
     struct NativeFunctionData {
-        std::function<Value(Context&, const std::vector<Value>&)> fn;
+        std::function<Value(Context&, std::span<const Value>)> fn;
         size_t declared_length = 0;
         std::string name;
     };
@@ -1304,11 +1304,11 @@ public:
              bool create_prototype = true);
 
     Function(const std::string& name,
-             std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+             std::function<Value(Context&, std::span<const Value>)> native_fn,
              bool create_prototype = false);
 
     Function(const std::string& name,
-             std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+             std::function<Value(Context&, std::span<const Value>)> native_fn,
              uint32_t arity,
              bool create_prototype = false);
     
@@ -1649,12 +1649,12 @@ namespace ObjectFactory {
                                                  class Context* closure_context,
                                                  bool create_prototype = true);
     std::unique_ptr<Function> create_native_function(const std::string& name,
-                                                     std::function<Value(Context&, const std::vector<Value>&)> fn);
+                                                     std::function<Value(Context&, std::span<const Value>)> fn);
     std::unique_ptr<Function> create_native_function(const std::string& name,
-                                                     std::function<Value(Context&, const std::vector<Value>&)> fn,
+                                                     std::function<Value(Context&, std::span<const Value>)> fn,
                                                      uint32_t arity);
     std::unique_ptr<Function> create_native_constructor(const std::string& name,
-                                                        std::function<Value(Context&, const std::vector<Value>&)> fn,
+                                                        std::function<Value(Context&, std::span<const Value>)> fn,
                                                         uint32_t arity = 1);
     std::unique_ptr<Function> create_array_method(const std::string& method_name);
     std::unique_ptr<Object> create_string(const std::string& value);

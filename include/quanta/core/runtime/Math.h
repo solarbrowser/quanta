@@ -8,6 +8,7 @@
 #define QUANTA_MATH_H
 
 #include "quanta/core/runtime/Value.h"
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include <memory>
 
@@ -26,44 +27,44 @@ public:
     static constexpr double SQRT1_2 = 0.7071067811865476;
     static constexpr double SQRT2 = 1.4142135623730951;
 
-    static Value abs(Context& ctx, const std::vector<Value>& args);
-    static Value acos(Context& ctx, const std::vector<Value>& args);
-    static Value asin(Context& ctx, const std::vector<Value>& args);
-    static Value atan(Context& ctx, const std::vector<Value>& args);
-    static Value atan2(Context& ctx, const std::vector<Value>& args);
-    static Value ceil(Context& ctx, const std::vector<Value>& args);
-    static Value cos(Context& ctx, const std::vector<Value>& args);
-    static Value exp(Context& ctx, const std::vector<Value>& args);
-    static Value floor(Context& ctx, const std::vector<Value>& args);
-    static Value log(Context& ctx, const std::vector<Value>& args);
-    static Value max(Context& ctx, const std::vector<Value>& args);
-    static Value min(Context& ctx, const std::vector<Value>& args);
-    static Value pow(Context& ctx, const std::vector<Value>& args);
-    static Value random(Context& ctx, const std::vector<Value>& args);
-    static Value round(Context& ctx, const std::vector<Value>& args);
-    static Value sin(Context& ctx, const std::vector<Value>& args);
-    static Value sqrt(Context& ctx, const std::vector<Value>& args);
-    static Value tan(Context& ctx, const std::vector<Value>& args);
+    static Value abs(Context& ctx, std::span<const Value> args);
+    static Value acos(Context& ctx, std::span<const Value> args);
+    static Value asin(Context& ctx, std::span<const Value> args);
+    static Value atan(Context& ctx, std::span<const Value> args);
+    static Value atan2(Context& ctx, std::span<const Value> args);
+    static Value ceil(Context& ctx, std::span<const Value> args);
+    static Value cos(Context& ctx, std::span<const Value> args);
+    static Value exp(Context& ctx, std::span<const Value> args);
+    static Value floor(Context& ctx, std::span<const Value> args);
+    static Value log(Context& ctx, std::span<const Value> args);
+    static Value max(Context& ctx, std::span<const Value> args);
+    static Value min(Context& ctx, std::span<const Value> args);
+    static Value pow(Context& ctx, std::span<const Value> args);
+    static Value random(Context& ctx, std::span<const Value> args);
+    static Value round(Context& ctx, std::span<const Value> args);
+    static Value sin(Context& ctx, std::span<const Value> args);
+    static Value sqrt(Context& ctx, std::span<const Value> args);
+    static Value tan(Context& ctx, std::span<const Value> args);
     
-    static Value trunc(Context& ctx, const std::vector<Value>& args);
-    static Value sign(Context& ctx, const std::vector<Value>& args);
-    static Value cbrt(Context& ctx, const std::vector<Value>& args);
-    static Value hypot(Context& ctx, const std::vector<Value>& args);
-    static Value clz32(Context& ctx, const std::vector<Value>& args);
-    static Value imul(Context& ctx, const std::vector<Value>& args);
+    static Value trunc(Context& ctx, std::span<const Value> args);
+    static Value sign(Context& ctx, std::span<const Value> args);
+    static Value cbrt(Context& ctx, std::span<const Value> args);
+    static Value hypot(Context& ctx, std::span<const Value> args);
+    static Value clz32(Context& ctx, std::span<const Value> args);
+    static Value imul(Context& ctx, std::span<const Value> args);
     
-    static Value sumPrecise(Context& ctx, const std::vector<Value>& args);
-    static Value f16round(Context& ctx, const std::vector<Value>& args);
-    static Value log10(Context& ctx, const std::vector<Value>& args);
-    static Value log2(Context& ctx, const std::vector<Value>& args);
-    static Value log1p(Context& ctx, const std::vector<Value>& args);
-    static Value expm1(Context& ctx, const std::vector<Value>& args);
-    static Value acosh(Context& ctx, const std::vector<Value>& args);
-    static Value asinh(Context& ctx, const std::vector<Value>& args);
-    static Value atanh(Context& ctx, const std::vector<Value>& args);
-    static Value cosh(Context& ctx, const std::vector<Value>& args);
-    static Value sinh(Context& ctx, const std::vector<Value>& args);
-    static Value tanh(Context& ctx, const std::vector<Value>& args);
+    static Value sumPrecise(Context& ctx, std::span<const Value> args);
+    static Value f16round(Context& ctx, std::span<const Value> args);
+    static Value log10(Context& ctx, std::span<const Value> args);
+    static Value log2(Context& ctx, std::span<const Value> args);
+    static Value log1p(Context& ctx, std::span<const Value> args);
+    static Value expm1(Context& ctx, std::span<const Value> args);
+    static Value acosh(Context& ctx, std::span<const Value> args);
+    static Value asinh(Context& ctx, std::span<const Value> args);
+    static Value atanh(Context& ctx, std::span<const Value> args);
+    static Value cosh(Context& ctx, std::span<const Value> args);
+    static Value sinh(Context& ctx, std::span<const Value> args);
+    static Value tanh(Context& ctx, std::span<const Value> args);
     
     static std::unique_ptr<Object> create_math_object();
 

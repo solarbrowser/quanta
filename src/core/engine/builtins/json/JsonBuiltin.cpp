@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/builtins/JsonBuiltin.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/JSON.h"
@@ -16,14 +17,14 @@ void register_json_builtins(Context& ctx) {
     auto json_object = ObjectFactory::create_object();
 
     auto json_parse = ObjectFactory::create_native_function("parse",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             return JSON::js_parse(ctx, args);
         }, 2);
     json_object->set_property("parse", Value(json_parse.release()),
         PropertyAttributes::BuiltinFunction);
 
     auto json_stringify = ObjectFactory::create_native_function("stringify",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             return JSON::js_stringify(ctx, args);
         }, 3);
     json_object->set_property("stringify", Value(json_stringify.release()),
@@ -31,7 +32,7 @@ void register_json_builtins(Context& ctx) {
 
     // JSON.rawJSON(text): creates a frozen null-prototype object with "rawJSON" property
     auto json_rawJSON = ObjectFactory::create_native_function("rawJSON",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (args.empty()) {
                 ctx.throw_syntax_error("JSON.rawJSON: text must be a valid JSON primitive");
                 return Value();
@@ -83,7 +84,7 @@ void register_json_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
 
     auto json_isRawJSON = ObjectFactory::create_native_function("isRawJSON",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)ctx;
             if (args.empty() || !args[0].is_object()) return Value(false);
             Object* obj = args[0].as_object();

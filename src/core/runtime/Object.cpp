@@ -5,6 +5,7 @@
  */
 
 #include <unordered_set>
+#include <span>
 #include "quanta/core/runtime/Object.h"
 #include <cstring>
 #include "quanta/core/gc/Collector.h"
@@ -3694,7 +3695,7 @@ std::unique_ptr<Object> create_boolean(bool value) {
 }
 
 std::unique_ptr<Function> create_array_method(const std::string& method_name) {
-    auto method_fn = [method_name](Context& ctx, const std::vector<Value>& args) -> Value {
+    auto method_fn = [method_name](Context& ctx, std::span<const Value> args) -> Value {
         Object* array = ctx.get_this_binding();
         
         if (!array || !array->is_array()) {

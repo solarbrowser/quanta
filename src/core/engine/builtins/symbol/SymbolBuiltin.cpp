@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/SymbolBuiltin.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -53,7 +54,7 @@ static std::string symbol_to_string_coerce(Context& ctx, const Value& v) {
 
 void register_symbol_builtins(Context& ctx) {
     auto symbol_constructor = ObjectFactory::create_native_constructor("Symbol",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (ctx.is_in_constructor_call()) {
                 ctx.throw_type_error("Symbol is not a constructor");
                 return Value();
@@ -66,13 +67,13 @@ void register_symbol_builtins(Context& ctx) {
         }, 0);
     
     auto symbol_for_fn = ObjectFactory::create_native_function("for",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             return Symbol::symbol_for(ctx, args);
         }, 1);
     symbol_constructor->set_property("for", Value(symbol_for_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto symbol_key_for_fn = ObjectFactory::create_native_function("keyFor",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             return Symbol::symbol_key_for(ctx, args);
         }, 1);
     symbol_constructor->set_property("keyFor", Value(symbol_key_for_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -161,7 +162,7 @@ void register_symbol_builtins(Context& ctx) {
             sym_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
         }
         auto desc_getter = ObjectFactory::create_native_function("get description",
-            [](Context& ctx, const std::vector<Value>&) -> Value {
+            [](Context& ctx, std::span<const Value>) -> Value {
                 // Primitive symbol this
                 Value prim = ctx.get_this_value();
                 if (prim.is_symbol()) return prim.as_symbol()->get_has_description() ? Value(prim.as_symbol()->get_description()) : Value();
@@ -181,7 +182,7 @@ void register_symbol_builtins(Context& ctx) {
         sym_proto->set_property_descriptor("description", desc_prop);
 
         auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
-            [](Context& ctx, const std::vector<Value>&) -> Value {
+            [](Context& ctx, std::span<const Value>) -> Value {
                 Value prim = ctx.get_this_value();
                 if (prim.is_symbol()) return prim;
                 Object* obj = ctx.get_this_binding();
@@ -198,7 +199,7 @@ void register_symbol_builtins(Context& ctx) {
         sym_proto->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto toString_fn = ObjectFactory::create_native_function("toString",
-            [](Context& ctx, const std::vector<Value>&) -> Value {
+            [](Context& ctx, std::span<const Value>) -> Value {
                 Value prim = ctx.get_this_value();
                 if (prim.is_symbol()) return Value(prim.as_symbol()->to_string());
                 Object* obj = ctx.get_this_binding();
@@ -216,7 +217,7 @@ void register_symbol_builtins(Context& ctx) {
         Symbol* toPrim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
         if (toPrim_sym) {
             auto sym_toPrimitive = ObjectFactory::create_native_function("[Symbol.toPrimitive]",
-                [](Context& ctx, const std::vector<Value>&) -> Value {
+                [](Context& ctx, std::span<const Value>) -> Value {
                     Value prim = ctx.get_this_value();
                     if (prim.is_symbol()) return prim;
                     Object* obj = ctx.get_this_binding();

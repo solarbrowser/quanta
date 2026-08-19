@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Temporal.h"
+#include <span>
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/AST.h"
 #include <sstream>
@@ -73,7 +74,7 @@ namespace {
         return millis * 1000000LL;
     }
 
-    Object* getThisObject(Context& ctx, const std::vector<Value>& args, const std::string& className) {
+    Object* getThisObject(Context& ctx, std::span<const Value> args, const std::string& className) {
         if (args.empty() || !args[0].is_object()) {
             ctx.throw_exception(Value("TypeError: " + className + " method called on incompatible receiver"));
             return nullptr;
@@ -97,7 +98,7 @@ namespace {
 }
 
 
-Value TemporalNow::instant(Context& ctx, const std::vector<Value>& args) {
+Value TemporalNow::instant(Context& ctx, std::span<const Value> args) {
     int64_t nanos = getCurrentNanoseconds();
     Object* instant = new Object();
     instant->set_property("_nanoseconds", Value(static_cast<double>(nanos)));
@@ -105,7 +106,7 @@ Value TemporalNow::instant(Context& ctx, const std::vector<Value>& args) {
     return Value(instant);
 }
 
-Value TemporalNow::plainDateISO(Context& ctx, const std::vector<Value>& args) {
+Value TemporalNow::plainDateISO(Context& ctx, std::span<const Value> args) {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm* tm = std::localtime(&t);
@@ -119,7 +120,7 @@ Value TemporalNow::plainDateISO(Context& ctx, const std::vector<Value>& args) {
     return Value(date);
 }
 
-Value TemporalNow::plainTimeISO(Context& ctx, const std::vector<Value>& args) {
+Value TemporalNow::plainTimeISO(Context& ctx, std::span<const Value> args) {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm* tm = std::localtime(&t);
@@ -136,7 +137,7 @@ Value TemporalNow::plainTimeISO(Context& ctx, const std::vector<Value>& args) {
     return Value(time);
 }
 
-Value TemporalNow::plainDateTimeISO(Context& ctx, const std::vector<Value>& args) {
+Value TemporalNow::plainDateTimeISO(Context& ctx, std::span<const Value> args) {
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm* tm = std::localtime(&t);
@@ -157,7 +158,7 @@ Value TemporalNow::plainDateTimeISO(Context& ctx, const std::vector<Value>& args
     return Value(dt);
 }
 
-Value TemporalNow::zonedDateTimeISO(Context& ctx, const std::vector<Value>& args) {
+Value TemporalNow::zonedDateTimeISO(Context& ctx, std::span<const Value> args) {
     std::string timezone = "UTC";
     if (!args.empty() && args[0].is_string()) {
         timezone = args[0].to_string();
@@ -172,14 +173,14 @@ Value TemporalNow::zonedDateTimeISO(Context& ctx, const std::vector<Value>& args
     return Value(zdt);
 }
 
-Value TemporalNow::timeZoneId(Context& ctx, const std::vector<Value>& args) {
+Value TemporalNow::timeZoneId(Context& ctx, std::span<const Value> args) {
     return Value(std::string("UTC"));
 }
 
 
 TemporalInstant::TemporalInstant(int64_t nanoseconds) : nanoseconds_(nanoseconds) {}
 
-Value TemporalInstant::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::constructor(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Temporal.Instant requires epochNanoseconds argument");
         return Value();
@@ -197,7 +198,7 @@ Value TemporalInstant::constructor(Context& ctx, const std::vector<Value>& args)
     return Value(instant);
 }
 
-Value TemporalInstant::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Temporal.Instant.from requires an argument");
         return Value();
@@ -210,7 +211,7 @@ Value TemporalInstant::from(Context& ctx, const std::vector<Value>& args) {
     return args[0];
 }
 
-Value TemporalInstant::fromEpochMilliseconds(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::fromEpochMilliseconds(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Temporal.Instant.fromEpochMilliseconds requires milliseconds argument");
         return Value();
@@ -225,11 +226,11 @@ Value TemporalInstant::fromEpochMilliseconds(Context& ctx, const std::vector<Val
     return Value(instant);
 }
 
-Value TemporalInstant::fromEpochNanoseconds(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::fromEpochNanoseconds(Context& ctx, std::span<const Value> args) {
     return constructor(ctx, args);
 }
 
-Value TemporalInstant::compare(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::compare(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Temporal.Instant.compare requires two arguments");
         return Value();
@@ -250,7 +251,7 @@ Value TemporalInstant::compare(Context& ctx, const std::vector<Value>& args) {
     return Value(0);
 }
 
-Value TemporalInstant::epochSeconds(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::epochSeconds(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -258,7 +259,7 @@ Value TemporalInstant::epochSeconds(Context& ctx, const std::vector<Value>& args
     return Value(std::floor(nanos / 1000000000.0));
 }
 
-Value TemporalInstant::epochMilliseconds(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::epochMilliseconds(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -266,7 +267,7 @@ Value TemporalInstant::epochMilliseconds(Context& ctx, const std::vector<Value>&
     return Value(std::floor(nanos / 1000000.0));
 }
 
-Value TemporalInstant::epochMicroseconds(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::epochMicroseconds(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -274,14 +275,14 @@ Value TemporalInstant::epochMicroseconds(Context& ctx, const std::vector<Value>&
     return Value(std::floor(nanos / 1000.0));
 }
 
-Value TemporalInstant::epochNanoseconds(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::epochNanoseconds(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
     return obj->get_property("_nanoseconds");
 }
 
-Value TemporalInstant::toString(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::toString(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -302,20 +303,20 @@ Value TemporalInstant::toString(Context& ctx, const std::vector<Value>& args) {
     return Value(oss.str());
 }
 
-Value TemporalInstant::toJSON(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::toJSON(Context& ctx, std::span<const Value> args) {
     return toString(ctx, args);
 }
 
-Value TemporalInstant::toLocaleString(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::toLocaleString(Context& ctx, std::span<const Value> args) {
     return toString(ctx, args);
 }
 
-Value TemporalInstant::valueOf(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::valueOf(Context& ctx, std::span<const Value> args) {
     ctx.throw_type_error("Temporal.Instant does not have a valueOf method");
     return Value();
 }
 
-Value TemporalInstant::add(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::add(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -341,7 +342,7 @@ Value TemporalInstant::add(Context& ctx, const std::vector<Value>& args) {
     return Value(result);
 }
 
-Value TemporalInstant::subtract(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::subtract(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -367,7 +368,7 @@ Value TemporalInstant::subtract(Context& ctx, const std::vector<Value>& args) {
     return Value(result);
 }
 
-Value TemporalInstant::until(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::until(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -386,7 +387,7 @@ Value TemporalInstant::until(Context& ctx, const std::vector<Value>& args) {
     return Value(duration);
 }
 
-Value TemporalInstant::since(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::since(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -405,7 +406,7 @@ Value TemporalInstant::since(Context& ctx, const std::vector<Value>& args) {
     return Value(duration);
 }
 
-Value TemporalInstant::round(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::round(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -418,7 +419,7 @@ Value TemporalInstant::round(Context& ctx, const std::vector<Value>& args) {
     return Value(result);
 }
 
-Value TemporalInstant::equals(Context& ctx, const std::vector<Value>& args) {
+Value TemporalInstant::equals(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Instant");
     if (!obj) return Value();
 
@@ -437,7 +438,7 @@ Value TemporalInstant::equals(Context& ctx, const std::vector<Value>& args) {
 TemporalPlainDate::TemporalPlainDate(int year, int month, int day, const std::string& calendar)
     : year_(year), month_(month), day_(day), calendar_(calendar) {}
 
-Value TemporalPlainDate::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::constructor(Context& ctx, std::span<const Value> args) {
     if (args.size() < 3) {
         ctx.throw_type_error("Temporal.PlainDate requires year, month, and day arguments");
         return Value();
@@ -462,7 +463,7 @@ Value TemporalPlainDate::constructor(Context& ctx, const std::vector<Value>& arg
     return Value(date);
 }
 
-Value TemporalPlainDate::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Temporal.PlainDate.from requires an argument");
         return Value();
@@ -474,14 +475,15 @@ Value TemporalPlainDate::from(Context& ctx, const std::vector<Value>& args) {
             int year = std::stoi(str.substr(0, 4));
             int month = std::stoi(str.substr(5, 2));
             int day = std::stoi(str.substr(8, 2));
-            return constructor(ctx, {Value(year), Value(month), Value(day)});
+            const Value ctor_args[] = {Value(year), Value(month), Value(day)};
+            return constructor(ctx, ctor_args);
         }
     }
 
     return args[0];
 }
 
-Value TemporalPlainDate::compare(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::compare(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         ctx.throw_type_error("Temporal.PlainDate.compare requires two arguments");
         return Value();
@@ -508,25 +510,25 @@ Value TemporalPlainDate::compare(Context& ctx, const std::vector<Value>& args) {
     return Value(0);
 }
 
-Value TemporalPlainDate::year(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::year(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
     return obj->get_property("_year");
 }
 
-Value TemporalPlainDate::month(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::month(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
     return obj->get_property("_month");
 }
 
-Value TemporalPlainDate::day(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::day(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
     return obj->get_property("_day");
 }
 
-Value TemporalPlainDate::dayOfWeek(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::dayOfWeek(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -537,7 +539,7 @@ Value TemporalPlainDate::dayOfWeek(Context& ctx, const std::vector<Value>& args)
     return Value(calcDayOfWeek(y, m, d) + 1);
 }
 
-Value TemporalPlainDate::dayOfYear(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::dayOfYear(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -548,7 +550,7 @@ Value TemporalPlainDate::dayOfYear(Context& ctx, const std::vector<Value>& args)
     return Value(calcDayOfYear(y, m, d));
 }
 
-Value TemporalPlainDate::weekOfYear(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::weekOfYear(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -556,7 +558,7 @@ Value TemporalPlainDate::weekOfYear(Context& ctx, const std::vector<Value>& args
     return Value((doy + 6) / 7);
 }
 
-Value TemporalPlainDate::monthCode(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::monthCode(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -564,11 +566,11 @@ Value TemporalPlainDate::monthCode(Context& ctx, const std::vector<Value>& args)
     return Value("M" + padZero(m, 2));
 }
 
-Value TemporalPlainDate::daysInWeek(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::daysInWeek(Context& ctx, std::span<const Value> args) {
     return Value(7);
 }
 
-Value TemporalPlainDate::daysInMonth(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::daysInMonth(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -582,7 +584,7 @@ Value TemporalPlainDate::daysInMonth(Context& ctx, const std::vector<Value>& arg
     return Value(days[m - 1]);
 }
 
-Value TemporalPlainDate::daysInYear(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::daysInYear(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -590,11 +592,11 @@ Value TemporalPlainDate::daysInYear(Context& ctx, const std::vector<Value>& args
     return Value(isLeapYear(y) ? 366 : 365);
 }
 
-Value TemporalPlainDate::monthsInYear(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::monthsInYear(Context& ctx, std::span<const Value> args) {
     return Value(12);
 }
 
-Value TemporalPlainDate::inLeapYear(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::inLeapYear(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -602,7 +604,7 @@ Value TemporalPlainDate::inLeapYear(Context& ctx, const std::vector<Value>& args
     return Value(isLeapYear(y));
 }
 
-Value TemporalPlainDate::toString(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::toString(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -615,20 +617,20 @@ Value TemporalPlainDate::toString(Context& ctx, const std::vector<Value>& args) 
     return Value(oss.str());
 }
 
-Value TemporalPlainDate::toJSON(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::toJSON(Context& ctx, std::span<const Value> args) {
     return toString(ctx, args);
 }
 
-Value TemporalPlainDate::toLocaleString(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::toLocaleString(Context& ctx, std::span<const Value> args) {
     return toString(ctx, args);
 }
 
-Value TemporalPlainDate::valueOf(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::valueOf(Context& ctx, std::span<const Value> args) {
     ctx.throw_type_error("Temporal.PlainDate does not have a valueOf method");
     return Value();
 }
 
-Value TemporalPlainDate::add(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::add(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -654,10 +656,11 @@ Value TemporalPlainDate::add(Context& ctx, const std::vector<Value>& args) {
         y--;
     }
 
-    return constructor(ctx, {Value(y), Value(m), Value(d)});
+    const Value ctor_args[] = {Value(y), Value(m), Value(d)};
+    return constructor(ctx, ctor_args);
 }
 
-Value TemporalPlainDate::subtract(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::subtract(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -683,10 +686,11 @@ Value TemporalPlainDate::subtract(Context& ctx, const std::vector<Value>& args) 
         y--;
     }
 
-    return constructor(ctx, {Value(y), Value(m), Value(d)});
+    const Value ctor_args[] = {Value(y), Value(m), Value(d)};
+    return constructor(ctx, ctor_args);
 }
 
-Value TemporalPlainDate::with_(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::with_(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -699,14 +703,15 @@ Value TemporalPlainDate::with_(Context& ctx, const std::vector<Value>& args) {
     int m = fields->has_own_property("month") ? getIntProperty(fields, "month") : getIntProperty(obj, "_month");
     int d = fields->has_own_property("day") ? getIntProperty(fields, "day") : getIntProperty(obj, "_day");
 
-    return constructor(ctx, {Value(y), Value(m), Value(d)});
+    const Value ctor_args[] = {Value(y), Value(m), Value(d)};
+    return constructor(ctx, ctor_args);
 }
 
-Value TemporalPlainDate::withCalendar(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::withCalendar(Context& ctx, std::span<const Value> args) {
     return Value(getThisObject(ctx, args, "Temporal.PlainDate"));
 }
 
-Value TemporalPlainDate::until(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::until(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -731,7 +736,7 @@ Value TemporalPlainDate::until(Context& ctx, const std::vector<Value>& args) {
     return Value(duration);
 }
 
-Value TemporalPlainDate::since(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::since(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -756,7 +761,7 @@ Value TemporalPlainDate::since(Context& ctx, const std::vector<Value>& args) {
     return Value(duration);
 }
 
-Value TemporalPlainDate::equals(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDate::equals(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDate");
     if (!obj) return Value();
 
@@ -777,7 +782,7 @@ TemporalPlainTime::TemporalPlainTime(int hour, int minute, int second, int milli
     : hour_(hour), minute_(minute), second_(second), millisecond_(millisecond),
       microsecond_(microsecond), nanosecond_(nanosecond) {}
 
-Value TemporalPlainTime::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::constructor(Context& ctx, std::span<const Value> args) {
     int hour = args.size() > 0 ? static_cast<int>(args[0].to_number()) : 0;
     int minute = args.size() > 1 ? static_cast<int>(args[1].to_number()) : 0;
     int second = args.size() > 2 ? static_cast<int>(args[2].to_number()) : 0;
@@ -801,7 +806,7 @@ Value TemporalPlainTime::constructor(Context& ctx, const std::vector<Value>& arg
     return Value(time);
 }
 
-Value TemporalPlainTime::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) {
         ctx.throw_type_error("Temporal.PlainTime.from requires an argument");
         return Value();
@@ -814,7 +819,7 @@ Value TemporalPlainTime::from(Context& ctx, const std::vector<Value>& args) {
     return args[0];
 }
 
-Value TemporalPlainTime::compare(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::compare(Context& ctx, std::span<const Value> args) {
     if (args.size() < 2) {
         return Value(0);
     }
@@ -840,43 +845,43 @@ Value TemporalPlainTime::compare(Context& ctx, const std::vector<Value>& args) {
     return Value(0);
 }
 
-Value TemporalPlainTime::hour(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::hour(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
     return obj->get_property("_hour");
 }
 
-Value TemporalPlainTime::minute(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::minute(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
     return obj->get_property("_minute");
 }
 
-Value TemporalPlainTime::second(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::second(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
     return obj->get_property("_second");
 }
 
-Value TemporalPlainTime::millisecond(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::millisecond(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
     return obj->get_property("_millisecond");
 }
 
-Value TemporalPlainTime::microsecond(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::microsecond(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
     return obj->get_property("_microsecond");
 }
 
-Value TemporalPlainTime::nanosecond(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::nanosecond(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
     return obj->get_property("_nanosecond");
 }
 
-Value TemporalPlainTime::toString(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::toString(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
 
@@ -889,20 +894,20 @@ Value TemporalPlainTime::toString(Context& ctx, const std::vector<Value>& args) 
     return Value(oss.str());
 }
 
-Value TemporalPlainTime::toJSON(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::toJSON(Context& ctx, std::span<const Value> args) {
     return toString(ctx, args);
 }
 
-Value TemporalPlainTime::toLocaleString(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::toLocaleString(Context& ctx, std::span<const Value> args) {
     return toString(ctx, args);
 }
 
-Value TemporalPlainTime::valueOf(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::valueOf(Context& ctx, std::span<const Value> args) {
     ctx.throw_type_error("Temporal.PlainTime does not have a valueOf method");
     return Value();
 }
 
-Value TemporalPlainTime::add(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::add(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
 
@@ -921,10 +926,11 @@ Value TemporalPlainTime::add(Context& ctx, const std::vector<Value>& args) {
     m %= 60;
     h %= 24;
 
-    return constructor(ctx, {Value(h), Value(m), Value(s)});
+    const Value ctor_args[] = {Value(h), Value(m), Value(s)};
+    return constructor(ctx, ctor_args);
 }
 
-Value TemporalPlainTime::subtract(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::subtract(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
 
@@ -941,10 +947,11 @@ Value TemporalPlainTime::subtract(Context& ctx, const std::vector<Value>& args) 
     while (m < 0) { m += 60; h--; }
     while (h < 0) { h += 24; }
 
-    return constructor(ctx, {Value(h), Value(m), Value(s)});
+    const Value ctor_args[] = {Value(h), Value(m), Value(s)};
+    return constructor(ctx, ctor_args);
 }
 
-Value TemporalPlainTime::with_(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::with_(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
 
@@ -957,24 +964,25 @@ Value TemporalPlainTime::with_(Context& ctx, const std::vector<Value>& args) {
     int m = fields->has_own_property("minute") ? getIntProperty(fields, "minute") : getIntProperty(obj, "_minute");
     int s = fields->has_own_property("second") ? getIntProperty(fields, "second") : getIntProperty(obj, "_second");
 
-    return constructor(ctx, {Value(h), Value(m), Value(s)});
+    const Value ctor_args[] = {Value(h), Value(m), Value(s)};
+    return constructor(ctx, ctor_args);
 }
 
-Value TemporalPlainTime::until(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::until(Context& ctx, std::span<const Value> args) {
     return TemporalDuration::constructor(ctx, {});
 }
 
-Value TemporalPlainTime::since(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::since(Context& ctx, std::span<const Value> args) {
     return TemporalDuration::constructor(ctx, {});
 }
 
-Value TemporalPlainTime::round(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::round(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
     return Value(obj);
 }
 
-Value TemporalPlainTime::equals(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainTime::equals(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainTime");
     if (!obj) return Value();
 
@@ -991,7 +999,7 @@ Value TemporalPlainTime::equals(Context& ctx, const std::vector<Value>& args) {
 }
 
 
-Value TemporalPlainDateTime::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDateTime::constructor(Context& ctx, std::span<const Value> args) {
     int year = args.size() > 0 ? static_cast<int>(args[0].to_number()) : 1970;
     int month = args.size() > 1 ? static_cast<int>(args[1].to_number()) : 1;
     int day = args.size() > 2 ? static_cast<int>(args[2].to_number()) : 1;
@@ -1019,16 +1027,16 @@ Value TemporalPlainDateTime::constructor(Context& ctx, const std::vector<Value>&
     return Value(dt);
 }
 
-Value TemporalPlainDateTime::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDateTime::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) return constructor(ctx, {});
     return args[0];
 }
 
-Value TemporalPlainDateTime::compare(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDateTime::compare(Context& ctx, std::span<const Value> args) {
     return Value(0);
 }
 
-Value TemporalPlainDateTime::toString(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDateTime::toString(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.PlainDateTime");
     if (!obj) return Value();
 
@@ -1046,14 +1054,14 @@ Value TemporalPlainDateTime::toString(Context& ctx, const std::vector<Value>& ar
 }
 
 #define TEMPORAL_STUB_METHOD(Class, Method) \
-    Value Class::Method(Context& ctx, const std::vector<Value>& args) { \
+    Value Class::Method(Context& ctx, std::span<const Value> args) { \
         Object* obj = getThisObject(ctx, args, #Class); \
         if (!obj) return Value(); \
         return Value(obj); \
     }
 
 #define TEMPORAL_GETTER_STUB(Class, Method, Property) \
-    Value Class::Method(Context& ctx, const std::vector<Value>& args) { \
+    Value Class::Method(Context& ctx, std::span<const Value> args) { \
         Object* obj = getThisObject(ctx, args, #Class); \
         if (!obj) return Value(); \
         return obj->get_property(Property); \
@@ -1072,7 +1080,7 @@ TEMPORAL_STUB_METHOD(TemporalPlainDateTime, equals)
 TEMPORAL_STUB_METHOD(TemporalPlainDateTime, toJSON)
 TEMPORAL_STUB_METHOD(TemporalPlainDateTime, toLocaleString)
 
-Value TemporalPlainDateTime::valueOf(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainDateTime::valueOf(Context& ctx, std::span<const Value> args) {
     ctx.throw_type_error("Temporal.PlainDateTime does not have a valueOf method");
     return Value();
 }
@@ -1095,7 +1103,7 @@ TemporalDuration::TemporalDuration(double years, double months, double weeks, do
       hours_(hours), minutes_(minutes), seconds_(seconds),
       milliseconds_(milliseconds), microseconds_(microseconds), nanoseconds_(nanoseconds) {}
 
-Value TemporalDuration::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalDuration::constructor(Context& ctx, std::span<const Value> args) {
     Object* duration = new Object();
 
     if (g_duration_prototype) {
@@ -1116,12 +1124,12 @@ Value TemporalDuration::constructor(Context& ctx, const std::vector<Value>& args
     return Value(duration);
 }
 
-Value TemporalDuration::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalDuration::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) return constructor(ctx, {});
     return args[0];
 }
 
-Value TemporalDuration::compare(Context& ctx, const std::vector<Value>& args) {
+Value TemporalDuration::compare(Context& ctx, std::span<const Value> args) {
     return Value(0);
 }
 
@@ -1136,7 +1144,7 @@ TEMPORAL_GETTER_STUB(TemporalDuration, milliseconds, "_milliseconds")
 TEMPORAL_GETTER_STUB(TemporalDuration, microseconds, "_microseconds")
 TEMPORAL_GETTER_STUB(TemporalDuration, nanoseconds, "_nanoseconds")
 
-Value TemporalDuration::sign(Context& ctx, const std::vector<Value>& args) {
+Value TemporalDuration::sign(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Duration");
     if (!obj) return Value();
 
@@ -1148,7 +1156,7 @@ Value TemporalDuration::sign(Context& ctx, const std::vector<Value>& args) {
     return Value(0);
 }
 
-Value TemporalDuration::blank(Context& ctx, const std::vector<Value>& args) {
+Value TemporalDuration::blank(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Duration");
     if (!obj) return Value();
 
@@ -1158,7 +1166,7 @@ Value TemporalDuration::blank(Context& ctx, const std::vector<Value>& args) {
     return Value(total == 0);
 }
 
-Value TemporalDuration::toString(Context& ctx, const std::vector<Value>& args) {
+Value TemporalDuration::toString(Context& ctx, std::span<const Value> args) {
     Object* obj = getThisObject(ctx, args, "Temporal.Duration");
     if (!obj) return Value();
 
@@ -1195,12 +1203,12 @@ TEMPORAL_STUB_METHOD(TemporalDuration, total)
 TEMPORAL_STUB_METHOD(TemporalDuration, toJSON)
 TEMPORAL_STUB_METHOD(TemporalDuration, toLocaleString)
 
-Value TemporalDuration::valueOf(Context& ctx, const std::vector<Value>& args) {
+Value TemporalDuration::valueOf(Context& ctx, std::span<const Value> args) {
     ctx.throw_type_error("Temporal.Duration does not have a valueOf method");
     return Value();
 }
 
-Value TemporalZonedDateTime::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalZonedDateTime::constructor(Context& ctx, std::span<const Value> args) {
     Object* zdt = new Object();
 
     if (g_zonedDateTime_prototype) {
@@ -1214,12 +1222,12 @@ Value TemporalZonedDateTime::constructor(Context& ctx, const std::vector<Value>&
     return Value(zdt);
 }
 
-Value TemporalZonedDateTime::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalZonedDateTime::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) return constructor(ctx, {});
     return args[0];
 }
 
-Value TemporalZonedDateTime::compare(Context& ctx, const std::vector<Value>& args) {
+Value TemporalZonedDateTime::compare(Context& ctx, std::span<const Value> args) {
     return Value(0);
 }
 
@@ -1236,7 +1244,7 @@ TEMPORAL_STUB_METHOD(TemporalZonedDateTime, toString)
 TEMPORAL_STUB_METHOD(TemporalZonedDateTime, toJSON)
 TEMPORAL_STUB_METHOD(TemporalZonedDateTime, toLocaleString)
 
-Value TemporalZonedDateTime::valueOf(Context& ctx, const std::vector<Value>& args) {
+Value TemporalZonedDateTime::valueOf(Context& ctx, std::span<const Value> args) {
     ctx.throw_type_error("Temporal.ZonedDateTime does not have a valueOf method");
     return Value();
 }
@@ -1245,7 +1253,7 @@ TEMPORAL_GETTER_STUB(TemporalZonedDateTime, epochSeconds, "_nanoseconds")
 TEMPORAL_GETTER_STUB(TemporalZonedDateTime, epochMilliseconds, "_nanoseconds")
 TEMPORAL_GETTER_STUB(TemporalZonedDateTime, epochNanoseconds, "_nanoseconds")
 
-Value TemporalPlainYearMonth::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainYearMonth::constructor(Context& ctx, std::span<const Value> args) {
     Object* ym = new Object();
 
     if (g_plainYearMonth_prototype) {
@@ -1259,12 +1267,12 @@ Value TemporalPlainYearMonth::constructor(Context& ctx, const std::vector<Value>
     return Value(ym);
 }
 
-Value TemporalPlainYearMonth::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainYearMonth::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) return constructor(ctx, {});
     return args[0];
 }
 
-Value TemporalPlainYearMonth::compare(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainYearMonth::compare(Context& ctx, std::span<const Value> args) {
     return Value(0);
 }
 
@@ -1280,7 +1288,7 @@ TEMPORAL_STUB_METHOD(TemporalPlainYearMonth, toJSON)
 TEMPORAL_GETTER_STUB(TemporalPlainYearMonth, year, "_year")
 TEMPORAL_GETTER_STUB(TemporalPlainYearMonth, month, "_month")
 
-Value TemporalPlainMonthDay::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainMonthDay::constructor(Context& ctx, std::span<const Value> args) {
     Object* md = new Object();
 
     if (g_plainMonthDay_prototype) {
@@ -1294,7 +1302,7 @@ Value TemporalPlainMonthDay::constructor(Context& ctx, const std::vector<Value>&
     return Value(md);
 }
 
-Value TemporalPlainMonthDay::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalPlainMonthDay::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) return constructor(ctx, {});
     return args[0];
 }
@@ -1307,7 +1315,7 @@ TEMPORAL_STUB_METHOD(TemporalPlainMonthDay, toJSON)
 TEMPORAL_GETTER_STUB(TemporalPlainMonthDay, month, "_month")
 TEMPORAL_GETTER_STUB(TemporalPlainMonthDay, day, "_day")
 
-Value TemporalCalendar::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalCalendar::constructor(Context& ctx, std::span<const Value> args) {
     Object* cal = new Object();
 
     if (g_calendar_prototype) {
@@ -1319,7 +1327,7 @@ Value TemporalCalendar::constructor(Context& ctx, const std::vector<Value>& args
     return Value(cal);
 }
 
-Value TemporalCalendar::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalCalendar::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) return constructor(ctx, {});
     return args[0];
 }
@@ -1327,7 +1335,7 @@ Value TemporalCalendar::from(Context& ctx, const std::vector<Value>& args) {
 TEMPORAL_STUB_METHOD(TemporalCalendar, toString)
 TEMPORAL_STUB_METHOD(TemporalCalendar, toJSON)
 
-Value TemporalTimeZone::constructor(Context& ctx, const std::vector<Value>& args) {
+Value TemporalTimeZone::constructor(Context& ctx, std::span<const Value> args) {
     Object* tz = new Object();
 
     if (g_timeZone_prototype) {
@@ -1339,7 +1347,7 @@ Value TemporalTimeZone::constructor(Context& ctx, const std::vector<Value>& args
     return Value(tz);
 }
 
-Value TemporalTimeZone::from(Context& ctx, const std::vector<Value>& args) {
+Value TemporalTimeZone::from(Context& ctx, std::span<const Value> args) {
     if (args.empty()) return constructor(ctx, {});
     return args[0];
 }

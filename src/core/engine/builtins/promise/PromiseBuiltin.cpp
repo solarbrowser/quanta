@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/PromiseBuiltin.h"
+#include <span>
 #include "quanta/core/engine/builtins/ObjectBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
@@ -32,7 +33,7 @@ static bool new_promise_capability(Context& ctx, Value C_val, PromiseCapabilityR
     auto state = std::make_shared<CapState>();
 
     auto executor = ObjectFactory::create_native_function("",
-        [state](Context& ctx, const std::vector<Value>& args) -> Value {
+        [state](Context& ctx, std::span<const Value> args) -> Value {
             Value res_arg = args.empty() ? Value() : args[0];
             Value rej_arg = args.size() > 1 ? args[1] : Value();
             if (!state->resolve_val.is_undefined()) {
@@ -218,7 +219,7 @@ static void iterator_close(Context& ctx, IteratorRecord& rec) {
 
 void register_promise_builtins(Context& ctx) {
     auto promise_constructor = ObjectFactory::create_native_constructor("Promise",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             if (!ctx.is_in_constructor_call()) {
                 ctx.throw_type_error("Promise constructor cannot be invoked without 'new'");
                 return Value();
@@ -255,7 +256,7 @@ void register_promise_builtins(Context& ctx) {
             auto already_called = std::make_shared<bool>(false);
 
             auto resolve_fn = ObjectFactory::create_native_function("",
-                [promise_ptr = promise.get(), already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                [promise_ptr = promise.get(), already_called](Context& ctx, std::span<const Value> args) -> Value {
                     (void)ctx;
                     if (*already_called) return Value();
                     *already_called = true;
@@ -265,7 +266,7 @@ void register_promise_builtins(Context& ctx) {
                 }, 1);
 
             auto reject_fn = ObjectFactory::create_native_function("",
-                [promise_ptr = promise.get(), already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                [promise_ptr = promise.get(), already_called](Context& ctx, std::span<const Value> args) -> Value {
                     (void)ctx;
                     if (*already_called) return Value();
                     *already_called = true;
@@ -298,7 +299,7 @@ void register_promise_builtins(Context& ctx) {
         });
     
     auto promise_try = ObjectFactory::create_native_function("try",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value c_val = ctx.get_binding("this");
             if (!c_val.is_object() && !c_val.is_function()) {
                 ctx.throw_type_error("Promise.try called on non-object");
@@ -330,7 +331,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("try", Value(promise_try.release()), PropertyAttributes::BuiltinFunction);
     
     auto promise_withResolvers = ObjectFactory::create_native_function("withResolvers",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Value c_val = ctx.get_binding("this");
             if (!c_val.is_object() && !c_val.is_function()) {
@@ -352,7 +353,7 @@ void register_promise_builtins(Context& ctx) {
     auto promise_prototype = ObjectFactory::create_object();
     
     auto promise_then = ObjectFactory::create_native_function("then",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_type_error("Promise.prototype.then called on non-object");
@@ -409,7 +410,7 @@ void register_promise_builtins(Context& ctx) {
             // PerformPromiseThen's "Identity"/"Thrower" defaults: with no real handler,
             // forward the value/reason to the capability unchanged rather than skipping it.
             auto ful_wrapper = ObjectFactory::create_native_function("",
-                [on_fulfilled, cap_resolve, cap_reject, fast_child](Context& ctx, const std::vector<Value>& args) -> Value {
+                [on_fulfilled, cap_resolve, cap_reject, fast_child](Context& ctx, std::span<const Value> args) -> Value {
                     auto settle = [&](const Value& v, bool ok) {
                         if (fast_child) { ok ? fast_child->fulfill(v) : fast_child->reject(v); return; }
                         std::vector<Value> a = { v };
@@ -427,7 +428,7 @@ void register_promise_builtins(Context& ctx) {
                     return Value();
                 }, 1);
             auto rej_wrapper = ObjectFactory::create_native_function("",
-                [on_rejected, cap_resolve, cap_reject, fast_child](Context& ctx, const std::vector<Value>& args) -> Value {
+                [on_rejected, cap_resolve, cap_reject, fast_child](Context& ctx, std::span<const Value> args) -> Value {
                     auto settle = [&](const Value& v, bool ok) {
                         if (fast_child) { ok ? fast_child->fulfill(v) : fast_child->reject(v); return; }
                         std::vector<Value> a = { v };
@@ -471,7 +472,7 @@ void register_promise_builtins(Context& ctx) {
     promise_prototype->set_property("then", Value(promise_then.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_catch = ObjectFactory::create_native_function("catch",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             // Spec: Return ? Invoke(promise, "then", «undefined, onRejected»). Duck-typed: works
             // on any object-coercible `this`, not just real Promise instances.
             Value this_val = ctx.get_binding("this");
@@ -492,7 +493,7 @@ void register_promise_builtins(Context& ctx) {
     promise_prototype->set_property("catch", Value(promise_catch.release()), PropertyAttributes::BuiltinFunction);
     
     auto promise_finally = ObjectFactory::create_native_function("finally",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value this_val = ctx.get_binding("this");
             if (!this_val.is_object() && !this_val.is_function()) {
                 ctx.throw_type_error("Promise.prototype.finally called on non-object");
@@ -543,21 +544,21 @@ void register_promise_builtins(Context& ctx) {
                 return then_m.as_function()->call(ctx, ta, wrapped);
             };
             auto then_wrapper = ObjectFactory::create_native_function("",
-                [on_finally, resolve_then_continue](Context& ctx, const std::vector<Value>& args) -> Value {
+                [on_finally, resolve_then_continue](Context& ctx, std::span<const Value> args) -> Value {
                     Value original_val = args.empty() ? Value() : args[0];
                     Value result = on_finally->call(ctx, {});
                     if (ctx.has_exception()) return Value();
                     auto value_thunk = ObjectFactory::create_native_function("",
-                        [original_val](Context&, const std::vector<Value>&) -> Value { return original_val; }, 0);
+                        [original_val](Context&, std::span<const Value>) -> Value { return original_val; }, 0);
                     return resolve_then_continue(ctx, result, value_thunk.release());
                 }, 1);
             auto catch_wrapper = ObjectFactory::create_native_function("",
-                [on_finally, resolve_then_continue](Context& ctx, const std::vector<Value>& args) -> Value {
+                [on_finally, resolve_then_continue](Context& ctx, std::span<const Value> args) -> Value {
                     Value original_reason = args.empty() ? Value() : args[0];
                     Value result = on_finally->call(ctx, {});
                     if (ctx.has_exception()) return Value();
                     auto thrower = ObjectFactory::create_native_function("",
-                        [original_reason](Context& ctx, const std::vector<Value>&) -> Value {
+                        [original_reason](Context& ctx, std::span<const Value>) -> Value {
                             ctx.throw_exception(original_reason, true);
                             return Value();
                         }, 0);
@@ -589,7 +590,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("prototype", Value(promise_prototype.release()), PropertyAttributes::None);
     
     auto promise_resolve_static = ObjectFactory::create_native_function("resolve",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value value = args.empty() ? Value() : args[0];
             Value c_val = ctx.get_binding("this");
             if (!c_val.is_object() && !c_val.is_function()) {
@@ -627,7 +628,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("resolve", Value(promise_resolve_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_reject_static = ObjectFactory::create_native_function("reject",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value reason = args.empty() ? Value() : args[0];
             Value c_val = ctx.get_binding("this");
             if (!c_val.is_object() && !c_val.is_function()) {
@@ -644,7 +645,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("reject", Value(promise_reject_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_all_static = ObjectFactory::create_native_function("all",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this = ctx.get_binding("this");
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.all called on non-object"); return Value(); }
 
@@ -710,7 +711,7 @@ void register_promise_builtins(Context& ctx) {
                 uint32_t this_idx = idx;
                 auto already_called = std::make_shared<bool>(false);
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
@@ -753,7 +754,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("all", Value(promise_all_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_race_static = ObjectFactory::create_native_function("race",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this = ctx.get_binding("this");
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.race called on non-object"); return Value(); }
 
@@ -817,7 +818,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("race", Value(promise_race_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_allSettled_static = ObjectFactory::create_native_function("allSettled",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this = ctx.get_binding("this");
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.allSettled called on non-object"); return Value(); }
 
@@ -884,7 +885,7 @@ void register_promise_builtins(Context& ctx) {
                 auto already_called = std::make_shared<bool>(false);
 
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
@@ -910,7 +911,7 @@ void register_promise_builtins(Context& ctx) {
                 on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 auto on_rej = ObjectFactory::create_native_function("",
-                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value reason = args.empty() ? Value() : args[0];
@@ -957,7 +958,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("allSettled", Value(promise_allSettled_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_allKeyed_static = ObjectFactory::create_native_function("allKeyed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this = ctx.get_binding("this");
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.allKeyed called on non-object"); return Value(); }
 
@@ -1033,7 +1034,7 @@ void register_promise_builtins(Context& ctx) {
 
                 auto already_called = std::make_shared<bool>(false);
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
@@ -1071,7 +1072,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("allKeyed", Value(promise_allKeyed_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_allSettledKeyed_static = ObjectFactory::create_native_function("allSettledKeyed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this = ctx.get_binding("this");
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.allSettledKeyed called on non-object"); return Value(); }
 
@@ -1145,7 +1146,7 @@ void register_promise_builtins(Context& ctx) {
                 // Spec: resolveElement and rejectElement for the same index share one AlreadyCalled flag.
                 auto already_called = std::make_shared<bool>(false);
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
@@ -1168,7 +1169,7 @@ void register_promise_builtins(Context& ctx) {
                 on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 auto on_rej = ObjectFactory::create_native_function("",
-                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value reason = args.empty() ? Value() : args[0];
@@ -1211,7 +1212,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("allSettledKeyed", Value(promise_allSettledKeyed_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_any_static = ObjectFactory::create_native_function("any",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             Value raw_this = ctx.get_binding("this");
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.any called on non-object"); return Value(); }
 
@@ -1288,7 +1289,7 @@ void register_promise_builtins(Context& ctx) {
                 // Spec: onFulfilled is the shared resultCapability.[[Resolve]]; onRejected is per-index.
                 auto already_called = std::make_shared<bool>(false);
                 auto on_reject = ObjectFactory::create_native_function("",
-                    [state, this_idx, already_called, finalize_aggregate_reject](Context& c, const std::vector<Value>& a) -> Value {
+                    [state, this_idx, already_called, finalize_aggregate_reject](Context& c, std::span<const Value> a) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         state->errors[this_idx] = a.empty() ? Value() : a[0];
@@ -1325,7 +1326,7 @@ void register_promise_builtins(Context& ctx) {
 
     // ES6: Promise[Symbol.species] = Promise (accessor)
     auto promise_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, std::span<const Value> args) -> Value {
             (void)args;
             Object* this_binding = ctx.get_this_binding();
             if (this_binding) return Value(this_binding);
