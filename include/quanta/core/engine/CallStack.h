@@ -8,6 +8,7 @@
 #define QUANTA_CALL_STACK_H
 
 #include <vector>
+#include <span>
 #include <string>
 #include <memory>
 #include "quanta/lexer/Token.h"
@@ -18,6 +19,8 @@ class Function;
 class Object;
 class ASTNode;
 
+class CallStack;
+
 struct CallStackFrame {
     // A frame is built on every call and read only when a stack trace is
     // formatted, so it stores nothing it can derive. It used to copy the
@@ -25,9 +28,10 @@ struct CallStackFrame {
     // of the Function's instance data that the hot path never touches
     // otherwise -- one dependent load, cold on every call once a program has
     // more functions than fit in cache.
-    const std::string* filename;
-    Function* function_ptr;
+    const std::string* filename = nullptr;
+    Function* function_ptr = nullptr;
 
+    CallStackFrame() = default;
     CallStackFrame(const std::string* file, Function* func = nullptr)
         : filename(file), function_ptr(func) {}
 
@@ -44,7 +48,12 @@ struct CallStackFrame {
  */
 class CallStack {
 private:
+    // Sized once to the depth limit rather than grown: a frame is pushed and
+    // popped on every call, and letting the vector own that meant a capacity
+    // test and a size update on the way in and an emptiness test on the way
+    // out, for a container whose bound is a compile-time constant.
     std::vector<CallStackFrame> frames_;
+    size_t depth_ = 0;
     static constinit thread_local CallStack* instance_;
     static void init_default_instance();
     
@@ -53,7 +62,7 @@ public:
     // under what the C++ stack beneath the interpreter can actually take.
     static constexpr size_t MAX_STACK_DEPTH = 3000;
 
-    CallStack() = default;
+    CallStack() : frames_(MAX_STACK_DEPTH) {}
     ~CallStack() = default;
     
     // Inline for the same reason push_frame is: this is read once per JS call,
@@ -71,23 +80,25 @@ public:
     // out-of-line call each way on every JS call, for a vector append the
     // caller could have done in a handful of instructions.
     void push_frame(const std::string* filename, Function* function_ptr = nullptr) {
-        if (frames_.size() >= MAX_STACK_DEPTH) return;
-        frames_.emplace_back(filename, function_ptr);
+        if (depth_ >= MAX_STACK_DEPTH) return;
+        frames_[depth_].filename = filename;
+        frames_[depth_].function_ptr = function_ptr;
+        ++depth_;
     }
 
     void pop_frame() {
-        if (!frames_.empty()) frames_.pop_back();
+        if (depth_) --depth_;
     }
 
     void clear();
     
-    size_t depth() const { return frames_.size(); }
-    bool is_empty() const { return frames_.empty(); }
-    bool is_full() const { return frames_.size() >= MAX_STACK_DEPTH; }
+    size_t depth() const { return depth_; }
+    bool is_empty() const { return depth_ == 0; }
+    bool is_full() const { return depth_ >= MAX_STACK_DEPTH; }
     
     const CallStackFrame& top() const;
     const CallStackFrame& at(size_t index) const;
-    const std::vector<CallStackFrame>& frames() const { return frames_; }
+    std::span<const CallStackFrame> frames() const { return {frames_.data(), depth_}; }
     
     std::string generate_stack_trace() const;
     std::string generate_stack_trace(size_t max_frames) const;

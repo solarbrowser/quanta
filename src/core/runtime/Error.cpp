@@ -76,7 +76,7 @@ std::string Error::to_string() const {
 void Error::generate_stack_trace() {
     {
         CallStack& stack = CallStack::instance();
-        size_t current_depth = stack.frames().size();
+        size_t current_depth = stack.depth();
         size_t existing_depth = 0;
         for (char c : stack_trace_) if (c == '\n') existing_depth++;
         if (!stack_trace_.empty() && existing_depth >= current_depth) return;

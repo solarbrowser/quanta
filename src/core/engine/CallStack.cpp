@@ -103,19 +103,19 @@ void CallStack::set_instance(CallStack* stack) {
 }
 
 void CallStack::clear() {
-    frames_.clear();
+    depth_ = 0;
 }
 
 const CallStackFrame& CallStack::top() const {
-    if (frames_.empty()) {
+    if (depth_ == 0) {
         static CallStackFrame empty_frame(nullptr, nullptr);
         return empty_frame;
     }
-    return frames_.back();
+    return frames_[depth_ - 1];
 }
 
 const CallStackFrame& CallStack::at(size_t index) const {
-    if (index >= frames_.size()) {
+    if (index >= depth_) {
         static CallStackFrame empty_frame(nullptr, nullptr);
         return empty_frame;
     }
@@ -123,53 +123,53 @@ const CallStackFrame& CallStack::at(size_t index) const {
 }
 
 std::string CallStack::generate_stack_trace() const {
-    return generate_stack_trace(frames_.size());
+    return generate_stack_trace(depth_);
 }
 
 std::string CallStack::generate_stack_trace(size_t max_frames) const {
-    if (frames_.empty()) {
+    if (depth_ == 0) {
         return "";
     }
     
     std::ostringstream oss;
-    size_t frame_count = std::min(max_frames, frames_.size());
+    size_t frame_count = std::min(max_frames, depth_);
     
     for (size_t i = 0; i < frame_count; ++i) {
-        size_t frame_idx = frames_.size() - 1 - i;
+        size_t frame_idx = depth_ - 1 - i;
         oss << "    " << format_frame(frames_[frame_idx], i);
         if (i < frame_count - 1) {
             oss << "\n";
         }
     }
     
-    if (max_frames < frames_.size()) {
-        oss << "\n    ... and " << (frames_.size() - max_frames) << " more frames";
+    if (max_frames < depth_) {
+        oss << "\n    ... and " << (depth_ - max_frames) << " more frames";
     }
     
     return oss.str();
 }
 
 std::string CallStack::current_function() const {
-    if (frames_.empty()) {
+    if (depth_ == 0) {
         return "<global>";
     }
-    const std::string& n = frames_.back().name();
+    const std::string& n = frames_[depth_ - 1].name();
     return n.empty() ? "<anonymous>" : n;
 }
 
 std::string CallStack::current_filename() const {
-    if (frames_.empty()) {
+    if (depth_ == 0) {
         return "<unknown>";
     }
-    const std::string* f = frames_.back().filename;
+    const std::string* f = frames_[depth_ - 1].filename;
     return (f && !f->empty()) ? *f : "<unknown>";
 }
 
 Position CallStack::current_position() const {
-    if (frames_.empty()) {
+    if (depth_ == 0) {
         return Position();
     }
-    return frames_.back().position();
+    return frames_[depth_ - 1].position();
 }
 
 bool CallStack::check_stack_overflow() {
