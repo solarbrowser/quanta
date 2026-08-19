@@ -1540,6 +1540,9 @@ public:
             std::vector<Value> copy(args.begin(), args.end());
             return call(ctx, copy, this_value);
         }
+        // A native has its own entry: call_default_impl's frame is built for a
+        // JS body it would only walk past.
+        if (is_native_) return call_native(ctx, args, this_value);
         return call_default_impl(ctx, args, this_value, nullptr);
     }
     Value construct(Context& ctx, const std::vector<Value>& args);
@@ -1608,8 +1611,8 @@ protected:
     Value call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
                             const std::vector<Value>* args_vec);
     Value call_tree_walker(Context& ctx, std::span<const Value> args, Value this_value);
-    Value call_native(Context& ctx, std::span<const Value> args, Value this_value,
-                      const std::vector<Value>* args_vec, bool is_construct_invocation);
+    Value call_native(Context& ctx, std::span<const Value> args, Value this_value);
+    Value call_native_rooted(Context& ctx, const std::vector<Value>& args_vec, Value this_value);
 };
 
 // get_type()-based replacement for dynamic_cast<Function*>: Object is no

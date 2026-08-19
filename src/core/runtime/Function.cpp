@@ -423,11 +423,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         case FunctionKind::Async: return static_cast<AsyncFunction*>(this)->call(ctx, args, this_value);
         case FunctionKind::Generator: return static_cast<GeneratorFunction*>(this)->call(ctx, args, this_value);
         case FunctionKind::AsyncGenerator: return static_cast<AsyncGeneratorFunction*>(this)->call(ctx, args, this_value);
-        default: return call_default_impl(ctx, args, this_value, &args);
+        default:
+            if (is_native_) return call_native_rooted(ctx, args, this_value);
+            return call_default_impl(ctx, args, this_value, &args);
     }
 }
 
 Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value this_value) {
+    if (is_native_) return call_native_rooted(ctx, args, this_value);
     return call_default_impl(ctx, args, this_value, &args);
 }
 
@@ -469,7 +472,6 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         return Value();
     }
 
-    if (is_native_) return call_native(ctx, args, this_value, args_vec, is_construct_invocation);
     
     // Resolve the fast-path gating states as early as possible (before any
     // Context exists) so a Function called for the first time -- e.g. a
@@ -678,15 +680,58 @@ namespace {
     return true;
 }
 
+[[gnu::noinline, gnu::cold]] Value throw_call_stack_exceeded(Context& ctx) {
+    ctx.throw_range_error("Maximum call stack size exceeded");
+    return Value();
+}
+
+[[gnu::noinline, gnu::cold]] Value throw_class_ctor_without_new(Context& ctx, const std::string& name) {
+    ctx.throw_exception(Value("TypeError: Class constructor " + name +
+                              " cannot be invoked without 'new'"));
+    return Value();
+}
+
 [[gnu::noinline, gnu::cold]] void drop_eval_caller_this(Context& ctx) {
     try { ctx.delete_binding("__eval_caller_this__"); } catch (...) {}
 }
 
 }
 
+// Entered directly rather than through call_default_impl. That function is
+// built for a JS body -- a closure environment, the bytecode gates, the
+// argument binding -- and a native reaches none of it, yet paid its prologue
+// and its frame to walk past all of it. What a native does need from there is
+// short enough to stand here: the two recursion guards, a stack frame, and the
+// pending-construct flag, in the order that function had them.
+// A vector's storage is malloc'd and invisible to the stack scan, so it has to
+// be rooted for the whole call. Only a caller that arrived with one needs this,
+// which a register-mode call never does -- its arguments are covered by its own
+// frame -- so the root lives out here rather than as a branch inside every call.
+Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_vec,
+                                   Value this_value) {
+    ValueVectorRoot args_root(&args_vec);
+    return call_native(ctx, args_vec, this_value);
+}
+
 [[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
-                                              Value this_value, const std::vector<Value>* args_vec,
-                                              bool is_construct_invocation) {
+                                              Value this_value) {
+    // Consumed immediately so a nested call triggered from inside this
+    // invocation doesn't inherit it.
+    const bool is_construct_invocation = ctx.consume_pending_construct_call();
+    CallStack& stack = CallStack::instance();
+    if (stack.depth() >= CallStack::MAX_STACK_DEPTH) return throw_call_stack_exceeded(ctx);
+    // A frame count is only a stand-in for how much stack is left, and it is
+    // calibrated for the thread's. Where the stack's own end is known, ask it.
+    if (const char* floor = current_stack_floor()) {
+        const char probe = 0;
+        if (&probe < floor) return throw_call_stack_exceeded(ctx);
+    }
+    CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
+
+    if (UNLIKELY_NATIVE(is_class_constructor_ && !ctx.is_in_constructor_call())) {
+        return throw_class_ctor_without_new(ctx, get_name());
+    }
+
     Value old_this_value = ctx.get_this_value();
 
     // Annex B's sloppy-mode null/undefined-this-becomes-global substitution only
@@ -737,9 +782,8 @@ namespace {
     if (native_captures_ctx_) ctx.mark_exposed_to_escape();
     Context* prev_context = Object::current_context_;
     Object::current_context_ = &ctx;
-    // A native takes a view of the arguments wherever they already are: the
-    // caller's registers, or the vector a non-register call arrived with.
-    Value result = native_data()->fn(ctx, args_vec ? std::span<const Value>(*args_vec) : args);
+    // A native takes a view of the arguments wherever they already are.
+    Value result = native_data()->fn(ctx, args);
     Object::current_context_ = prev_context;
     ctx.set_original_this_kind(prev_this_kind);
 
