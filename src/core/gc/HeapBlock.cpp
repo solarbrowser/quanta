@@ -29,6 +29,8 @@ HeapBlock* HeapBlock::init(void* region, Heap* heap, CellKind kind,
         ((static_cast<uint64_t>(1) << 32) + cell_size - 1) / cell_size);
     h.cell_kind   = kind;
     h.segment     = segment;
+    // A recycled region arrives with whatever the last block left here.
+    h.in_dirty_list = false;
     std::memset(h.alloc_bitmap, 0, sizeof(h.alloc_bitmap));
     std::memset(h.mark_bitmap, 0, sizeof(h.mark_bitmap));
     std::memset(h.remembered_bitmap, 0, sizeof(h.remembered_bitmap));

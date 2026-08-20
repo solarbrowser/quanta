@@ -195,11 +195,13 @@ void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
         partial.pop_back();
         if (void* p = block->try_allocate()) {
             active_block_[k][cls] = block;
+            note_dirty(block);
             return p;
         }
     }
     block = fresh_block(kind, segment, cls);
     active_block_[k][cls] = block;
+    note_dirty(block);
     void* p = block->try_allocate();
     assert(p && "fresh block must satisfy a Tier-1 allocation");
     return p;
@@ -403,7 +405,11 @@ void Heap::clear_remembered(const ProbeResult& p) {
     HeapBlock::from_cell(p.cell)->clear_remembered(p.cell);
 }
 
-void Heap::rebuild_allocation_candidates() {
+size_t Heap::rebuild_allocation_candidates() {
+    // Only the active heap's, matching what the pacing used to ask stats()
+    // for -- stats() is a member, and the collector called it on that heap.
+    Heap* counted = &Heap::active();
+    size_t live_bytes = 0;
     for (Heap* heap : thread_heaps()) {
         for (size_t k = 0; k < kNumCellKinds; k++) {
             for (size_t c = 0; c < kNumSizeClasses; c++) {
@@ -427,13 +433,20 @@ void Heap::rebuild_allocation_candidates() {
                         if (b != heap->active_block_[k][c] && !b->is_full()) {
                             partial.push_back(b);
                         }
+                        if (heap == counted) {
+                            live_bytes += static_cast<size_t>(b->live_count()) * b->cell_size();
+                        }
                         prev = b;
                     }
                     b = next;
                 }
             }
         }
+        if (heap == counted) {
+            for (LargeCell* lc = heap->large_cells_; lc; lc = lc->next) live_bytes += lc->size;
+        }
     }
+    return live_bytes;
 }
 
 void Heap::decommit_idle_memory() {
@@ -480,18 +493,41 @@ void Heap::for_each_cell(const std::function<void(void*, CellKind, bool)>& fn) {
     }
 }
 
-void Heap::for_each_dead_cell(const std::function<void(void*, CellKind)>& fn) {
+void Heap::collect_dead_cells(std::vector<DeadCell>& out, bool minor_only) {
     for (Heap* heap : thread_heaps()) {
-        for (size_t k = 0; k < kNumCellKinds; k++) {
-            for (size_t c = 0; c < kNumSizeClasses; c++) {
-                for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) {
-                    CellKind kind = b->cell_kind();
-                    b->for_each_dead_cell([&](void* cell) { fn(cell, kind); });
+        auto sweep_block = [&out](HeapBlock* b) {
+            const CellKind kind = b->cell_kind();
+            b->for_each_dead_cell([&](void* cell) { out.push_back({cell, kind}); });
+        };
+        if (minor_only) {
+            for (HeapBlock* b : heap->dirty_blocks_) sweep_block(b);
+        } else {
+            for (size_t k = 0; k < kNumCellKinds; k++) {
+                for (size_t c = 0; c < kNumSizeClasses; c++) {
+                    for (HeapBlock* b = heap->all_blocks_[k][c]; b; b = b->next()) sweep_block(b);
                 }
             }
         }
+        // Large cells are few and are not blocks; both kinds of sweep take
+        // the whole list.
         for (LargeCell* lc = heap->large_cells_; lc; lc = lc->next) {
-            if (!lc->marked) fn(reinterpret_cast<char*>(lc) + kLargeHeaderSize, lc->kind);
+            if (!lc->marked) {
+                out.push_back({reinterpret_cast<char*>(lc) + kLargeHeaderSize, lc->kind});
+            }
+        }
+    }
+}
+
+void Heap::reset_dirty_blocks() {
+    for (Heap* heap : thread_heaps()) {
+        for (HeapBlock* b : heap->dirty_blocks_) b->set_in_dirty_list(false);
+        heap->dirty_blocks_.clear();
+        // Whatever allocation is currently pointed at will take the next cell
+        // handed out, so it starts the new cycle dirty.
+        for (size_t k = 0; k < kNumCellKinds; k++) {
+            for (size_t c = 0; c < kNumSizeClasses; c++) {
+                if (HeapBlock* b = heap->active_block_[k][c]) heap->note_dirty(b);
+            }
         }
     }
 }

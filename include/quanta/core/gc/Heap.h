@@ -118,13 +118,36 @@ public:
     static void clear_all_marks();   // every heap, every block, every large
     // Walks every live cell of every heap: fn(cell, kind, marked).
     static void for_each_cell(const std::function<void(void*, CellKind, bool)>& fn);
-    // Sweep's fast path: fn(cell, kind) for every dead cell only (see
-    // HeapBlock::for_each_dead_cell for the word-level skip).
-    static void for_each_dead_cell(const std::function<void(void*, CellKind)>& fn);
+    // Sweep's fast path: every dead cell, appended to the caller's vector
+    // (see HeapBlock::for_each_dead_cell for the word-level skip). It hands
+    // back a list rather than calling per cell because the sweep wants the
+    // whole list before it runs a single destructor, and because a callback
+    // here is an indirect call per dead cell -- millions of them on a heap
+    // that has just filled up.
+    struct DeadCell {
+        void* cell;
+        CellKind kind;
+    };
+    // `minor_only` restricts the walk to blocks that have taken an allocation
+    // since the last sweep. A minor collection can only free cells there: with
+    // sticky marks every survivor of the previous cycle is still marked, and a
+    // cell handed out by the allocator is unmarked, so an untouched block holds
+    // nothing for a minor sweep to find. Walking all of them regardless made
+    // every minor pass over the whole heap, which on a large live set is most
+    // of what the collection costs. A major clears the marks first, so it has
+    // to look everywhere.
+    static void collect_dead_cells(std::vector<DeadCell>& out, bool minor_only);
+    // Empties the dirty list and re-seeds it with the blocks allocation is
+    // currently pointed at. Must run before rebuild_allocation_candidates,
+    // which is what releases blocks: a released block must not still be on it.
+    static void reset_dirty_blocks();
 
     // Post-sweep: re-queue every block with free slots as an allocation
-    // candidate, so reclaimed cells actually get reused.
-    static void rebuild_allocation_candidates();
+    // candidate, so reclaimed cells actually get reused. Returns the active
+    // heap's live bytes, counted on the way through: the pacing needs that
+    // number right after a sweep, and this already touches every block to
+    // find it -- asking stats() for it walked the whole heap a second time.
+    static size_t rebuild_allocation_candidates();
 
     // Full idle-chunk scan (see BlockAllocator::decommit_idle_chunks) --
     // major-collection-only housekeeping, not part of the minor pause budget.
@@ -199,6 +222,13 @@ private:
     // all_blocks_ chains and come back via partial_blocks_ after a sweep.
     HeapBlock* active_block_[kNumCellKinds][kNumSizeClasses] = {};
     HeapBlock* all_blocks_[kNumCellKinds][kNumSizeClasses] = {};
+    // See collect_dead_cells: the blocks a minor sweep has any reason to look at.
+    std::vector<HeapBlock*> dirty_blocks_;
+    void note_dirty(HeapBlock* b) {
+        if (b->in_dirty_list()) return;
+        b->set_in_dirty_list(true);
+        dirty_blocks_.push_back(b);
+    }
     std::vector<HeapBlock*> partial_blocks_[kNumCellKinds][kNumSizeClasses];
     LargeCell* large_cells_ = nullptr;
     size_t block_count_ = 0;

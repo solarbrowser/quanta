@@ -115,6 +115,9 @@ public:
     // when alloc & ~mark is zero (nothing dead there, the common case for a
     // block that survived a cycle mostly or entirely intact), so a fully-live
     // block costs one word-check each rather than one bit-check per slot.
+    bool in_dirty_list() const { return h_.in_dirty_list; }
+    void set_in_dirty_list(bool v) { h_.in_dirty_list = v; }
+
     template <typename Fn>
     void for_each_dead_cell(Fn&& fn) {
         uint32_t word_count = (h_.bump_cursor + 63) / 64;
@@ -149,6 +152,10 @@ private:
         uint32_t   cell_size_magic;
         CellKind   cell_kind;
         HeapSegment segment;
+        // Whether this block is on its heap's dirty list -- see Heap's
+        // dirty_blocks_. Sits in padding the two enums already leave, so the
+        // header does not grow.
+        bool       in_dirty_list;
         uint64_t   alloc_bitmap[kBitmapWords];
         uint64_t   mark_bitmap[kBitmapWords];
         uint64_t   remembered_bitmap[kBitmapWords];

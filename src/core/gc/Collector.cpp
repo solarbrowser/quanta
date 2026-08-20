@@ -739,21 +739,22 @@ void hunt_check(const Environment* env, const char* who) {
                  who, static_cast<const void*>(env));
 }
 
-size_t run_sweep() {
+size_t run_sweep(bool minor) {
     // Two passes: destructors may consult other cells' memory only through
     // their own backing stores (audited rule), but collecting the dead list
     // first keeps the block bitmaps stable while destructors run.
-    struct Dead { void* cell; CellKind kind; };
-    std::vector<Dead> dead;
-    Heap::for_each_dead_cell([&](void* cell, CellKind kind) {
-        dead.push_back({cell, kind});
-    });
+    // Kept across sweeps for its capacity: a heap that has just filled up
+    // hands over millions of cells, and growing the list from nothing again
+    // every cycle costs more than the destructors it is holding.
+    static thread_local std::vector<Heap::DeadCell> dead;
+    dead.clear();
+    Heap::collect_dead_cells(dead, minor);
     // QUANTA_GC_POISON=1: fill freed cells with a recognizable pattern and
     // leak the slot instead of reusing it -- any use-after-free then crashes
     // deterministically on the poison instead of silently reading a
     // recycled cell. Debug tool for hunting invisible lambda captures.
     static const bool poison = env_flag("QUANTA_GC_POISON");
-    for (const Dead& d : dead) {
+    for (const Heap::DeadCell& d : dead) {
         switch (d.kind) {
             case CellKind::Object: {
                 Object* obj = static_cast<Object*>(d.cell);
@@ -995,18 +996,16 @@ void run_minor_collection() {
 
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {
-        g_last_cycle.swept_cells = run_sweep();
-        {
-            // Budget the next collection against what this one cost, but the
-            // two halves of that cost do not behave alike: marking the live
-            // set is amortizable (collecting sooner leaves less floating
-            // garbage), while scanning roots is paid in full every time
-            // regardless. They are handed over separately.
-            Heap::Stats st = Heap::active().stats();
-            Heap::retune_budget(st.live_bytes + st.large_bytes,
-                                g_scanned_words * sizeof(uint64_t));
-        }
-        Heap::rebuild_allocation_candidates();
+        g_last_cycle.swept_cells = run_sweep(/*minor=*/true);
+        // Budget the next collection against what this one cost, but the two
+        // halves of that cost do not behave alike: marking the live set is
+        // amortizable (collecting sooner leaves less floating garbage), while
+        // scanning roots is paid in full every time regardless. They are
+        // handed over separately. The live figure comes back from the rebuild,
+        // which has to touch every block anyway.
+        Heap::reset_dirty_blocks();
+        const size_t live_after = Heap::rebuild_allocation_candidates();
+        Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
     }
     auto t6 = std::chrono::steady_clock::now();
 
@@ -1169,20 +1168,14 @@ void finish_major_cycle(MarkVisitor& v) {
 
     static const bool mark_only = env_flag("QUANTA_GC_MARK_ONLY");
     if (!mark_only) {
-        g_last_cycle.swept_cells = run_sweep();
-        {
-            // Budget the next collection against what this one cost, but the
-            // two halves of that cost do not behave alike: marking the live
-            // set is amortizable (collecting sooner leaves less floating
-            // garbage), while scanning roots is paid in full every time
-            // regardless. They are handed over separately.
-            Heap::Stats st = Heap::active().stats();
-            Heap::retune_budget(st.live_bytes + st.large_bytes,
-                                g_scanned_words * sizeof(uint64_t));
-            Heap::note_major_done(st.live_bytes + st.large_bytes);
-        }
+        g_last_cycle.swept_cells = run_sweep(/*minor=*/false);
+        // See the minor path for why the two halves of the cost are handed
+        // over separately, and why the live figure comes from the rebuild.
+        Heap::reset_dirty_blocks();
+        const size_t live_after = Heap::rebuild_allocation_candidates();
+        Heap::retune_budget(live_after, g_scanned_words * sizeof(uint64_t));
+        Heap::note_major_done(live_after);
         note_major_yield(g_last_cycle.marked_cells, g_last_cycle.swept_cells);
-        Heap::rebuild_allocation_candidates();
         Heap::decommit_idle_memory();
     }
 
