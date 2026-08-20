@@ -401,9 +401,28 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // a key that is neither length nor an index, so elements cannot answer it
     // either. Which is the same thing the descriptor query would have
     // established, only without doing it.
+    // Which non-ordinary receivers may still be cached against, and under
+    // which names. The question each answers is the same: can anything other
+    // than this object's shape and its descriptor map produce an own property
+    // under this name? For an Array that is `length` and the indices, and for
+    // a Map or a Set it is `size`; a RegExp has none, since neither
+    // get_property nor get_own_property has a branch for one. The types left
+    // out -- Function, TypedArray, ArrayBuffer, DataView, Proxy, Custom, the
+    // primitive wrappers -- each answer names of their own and belong on the
+    // general path until someone lists theirs too. Date is left out for a
+    // different reason: it was measured and the cache did not pay there.
+    //
+    // Array leads because it is far and away the most common receiver here,
+    // and a chain of compares beats the jump table a switch would build.
+    const Object::ObjectType recv_type = obj->get_type();
     const bool exotic_proto_ok =
-        obj->get_type() == Object::ObjectType::Array &&
-        name != "length" && !(!name.empty() && name[0] >= '0' && name[0] <= '9');
+        recv_type == Object::ObjectType::Array
+            ? (name != "length" &&
+               !(!name.empty() && name[0] >= '0' && name[0] <= '9'))
+        : (recv_type == Object::ObjectType::Map ||
+           recv_type == Object::ObjectType::Set)
+            ? name != "size"
+            : recv_type == Object::ObjectType::RegExp;
     if (rooted && fb && !fb->proto_mega &&
         (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
         !obj->has_descriptor_override(name)) {
