@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/gc/Collector.h"
 #include <span>
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/engine/Context.h"
@@ -261,8 +262,31 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 
 Value Iterator::create_iterator_result(const Value& value, bool done) {
     auto result_obj = ObjectFactory::create_object();
-    result_obj->set_property("value", value);
-    result_obj->set_property("done", Value(done));
+    Object* obj = result_obj.get();
+    // Every one of these is the same two properties in the same order on a
+    // fresh object, so it passes through the same two shapes every time and
+    // the transitions can be remembered instead of looked up by name -- which
+    // was most of what producing an iterator result cost. Shapes are immortal
+    // for the thread, so holding them is safe, and the from-shape is compared
+    // rather than assumed.
+    static thread_local Shape* from_shape = nullptr;
+    static thread_local Shape* after_value = nullptr;
+    static thread_local Shape* after_done = nullptr;
+    // CreateIterResultObject makes these outright (CreateDataProperty), which
+    // is not what an assignment does: [[Set]] walks the prototype chain, so a
+    // `value` or `done` accessor anywhere above ran instead and the result came
+    // back without the property at all.
+    if (obj->get_shape() == from_shape && after_value && after_done) {
+        Collector::write_barrier_value(obj, value);
+        obj->add_shape_property_cached("value", value, after_value);
+        obj->add_shape_property_cached("done", Value(done), after_done);
+    } else {
+        from_shape = obj->get_shape();
+        obj->create_own_data_property("value", value);
+        after_value = obj->get_shape();
+        obj->create_own_data_property("done", Value(done));
+        after_done = obj->get_shape();
+    }
     return Value(result_obj.release());
 }
 

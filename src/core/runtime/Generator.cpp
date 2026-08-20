@@ -303,11 +303,7 @@ Value Generator::generator_next(Context& ctx, std::span<const Value> args, Value
     // yield* propagates the inner iterator's result object directly
     if (result.raw_result) return result.value;
 
-    auto result_obj = ObjectFactory::create_object();
-    result_obj->set_property("value", result.value);
-    result_obj->set_property("done", Value(result.done));
-
-    return Value(result_obj.release());
+    return Iterator::create_iterator_result(result.value, result.done);
 }
 
 Value Generator::generator_return(Context& ctx, std::span<const Value> args, Value receiver) {
@@ -337,11 +333,7 @@ Value Generator::generator_return(Context& ctx, std::span<const Value> args, Val
         return Value();
     }
 
-    auto result_obj = ObjectFactory::create_object();
-    result_obj->set_property("value", result.value);
-    result_obj->set_property("done", Value(result.done));
-
-    return Value(result_obj.release());
+    return Iterator::create_iterator_result(result.value, result.done);
 }
 
 Value Generator::generator_throw(Context& ctx, std::span<const Value> args, Value receiver) {
@@ -379,11 +371,7 @@ Value Generator::generator_throw(Context& ctx, std::span<const Value> args, Valu
         return Value();
     }
 
-    auto result_obj = ObjectFactory::create_object();
-    result_obj->set_property("value", result.value);
-    result_obj->set_property("done", Value(result.done));
-
-    return Value(result_obj.release());
+    return Iterator::create_iterator_result(result.value, result.done);
 }
 
 void Generator::setup_generator_prototype(Context& ctx) {
