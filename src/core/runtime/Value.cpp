@@ -11,6 +11,7 @@
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/String.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Error.h"
@@ -468,22 +469,45 @@ bool Value::to_boolean() const {
     return true;
 }
 
+namespace {
+// typeof answers with one of eight fixed strings, and a fresh cell for each
+// evaluation put an allocation on an operator that computes nothing at all --
+// a loop asking `typeof x === "object"` spends its time in the allocator and
+// then in the collector. Strings are immutable, so one cell per answer serves
+// every evaluation for the life of the thread, and the vector holding them is
+// a root for exactly that long.
+enum TypeofName { kUndefined, kObject, kFunction, kBoolean,
+                  kNumber, kString, kSymbol, kBigInt };
+
+const Value& typeof_name(TypeofName which) {
+    static thread_local std::vector<Value> cache;
+    static thread_local ValueVectorRoot cache_root(&cache);
+    if (cache.empty()) {
+        static const char* const kNames[] = { "undefined", "object", "function", "boolean",
+                                              "number", "string", "symbol", "bigint" };
+        cache.reserve(sizeof(kNames) / sizeof(kNames[0]));
+        for (const char* n : kNames) cache.push_back(Value(std::string(n)));
+    }
+    return cache[static_cast<size_t>(which)];
+}
+}
+
 Value Value::typeof_op() const {
-    if (is_undefined()) return Value(std::string("undefined"));
-    if (is_null()) return Value(std::string("object"));
-    if (is_function()) return Value(std::string("function"));
-    if (is_boolean()) return Value(std::string("boolean"));
-    if (is_number()) return Value(std::string("number"));
-    if (is_string()) return Value(std::string("string"));
-    if (is_symbol()) return Value(std::string("symbol"));
-    if (is_bigint()) return Value(std::string("bigint"));
+    if (is_undefined()) return typeof_name(kUndefined);
+    if (is_null()) return typeof_name(kObject);
+    if (is_function()) return typeof_name(kFunction);
+    if (is_boolean()) return typeof_name(kBoolean);
+    if (is_number()) return typeof_name(kNumber);
+    if (is_string()) return typeof_name(kString);
+    if (is_symbol()) return typeof_name(kSymbol);
+    if (is_bigint()) return typeof_name(kBigInt);
     // A Proxy is tagged TAG_OBJECT regardless of target, so check target_was_callable() instead.
     if (is_object() && as_object()->get_type() == Object::ObjectType::Proxy &&
         static_cast<Proxy*>(as_object())->target_was_callable()) {
-        return Value(std::string("function"));
+        return typeof_name(kFunction);
     }
 
-    return Value(std::string("object"));
+    return typeof_name(kObject);
 }
 
 
