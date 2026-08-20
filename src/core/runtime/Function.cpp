@@ -2032,4 +2032,8 @@ void Function::scan_for_var_declarations(ASTNode* node, Context& ctx, Environmen
     }
 }
 
+Position Function::body_start_position() const {
+    return executable_ ? executable_->body_start() : Position(1, 1, 0);
+}
+
 }

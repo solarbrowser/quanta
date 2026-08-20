@@ -64,8 +64,10 @@ const std::string& CallStackFrame::name() const {
 }
 
 Position CallStackFrame::position() const {
-    const ASTNode* body = function_ptr ? function_ptr->ast_body() : nullptr;
-    return body ? body->get_start() : Position(1, 1, 0);
+    // Recorded when the body was attached, so asking where a frame is does not
+    // require the body still to be there -- materializing it here is what kept
+    // every compiled function's tree alive for the whole run.
+    return function_ptr ? function_ptr->body_start_position() : Position(1, 1, 0);
 }
 
 std::string CallStackFrame::to_string() const {

@@ -20,10 +20,13 @@ namespace Quanta {
 // Then by the deferred-body state (a token index and the parse context the
 // body needs rebuilding in): 16 bytes each, so ~190KB across a bundle's worth
 // of literals, against the megabytes of parse tree those literals stop
-// holding. See defer_body.
-static_assert(sizeof(FunctionExecutable) == 208);
+// holding. See defer_body. The body's start position is here for the same
+// trade in the same direction: eight more bytes per executable, so that
+// nothing has to keep a whole tree alive just to say what line a function is
+// on.
+static_assert(sizeof(FunctionExecutable) == 216);
 #else
-static_assert(sizeof(FunctionExecutable) <= 224);
+static_assert(sizeof(FunctionExecutable) <= 232);
 #endif
 
 constinit thread_local FunctionExecutable* FunctionExecutable::live_head_ = nullptr;
@@ -59,6 +62,7 @@ void FunctionExecutable::adopt_body(std::unique_ptr<ASTNode> node) {
     owned_body_ = std::move(node);
     unit_ = ExecutableRef<ScriptUnit>();
     body_ = owned_body_.get();
+    if (body_) body_start_ = body_->get_start();
     body_has_use_strict = opens_with_use_strict(body_);
 }
 
@@ -95,6 +99,7 @@ ASTNode* FunctionExecutable::ensure_body() const {
     }
     owned_body_ = std::move(parsed);
     body_ = owned_body_.get();
+    if (body_) body_start_ = body_->get_start();
     body_deferred_ = false;
     body_tok_first_ = 0;
     return body_;
@@ -104,6 +109,7 @@ void FunctionExecutable::borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTN
     owned_body_.reset();
     unit_ = unit;
     body_ = node;
+    if (node) body_start_ = node->get_start();
     body_has_use_strict = opens_with_use_strict(body_);
 }
 

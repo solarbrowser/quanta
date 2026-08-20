@@ -1580,6 +1580,9 @@ public:
     // consumer of the body reaches it through here, which is what keeps that
     // one-way transition invisible to them.
     class ASTNode* ast_body() const { return executable_ ? executable_->ensure_body() : nullptr; }
+    // Where the body starts, without materializing it -- see
+    // FunctionExecutable::body_start.
+    Position body_start_position() const;
 
     // Non-virtual: switches on get_function_kind(), same reasoning as
     // trace() above. call_default() is the plain-Function body.

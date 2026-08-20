@@ -8,6 +8,7 @@
 #define QUANTA_FUNCTION_EXECUTABLE_H
 
 #include "quanta/core/vm/Bytecode.h"
+#include "quanta/lexer/Token.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -104,6 +105,11 @@ private:
     // Only the opening index is kept: parse_body_at reads to the matching
     // brace itself, so an end index would be a second copy of the same fact.
     mutable uint32_t body_tok_first_ = 0;
+    // Where the body begins in the source. Recorded when the body is attached
+    // rather than read back off it, so a stack frame can say where a function
+    // is without the tree still being there to ask -- which is the one thing
+    // that kept every compiled body's AST alive for the whole run.
+    mutable Position body_start_{1, 1, 0};
 
 public:
     // Backs ExecutableRef<T> above -- intentionally not atomic, see that
@@ -135,6 +141,7 @@ public:
     // body() stays the raw accessor for the paths that only test for one.
     ASTNode* ensure_body() const;
     ASTNode* body() const { return body_; }
+    const Position& body_start() const { return body_start_; }
     bool has_body() const { return body_ != nullptr; }
     bool body_is_deferred() const { return body_deferred_ && body_ == nullptr; }
 
