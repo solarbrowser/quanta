@@ -1397,6 +1397,8 @@ void Collector::write_barrier_env_for(Environment* env, const Value& value) {
 
 void Collector::write_barrier_env(Environment* env) {
     if (barriers_disabled() || !env || env->gc_remembered_) return;
+   // zero means 'never queued', so it is skipped on wrap
+    if (env->gc_seen_cycle_ == 0) return;
     env->gc_remembered_ = true;
     // gc_remembered_ can have been cleared at trace time (below) while this
     // environment's earlier entry is still sitting in the vector. Drop that one
