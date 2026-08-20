@@ -3281,11 +3281,21 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             }
         } else {
             if (!compiler.declare_local(info.name)) {
-                // Disjoint siblings share one register on purpose: the second
-                // declaration finds the first one's and reuses it, which is the
-                // whole point of proving the regions never overlap. Any other
-                // repeat is a real shadow, and refusing to compile is right.
-                if (!sibling_safe.count(info.name) || compiler.lookup_local(info.name) < 0) {
+                // A repeated `var` is not a second binding at all: var is
+                // function-scoped and hoisted, so both declarations name the
+                // one variable and the register already standing for it is the
+                // right one. Two counted loops in a row, each opening with
+                // `var i`, is the ordinary way to write that, and refusing on
+                // it handed the whole function to the tree-walker.
+                //
+                // Otherwise: disjoint siblings share one register on purpose,
+                // the second declaration finding the first one's and reusing
+                // it, which is the whole point of proving the regions never
+                // overlap. Any other repeat is a real shadow, and refusing to
+                // compile is right.
+                const bool same_var = !info.is_lexical && compiler.lookup_local(info.name) >= 0;
+                if (!same_var &&
+                    (!sibling_safe.count(info.name) || compiler.lookup_local(info.name) < 0)) {
                     return nullptr;
                 }
             }
@@ -3660,11 +3670,21 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
             if (info.is_const) compiler.const_locals_.insert(info.name);
         } else {
             if (!compiler.declare_local(info.name)) {
-                // Disjoint siblings share one register on purpose: the second
-                // declaration finds the first one's and reuses it, which is the
-                // whole point of proving the regions never overlap. Any other
-                // repeat is a real shadow, and refusing to compile is right.
-                if (!sibling_safe.count(info.name) || compiler.lookup_local(info.name) < 0) {
+                // A repeated `var` is not a second binding at all: var is
+                // function-scoped and hoisted, so both declarations name the
+                // one variable and the register already standing for it is the
+                // right one. Two counted loops in a row, each opening with
+                // `var i`, is the ordinary way to write that, and refusing on
+                // it handed the whole function to the tree-walker.
+                //
+                // Otherwise: disjoint siblings share one register on purpose,
+                // the second declaration finding the first one's and reusing
+                // it, which is the whole point of proving the regions never
+                // overlap. Any other repeat is a real shadow, and refusing to
+                // compile is right.
+                const bool same_var = !info.is_lexical && compiler.lookup_local(info.name) >= 0;
+                if (!same_var &&
+                    (!sibling_safe.count(info.name) || compiler.lookup_local(info.name) < 0)) {
                     return nullptr;
                 }
             }
