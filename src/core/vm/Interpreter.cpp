@@ -1237,23 +1237,20 @@ struct Frame {
     bool this_resolved;
 };
 
-// Tail-call threaded dispatch, hybrid with the switch below.
+// Tail-call threaded dispatch.
 //
-// The switch keeps the interpreter's state on the stack: run's frame had 133
-// distinct slots and even `code`, a pointer that never changes, was reloaded
-// per opcode -- 48 instructions and ~15 loads for an opcode like Ldar that
-// needs about four. A handler per opcode carries the hot state in argument
-// registers instead, and musttail makes each one reuse the same machine frame
-// rather than growing the stack.
+// This started as a single switch over every opcode, which kept the
+// interpreter's state on the stack: run's frame had 133 distinct slots and
+// even `code`, a pointer that never changes, was reloaded per opcode -- 48
+// instructions and ~15 loads for an opcode like Ldar that needs about four. A
+// handler per opcode carries the hot state in argument registers instead, and
+// musttail makes each one reuse the same machine frame rather than growing
+// the stack.
 //
-// Converting all of them at once is not required: kHandlers defaults to
-// h_switch, so an unconverted opcode lands back in the switch, and the switch
-// hands control back the moment it reaches one that does have a handler.
-// `pc` therefore always names the opcode byte itself, never its operands, so
-// either half can pick up wherever the other left off.
+// `pc` names the opcode byte itself, never its operands, so a handler that
+// only covers the common shape can hand that same pc to a slower one.
 using Handler = Value (*)(Frame&, uint32_t, Value);
 
-Value h_switch(Frame& f, uint32_t pc, Value acc);
 extern const std::array<Handler, 256> kHandlers;
 
 #define DISPATCH() [[clang::musttail]] return kHandlers[f.code[pc]](f, pc, acc)
@@ -1332,108 +1329,16 @@ BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
 // Numeric fast paths only. Anything else re-enters the switch at this same
 // opcode and runs through the shared slow path exactly as before, so a
 // handler never duplicates the coercion, the BigInt case or the raise check.
-#define NUMERIC_BINARY_HANDLER(name, expr)                                 \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        const Value& lhs = f.regs[f.code[pc + 1]];                         \
-        if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
-            double l = lhs.as_finite_double();                             \
-            double r = acc.as_finite_double();                             \
-            (void)l; (void)r;                                              \
-            acc = (expr);                                                  \
-            pc += 2;                                                       \
-            DISPATCH();                                                    \
-        }                                                                  \
-        [[clang::musttail]] return h_switch(f, pc, acc);                   \
-    }
-
-NUMERIC_BINARY_HANDLER(h_Add, Value(l + r))
-NUMERIC_BINARY_HANDLER(h_Sub, Value(l - r))
-NUMERIC_BINARY_HANDLER(h_Mul, Value(l * r))
-NUMERIC_BINARY_HANDLER(h_TestLt, Value(l < r))
-NUMERIC_BINARY_HANDLER(h_TestGt, Value(l > r))
-NUMERIC_BINARY_HANDLER(h_TestLe, Value(l <= r))
-NUMERIC_BINARY_HANDLER(h_TestGe, Value(l >= r))
-NUMERIC_BINARY_HANDLER(h_TestEq, Value(l == r))
-NUMERIC_BINARY_HANDLER(h_TestNe, Value(l != r))
-NUMERIC_BINARY_HANDLER(h_TestStrictEq, Value(l == r))
-NUMERIC_BINARY_HANDLER(h_TestStrictNe, Value(l != r))
-
-// Same lean shape as NUMERIC_BINARY_HANDLER, for the same reason: a bitwise op
-// is a couple of instructions of real work, and going through the generated
-// handler made it pay that handler's whole prologue (chunk, ctx, instr_pc)
-// first. ToInt32 already answers for NaN and the infinities, so being a number
-// is the entire gate; anything else falls back to the general path.
-#define BITWISE_BINARY_HANDLER(name, expr)                                 \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        const Value& lhs = f.regs[f.code[pc + 1]];                         \
-        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
-            int32_t l = js_to_int32(lhs.as_number());                      \
-            int32_t r = js_to_int32(acc.as_number());                      \
-            (void)l; (void)r;                                              \
-            acc = (expr);                                                  \
-            pc += 2;                                                       \
-            DISPATCH();                                                    \
-        }                                                                  \
-        [[clang::musttail]] return h_switch(f, pc, acc);                   \
-    }
-
-BITWISE_BINARY_HANDLER(h_BitAnd, Value(static_cast<double>(l & r)))
-BITWISE_BINARY_HANDLER(h_BitOr,  Value(static_cast<double>(l | r)))
-BITWISE_BINARY_HANDLER(h_BitXor, Value(static_cast<double>(l ^ r)))
-BITWISE_BINARY_HANDLER(h_Shl,
-    Value(static_cast<double>(static_cast<int32_t>(static_cast<uint32_t>(l) << (r & 31)))))
-BITWISE_BINARY_HANDLER(h_Sar, Value(static_cast<double>(l >> (r & 31))))
-BITWISE_BINARY_HANDLER(h_Shr, Value(static_cast<double>(static_cast<uint32_t>(l) >> (r & 31))))
-
-#define UNARY_STEP_HANDLER(name, delta)                                    \
-    Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        if (LIKELY(acc.is_number())) {                                     \
-            acc = Value(acc.as_number() + (delta));                        \
-            pc += 1;                                                       \
-            DISPATCH();                                                    \
-        }                                                                  \
-        [[clang::musttail]] return h_switch(f, pc, acc);                   \
-    }
-
-UNARY_STEP_HANDLER(h_Inc, 1.0)
-UNARY_STEP_HANDLER(h_Dec, -1.0)
 
 #undef CONST_HANDLER
 #undef BRANCH_HANDLER
-#undef NUMERIC_BINARY_HANDLER
-#undef UNARY_STEP_HANDLER
 
-// The dispatch loop. Split out of run() so no call in it is an invoke: with
-// the try one frame up there is no landing pad here for a value to stay
-// memory-resident for, which is what kept the loop's state off the registers.
-// A JS throw is still handled in here (CHECK_EXC finds the covering handler
-// and jumps); only a C++ throw leaves, and run() resumes by calling this
-// again with frame.pc moved.
-Value h_switch(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = f.ctx;
-    std::span<const Value> args = f.args;
-    Function* owner = f.owner;
-    Value* regs = f.regs;
-    Environment** env_saves = f.env_saves;
-    BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
-    PrivateFeedback* private_feedback_data = f.private_feedback_data;
-    const uint8_t* code = f.code;
-    const Value* constants = f.constants;
-    Environment* entry_env = f.entry_env;
-    uint8_t& env_save_top = f.env_save_top;
-    bool& this_resolved = f.this_resolved;
-    Value& this_value = f.this_value;
-    uint32_t& instr_pc = f.instr_pc;
-    (void)args; (void)owner; (void)entry_env; (void)private_feedback_data;
-    (void)lookup_cache_data; (void)constants;
-
-    // On exception, find the innermost handler covering instr_pc; `continue`
-    // re-enters the for(;;) below with pc already moved to the handler.
-// NOT a do-while(0) macro: `continue` inside do{}while(0) binds to the
-// do-while, not the dispatch loop -- the rest of the case would keep
-// running with pc already pointed at the handler, clobbering the
-// exception value in acc (found via ~{valueOf(){throw}} in a try).
+// On exception, find the innermost handler covering instr_pc and move pc
+// to it. NOT a do-while(0) macro at the point of use: the `continue` is
+// meant to leave the do/while(0) that wraps a generated handler body, so
+// the rest of that body stops running with pc already pointed at the
+// handler -- which would clobber the exception value in acc (found via
+// ~{valueOf(){throw}} in a try).
 #define CHECK_EXC()                                                        \
     if (ctx.has_exception()) {                                            \
         int32_t handler_pc = -1;                                           \
@@ -1466,1495 +1371,6 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
         }                                                                  \
     } while (0)
 
-// Same shape as BINARY_OP for the bitwise operators, whose operands go
-// through ToInt32 first. Two numbers is the whole whitelist; BigInt, strings,
-// objects with valueOf and everything else keep the shared slow path, which
-// is where these opcodes used to go unconditionally.
-#define BITWISE_OP(binop, expr)                                            \
-    do {                                                                   \
-        const Value& lhs = regs[code[pc]];                                 \
-        pc += 1;                                                           \
-        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
-            int32_t l = js_to_int32(lhs.as_number());                      \
-            int32_t r = js_to_int32(acc.as_number());                      \
-            acc = (expr);                                                  \
-        } else {                                                           \
-            acc = binary_slow(ctx, binop, lhs, acc);                       \
-            CHECK_EXC();                                                   \
-        }                                                                  \
-    } while (0)
-
-        for (;;) {
-        instr_pc = pc;
-        Op op = static_cast<Op>(code[pc++]);
-        switch (op) {
-            case Op::LdaConst:
-                acc = constants[read_u16(code, pc)];
-                pc += 2;
-                break;
-            case Op::LdaZero:
-                acc = Value(0.0);
-                break;
-            case Op::LdaSmi:
-                acc = Value(static_cast<double>(static_cast<int8_t>(code[pc])));
-                pc += 1;
-                break;
-            case Op::LdaUndefined:
-                acc = Value();
-                break;
-            case Op::LdaNull:
-                acc = Value::null();
-                break;
-            case Op::LdaTrue:
-                acc = Value(true);
-                break;
-            case Op::LdaFalse:
-                acc = Value(false);
-                break;
-
-            case Op::LdaThis: {
-                // Derived-constructor this-TDZ (spec 9.1.1.3.4 GetThisBinding):
-                // mirrors Identifier::evaluate's check for "this" -- must be
-                // re-checked on every read, not just once, since a `super()`
-                // call between two reads flips it mid-frame.
-                if (ctx.this_needs_super()) {
-                    ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
-                    CHECK_EXC();
-                    break;
-                }
-                if (!this_resolved) {
-                    // Same resolution as LdaLookup 'this': the binding is
-                    // created by Function::call (arrows find the outer one
-                    // through the chain).
-                    Environment* env = ctx.find_binding_env("this");
-                    if (env) {
-                        this_value = env->get_binding_direct("this", &ctx);
-                    } else if (ctx.has_binding("this")) {
-                        this_value = ctx.get_binding("this");
-                    }
-                    CHECK_EXC();
-                    this_resolved = true;
-                }
-                acc = this_value;
-                break;
-            }
-            case Op::Ldar:
-                acc = regs[code[pc]];
-                pc += 1;
-                break;
-            case Op::Star:
-                regs[code[pc]] = acc;
-                pc += 1;
-                break;
-            case Op::Mov:
-                regs[code[pc + 1]] = regs[code[pc]];
-                pc += 2;
-                break;
-
-            case Op::LdaTdz:
-                acc = Value::vm_tdz_sentinel();
-                break;
-            case Op::LdarChecked: {
-                uint8_t reg = code[pc];
-                uint16_t name_idx = read_u16(code, pc + 1);
-                pc += 3;
-                if (regs[reg].is_vm_tdz_sentinel()) {
-                    ctx.throw_reference_error("Cannot access '" + chunk.name_at(name_idx) +
-                                               "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                acc = regs[reg];
-                break;
-            }
-            case Op::StarChecked: {
-                uint8_t reg = code[pc];
-                uint16_t name_idx = read_u16(code, pc + 1);
-                pc += 3;
-                if (regs[reg].is_vm_tdz_sentinel()) {
-                    ctx.throw_reference_error("Cannot access '" + chunk.name_at(name_idx) +
-                                               "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                regs[reg] = acc;
-                break;
-            }
-
-            case Op::Add:    BINARY_OP(BinOp::ADD, Value(l + r)); break;
-            case Op::Sub:    BINARY_OP(BinOp::SUBTRACT, Value(l - r)); break;
-            case Op::Mul:    BINARY_OP(BinOp::MULTIPLY, Value(l * r)); break;
-            // IEEE division already produces the signed infinities and the
-            // NaN that the shared path spells out by hand, and Value boxes
-            // both, so two numbers need no special casing here.
-            case Op::Div: BINARY_OP(BinOp::DIVIDE, Value(l / r)); break;
-            case Op::Mod: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                if (LIKELY(lhs.is_number() && acc.is_number())) {
-                    acc = Value(std::fmod(lhs.as_number(), acc.as_number()));
-                } else {
-                    acc = binary_slow(ctx, BinOp::MODULO, lhs, acc);
-                    CHECK_EXC();
-                }
-                break;
-            }
-            case Op::Exp: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::EXPONENT, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
-            case Op::BitAnd: BITWISE_OP(BinOp::BITWISE_AND, Value(static_cast<double>(l & r))); break;
-            case Op::BitOr:  BITWISE_OP(BinOp::BITWISE_OR,  Value(static_cast<double>(l | r))); break;
-            case Op::BitXor: BITWISE_OP(BinOp::BITWISE_XOR, Value(static_cast<double>(l ^ r))); break;
-            // Shift counts use only the low 5 bits, and the left shift runs
-            // unsigned so an overflowing result stays defined.
-            case Op::Shl: BITWISE_OP(BinOp::LEFT_SHIFT,
-                Value(static_cast<double>(static_cast<int32_t>(static_cast<uint32_t>(l) << (r & 31))))); break;
-            case Op::Sar: BITWISE_OP(BinOp::RIGHT_SHIFT,
-                Value(static_cast<double>(l >> (r & 31)))); break;
-            case Op::Shr: BITWISE_OP(BinOp::UNSIGNED_RIGHT_SHIFT,
-                Value(static_cast<double>(static_cast<uint32_t>(l) >> (r & 31)))); break;
-
-            case Op::TestEq:       BINARY_OP(BinOp::EQUAL, Value(l == r)); break;
-            case Op::TestNe:       BINARY_OP(BinOp::NOT_EQUAL, Value(l != r)); break;
-            case Op::TestStrictEq: BINARY_OP(BinOp::STRICT_EQUAL, Value(l == r)); break;
-            case Op::TestStrictNe: BINARY_OP(BinOp::STRICT_NOT_EQUAL, Value(l != r)); break;
-            case Op::TestLt:       BINARY_OP(BinOp::LESS_THAN, Value(l < r)); break;
-            case Op::TestGt:       BINARY_OP(BinOp::GREATER_THAN, Value(l > r)); break;
-            case Op::TestLe:       BINARY_OP(BinOp::LESS_EQUAL, Value(l <= r)); break;
-            case Op::TestGe:       BINARY_OP(BinOp::GREATER_EQUAL, Value(l >= r)); break;
-
-            case Op::TestInstanceOf: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::INSTANCEOF, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
-            case Op::TestIn: {
-                const Value& lhs = regs[code[pc]];
-                pc += 1;
-                acc = binary_slow(ctx, BinOp::IN, lhs, acc);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::Neg:
-                if (acc.is_object() || acc.is_function()) {
-                    acc = UnaryExpression::to_numeric(ctx, acc);
-                    CHECK_EXC();
-                }
-                acc = acc.unary_minus();
-                break;
-            case Op::LogicalNot:
-                acc = acc.logical_not();
-                break;
-            case Op::BitNot:
-                if (acc.is_object() || acc.is_function()) {
-                    acc = UnaryExpression::to_numeric(ctx, acc);
-                    CHECK_EXC();
-                }
-                acc = acc.bitwise_not();
-                break;
-            case Op::TypeOf:
-                acc = acc.typeof_op();
-                break;
-            case Op::ToNumber:
-                if (acc.is_object() || acc.is_function()) {
-                    acc = UnaryExpression::to_numeric(ctx, acc);
-                    CHECK_EXC();
-                    if (acc.is_bigint()) {
-                        ctx.throw_type_error("Cannot convert a BigInt value to a number");
-                        CHECK_EXC();
-                        break;
-                    }
-                } else {
-                    acc = acc.unary_plus();
-                }
-                break;
-            case Op::ToNumeric:
-                acc = UnaryExpression::to_numeric(ctx, acc);
-                CHECK_EXC();
-                break;
-            case Op::ToTemplateString:
-                acc = Value(TemplateLiteral::stringify_element(ctx, acc));
-                CHECK_EXC();
-                break;
-            case Op::ToPropertyKey:
-                // A number is left alone: converting it is what the keyed
-                // opcodes downstream already do for themselves, and unlike an
-                // object key it has no valueOf/toString to observe, so running
-                // the conversion here early buys nothing and costs every
-                // compound element write its index string.
-                if (!acc.is_string() && !acc.is_number()) {
-                    acc = Value(acc.to_property_key());
-                    CHECK_EXC();
-                }
-                break;
-            case Op::CheckObjectCoercible:
-                if (acc.is_null() || acc.is_undefined()) {
-                    ctx.throw_type_error(std::string("Cannot read properties of ") +
-                        (acc.is_null() ? "null" : "undefined"));
-                    CHECK_EXC();
-                }
-                break;
-            case Op::Inc:
-            case Op::Dec: {
-                Value numeric = acc;
-                if (!numeric.is_number() && !numeric.is_bigint()) {
-                    numeric = UnaryExpression::to_numeric(ctx, numeric);
-                    CHECK_EXC();
-                }
-                double delta = (op == Op::Inc) ? 1.0 : -1.0;
-                if (numeric.is_bigint()) {
-                    acc = Value(new BigInt(op == Op::Inc
-                        ? *numeric.as_bigint() + BigInt(1)
-                        : *numeric.as_bigint() - BigInt(1)));
-                } else {
-                    acc = Value(numeric.to_number() + delta);
-                }
-                break;
-            }
-
-            case Op::LdaLookup: {
-                uint16_t name_idx = read_u16(code, pc);
-                pc += 2;
-                {
-                    // Captured-chain fast path: the resolved binding address is
-                    // stable for this chunk's lifetime (see lookup_cache).
-                    const auto& entry = lookup_cache_data[name_idx];
-                    if (entry.obj_shape) {
-                        Object* bo = entry.env->get_binding_object();
-                        if (bo && bo->get_shape() == entry.obj_shape &&
-                            entry.descriptor_epoch == Object::descriptor_epoch()) {
-                            if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
-                                acc = *s;
-                                break;
-                            }
-                        }
-                    } else if (entry.slot) { acc = *entry.slot; break; }
-                }
-                // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
-                const std::string* key = chunk.names[name_idx];
-                const std::string& name = *key;
-                if (ctx.is_in_tdz_interned(key)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                Environment* env = ctx.get_lexical_environment();
-                bool found = false;
-                for (; env; env = env->get_outer()) {
-                    if (env->try_get_binding_interned(key, acc, &ctx)) { found = true; break; }
-                    CHECK_EXC();
-                }
-                CHECK_EXC();
-                if (found) {
-                    if (env != entry_env) {
-                        uint32_t obj_slot = 0;
-                        bool slot_writable = false;
-                        // The entry outlives this frame (it is the owning
-                        // Function's, or the single-instance script chunk's),
-                        // and both forms below dereference `env` again on a
-                        // later call -- so caching one is exactly the "a
-                        // pointer to this environment is stored somewhere
-                        // longer-lived" event mark_referenced exists for.
-                        if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
-                            env->mark_referenced();
-                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable};
-                        } else if (env->cacheable_object_binding(name, obj_slot)) {
-                            env->mark_referenced();
-                            lookup_cache_data[name_idx] = {env, nullptr,
-                                env->get_binding_object()->get_shape(),
-                                Object::descriptor_epoch(), obj_slot};
-                        }
-                    }
-                } else if (ctx.has_binding(name)) {
-                    acc = ctx.get_binding(name);
-                    CHECK_EXC();
-                } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
-                    CHECK_EXC();
-                }
-                break;
-            }
-
-            case Op::LdaLookupTypeof: {
-                // `typeof x` suppresses only the unresolved-binding case, not TDZ.
-                const std::string& name = chunk.name_at(read_u16(code, pc));
-                pc += 2;
-                if (ctx.is_in_tdz(name)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                Environment* env = ctx.find_binding_env(name);
-                CHECK_EXC();
-                if (env) {
-                    acc = env->get_binding_direct(name, &ctx);
-                    CHECK_EXC();
-                } else if (ctx.has_binding(name)) {
-                    acc = ctx.get_binding(name);
-                    CHECK_EXC();
-                } else {
-                    acc = Value();
-                }
-                break;
-            }
-
-            case Op::StaLookup: {
-                uint16_t sta_name_idx = read_u16(code, pc);
-                pc += 2;
-                {
-                    const auto& entry = lookup_cache_data[sta_name_idx];
-                    // The obj_shape form is LdaLookup's alone -- writing a
-                    // global needs [[Set]]'s readonly/setter handling. And a
-                    // const binding is cached for reading only: storing here
-                    // would skip the TypeError the slow path raises.
-                    if (entry.slot && !entry.obj_shape && entry.writable) {
-                        // The barrier records "env gained a reference" for the
-                        // remembered set -- storing a non-heap value can't.
-                        if (acc.is_object() || acc.is_function() || acc.is_string() ||
-                            acc.is_symbol() || acc.is_bigint()) {
-                            Collector::write_barrier_env(entry.env);
-                        }
-                        *entry.slot = acc;
-                        break;
-                    }
-                }
-                // Mirrors AssignmentExpression's identifier PutValue. `with` and
-                // direct eval bail out of the VM, so resolving the reference at
-                // write time matches the tree-walker's captured-env behavior.
-                const std::string* key = chunk.names[sta_name_idx];
-                const std::string& name = *key;
-                if (ctx.is_in_tdz_interned(key)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                Environment* env = ctx.find_binding_env_interned(key);
-                CHECK_EXC();
-                if (!env) {
-                    if (ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
-                        CHECK_EXC();
-                        break;
-                    }
-                    // Sloppy PutValue on an unresolvable reference: global object.
-                    Object* global = ctx.get_global_object();
-                    if (global) global->set_property(name, acc);
-                    break;
-                }
-                if (env->get_type() == Environment::Type::Object && env->get_binding_object()) {
-                    Object* bobj = env->get_binding_object();
-                    if (!bobj->has_own_property(name) && ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
-                        CHECK_EXC();
-                        break;
-                    }
-                    bool ok = bobj->set_property(name, acc);
-                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                    }
-                } else {
-                    bool ok = env->set_binding(name, acc);
-                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                    } else if (ok && env != entry_env) {
-                        bool slot_writable = false;
-                        Value* slot = env->stable_binding_slot(name, &slot_writable);
-                        if (slot && slot_writable) {
-                            env->mark_referenced();  // see Op::LdaLookup's note
-                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true};
-                        }
-                    }
-                }
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::CheckLookupResolvable: {
-                const std::string& name = chunk.name_at(read_u16(code, pc));
-                pc += 2;
-                acc = Value(ctx.find_binding_env(name) != nullptr || ctx.has_binding(name));
-                break;
-            }
-
-            case Op::StaLookupChecked: {
-                uint8_t resolved_reg = code[pc];
-                const std::string& name = chunk.name_at(read_u16(code, pc + 1));
-                pc += 3;
-                if (!regs[resolved_reg].to_boolean()) {
-                    // Unresolvable BEFORE the RHS ran -- honor that verdict
-                    // even if the RHS just created the binding (e.g.
-                    // `x = (this.x = 1)`): PutValue resolves before GetValue
-                    // of the RHS, spec 13.15.2 step 1-4.
-                    if (ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
-                        CHECK_EXC();
-                        break;
-                    }
-                    Object* global = ctx.get_global_object();
-                    if (global) global->set_property(name, acc);
-                    break;
-                }
-                if (ctx.is_in_tdz(name)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                Environment* env = ctx.find_binding_env(name);
-                CHECK_EXC();
-                if (env) {
-                    bool ok = env->set_binding(name, acc);
-                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                    }
-                } else if (ctx.has_binding(name)) {
-                    // Object environment record (global/with) path.
-                    ctx.set_binding(name, acc);
-                } else {
-                    // Resolvable before the RHS ran, but the RHS deleted the
-                    // binding (e.g. `x = (delete global.x, 2)`) --
-                    // SetMutableBinding's own HasBinding check now fails.
-                    if (ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
-                        CHECK_EXC();
-                        break;
-                    }
-                    Object* global = ctx.get_global_object();
-                    if (global) global->set_property(name, acc);
-                }
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::LdaEnv: {
-                const std::string* key = chunk.names[read_u16(code, pc)];
-                const std::string& name = *key;
-                pc += 2;
-                // `this` is not in any environment; it is answered from the
-                // frame, so it keeps the general path.
-                if (name != "this") {
-                    // One walk for both questions. The value comes from the
-                    // first environment that binds the name; whether it can be
-                    // read at all comes from the first DECLARATIVE one, which
-                    // may be further out -- so an object environment's answer
-                    // is held and the walk goes on.
-                    Value object_value;
-                    bool from_object = false;
-                    int r = Environment::kNotBound;
-                    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-                        r = e->env_read_step_interned(key, acc, &ctx);
-                        CHECK_EXC();
-                        if (r == Environment::kObjectValue) {
-                            if (!from_object) { from_object = true; object_value = acc; }
-                            r = Environment::kNotBound;
-                            continue;
-                        }
-                        if (r != Environment::kNotBound) break;
-                    }
-                    if (r == Environment::kTdz) {
-                        ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    } else if (from_object) {
-                        acc = object_value;
-                    } else if (r == Environment::kNotBound) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
-                    }
-                    CHECK_EXC();
-                    break;
-                }
-                if (ctx.is_in_tdz(name)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                // `is_local` doesn't mean the scope is still active --
-                // "not found" here is the same as never-declared.
-                Environment* env = ctx.find_binding_env(name);
-                if (env) {
-                    acc = env->get_binding_direct(name, &ctx);
-                } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
-                }
-                CHECK_EXC();
-                break;
-            }
-            case Op::StaEnv: {
-                const std::string* key = chunk.names[read_u16(code, pc)];
-                const std::string& name = *key;
-                pc += 2;
-                if (ctx.is_in_tdz_interned(key)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                Environment* env = ctx.find_binding_env_interned(key);
-                if (env) {
-                    if (!env->set_binding_direct_interned(key, acc, &ctx) &&
-                        (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                        CHECK_EXC();
-                    }
-                } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
-                }
-                CHECK_EXC();
-                break;
-            }
-            case Op::StaEnvInit: {
-                const std::string* key = chunk.names[read_u16(code, pc)];
-                pc += 2;
-                ctx.get_lexical_environment()->initialize_binding_interned(key, acc);  // current environment, no chain walk
-                break;
-            }
-
-            // Guarded direct-slot variants (see BytecodeCompiler.h's
-            // EnvSlotInfo and Environment::inline_slot for why the
-            // predicted slot needs re-validation). On a guard miss these
-            // fall through to IDENTICAL code to LdaEnv/StaEnv/StaEnvInit --
-            // a miss only costs the fast path, never correctness.
-            case Op::LdaEnvSlot: {
-                uint8_t slot = code[pc];
-                pc += 1;
-                const std::string* key = chunk.names[read_u16(code, pc)];
-                const std::string& name = *key;
-                pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
-                    if (!e->slot.initialized) {
-                        ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                        CHECK_EXC();
-                        break;
-                    }
-                    acc = e->slot.value;
-                    break;
-                }
-                if (ctx.is_in_tdz_interned(key)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                Environment* env = ctx.find_binding_env_interned(key);
-                if (env) {
-                    acc = env->get_binding_direct_interned(key, &ctx);
-                } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
-                }
-                CHECK_EXC();
-                break;
-            }
-            case Op::StaEnvSlot: {
-                uint8_t slot = code[pc];
-                pc += 1;
-                const std::string* key = chunk.names[read_u16(code, pc)];
-                const std::string& name = *key;
-                pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
-                    // The refusal used to be spelled as a silent skip, so a
-                    // const write here vanished instead of raising.
-                    if (!e->slot.mutable_flag) {
-                        if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
-                            ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                            CHECK_EXC();
-                        }
-                        break;
-                    }
-                    Collector::write_barrier_env_for(ctx.get_lexical_environment(), acc);
-                    e->slot.value = acc;
-                    break;
-                }
-                if (ctx.is_in_tdz_interned(key)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    CHECK_EXC();
-                    break;
-                }
-                Environment* env = ctx.find_binding_env_interned(key);
-                if (env) {
-                    if (!env->set_binding_direct_interned(key, acc, &ctx) &&
-                        (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                        CHECK_EXC();
-                    }
-                } else {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
-                }
-                CHECK_EXC();
-                break;
-            }
-            case Op::StaEnvSlotInit: {
-                uint8_t slot = code[pc];
-                pc += 1;
-                const std::string* key = chunk.names[read_u16(code, pc)];
-                pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
-                    // Skipping the name lookup is the point of this path; the
-                    // barrier initialize_binding runs below is not optional
-                    // with it. An environment already traced by an open major
-                    // is never revisited on its own, so a declaration storing
-                    // a fresh cell here would leave it unmarked and swept
-                    // while the binding still points at it.
-                    Collector::write_barrier_env_for(ctx.get_lexical_environment(), acc);
-                    e->slot.value = acc;
-                    e->slot.initialized = true;
-                    break;
-                }
-                ctx.get_lexical_environment()->initialize_binding_interned(key, acc);
-                break;
-            }
-
-            case Op::BindEnvLocals: {
-                Environment* env = ctx.get_lexical_environment();
-                if (chunk.env) for (const auto& loc : chunk.env->env_locals) {
-                    if (loc.is_lexical) {
-                        env->create_uninitialized_binding(loc.name, !loc.is_const);
-                        // is_strict_const() wants the const SET, not just the cleared mutable
-                        // flag, and every "Assignment to constant variable" check gates on
-                        // it -- without this they are all inert in sloppy mode for a binding
-                        // the VM created.
-                        if (loc.is_const) env->mark_const_binding(loc.name);
-                    }
-                    else env->create_binding(loc.name, Value(), true);
-                }
-                break;
-            }
-
-            case Op::EnterLoopEnv: {
-                uint16_t idx = read_u16(code, pc);
-                pc += 2;
-                ctx.push_block_scope();
-                Environment* env = ctx.get_lexical_environment();
-                for (const auto& v : chunk.env->loop_envs[idx]) {
-                    if (v.is_lexical) {
-                        env->create_uninitialized_binding(v.name, !v.is_const);
-                        if (v.is_const) env->mark_const_binding(v.name);
-                    }
-                    else env->create_binding(v.name, Value(), true);
-                }
-                break;
-            }
-            case Op::AdvanceLoopEnv: {
-                uint16_t idx = read_u16(code, pc);
-                pc += 2;
-                const auto& vars = chunk.env->loop_envs[idx];
-                std::vector<Value> carried(vars.size());
-                Environment* old_env = ctx.get_lexical_environment();
-                for (size_t i = 0; i < vars.size(); i++) {
-                    if (vars[i].copy_forward) carried[i] = old_env->get_binding_direct(vars[i].name, &ctx);
-                }
-                ctx.pop_block_scope();
-                ctx.push_block_scope();
-                Environment* new_env = ctx.get_lexical_environment();
-                for (size_t i = 0; i < vars.size(); i++) {
-                    const auto& v = vars[i];
-                    if (v.is_lexical) {
-                        new_env->create_uninitialized_binding(v.name, !v.is_const);
-                        if (v.is_const) new_env->mark_const_binding(v.name);
-                    }
-                    else new_env->create_binding(v.name, Value(), true);
-                    if (v.copy_forward) new_env->initialize_binding(v.name, carried[i]);
-                }
-                break;
-            }
-            case Op::ExitLoopEnv:
-                ctx.pop_block_scope();
-                break;
-
-            case Op::SaveEnv:
-                env_saves[env_save_top++] = ctx.get_lexical_environment();
-                break;
-            case Op::RestoreEnv:
-                ctx.set_lexical_environment(env_saves[--env_save_top]);
-                break;
-            case Op::PopEnvSave:
-                env_save_top--;
-                break;
-
-            case Op::GetIterator: {
-                uint8_t next_fn_reg = code[pc];
-                pc += 1;
-                Value iterator, next_fn;
-                if (!ForOfStatement::get_iterator(ctx, acc, iterator, next_fn)) {
-                    CHECK_EXC();
-                    break;
-                }
-                regs[next_fn_reg] = next_fn;
-                acc = iterator;
-                break;
-            }
-            case Op::IteratorNextOrJump: {
-                uint8_t iter_reg = code[pc];
-                uint8_t next_fn_reg = code[pc + 1];
-                int16_t off = read_i16(code, pc + 2);
-                pc += 4;
-                bool done = false;
-                Value value;
-                if (!ForOfStatement::iterator_step(ctx, regs[iter_reg], regs[next_fn_reg], done, value)) {
-                    CHECK_EXC();
-                    break;
-                }
-                if (done) {
-                    pc += off;
-                } else {
-                    acc = value;
-                }
-                break;
-            }
-            case Op::IteratorClose: {
-                uint8_t iter_reg = code[pc];
-                uint8_t mode = code[pc + 1];
-                pc += 2;
-                if (mode == 0) {
-                    ForOfStatement::iterator_close(ctx, regs[iter_reg], /*validate_result=*/true,
-                                                    /*is_pending=*/false, Value());
-                } else {
-                    Value pending = acc;
-                    ForOfStatement::iterator_close(ctx, regs[iter_reg], /*validate_result=*/false,
-                                                    /*is_pending=*/true, pending);
-                }
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::CreateForInKeys: {
-                uint8_t obj_out = code[pc];
-                pc += 1;
-                // ToObject, same as the tree-walker's head evaluation: a string
-                // enumerates through its wrapper. Null and undefined pass
-                // through unboxed and produce no keys, which is their answer.
-                if (!acc.is_object_like() && !acc.is_null() && !acc.is_undefined()) {
-                    acc = ObjectFactory::box_primitive_this_sloppy(ctx, acc);
-                    CHECK_EXC();
-                }
-                Object* obj = as_object_like(acc);
-                // The loop re-asks this object whether a key is still there, so
-                // it has to be the very object enumerated here rather than the
-                // head's value: a receiver this converts stays converted.
-                regs[obj_out] = obj ? Value(obj) : Value();
-                Object* result = ObjectFactory::create_array(0).release();
-                if (obj) {
-                    std::vector<std::string> keys;
-                    if (!ForInStatement::collect_keys(ctx, obj, keys)) {
-                        CHECK_EXC();
-                        break;
-                    }
-                    for (size_t i = 0; i < keys.size(); i++) {
-                        result->set_element(static_cast<uint32_t>(i), Value(keys[i]));
-                    }
-                }
-                acc = Value(result);
-                break;
-            }
-
-            case Op::JumpIfNotNullish: {
-                int16_t off = read_i16(code, pc);
-                pc += 2;
-                if (!acc.is_null() && !acc.is_undefined()) pc += off;
-                break;
-            }
-            case Op::JumpIfNullish: {
-                int16_t off = read_i16(code, pc);
-                pc += 2;
-                if (acc.is_null() || acc.is_undefined()) pc += off;
-                break;
-            }
-            case Op::JumpIfNotUndefined: {
-                int16_t off = read_i16(code, pc);
-                pc += 2;
-                if (!acc.is_undefined()) pc += off;
-                break;
-            }
-
-            case Op::CreateClosure: {
-                uint16_t idx = read_u16(code, pc);
-                pc += 2;
-                acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::DeclareFunction: {
-                uint16_t idx = read_u16(code, pc);
-                pc += 2;
-                declare_function(ctx, (*chunk.closures)[idx]);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::EvalAst: {
-                uint16_t idx = read_u16(code, pc);
-                pc += 2;
-                acc = const_cast<ASTNode*>((*chunk.treewalk_nodes)[idx])->evaluate(ctx);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::CopyRestProperties: {
-                uint8_t src_reg = code[pc];
-                uint8_t keys_reg = code[pc + 1];
-                pc += 2;
-                std::vector<std::string> taken;
-                if (Object* keys = as_object_like(regs[keys_reg])) {
-                    uint32_t n = static_cast<uint32_t>(keys->get_property("length").to_number());
-                    for (uint32_t i = 0; i < n; i++) taken.push_back(keys->get_element(i).to_string());
-                }
-                acc = build_rest_object(ctx, regs[src_reg], as_object_like(regs[src_reg]), taken);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::Call: {
-                uint8_t callee_reg = code[pc];
-                uint8_t args_start = code[pc + 1];
-                uint8_t argc = code[pc + 2];
-                uint16_t name_idx = read_u16(code, pc + 3);
-                pc += 5;
-                const Value& callee = regs[callee_reg];
-                std::span<const Value> call_args(regs + args_start, argc);
-                if (callee.is_function()) {
-                    acc = callee.as_function()->call_register_args(ctx, call_args, Value());
-                } else if (callee.is_object() &&
-                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, Value());
-                } else {
-                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
-                }
-                CHECK_EXC();
-                Collector::safepoint();
-                break;
-            }
-
-            case Op::CallResolved: {
-                // Callee already resolved+validated by GetNamed before args
-                // were compiled (spec order); this just invokes it.
-                uint8_t func_reg = code[pc];
-                uint8_t this_reg = code[pc + 1];
-                uint8_t args_start = code[pc + 2];
-                uint8_t argc = code[pc + 3];
-                uint16_t name_idx = read_u16(code, pc + 4);
-                pc += 6;
-                const Value& callee = regs[func_reg];
-                const Value& receiver = regs[this_reg];
-                std::span<const Value> call_args(regs + args_start, argc);
-                if (callee.is_function()) {
-                    acc = callee.as_function()->call_register_args(ctx, call_args, receiver);
-                } else if (callee.is_object() &&
-                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, receiver);
-                } else {
-                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
-                }
-                CHECK_EXC();
-                Collector::safepoint();
-                break;
-            }
-
-            case Op::Construct: {
-                uint8_t callee_reg = code[pc];
-                uint8_t args_start = code[pc + 1];
-                uint8_t argc = code[pc + 2];
-                uint16_t name_idx = read_u16(code, pc + 3);
-                pc += 5;
-                const Value& callee = regs[callee_reg];
-                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
-                if (callee.is_function()) {
-                    // A literal `new X()` targets X regardless of any ambient
-                    // new.target from an enclosing constructor call.
-                    Value old_new_target = ctx.get_new_target();
-                    ctx.set_new_target(callee);
-                    acc = callee.as_function()->construct(ctx, call_args);
-                    ctx.set_new_target(old_new_target);
-                } else if (callee.is_object() &&
-                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
-                } else {
-                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
-                }
-                CHECK_EXC();
-                Collector::safepoint();
-                break;
-            }
-
-            case Op::CallSpread: {
-                uint8_t func_reg = code[pc];
-                uint8_t this_reg = code[pc + 1];
-                uint8_t args_reg = code[pc + 2];
-                uint16_t name_idx = read_u16(code, pc + 3);
-                pc += 5;
-                const Value& callee = regs[func_reg];
-                // The operand is a spread SOURCE, not necessarily a
-                // materialized argument array: a call whose whole argument
-                // list is one spread (`f(...xs)`, the common shape) hands the
-                // original iterable straight through, so nothing is
-                // allocated. Mixed lists still arrive as a prebuilt Array,
-                // which append_spread_values bulk-copies.
-                std::vector<Value> call_args;
-                ValueVectorRoot call_args_root(&call_args);
-                append_spread_values(ctx, regs[args_reg], call_args);
-                CHECK_EXC();
-                if (callee.is_function()) {
-                    acc = callee.as_function()->call(ctx, call_args, regs[this_reg]);
-                } else if (callee.is_object() &&
-                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, regs[this_reg]);
-                } else {
-                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
-                }
-                CHECK_EXC();
-                Collector::safepoint();
-                break;
-            }
-
-            case Op::ConstructSpread: {
-                uint8_t callee_reg = code[pc];
-                uint8_t args_reg = code[pc + 1];
-                uint16_t name_idx = read_u16(code, pc + 2);
-                pc += 4;
-                const Value& callee = regs[callee_reg];
-                std::vector<Value> call_args;   // see CallSpread: a spread source, not always an array
-                ValueVectorRoot call_args_root(&call_args);
-                append_spread_values(ctx, regs[args_reg], call_args);
-                CHECK_EXC();
-                if (callee.is_function()) {
-                    Value old_new_target = ctx.get_new_target();
-                    ctx.set_new_target(callee);
-                    acc = callee.as_function()->construct(ctx, call_args);
-                    ctx.set_new_target(old_new_target);
-                } else if (callee.is_object() &&
-                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
-                } else {
-                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
-                }
-                CHECK_EXC();
-                Collector::safepoint();
-                break;
-            }
-
-            case Op::CreateRegExp: {
-                uint16_t pat_idx = read_u16(code, pc);
-                uint16_t flg_idx = read_u16(code, pc + 2);
-                pc += 4;
-                acc = create_regexp_literal(ctx, chunk.name_at(pat_idx), chunk.name_at(flg_idx));
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::HasPrivate: {
-                uint16_t name_idx = read_u16(code, pc);
-                pc += 2;
-                acc = private_name_in(ctx, chunk.name_at(name_idx), acc);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::LdaEngineHelper: {
-                uint8_t kind = code[pc];
-                pc += 1;
-                Object* global = ctx.get_global_object();
-                acc = global ? global->get_internal_slot(
-                          EngineHelper::slot_name(static_cast<EngineHelper::Kind>(kind)))
-                             : Value();
-                break;
-            }
-
-            case Op::GetSuper: {
-                uint16_t name_idx = read_u16(code, pc);
-                pc += 2;
-                acc = super_get(ctx, chunk.name_at(name_idx));
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::SetSuper: {
-                uint8_t base_reg = code[pc];
-                uint16_t name_idx = read_u16(code, pc + 1);
-                pc += 3;
-                super_set_on(ctx, as_object_like(regs[base_reg]), chunk.name_at(name_idx), acc);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::ResolveSuperBase: {
-                uint8_t dst = code[pc];
-                pc += 1;
-                // The this-TDZ check belongs here rather than in the keyed opcodes:
-                // GetThisBinding precedes the key expression, whose side effects must
-                // not run first (13.3.7.1 step 2).
-                if (ctx.this_needs_super()) {
-                    ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
-                    CHECK_EXC();
-                    break;
-                }
-                Object* base = resolve_super_base(ctx);
-                CHECK_EXC();
-                regs[dst] = base ? Value(base) : Value();
-                break;
-            }
-
-            case Op::GetSuperKeyed: {
-                uint8_t base_reg = code[pc];
-                pc += 1;
-                std::string key = acc.to_property_key();
-                CHECK_EXC();
-                acc = super_get_on(ctx, as_object_like(regs[base_reg]), key);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::SetSuperKeyed: {
-                uint8_t base_reg = code[pc];
-                uint8_t key_reg = code[pc + 1];
-                pc += 2;
-                std::string key = regs[key_reg].to_property_key();
-                CHECK_EXC();
-                super_set_on(ctx, as_object_like(regs[base_reg]), key, acc);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::SuperCall: {
-                uint8_t args_start = code[pc];
-                uint8_t argc = code[pc + 1];
-                pc += 2;
-                std::vector<Value> call_args(regs + args_start, regs + args_start + argc);
-                // The arguments already ran, so sampling here is what the
-                // tree-walker gets by OR-ing its before/after samples.
-                acc = perform_super_call(ctx, call_args, ctx.was_super_called());
-                CHECK_EXC();
-                Collector::safepoint();
-                break;
-            }
-
-            case Op::SpreadInto: {
-                uint8_t arr_reg = code[pc];
-                uint8_t idx_reg = code[pc + 1];
-                pc += 2;
-                std::vector<Value> expanded;
-                ValueVectorRoot expanded_root(&expanded);
-                append_spread_values(ctx, acc, expanded);
-                CHECK_EXC();
-                if (Object* target = as_object_like(regs[arr_reg])) {
-                    uint32_t idx = static_cast<uint32_t>(regs[idx_reg].to_number());
-                    for (const Value& v : expanded) target->set_element(idx++, v);
-                    regs[idx_reg] = Value(static_cast<double>(idx));
-                }
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::ObjectSpreadInto: {
-                uint8_t obj_reg = code[pc];
-                pc += 1;
-                if (Object* target = as_object_like(regs[obj_reg])) {
-                    object_spread_into(ctx, target, acc);
-                }
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::GetNamed: {
-                uint8_t obj_reg = code[pc];
-                uint16_t name_idx = read_u16(code, pc + 1);
-                uint16_t fb_idx = read_u16(code, pc + 3);
-                pc += 5;
-                acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner, f.feedback_rooted);
-                CHECK_EXC();
-                break;
-            }
-            case Op::SetNamed: {
-                uint8_t obj_reg = code[pc];
-                uint16_t name_idx = read_u16(code, pc + 1);
-                uint16_t fb_idx = read_u16(code, pc + 3);
-                pc += 5;
-                set_named(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx], owner);
-                CHECK_EXC();
-                break;
-            }
-            case Op::GetPrivate: {
-                uint8_t obj_reg = code[pc];
-                uint16_t name_idx = read_u16(code, pc + 1);
-                uint16_t fb_idx = read_u16(code, pc + 3);
-                pc += 5;
-                acc = get_private(ctx, regs[obj_reg], chunk.name_at(name_idx), &private_feedback_data[fb_idx]);
-                CHECK_EXC();
-                break;
-            }
-            case Op::SetPrivate: {
-                uint8_t obj_reg = code[pc];
-                uint16_t name_idx = read_u16(code, pc + 1);
-                uint16_t fb_idx = read_u16(code, pc + 3);
-                pc += 5;
-                set_private(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &private_feedback_data[fb_idx]);
-                CHECK_EXC();
-                break;
-            }
-            case Op::GetKeyed: {
-                uint8_t obj_reg = code[pc];
-                uint16_t fb_idx = read_u16(code, pc + 1);
-                pc += 3;
-                const Value& recv = regs[obj_reg];
-                // Null/undefined check must run before ToPropertyKey on the key (spec order).
-                if (recv.is_null() || recv.is_undefined()) {
-                    ctx.throw_type_error("Cannot read property of null or undefined");
-                    CHECK_EXC();
-                    break;
-                }
-                uint32_t index;
-                Object* dense;
-                TypedArrayBase* typed;
-                if (array_index_key(acc, index)) {
-                    if (dense_element_slot(recv, index, dense)) {
-                        acc = dense->get_element_unchecked(index);
-                        break;
-                    }
-                    if (typed_element_slot(recv, index, typed)) {
-                        acc = typed->get_element(index);
-                        break;
-                    }
-                }
-                std::string key = acc.to_property_key();
-                CHECK_EXC();
-                acc = get_keyed(ctx, recv, key, &chunk.ic_feedback->keyed_feedback[fb_idx]);
-                CHECK_EXC();
-                break;
-            }
-            case Op::SetKeyed: {
-                uint8_t obj_reg = code[pc];
-                uint8_t key_reg = code[pc + 1];
-                uint16_t fb_idx = read_u16(code, pc + 2);
-                pc += 4;
-                const Value& recv = regs[obj_reg];
-                if (recv.is_null() || recv.is_undefined()) {
-                    ctx.throw_type_error(std::string("Cannot set properties of ") +
-                        (recv.is_null() ? "null" : "undefined"));
-                    CHECK_EXC();
-                    break;
-                }
-                uint32_t index;
-                Object* dense;
-                TypedArrayBase* typed;
-                if (array_index_key(regs[key_reg], index)) {
-                    if (dense_element_slot(recv, index, dense)) {
-                        dense->set_element(index, acc);
-                        break;
-                    }
-                    if (typed_element_slot(recv, index, typed)) {
-                        typed->set_element(index, acc);
-                        break;
-                    }
-                }
-                std::string key = regs[key_reg].to_property_key();
-                CHECK_EXC();
-                set_keyed(ctx, recv, key, acc, &chunk.ic_feedback->keyed_feedback[fb_idx]);
-                CHECK_EXC();
-                break;
-            }
-
-            case Op::DeleteNamed:
-            case Op::DeleteKeyed: {
-                uint8_t obj_reg = code[pc];
-                std::string property_name;
-                if (op == Op::DeleteNamed) {
-                    property_name = chunk.name_at(read_u16(code, pc + 1));
-                    pc += 3;
-                } else {
-                    pc += 1;
-                }
-                const Value& recv = regs[obj_reg];
-                Object* obj = recv.is_object() ? recv.as_object()
-                            : recv.is_function() ? static_cast<Object*>(recv.as_function())
-                            : nullptr;
-                if (!obj) {
-                    // null/undefined: ToObject throws; other primitives wrap into a
-                    // temporary whose delete trivially succeeds.
-                    if (recv.is_null() || recv.is_undefined()) {
-                        ctx.throw_type_error("Cannot convert undefined or null to object");
-                        CHECK_EXC();
-                        break;
-                    }
-                    if (op == Op::DeleteKeyed) {
-                        (void)acc.to_property_key();  // ToPropertyKey may still throw
-                        CHECK_EXC();
-                    }
-                    acc = Value(true);
-                    break;
-                }
-                if (op == Op::DeleteKeyed) {
-                    property_name = acc.to_property_key();
-                    CHECK_EXC();
-                }
-                bool deleted;
-                if (obj->get_type() == Object::ObjectType::Proxy) {
-                    deleted = static_cast<Proxy*>(obj)->delete_trap(Value(property_name));
-                } else {
-                    deleted = obj->delete_property(property_name);
-                }
-                CHECK_EXC();
-                if (!deleted && ctx.is_strict_mode()) {
-                    ctx.throw_type_error("Cannot delete property '" + property_name + "'");
-                    CHECK_EXC();
-                    break;
-                }
-                acc = Value(deleted);
-                break;
-            }
-
-            case Op::DefineOwn: {
-                uint8_t obj_reg = code[pc];
-                uint16_t name_idx = read_u16(code, pc + 1);
-                uint16_t fb_idx = read_u16(code, pc + 3);
-                pc += 5;
-                Object* obj = as_object_like(regs[obj_reg]);
-                define_own_cached(obj, chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx]);
-                CHECK_EXC();
-                break;
-            }
-            case Op::DefineElement: {
-                uint8_t obj_reg = code[pc];
-                uint8_t key_reg = code[pc + 1];
-                pc += 2;
-                Object* obj = as_object_like(regs[obj_reg]);
-                if (obj) obj->set_element(static_cast<uint32_t>(regs[key_reg].to_number()), acc);
-                CHECK_EXC();
-                break;
-            }
-            case Op::ToPropertyKeyStrict:
-                if (!acc.is_string()) {
-                    acc = Value(acc.to_property_key_strict(ctx));
-                    CHECK_EXC();
-                }
-                break;
-            case Op::DefineOwnKeyed: {
-                uint8_t obj_reg = code[pc];
-                uint8_t key_reg = code[pc + 1];
-                pc += 2;
-                Object* obj = as_object_like(regs[obj_reg]);
-                if (obj) {
-                    std::string key = regs[key_reg].to_property_key();
-                    CHECK_EXC();
-                    if (key == "__proto__") {
-                        // Computed __proto__ is a plain data property, never
-                        // [[Prototype]] (Annex B.3.1 only special-cases the
-                        // non-computed literal form) -- set_property() would
-                        // otherwise find Object.prototype's own __proto__
-                        // ACCESSOR via its inherited-setter walk and wrongly
-                        // invoke it instead of creating an own property.
-                        obj->set_property_descriptor(key, PropertyDescriptor(acc, PropertyAttributes::Default));
-                    } else {
-                        obj->set_property(key, acc);
-                    }
-                }
-                CHECK_EXC();
-                break;
-            }
-            case Op::FinalizeStaticProperty: {
-                uint8_t obj_reg = code[pc];
-                uint16_t key_name_idx = read_u16(code, pc + 1);
-                uint16_t display_name_idx = read_u16(code, pc + 3);
-                uint8_t raw_kind = code[pc + 5];
-                // Bit 0x4: the compiler proved this method's body never
-                // references `super`, so the [[HomeObject]] write below
-                // (needed only for super resolution, see member.cpp) was
-                // skipped entirely -- see BytecodeCompiler.cpp's
-                // method_references_super. Getter/Setter never set this bit.
-                uint8_t kind = raw_kind & 0x3;
-                bool super_free = (raw_kind & 0x4) != 0;
-                uint16_t fb_idx = read_u16(code, pc + 6);
-                pc += 8;
-                Object* obj = as_object_like(regs[obj_reg]);
-                if (acc.is_function()) {
-                    Function* fn = acc.as_function();
-                    // Only rename if currently unnamed -- method/getter/setter
-                    // shorthand syntax can't produce a pre-named function, but
-                    // mirror literals.cpp's own guard exactly rather than
-                    // assume that.
-                    if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                        fn->set_name(chunk.name_at(display_name_idx));
-                    }
-                    const std::string& key = chunk.name_at(key_name_idx);
-                    if (kind == 0) {
-                        // Method: spec 14.3.9 -- non-generator methods are not
-                        // constructors and have no .prototype.
-                        if (!super_free && obj) fn->set_home_object(obj);
-                        if (fn->is_constructor()) {
-                            fn->set_is_constructor(false);
-                            fn->set_function_prototype(nullptr);
-                        }
-                        if (obj) define_own_cached(obj, key, acc, &chunk.feedback[fb_idx]);
-                    } else {
-                        // Getter (1) / Setter (2): spec 14.4.13/14.4.14 --
-                        // GetterMethod/SetterMethod never had a .prototype to
-                        // begin with (create_prototype=false at creation, same
-                        // as a shorthand Method), so is_constructor() is
-                        // already false here; skip the strip entirely instead
-                        // of paying set_function_prototype's real (if no-op)
-                        // descriptor-erase + Shape::find_slot + a linear scan
-                        // over property_insertion_order_ on every getter/
-                        // setter. define_accessor_cached handles the fetch-
-                        // existing-descriptor-and-merge case internally, so a
-                        // getter+setter pair sharing a key still installs
-                        // correctly regardless of what else runs between them.
-                        if (fn->is_constructor()) fn->set_function_prototype(nullptr);
-                        if (obj) define_accessor_cached(obj, key, fn, kind == 1, &chunk.feedback[fb_idx]);
-                    }
-                }
-                CHECK_EXC();
-                break;
-            }
-            case Op::FinalizeComputedProperty: {
-                uint8_t obj_reg = code[pc];
-                uint8_t key_reg = code[pc + 1];
-                uint8_t raw_key_reg = code[pc + 2];
-                uint8_t raw_kind = code[pc + 3];
-                // See FinalizeStaticProperty's identical bit-0x4 comment.
-                uint8_t kind = raw_kind & 0x3;
-                bool super_free = (raw_kind & 0x4) != 0;
-                pc += 4;
-                Object* obj = as_object_like(regs[obj_reg]);
-                if (kind != 0 && acc.is_function()) {
-                    // ValueWithName (1) or Method (2): NamedEvaluation, computed
-                    // at runtime since the key isn't known until now -- mirrors
-                    // literals.cpp's is_symbol()-aware "[desc]" formatting.
-                    Function* fn = acc.as_function();
-                    // Only rename if currently unnamed (e.g. `{[k]: function named(){}}`
-                    // keeps "named", matching literals.cpp's own guard).
-                    if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                        const Value& raw_key = regs[raw_key_reg];
-                        std::string func_name;
-                        if (raw_key.is_symbol()) {
-                            std::string desc = raw_key.as_symbol()->get_description();
-                            func_name = desc.empty() ? "" : "[" + desc + "]";
-                        } else {
-                            func_name = regs[key_reg].to_property_key();
-                            CHECK_EXC();
-                        }
-                        fn->set_name(func_name);
-                    }
-                }
-                if (kind == 2 && acc.is_function()) {
-                    // Method finalize (spec 14.3.9), same as FinalizeStaticProperty.
-                    Function* fn = acc.as_function();
-                    if (!super_free && obj) fn->set_home_object(obj);
-                    if (fn->is_constructor()) {
-                        fn->set_is_constructor(false);
-                        fn->set_function_prototype(nullptr);
-                    }
-                }
-                if (obj) {
-                    std::string key = regs[key_reg].to_property_key();
-                    CHECK_EXC();
-                    if (key == "__proto__") {
-                        // Same fix as DefineOwnKeyed: computed __proto__ is a
-                        // plain data property, never [[Prototype]].
-                        obj->set_property_descriptor(key, PropertyDescriptor(acc, PropertyAttributes::Default));
-                    } else {
-                        obj->create_own_data_property(key, acc);
-                    }
-                }
-                CHECK_EXC();
-                break;
-            }
-            case Op::SetFunctionNameIfUnnamed: {
-                uint16_t name_idx = read_u16(code, pc);
-                pc += 2;
-                if (acc.is_function()) {
-                    Function* fn = acc.as_function();
-                    if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                        fn->set_name(chunk.name_at(name_idx));
-                    }
-                }
-                break;
-            }
-            case Op::CreateObject: {
-                pc += 2;  // hint currently informational only (see BytecodeCompiler)
-                Object* obj = ObjectFactory::create_object().release();
-                obj->reserve_property_slots(read_u16(code, pc - 2));
-                acc = Value(obj);
-                break;
-            }
-            case Op::CreateArray: {
-                uint16_t n = read_u16(code, pc);
-                pc += 2;
-                auto arr = ObjectFactory::create_array(0);
-                if (n) arr->set_length(n);  // trailing holes count toward length
-                acc = Value(arr.release());
-                break;
-            }
-            case Op::CreateRestArray: {
-                uint8_t start_index = code[pc];
-                pc += 1;
-                auto rest_array = ObjectFactory::create_array(0);
-                for (size_t j = start_index; j < args.size(); j++) {
-                    rest_array->push(args[j]);
-                }
-                acc = Value(rest_array.release());
-                break;
-            }
-
-            // Backward jumps are loop back-edges -- the VM's equivalent of the
-            // tree-walker's once-per-statement Collector::safepoint() hook.
-            case Op::Jump: {
-                int16_t off = read_i16(code, pc);
-                pc += 2 + off;
-                if (off < 0) Collector::safepoint();
-                break;
-            }
-            case Op::JumpIfTrue: {
-                int16_t off = read_i16(code, pc);
-                pc += 2;
-                if (acc.to_boolean()) {
-                    pc += off;
-                    if (off < 0) Collector::safepoint();
-                }
-                break;
-            }
-            case Op::JumpIfFalse: {
-                int16_t off = read_i16(code, pc);
-                pc += 2;
-                if (!acc.to_boolean()) {
-                    pc += off;
-                    if (off < 0) Collector::safepoint();
-                }
-                break;
-            }
-
-            case Op::Return:
-                return acc;
-
-            case Op::Throw:
-                ctx.throw_exception(acc, /*raw=*/true);
-                CHECK_EXC();
-                break;
-
-            case Op::ReraiseGeneratorReturn:
-                throw GeneratorReturnException(acc);
-
-            default:
-                ctx.throw_exception(Value(std::string("VM: invalid opcode")));
-                return Value();
-        }
-        // Every opcode that can raise checks for itself; this catches the few
-        // that set an exception on the context without saying so.
-        CHECK_EXC();
-        // The one place the two halves meet, and it has to be here rather
-        // than at the top of the loop: a numeric handler that fell back
-        // re-enters with pc still on ITS opcode, and a check up there
-        // would hand that same opcode straight back to it forever.
-        // Checking after an instruction has run means h_switch always
-        // makes progress first.
-        if (Handler h = kHandlers[code[pc]]; h != &h_switch) {
-            [[clang::musttail]] return h(f, pc, acc);
-        }
-        }
-
-}
-
 // The check the switch ran after every case, for an opcode that set an
 // exception on the context without saying so. Unlike CHECK_EXC there is no
 // loop to continue to: it only moves pc, and the DISPATCH that follows
@@ -2976,6 +1392,123 @@ Value h_switch(Frame& f, uint32_t pc, Value acc) {
         ctx.clear_exception();                                            \
         pc = static_cast<uint32_t>(handler_pc);                           \
     } else ((void)0)
+
+// Two finite doubles is the whole fast form; a string, a BigInt or an object
+// with valueOf goes to binary_slow, and the split matters because the fast
+// half stays small enough to keep its operands in registers. Putting both in
+// one handler made every iteration of a numeric loop carry the prologue the
+// slow half needs -- chunk, ctx, instr_pc -- to reach a call it never makes.
+#define NUMERIC_BINARY_HANDLER(name, binop, expr)                          \
+    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+        const BytecodeChunk& chunk = f.chunk;                              \
+        Context& ctx = f.ctx;                                              \
+        uint32_t& instr_pc = f.instr_pc;                                   \
+        instr_pc = pc;                                                     \
+        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        pc += 2;                                                           \
+        CHECK_EXC_TAIL();                                                  \
+        DISPATCH();                                                        \
+    }                                                                      \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+        if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
+            double l = lhs.as_finite_double();                             \
+            double r = acc.as_finite_double();                             \
+            (void)l; (void)r;                                              \
+            acc = (expr);                                                  \
+            pc += 2;                                                       \
+            DISPATCH();                                                    \
+        }                                                                  \
+        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+    }
+
+NUMERIC_BINARY_HANDLER(h_Add, BinOp::ADD, Value(l + r))
+NUMERIC_BINARY_HANDLER(h_Sub, BinOp::SUBTRACT, Value(l - r))
+NUMERIC_BINARY_HANDLER(h_Mul, BinOp::MULTIPLY, Value(l * r))
+NUMERIC_BINARY_HANDLER(h_TestLt, BinOp::LESS_THAN, Value(l < r))
+NUMERIC_BINARY_HANDLER(h_TestGt, BinOp::GREATER_THAN, Value(l > r))
+NUMERIC_BINARY_HANDLER(h_TestLe, BinOp::LESS_EQUAL, Value(l <= r))
+NUMERIC_BINARY_HANDLER(h_TestGe, BinOp::GREATER_EQUAL, Value(l >= r))
+NUMERIC_BINARY_HANDLER(h_TestEq, BinOp::EQUAL, Value(l == r))
+NUMERIC_BINARY_HANDLER(h_TestNe, BinOp::NOT_EQUAL, Value(l != r))
+NUMERIC_BINARY_HANDLER(h_TestStrictEq, BinOp::STRICT_EQUAL, Value(l == r))
+NUMERIC_BINARY_HANDLER(h_TestStrictNe, BinOp::STRICT_NOT_EQUAL, Value(l != r))
+
+// A bitwise op is a couple of instructions of real work, so the handler stays
+// as lean as the arithmetic one and splits its fallback out the same way.
+// ToInt32 already answers for NaN and the infinities, so being a number is the
+// entire gate; a string, a BigInt or an object with valueOf takes the slow
+// half, which reaches binary_slow directly.
+#define BITWISE_BINARY_HANDLER(name, binop, expr)                          \
+    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+        const BytecodeChunk& chunk = f.chunk;                              \
+        Context& ctx = f.ctx;                                              \
+        uint32_t& instr_pc = f.instr_pc;                                   \
+        instr_pc = pc;                                                     \
+        acc = binary_slow(ctx, binop, f.regs[f.code[pc + 1]], acc);        \
+        pc += 2;                                                           \
+        CHECK_EXC_TAIL();                                                  \
+        DISPATCH();                                                        \
+    }                                                                      \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        const Value& lhs = f.regs[f.code[pc + 1]];                         \
+        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
+            int32_t l = js_to_int32(lhs.as_number());                      \
+            int32_t r = js_to_int32(acc.as_number());                      \
+            (void)l; (void)r;                                              \
+            acc = (expr);                                                  \
+            pc += 2;                                                       \
+            DISPATCH();                                                    \
+        }                                                                  \
+        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+    }
+
+BITWISE_BINARY_HANDLER(h_BitAnd, BinOp::BITWISE_AND, Value(static_cast<double>(l & r)))
+BITWISE_BINARY_HANDLER(h_BitOr,  BinOp::BITWISE_OR,  Value(static_cast<double>(l | r)))
+BITWISE_BINARY_HANDLER(h_BitXor, BinOp::BITWISE_XOR, Value(static_cast<double>(l ^ r)))
+BITWISE_BINARY_HANDLER(h_Shl, BinOp::LEFT_SHIFT,
+    Value(static_cast<double>(static_cast<int32_t>(static_cast<uint32_t>(l) << (r & 31)))))
+BITWISE_BINARY_HANDLER(h_Sar, BinOp::RIGHT_SHIFT, Value(static_cast<double>(l >> (r & 31))))
+BITWISE_BINARY_HANDLER(h_Shr, BinOp::UNSIGNED_RIGHT_SHIFT,
+    Value(static_cast<double>(static_cast<uint32_t>(l) >> (r & 31))))
+
+// ToNumeric plus the BigInt step, which is everything Inc and Dec do once the
+// accumulator turns out not to be a plain number.
+static Value step_numeric(Context& ctx, const Value& acc, double delta) {
+    Value numeric = acc;
+    if (!numeric.is_number() && !numeric.is_bigint()) {
+        numeric = UnaryExpression::to_numeric(ctx, numeric);
+        if (ctx.has_exception()) return Value();
+    }
+    if (numeric.is_bigint()) {
+        return Value(new BigInt(delta > 0 ? *numeric.as_bigint() + BigInt(1)
+                                          : *numeric.as_bigint() - BigInt(1)));
+    }
+    return Value(numeric.to_number() + delta);
+}
+
+#define UNARY_STEP_HANDLER(name, delta)                                    \
+    Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
+        const BytecodeChunk& chunk = f.chunk;                              \
+        Context& ctx = f.ctx;                                              \
+        uint32_t& instr_pc = f.instr_pc;                                   \
+        instr_pc = pc;                                                     \
+        acc = step_numeric(ctx, acc, (delta));                             \
+        pc += 1;                                                           \
+        CHECK_EXC_TAIL();                                                  \
+        DISPATCH();                                                        \
+    }                                                                      \
+    Value name(Frame& f, uint32_t pc, Value acc) {                         \
+        if (LIKELY(acc.is_number())) {                                     \
+            acc = Value(acc.as_number() + (delta));                        \
+            pc += 1;                                                       \
+            DISPATCH();                                                    \
+        }                                                                  \
+        [[clang::musttail]] return name##_slow(f, pc, acc);                \
+    }
+
+UNARY_STEP_HANDLER(h_Inc, 1.0)
+UNARY_STEP_HANDLER(h_Dec, -1.0)
 
 Value h_gen_LdaThis(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
@@ -3141,101 +1674,6 @@ Value h_gen_Exp(Frame& f, uint32_t pc, Value acc) {
                 CHECK_EXC();
                 break;
             }
-    } while (0);
-    CHECK_EXC_TAIL();
-    DISPATCH();
-}
-
-Value h_gen_BitAnd(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
-    uint32_t& instr_pc = f.instr_pc;
-    instr_pc = pc;
-    pc += 1;
-    do {
-                BITWISE_OP(BinOp::BITWISE_AND, Value(static_cast<double>(l & r))); break;
-    } while (0);
-    CHECK_EXC_TAIL();
-    DISPATCH();
-}
-
-Value h_gen_BitOr(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
-    uint32_t& instr_pc = f.instr_pc;
-    instr_pc = pc;
-    pc += 1;
-    do {
-                BITWISE_OP(BinOp::BITWISE_OR,  Value(static_cast<double>(l | r))); break;
-    } while (0);
-    CHECK_EXC_TAIL();
-    DISPATCH();
-}
-
-Value h_gen_BitXor(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
-    uint32_t& instr_pc = f.instr_pc;
-    instr_pc = pc;
-    pc += 1;
-    do {
-                BITWISE_OP(BinOp::BITWISE_XOR, Value(static_cast<double>(l ^ r))); break;
-            // Shift counts use only the low 5 bits, and the left shift runs
-            // unsigned so an overflowing result stays defined.
-    } while (0);
-    CHECK_EXC_TAIL();
-    DISPATCH();
-}
-
-Value h_gen_Shl(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
-    uint32_t& instr_pc = f.instr_pc;
-    instr_pc = pc;
-    pc += 1;
-    do {
-                BITWISE_OP(BinOp::LEFT_SHIFT,
-                Value(static_cast<double>(static_cast<int32_t>(static_cast<uint32_t>(l) << (r & 31))))); break;
-    } while (0);
-    CHECK_EXC_TAIL();
-    DISPATCH();
-}
-
-Value h_gen_Sar(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
-    uint32_t& instr_pc = f.instr_pc;
-    instr_pc = pc;
-    pc += 1;
-    do {
-                BITWISE_OP(BinOp::RIGHT_SHIFT,
-                Value(static_cast<double>(l >> (r & 31)))); break;
-    } while (0);
-    CHECK_EXC_TAIL();
-    DISPATCH();
-}
-
-Value h_gen_Shr(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = f.ctx;
-    Value* regs = f.regs;
-    const uint8_t* code = f.code;
-    uint32_t& instr_pc = f.instr_pc;
-    instr_pc = pc;
-    pc += 1;
-    do {
-                BITWISE_OP(BinOp::UNSIGNED_RIGHT_SHIFT,
-                Value(static_cast<double>(static_cast<uint32_t>(l) >> (r & 31)))); break;
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
@@ -5891,13 +4329,21 @@ Value h_gen_ReraiseGeneratorReturn(Frame& f, uint32_t pc, Value acc) {
 
 #undef CHECK_EXC_TAIL
 #undef BINARY_OP
-#undef BITWISE_OP
 #undef CHECK_EXC
 #undef DISPATCH
 
+// The table is 256 wide and the opcode enum is not, so a byte that is not an
+// opcode at all needs somewhere to land.
+Value h_invalid(Frame& f, uint32_t pc, Value acc) {
+    (void)pc;
+    (void)acc;
+    f.ctx.throw_exception(Value(std::string("VM: invalid opcode")));
+    return Value();
+}
+
 constexpr std::array<Handler, 256> make_handler_table() {
     std::array<Handler, 256> t{};
-    for (auto& e : t) e = &h_switch;
+    for (auto& e : t) e = &h_invalid;
     t[static_cast<uint8_t>(Op::Ldar)]          = &h_Ldar;
     t[static_cast<uint8_t>(Op::Star)]          = &h_Star;
     t[static_cast<uint8_t>(Op::Mov)]           = &h_Mov;
