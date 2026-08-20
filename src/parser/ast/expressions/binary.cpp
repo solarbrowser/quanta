@@ -562,12 +562,12 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
             ctx.throw_type_error("Symbol.toPrimitive is not a function");
             return Value();
         }
-        // A Date reads as a string for "default" as well as "string", which is
-        // what makes `date + 1` concatenate. "number" is not one of them: every
-        // arithmetic and bitwise operator asks for that hint and has to reach
-        // valueOf. Only Dates whose @@toPrimitive was removed get here at all.
-        bool prefer_string = hint == "string" ||
-                             (hint != "number" && obj->has_property("_isDate"));
+        // What makes `date + 1` concatenate is Date.prototype's own
+        // @@toPrimitive, which reads "default" as "string" and is consulted
+        // above. Reaching here means a Date no longer has it, and then the
+        // ordinary rule applies to a Date like anything else: "default"
+        // behaves as "number" and valueOf goes first.
+        bool prefer_string = hint == "string";
 
         if (prefer_string) {
             Value toString_method = obj->get_property("toString");
@@ -776,7 +776,11 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
                 Object* rhs = right_value.is_function()
                     ? static_cast<Object*>(right_value.as_function())
                     : right_value.as_object();
-                Value hasInstance = rhs->get_property("Symbol.hasInstance");
+                // Built once: the key is past what a std::string keeps inline,
+                // so spelling it here put a heap allocation on every
+                // `instanceof` before any of the work started.
+                static const std::string kHasInstance = "Symbol.hasInstance";
+                Value hasInstance = rhs->get_property(kHasInstance);
                 if (!hasInstance.is_undefined() && hasInstance.is_function()) {
                     Value result = hasInstance.as_function()->call(ctx, {left_value}, right_value);
                     return Value(result.to_boolean());

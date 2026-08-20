@@ -168,12 +168,20 @@ double utc_time(double local) {
     return local - off;
 }
 
+// [[DateValue]] is a slot, not a property: as a named one it turned up in
+// getOwnPropertyNames and `in`, user code could assign over it and change what
+// getTime answered, and freezing a date made setTime fail silently.
+const std::string& date_value_slot() {
+    static const std::string k = "[[DateValue]]";
+    return k;
+}
+
 double get_date_value(Object* obj) {
-    return obj->get_property("_timestamp").to_number();
+    return obj->get_internal_slot(date_value_slot()).to_number();
 }
 
 void set_date_value(Object* obj, double t) {
-    obj->set_property("_timestamp", Value(t));
+    obj->set_internal_slot(date_value_slot(), Value(t));
 }
 
 Object* this_date_object(Context& ctx, const Value& receiver) {
@@ -606,8 +614,7 @@ Value Date::date_constructor(Context& ctx, std::span<const Value> args, Value re
     }
 
     auto obj = std::make_unique<Object>(Object::ObjectType::Date);
-    obj->set_property("_isDate", Value(true), PropertyAttributes::Writable);
-    obj->set_property("_timestamp", Value(dv), PropertyAttributes::Writable);
+    set_date_value(obj.get(), dv);
     return Value(obj.release());
 }
 

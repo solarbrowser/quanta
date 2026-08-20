@@ -468,7 +468,8 @@ void register_function_builtins(Context& ctx) {
                     Value v = args[0];
                     if (!v.is_object() && !v.is_function()) return Value(false);
                     Object* f_obj = raw_this.is_function() ? static_cast<Object*>(raw_this.as_function()) : raw_this.as_object();
-                    Value bound_target = f_obj->get_internal_slot("__bound_target__");
+                    static const std::string kBoundTarget = "__bound_target__";
+                    Value bound_target = f_obj->get_internal_slot(kBoundTarget);
                     if (!bound_target.is_undefined()) {
                         return Value(v.instanceof_check(bound_target));
                     }

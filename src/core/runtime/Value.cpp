@@ -1000,7 +1000,7 @@ bool Value::instanceof_check(const Value& constructor) const {
     if (!constructor.is_function()) return false;
 
     Function* ctor = constructor.as_function();
-    std::string ctor_name = ctor->get_name();
+    const std::string& ctor_name = ctor->get_name();
     
     if (is_function()) {
         if (ctor_name == "Function") return true;
