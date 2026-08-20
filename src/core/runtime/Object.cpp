@@ -920,17 +920,6 @@ Value Object::get_property_default(const std::string& key) const {
             current = current->get_prototype();
         }
 
-        // Only if not found in prototype chain, return native method
-        if (key == "map" || key == "filter" || key == "reduce" || key == "forEach" ||
-            key == "indexOf" || key == "slice" || key == "splice" || key == "push" ||
-            key == "pop" || key == "shift" || key == "unshift" || key == "join" || key == "concat" || key == "toString" || key == "groupBy" ||
-            key == "reverse" || key == "sort" || key == "find" || key == "includes" ||
-            key == "some" || key == "every" || key == "findIndex" || key == "flat" || key == "flatMap" || key == "reduceRight" || key == "copyWithin" ||
-            key == "findLast" || key == "findLastIndex" || key == "toSpliced" || key == "fill" ||
-            key == "toSorted" || key == "with" || key == "at" || key == "toReversed") {
-            return Value(ObjectFactory::create_array_method(key).release());
-        }
-
         // Already walked the whole chain above: don't fall through to the generic
         // walk below, which would re-invoke any inherited accessor a second time.
         return Value();
@@ -1631,7 +1620,33 @@ bool Object::delete_property_default(const std::string& key) {
     return false;
 }
 
+// One entry is enough for the shape this is asked in: a loop storing into the
+// same array asks the same question about the same chain on every store, and
+// walking it each time was most of what an append cost. proto_epoch_ moves on
+// every change to any object in any chain, including one entering a chain, so
+// a hit means the walk would reach the same objects and find them unchanged.
+// UINT64_MAX is a value the epoch never takes, so the first call always misses
+// rather than answering for the null chain a zeroed memo would describe.
+namespace {
+constinit thread_local Object* g_chain_memo_head = nullptr;
+constinit thread_local uint64_t g_chain_memo_epoch = UINT64_MAX;
+constinit thread_local bool g_chain_memo_answer = false;
+}
+
 bool Object::proto_chain_has_no_indices() const {
+    Object* head = proto_;
+    const uint64_t epoch = proto_epoch_;
+    if (head == g_chain_memo_head && epoch == g_chain_memo_epoch) {
+        return g_chain_memo_answer;
+    }
+    const bool answer = walk_proto_chain_for_indices();
+    g_chain_memo_head = head;
+    g_chain_memo_epoch = epoch;
+    g_chain_memo_answer = answer;
+    return answer;
+}
+
+bool Object::walk_proto_chain_for_indices() const {
     for (Object* p = proto_; p; p = p->get_prototype()) {
         if (p->get_type() == ObjectType::Proxy) return false;
         if (p->elements_length() != 0) return false;
@@ -1834,10 +1849,35 @@ bool Object::set_element(uint32_t index, const Value& value) {
             // never shrink length on a write within bounds
             bump_array_length(static_cast<double>(new_size));
         }
+        // An index this object did not have before. On an ordinary object
+        // that is nobody else's business, but on one somebody inherits from
+        // it decides whether a store to an array's own end may skip the
+        // chain -- see proto_chain_has_no_indices, which caches that answer
+        // against this epoch. store_in_overflow bumps for its own branch.
+        if (used_as_prototype()) bump_proto_epoch();
     }
 
     (*element_ptr(index)) = value;
     if (auto* de = deleted_elements()) de->erase(index);
+    return true;
+}
+
+bool Object::store_dense_element(uint32_t index, const Value& value) {
+    Collector::write_barrier_value(this, value);
+    if (index == elements_length()) {
+        if (__builtin_expect(!has_plain_array_length(), 0)) return false;
+        resize_elements(index + 1);
+        butterfly_header()->array_length = index + 1;
+        // resize_elements clears the flag because a length change in general
+        // can leave elements the vector no longer covers; growing by exactly
+        // one and filling it cannot, and re-running the full check on the next
+        // store is the entire cost of not saying so.
+        mark_dense_verified();
+        // An index this object did not have before -- see set_element's own
+        // bump for why a prototype's new index has to move the epoch.
+        if (__builtin_expect(used_as_prototype(), 0)) bump_proto_epoch();
+    }
+    *element_ptr(index) = value;
     return true;
 }
 
@@ -3764,457 +3804,6 @@ std::unique_ptr<Object> create_boolean(bool value) {
     auto bool_obj = std::make_unique<Object>(Object::ObjectType::Boolean);
     bool_obj->set_property("[[PrimitiveValue]]", Value(value), PropertyAttributes::Writable);
     return bool_obj;
-}
-
-std::unique_ptr<Function> create_array_method(const std::string& method_name) {
-    auto method_fn = [method_name](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-        Object* array = receiver.as_object_or_null();
-        
-        if (!array || !array->is_array()) {
-            ctx.throw_exception(Value(std::string("Array method called on non-array")));
-            return Value();
-        }
-        
-        if (method_name == "map") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                auto result = array->map(args[0].as_function(), ctx, thisArg);
-                return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
-            } else {
-                ctx.throw_type_error("Array.map callback must be a function");
-                return Value(ObjectFactory::create_array(0).release());
-            }
-        } else if (method_name == "filter") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                auto result = array->filter(args[0].as_function(), ctx, thisArg);
-                return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
-            } else {
-                ctx.throw_type_error("Array.filter callback must be a function");
-                return Value(ObjectFactory::create_array(0).release());
-            }
-        } else if (method_name == "reduce") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value initial = args.size() > 1 ? args[1] : Value();
-                return array->reduce(args[0].as_function(), initial, ctx);
-            }
-        } else if (method_name == "reduceRight") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value initial = args.size() > 1 ? args[1] : Value();
-                return array->reduceRight(args[0].as_function(), initial, ctx);
-            }
-        } else if (method_name == "forEach") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                array->forEach(args[0].as_function(), ctx, thisArg);
-                return Value();
-            }
-        } else if (method_name == "flat") {
-            uint32_t depth = 1;
-            if (args.size() > 0 && args[0].is_number()) {
-                depth = static_cast<uint32_t>(args[0].to_number());
-            }
-            auto result = array->flat(depth);
-            return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
-        } else if (method_name == "flatMap") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                auto result = array->flatMap(args[0].as_function(), ctx, thisArg);
-                return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
-            }
-        } else if (method_name == "copyWithin") {
-            int32_t target = args.size() > 0 ? static_cast<int32_t>(args[0].to_number()) : 0;
-            int32_t start = args.size() > 1 ? static_cast<int32_t>(args[1].to_number()) : 0;
-            int32_t end = args.size() > 2 ? static_cast<int32_t>(args[2].to_number()) : -1;
-            return Value(array->copyWithin(target, start, end));
-        } else if (method_name == "indexOf") {
-            if (args.size() > 0) {
-                Value search_element = args[0];
-                uint32_t length = array->get_length();
-                for (uint32_t i = 0; i < length; i++) {
-                    Value element = array->get_element(i);
-                    if (element.to_string() == search_element.to_string()) {
-                        return Value(static_cast<double>(i));
-                    }
-                }
-                return Value(-1.0);
-            }
-        } else if (method_name == "slice") {
-            uint32_t length = array->get_length();
-            uint32_t start = 0;
-            uint32_t end = length;
-            
-            if (args.size() > 0) {
-                double start_val = args[0].to_number();
-                start = start_val < 0 ? std::max(0.0, length + start_val) : std::min(start_val, static_cast<double>(length));
-            }
-            if (args.size() > 1) {
-                double end_val = args[1].to_number();
-                end = end_val < 0 ? std::max(0.0, length + end_val) : std::min(end_val, static_cast<double>(length));
-            }
-            
-            auto result = ObjectFactory::create_array(0);
-            for (uint32_t i = start; i < end; i++) {
-                result->push(array->get_element(i));
-            }
-            return Value(result.release());
-        } else if (method_name == "push") {
-            for (const Value& arg : args) {
-                array->push(arg);
-            }
-            return Value(static_cast<double>(array->get_length()));
-        } else if (method_name == "pop") {
-            return array->pop();
-        } else if (method_name == "join") {
-            std::string separator = ",";
-            if (args.size() > 0) {
-                separator = args[0].to_string();
-            }
-            
-            std::ostringstream result;
-            uint32_t length = array->get_length();
-            for (uint32_t i = 0; i < length; i++) {
-                if (i > 0) result << separator;
-                Value element = array->get_element(i);
-                if (element.is_null() || element.is_undefined()) {
-                    result << "";
-                } else {
-                    result << element.to_string();
-                }
-            }
-            return Value(result.str());
-        } else if (method_name == "groupBy") {
-            if (args.size() > 0 && args[0].is_function()) {
-                return array->groupBy(args[0].as_function(), ctx);
-            } else {
-                ctx.throw_exception(Value(std::string("GroupBy requires a callback function")));
-                return Value();
-            }
-        } else if (method_name == "reverse") {
-            uint32_t length = array->get_length();
-            for (uint32_t i = 0; i < length / 2; i++) {
-                Value temp = array->get_element(i);
-                array->set_element(i, array->get_element(length - 1 - i));
-                array->set_element(length - 1 - i, temp);
-            }
-            return Value(array);
-        } else if (method_name == "sort") {
-            uint32_t length = array->get_length();
-            std::vector<Value> elements;
-
-            for (uint32_t i = 0; i < length; i++) {
-                elements.push_back(array->get_element(i));
-            }
-
-            Function* compareFn = nullptr;
-            if (args.size() > 0 && args[0].is_function()) {
-                compareFn = args[0].as_function();
-            }
-
-            if (compareFn) {
-                std::sort(elements.begin(), elements.end(), [&](const Value& a, const Value& b) {
-                    std::vector<Value> comp_args = {a, b};
-                    Value result = compareFn->call(ctx, comp_args);
-                    if (ctx.has_exception()) return false;
-                    return result.to_number() < 0;
-                });
-            } else {
-                std::sort(elements.begin(), elements.end(), [](const Value& a, const Value& b) {
-                    return a.to_string() < b.to_string();
-                });
-            }
-
-            for (uint32_t i = 0; i < length; i++) {
-                array->set_element(i, elements[i]);
-            }
-
-            return Value(array);
-        } else if (method_name == "shift") {
-            return array->shift();
-        } else if (method_name == "unshift") {
-            if (!args.empty()) {
-                uint32_t length = array->get_length();
-                uint32_t argCount = args.size();
-
-                for (uint32_t i = length; i > 0; --i) {
-                    Value element = array->get_element(i - 1);
-                    array->set_element(i + argCount - 1, element);
-                }
-                
-                for (uint32_t i = 0; i < argCount; ++i) {
-                    array->set_element(i, args[i]);
-                }
-                
-                array->set_length(length + argCount);
-            }
-            return Value(static_cast<double>(array->get_length()));
-        } else if (method_name == "splice") {
-            uint32_t length = array->get_length();
-            uint32_t start = 0;
-            uint32_t deleteCount = 0;
-
-            if (args.size() == 0) {
-                // No arguments: do nothing, return empty array
-                auto deleted = ObjectFactory::create_array(0);
-                return Value(deleted.release());
-            }
-
-            double start_val = args[0].to_number();
-            start = static_cast<uint32_t>(start_val < 0 ? std::max(0.0, length + start_val) : std::min(start_val, static_cast<double>(length)));
-
-            if (args.size() > 1) {
-                double delete_val = args[1].to_number();
-                deleteCount = static_cast<uint32_t>(std::max(0.0, std::min(delete_val, static_cast<double>(length - start))));
-            } else {
-                // If only start is provided, delete to end
-                deleteCount = length - start;
-            }
-            
-            auto deleted = ObjectFactory::create_array(0);
-            for (uint32_t i = start; i < start + deleteCount; i++) {
-                deleted->push(array->get_element(i));
-            }
-            
-            uint32_t insertCount = args.size() > 2 ? args.size() - 2 : 0;
-            
-            if (insertCount > deleteCount) {
-                uint32_t shiftBy = insertCount - deleteCount;
-                for (uint32_t i = length; i > start + deleteCount; i--) {
-                    array->set_element(i + shiftBy - 1, array->get_element(i - 1));
-                }
-            } else if (insertCount < deleteCount) {
-                uint32_t shiftBy = deleteCount - insertCount;
-                for (uint32_t i = start + deleteCount; i < length; i++) {
-                    array->set_element(i - shiftBy, array->get_element(i));
-                }
-                for (uint32_t i = length - shiftBy; i < length; i++) {
-                    array->delete_element(i);
-                }
-            }
-            
-            for (uint32_t i = 0; i < insertCount; i++) {
-                array->set_element(start + i, args[i + 2]);
-            }
-            
-            array->set_length(length - deleteCount + insertCount);
-            
-            return Value(deleted.release());
-        } else if (method_name == "toSpliced") {
-            uint32_t start = 0;
-            uint32_t deleteCount = array->get_length();
-
-            if (args.size() > 0) {
-                start = static_cast<uint32_t>(std::max(0.0, args[0].to_number()));
-            }
-            if (args.size() > 1) {
-                deleteCount = static_cast<uint32_t>(std::max(0.0, args[1].to_number()));
-            }
-
-            std::vector<Value> items;
-            for (size_t i = 2; i < args.size(); i++) {
-                items.push_back(args[i]);
-            }
-
-            auto result = array->toSpliced(start, deleteCount, items);
-            return Value(result.release());
-        } else if (method_name == "fill") {
-            Value value = args.size() > 0 ? args[0] : Value();
-            int32_t start = args.size() > 1 ? static_cast<int32_t>(args[1].to_number()) : 0;
-            int32_t end = args.size() > 2 ? static_cast<int32_t>(args[2].to_number()) : -1;
-            return Value(array->fill(value, start, end));
-        } else if (method_name == "toSorted") {
-            Function* compareFn = (args.size() > 0 && args[0].is_function()) ? args[0].as_function() : nullptr;
-            auto result = array->toSorted(compareFn, ctx);
-            return Value(result.release());
-        } else if (method_name == "with") {
-            if (args.size() >= 2) {
-                uint32_t index = static_cast<uint32_t>(args[0].to_number());
-                auto result = array->with_method(index, args[1]);
-                return Value(result.release());
-            }
-            return Value(array);
-        } else if (method_name == "at") {
-            int32_t index = args.size() > 0 ? static_cast<int32_t>(args[0].to_number()) : 0;
-            return array->at(index);
-        } else if (method_name == "toReversed") {
-            auto result = array->toReversed();
-            return Value(result.release());
-        } else if (method_name == "find") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                uint32_t length = array->get_length();
-                for (uint32_t i = 0; i < length; i++) {
-                    Value element = array->get_element(i);
-                    std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
-                    Value result = args[0].as_function()->call(ctx, callback_args, thisArg);
-                    if (result.to_boolean()) {
-                        return element;
-                    }
-                }
-                return Value();
-            }
-        } else if (method_name == "findLast") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                return array->findLast(args[0].as_function(), ctx, thisArg);
-            }
-            return Value();
-        } else if (method_name == "findLastIndex") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                return array->findLastIndex(args[0].as_function(), ctx, thisArg);
-            }
-            return Value(-1.0);
-        } else if (method_name == "includes") {
-            if (args.size() > 0) {
-                Value search_element = args[0];
-                uint32_t length = array->get_length();
-                for (uint32_t i = 0; i < length; i++) {
-                    Value element = array->get_element(i);
-
-                    if (search_element.is_number() && element.is_number()) {
-                        double search_num = search_element.to_number();
-                        double element_num = element.to_number();
-
-                        if (std::isnan(search_num) && std::isnan(element_num)) {
-                            return Value(true);
-                        }
-
-                        if (search_num == element_num) {
-                            return Value(true);
-                        }
-                    } else if (element.strict_equals(search_element)) {
-                        return Value(true);
-                    }
-                }
-                return Value(false);
-            }
-        } else if (method_name == "some") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                uint32_t length = array->get_length();
-                for (uint32_t i = 0; i < length; i++) {
-                    Value element = array->get_element(i);
-                    std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
-                    Value result = args[0].as_function()->call(ctx, callback_args, thisArg);
-                    if (result.to_boolean()) {
-                        return Value(true);
-                    }
-                }
-                return Value(false);
-            }
-        } else if (method_name == "every") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                uint32_t length = array->get_length();
-                for (uint32_t i = 0; i < length; i++) {
-                    Value element = array->get_element(i);
-                    std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
-                    Value result = args[0].as_function()->call(ctx, callback_args, thisArg);
-                    if (!result.to_boolean()) {
-                        return Value(false);
-                    }
-                }
-                return Value(true);
-            }
-        } else if (method_name == "findIndex") {
-            if (args.size() > 0 && args[0].is_function()) {
-                Value thisArg = args.size() > 1 ? args[1] : Value();
-                uint32_t length = array->get_length();
-                for (uint32_t i = 0; i < length; i++) {
-                    Value element = array->get_element(i);
-                    std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
-                    Value result = args[0].as_function()->call(ctx, callback_args, thisArg);
-                    if (result.to_boolean()) {
-                        return Value(static_cast<double>(i));
-                    }
-                }
-                return Value(-1.0);
-            }
-        } else if (method_name == "flat") {
-            uint32_t length = array->get_length();
-            auto result = ObjectFactory::create_array(0);
-            uint32_t result_index = 0;
-            
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = array->get_element(i);
-                
-                if (element.is_object() && element.as_object() && element.as_object()->is_array()) {
-                    Object* nested_array = element.as_object();
-                    uint32_t nested_length = nested_array->get_length();
-                    
-                    for (uint32_t j = 0; j < nested_length; j++) {
-                        Value nested_element = nested_array->get_element(j);
-                        result->set_element(result_index++, nested_element);
-                    }
-                } else {
-                    result->set_element(result_index++, element);
-                }
-            }
-            
-            result->set_length(result_index);
-            return Value(result.release());
-        } else if (method_name == "concat") {
-            auto result = ObjectFactory::create_array(0);
-            uint32_t result_index = 0;
-
-            uint32_t this_length = array->get_length();
-            for (uint32_t i = 0; i < this_length; i++) {
-                Value element = array->get_element(i);
-                result->set_element(result_index++, element);
-            }
-
-            for (const auto& arg : args) {
-                if (arg.is_object() && arg.as_object()->is_array()) {
-                    Object* arg_array = arg.as_object();
-                    uint32_t arg_length = arg_array->get_length();
-                    for (uint32_t i = 0; i < arg_length; i++) {
-                        Value element = arg_array->get_element(i);
-                        result->set_element(result_index++, element);
-                    }
-                } else {
-                    result->set_element(result_index++, arg);
-                }
-            }
-
-            result->set_length(result_index);
-            return Value(result.release());
-        } else if (method_name == "toString") {
-            std::ostringstream result;
-            uint32_t length = array->get_length();
-            for (uint32_t i = 0; i < length; i++) {
-                if (i > 0) result << ",";
-                result << array->get_element(i).to_string();
-            }
-            return Value(result.str());
-        }
-
-        ctx.throw_exception(Value(std::string("Invalid array method call")));
-        return Value();
-    };
-
-    uint32_t arity = 1;
-    if (method_name == "map" || method_name == "filter" || method_name == "forEach" ||
-        method_name == "reduce" || method_name == "reduceRight" || method_name == "find" || method_name == "findIndex" ||
-        method_name == "some" || method_name == "every" || method_name == "flatMap" ||
-        method_name == "findLast" || method_name == "findLastIndex") {
-        arity = 1;
-    } else if (method_name == "flat" || method_name == "fill" || method_name == "toSorted" || method_name == "at") {
-        arity = 1;
-    } else if (method_name == "copyWithin" || method_name == "toSpliced" || method_name == "with") {
-        arity = 2;
-    } else if (method_name == "slice" || method_name == "splice" || method_name == "indexOf" ||
-               method_name == "lastIndexOf") {
-        arity = 2;
-    } else if (method_name == "push" || method_name == "unshift" || method_name == "concat") {
-        arity = 1;
-    } else if (method_name == "join") {
-        arity = 1;
-    } else if (method_name == "pop" || method_name == "shift" || method_name == "reverse" || method_name == "toReversed") {
-        arity = 0;
-    }
-
-    return std::make_unique<Function>(method_name, method_fn, arity, false);
 }
 
 std::unique_ptr<Object> create_error(const std::string& message) {

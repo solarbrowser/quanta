@@ -3817,8 +3817,8 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                 Object* dense;
                 TypedArrayBase* typed;
                 if (array_index_key(regs[key_reg], index)) {
-                    if (dense_element_store_slot(recv, index, dense)) {
-                        dense->set_element(index, acc);
+                    if (dense_element_store_slot(recv, index, dense) &&
+                        dense->store_dense_element(index, acc)) {
                         break;
                     }
                     if (typed_element_slot(recv, index, typed)) {

@@ -512,6 +512,9 @@ public:
     bool dense_check_slow() const;
 
     bool proto_chain_has_no_indices() const;
+private:
+    bool walk_proto_chain_for_indices() const;
+public:
 
     bool set_element(uint32_t index, const Value& value);
     bool delete_element(uint32_t index);
@@ -539,7 +542,15 @@ public:
     // mutations need to bump proto_epoch(), so ordinary objects never pay it.
     static constexpr uintptr_t kUsedAsPrototype = 0x02;
     bool used_as_prototype() const { return proto_.flag(kUsedAsPrototype); }
-    void mark_used_as_prototype() { proto_.set_flag(kUsedAsPrototype); }
+    // Bumps the epoch on the transition, not just on changes to an object
+    // already in a chain: a cache keyed on a prototype POINTER would
+    // otherwise never notice a fresh object taking the address a dead
+    // prototype used to have, and answering for the dead one.
+    void mark_used_as_prototype() {
+        if (used_as_prototype()) return;
+        proto_.set_flag(kUsedAsPrototype);
+        bump_proto_epoch();
+    }
 
     // Sticky: set the first time any descriptors_ entry is made under an index
     // key. Without it every element read and write has to build the index's
@@ -565,6 +576,14 @@ public:
     // what a keyed write would have done: a length made non-writable has to
     // refuse, and the keyed path is what knows to refuse.
     bool has_plain_array_length() const;
+    // The store the VM's dense-element check has already cleared the way for.
+    // has_only_dense_elements answered for index descriptors, holes, sparse
+    // overflow and length == element count; an append was additionally checked
+    // for extensibility and for a prototype chain carrying no index, so none of
+    // that is asked again here. Returns false without touching anything when
+    // the one remaining refusal is possible -- an array whose length carries a
+    // recorded attribute -- leaving that case to the general path.
+    bool store_dense_element(uint32_t index, const Value& value);
     void push(const Value& value);
     Value pop();
     void unshift(const Value& value);
@@ -1701,7 +1720,6 @@ namespace ObjectFactory {
     std::unique_ptr<Function> create_native_constructor(const std::string& name,
                                                         std::function<Value(Context&, std::span<const Value>, Value)> fn,
                                                         uint32_t arity = 1);
-    std::unique_ptr<Function> create_array_method(const std::string& method_name);
     std::unique_ptr<Object> create_string(const std::string& value);
     std::unique_ptr<Object> create_number(double value);
     std::unique_ptr<Object> create_boolean(bool value);

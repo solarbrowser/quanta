@@ -1511,6 +1511,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
+            bool stored_densely = false;
             for (const auto& arg : args) {
                 // Appending to a plain dense array is an element write; the
                 // keyed [[Set]] below is for array-likes, a Proxy, an array
@@ -1519,13 +1520,16 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 // prototype chain has to be clear of index properties too --
                 // an inherited setter at that index is entitled to run, and
                 // may make the array non-extensible from inside itself.
-                if (this_obj->get_type() == Object::ObjectType::Array &&
-                    !this_obj->has_index_descriptor() &&
+                // has_only_dense_elements is what the element store wants
+                // asked: it covers holes and spilled indices as well, and an
+                // array carrying either must not come out of this claiming to
+                // be dense.
+                if (this_obj->has_only_dense_elements() &&
                     length == static_cast<double>(this_obj->element_count()) &&
                     this_obj->is_extensible() &&
-                    this_obj->proto_chain_has_no_indices()) {
-                    this_obj->set_element(static_cast<uint32_t>(length), arg);
-                    if (ctx.has_exception()) return Value();
+                    this_obj->proto_chain_has_no_indices() &&
+                    this_obj->store_dense_element(static_cast<uint32_t>(length), arg)) {
+                    stored_densely = true;
                 } else {
                     // Set(O, key, value, true): OrdinarySet, which reports
                     // failure when an inherited non-writable data property at
@@ -1541,9 +1545,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 length++;
             }
 
-            if (!set_array_length_fast(ctx, this_obj, length)) {
-                if (!ctx.has_exception()) ctx.throw_type_error("Cannot set property 'length'");
-                return Value();
+            // Every element went in through the dense store, which moved the
+            // header's length with it; setting it again to the value it
+            // already holds is the whole of what this call would do.
+            if (!stored_densely || !this_obj->has_only_dense_elements() ||
+                static_cast<double>(this_obj->get_length()) != length) {
+                if (!set_array_length_fast(ctx, this_obj, length)) {
+                    if (!ctx.has_exception()) ctx.throw_type_error("Cannot set property 'length'");
+                    return Value();
+                }
             }
 
             return Value(length);
