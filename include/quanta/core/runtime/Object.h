@@ -130,6 +130,14 @@ public:
     // definitions would otherwise leave the protector permanently cleared
     // before any user code has run.
     static void arm_array_iterator_protector();
+    // Same idea for RegExp.prototype's exec and flags: true while neither has
+    // been redefined or deleted, which is what lets [Symbol.replace] answer
+    // without running exec and building a match object per match. Armed once
+    // the two are installed; watch_regexp_prototype also records which object
+    // to watch, since only that one's entries matter.
+    static bool regexp_proto_protector_intact();
+    static Object* watched_regexp_prototype();
+    static void watch_regexp_prototype(Object* proto);
 private:
     static void bump_descriptor_epoch() { ++descriptor_epoch_; }
 

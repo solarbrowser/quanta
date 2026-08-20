@@ -65,6 +65,15 @@ public:
 
     bool test(const std::string& str);
     Value exec(const std::string& str);
+    // A global replace whose replacement is a literal, done without building
+    // anything JS-visible. exec's own matching half is all this needs, and the
+    // result array it goes on to build -- one object per match, with index,
+    // input and groups properties and their descriptors -- was the whole cost
+    // of a replace. Same reasoning as test(), which was split off for it.
+    // Only for a global, non-sticky pattern; the caller decides whether the
+    // replacement can be taken literally.
+    bool replace_all_literal(const std::string& str, const std::string& replacement,
+                             std::string& out);
     void compile(const std::string& pattern, const std::string& flags = "");
 
     std::string get_source() const { return pattern_; }

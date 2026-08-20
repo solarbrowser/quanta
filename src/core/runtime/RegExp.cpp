@@ -2504,6 +2504,58 @@ bool RegExp::test(const std::string& str) {
     return found;
 }
 
+bool RegExp::replace_all_literal(const std::string& str, const std::string& replacement,
+                                 std::string& out) {
+    if (!global_ || sticky_) return false;
+    if (backtrack_engine_) return false;   // PCRE2 path only; the fallback keeps exec's
+    if (!code_) return false;
+
+    std::u16string decode_scratch;
+    const std::u16string& orig = decode_subject(str, decode_scratch);
+    std::u16string sanitized;
+    if (unicode_ && has_lone_surrogate(orig)) {
+        sanitized = orig;
+        sanitize_utf16_surrogates(sanitized);
+    }
+    const std::u16string& subject = sanitized.empty() ? orig : sanitized;
+
+    pcre2_code* re = static_cast<pcre2_code*>(code_);
+    pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+    if (!md) return false;
+
+    out.clear();
+    size_t copied = 0;   // how much of `orig` is already in `out`
+    size_t pos = 0;      // where the next search starts
+    while (pos <= subject.size()) {
+        int rc = pcre2_match(re, reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
+                             static_cast<PCRE2_SIZE>(pos), 0, md, nullptr);
+        if (rc < 0) break;
+        PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
+        const size_t ms = ov[0], me = ov[1];
+        out += utf16_to_wtf8(orig.data() + copied, ms - copied);
+        out += replacement;
+        copied = me;
+        if (me != ms) {
+            pos = me;
+            continue;
+        }
+        // An empty match advances by one position, or by a whole code point
+        // when the pattern is unicode-aware -- AdvanceStringIndex, which is
+        // what keeps a pattern that matches nothing from matching forever.
+        pos = ms + 1;
+        if (unicode_ && pos < subject.size() &&
+            subject[ms] >= 0xD800 && subject[ms] <= 0xDBFF &&
+            subject[pos] >= 0xDC00 && subject[pos] <= 0xDFFF) {
+            pos++;
+        }
+    }
+    pcre2_match_data_free(md);
+    out += utf16_to_wtf8(orig.data() + copied, orig.size() - copied);
+    // The general path leaves it here too: the exec that finally fails resets it.
+    last_index_ = 0;
+    return true;
+}
+
 Value RegExp::exec(const std::string& str) {
     // orig holds the unsanitized units so capture text preserves lone surrogates.
     std::u16string decode_scratch;

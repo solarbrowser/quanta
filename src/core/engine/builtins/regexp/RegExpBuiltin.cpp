@@ -219,6 +219,22 @@ bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& 
 // RegExpExec abstract operation: use a callable "exec" property when present,
 // otherwise RegExpBuiltinExec -- replacing RegExp.prototype.exec with a
 // non-callable is legal and must not stop a real RegExp from matching.
+// An own entry under any of these hides what RegExp.prototype would have
+// answered, and the flags getter reads all eight of the flag accessors by
+// name -- so an own `global` is enough to make a global pattern behave as a
+// non-global one, which the shortcut below would never see. Checked per call,
+// not per match, which is what the shortcut is trading away.
+static bool regexp_has_shortcut_override(Object* r) {
+    static const char* const kNames[] = {
+        "exec", "flags", "hasIndices", "global", "ignoreCase",
+        "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
+    };
+    for (const char* n : kNames) {
+        if (r->has_own_property(n)) return true;
+    }
+    return false;
+}
+
 static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str, Value& out) {
     Value exec_fn = r->get_property("exec");
     if (ctx.has_exception()) return false;
@@ -733,6 +749,35 @@ void register_regexp_builtins(Context& ctx) {
                 if (replace_val.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
                 else if (replace_val.is_object() || replace_val.is_function()) { replace_str = replace_val.to_property_key(); if (ctx.has_exception()) return Value(); }
                 else { replace_str = replace_val.to_string(); }
+            }
+            // Everything below reads the match back out of an object it just
+            // built, one per match, with index/input/groups and their
+            // descriptors -- and for a literal replacement none of it is
+            // observable. Taking the shortcut needs the whole shape to be
+            // ordinary, so the conditions are listed rather than the exceptions
+            // ruled out: a real RegExp whose prototype is still the one the
+            // engine installed, with exec and flags still on it and no own copy
+            // of either, global and not sticky, and a replacement string with
+            // no $ substitution in it.
+            if (!is_fn_replace && replace_str.find('$') == std::string::npos &&
+                Object::regexp_proto_protector_intact() &&
+                this_obj->get_prototype() == Object::watched_regexp_prototype() &&
+                !regexp_has_shortcut_override(this_obj)) {
+                RegExpObject* reo = RegExpObject::from(this_obj);
+                if (reo && reo->impl() && reo->impl()->get_global() && !reo->impl()->get_sticky()) {
+                    // Step 12 either way: the general path's own exec writes it
+                    // back to zero when it finally fails to match.
+                    bool li_ok = this_obj->set_property("lastIndex", Value(0.0));
+                    if (ctx.has_exception()) return Value();
+                    if (!li_ok) {
+                        ctx.throw_type_error("Cannot assign to read only property 'lastIndex' of regexp");
+                        return Value();
+                    }
+                    std::string replaced;
+                    if (reo->impl()->replace_all_literal(str, replace_str, replaced)) {
+                        return Value(replaced);
+                    }
+                }
             }
             // Steps 7-9: read flags string (not global/unicode directly -- fires flags getter which reads them)
             Value flags_v = this_obj->get_property("flags");
@@ -1324,6 +1369,9 @@ void register_regexp_builtins(Context& ctx) {
             Value(regexp_sym_matchAll.release()), PropertyAttributes::BuiltinFunction);
     }
 
+    // Armed only now: every set_property above would otherwise have cleared it
+    // on the way in. See Object::regexp_proto_protector_intact.
+    Object::watch_regexp_prototype(regexp_prototype.get());
     regexp_constructor->set_property("prototype", Value(regexp_prototype.release()), PropertyAttributes::None);
     {
         PropertyDescriptor len_desc(Value(2.0), PropertyAttributes::Configurable);

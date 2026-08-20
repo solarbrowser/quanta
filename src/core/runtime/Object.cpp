@@ -1138,23 +1138,46 @@ namespace {
 // Array.prototype and per-instance shadowing) or patches
 // %ArrayIteratorPrototype%.next. Real code never does either, so the fast
 // path effectively always holds; when it does not, correctness wins.
+constinit thread_local bool g_regexp_proto_intact = false;
+constinit thread_local Object* g_regexp_prototype = nullptr;
 constinit thread_local bool g_array_iterator_intact = true;
 constinit thread_local Object* g_array_iterator_prototype = nullptr;
 
 // Both checks lead with a length test so the common case costs a compare.
 inline void note_protector_write(const Object* target, const std::string& key) {
-    if (!g_array_iterator_intact) return;
-    if (key.size() == 15 && key[0] == 'S' && key == "Symbol.iterator") {
-        g_array_iterator_intact = false;
-        return;
+    if (g_array_iterator_intact) {
+        if (key.size() == 15 && key[0] == 'S' && key == "Symbol.iterator") {
+            g_array_iterator_intact = false;
+        } else if (key.size() == 4 && key[0] == 'n' &&
+                   target == g_array_iterator_prototype && key == "next") {
+            g_array_iterator_intact = false;
+        }
     }
-    if (key.size() == 4 && key[0] == 'n' && target == g_array_iterator_prototype && key == "next") {
-        g_array_iterator_intact = false;
+    // RegExp.prototype's exec, its flags getter, and the eight accessors that
+    // getter reads. A replace that skips building a match object reads none of
+    // them and asks the pattern itself instead, so it may only be taken while
+    // every one still says what the general path would have read -- deleting
+    // one counts too, since the general path then reads something else. The
+    // pointer test leads so that writes to anything else cost one compare.
+    if (g_regexp_proto_intact && target == g_regexp_prototype) {
+        static const char* const kWatched[] = {
+            "exec", "flags", "hasIndices", "global", "ignoreCase",
+            "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
+        };
+        for (const char* w : kWatched) {
+            if (key == w) { g_regexp_proto_intact = false; break; }
+        }
     }
 }
 }  // namespace
 
 bool Object::array_iterator_protector_intact() { return g_array_iterator_intact; }
+bool Object::regexp_proto_protector_intact() { return g_regexp_proto_intact; }
+Object* Object::watched_regexp_prototype() { return g_regexp_prototype; }
+void Object::watch_regexp_prototype(Object* proto) {
+    g_regexp_prototype = proto;
+    g_regexp_proto_intact = proto != nullptr;
+}
 void Object::watch_array_iterator_prototype(Object* proto) { g_array_iterator_prototype = proto; }
 void Object::arm_array_iterator_protector() { g_array_iterator_intact = true; }
 
