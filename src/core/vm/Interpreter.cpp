@@ -1294,6 +1294,37 @@ Value h_LdaSmi(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// The pair fuse_store_pairs rewrites: produce, then park. Each does exactly
+// what its two instructions did, in the same order, so the accumulator is
+// left holding the same value and only one dispatch is paid for.
+Value h_LdarStar(Frame& f, uint32_t pc, Value acc) {
+    acc = f.regs[f.code[pc + 1]];
+    f.regs[f.code[pc + 2]] = acc;
+    pc += 3;
+    DISPATCH();
+}
+
+Value h_LdaSmiStar(Frame& f, uint32_t pc, Value acc) {
+    acc = Value(static_cast<double>(static_cast<int8_t>(f.code[pc + 1])));
+    f.regs[f.code[pc + 2]] = acc;
+    pc += 3;
+    DISPATCH();
+}
+
+Value h_LdaZeroStar(Frame& f, uint32_t pc, Value acc) {
+    acc = Value(0.0);
+    f.regs[f.code[pc + 1]] = acc;
+    pc += 2;
+    DISPATCH();
+}
+
+Value h_LdaConstStar(Frame& f, uint32_t pc, Value acc) {
+    acc = f.constants[read_u16(f.code, pc + 1)];
+    f.regs[f.code[pc + 3]] = acc;
+    pc += 4;
+    DISPATCH();
+}
+
 Value h_LdaConst(Frame& f, uint32_t pc, Value acc) {
     acc = f.constants[read_u16(f.code, pc + 1)];
     pc += 3;
@@ -4347,6 +4378,10 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::Ldar)]          = &h_Ldar;
     t[static_cast<uint8_t>(Op::Star)]          = &h_Star;
     t[static_cast<uint8_t>(Op::Mov)]           = &h_Mov;
+    t[static_cast<uint8_t>(Op::LdarStar)]      = &h_LdarStar;
+    t[static_cast<uint8_t>(Op::LdaSmiStar)]    = &h_LdaSmiStar;
+    t[static_cast<uint8_t>(Op::LdaZeroStar)]   = &h_LdaZeroStar;
+    t[static_cast<uint8_t>(Op::LdaConstStar)]  = &h_LdaConstStar;
     t[static_cast<uint8_t>(Op::LdaZero)]       = &h_LdaZero;
     t[static_cast<uint8_t>(Op::LdaUndefined)]  = &h_LdaUndefined;
     t[static_cast<uint8_t>(Op::LdaNull)]       = &h_LdaNull;

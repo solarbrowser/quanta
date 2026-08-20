@@ -212,6 +212,15 @@ enum class Op : uint8_t {
                             // landing pad's tail: re-throw as a C++
                             // GeneratorReturnException once finally is done.
 
+    // Produce a value and park it in a register, as one instruction instead
+    // of two. The accumulator ends up holding what it would have held either
+    // way, so nothing downstream can tell which form it came from. Written by
+    // fuse_store_pairs after the body is compiled, never emitted directly.
+    LdarStar,      // rr: src, dst
+    LdaSmiStar,    // i8, dst
+    LdaConstStar,  // k16, dst
+    LdaZeroStar,   // dst
+
     kCount
 };
 
@@ -570,6 +579,12 @@ struct BytecodeChunk {
 };
 
 // Human-readable dump for QUANTA_VM_DISASM=1.
+// Operand layout, for the passes that have to walk instructions without
+// caring what any of them do: the peephole in BytecodeCompiler and anything
+// else that needs to find instruction boundaries or an embedded jump offset.
+int op_operand_bytes(Op op);
+char op_operand_kind(Op op);
+
 std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& name);
 
 // Every register operand a chunk carries must name a register the chunk

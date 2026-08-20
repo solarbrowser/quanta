@@ -130,6 +130,12 @@ private:
     // EnterLoopEnv has run (i.e. after the caller's env_depth_++).
     void record_env_slot_info(const std::vector<BytecodeChunk::LoopEnvVar>& vars, int depth);
 
+    // Rewrites every "produce into the accumulator, then park it in a
+    // register" pair into the single instruction that does both. Run once on
+    // the finished body rather than at emit time, so the fifty-odd places
+    // that emit a Star stay unaware of it and one place has to know that an
+    // instruction somebody jumps to cannot be swallowed by the one before it.
+    void fuse_store_pairs();
     void emit(Op op);
     void emit_u8(uint8_t v);
     void emit_u16(uint16_t v);

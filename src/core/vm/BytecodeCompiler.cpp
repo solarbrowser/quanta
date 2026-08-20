@@ -3460,6 +3460,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
                 static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
         }
+        compiler.fuse_store_pairs();
         compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
         compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
         compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
@@ -3506,6 +3507,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
             static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
     }
+    compiler.fuse_store_pairs();
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
@@ -3697,6 +3699,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
         compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
             static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
     }
+    compiler.fuse_store_pairs();
     compiler.chunk_->code = FixedArray<uint8_t>::from(std::move(compiler.code_));
     compiler.chunk_->constants = FixedArray<Value>::from(std::move(compiler.constants_));
     compiler.chunk_->names = intern_name_pool(std::move(compiler.names_));
@@ -4077,6 +4080,129 @@ void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declara
             initialized_lexicals_.insert(reg);
         }
     }
+}
+
+namespace {
+Op fused_store_form(Op producer) {
+    switch (producer) {
+        case Op::Ldar:     return Op::LdarStar;
+        case Op::LdaSmi:   return Op::LdaSmiStar;
+        case Op::LdaZero:  return Op::LdaZeroStar;
+        case Op::LdaConst: return Op::LdaConstStar;
+        default:           return Op::kCount;
+    }
+}
+
+// Where an instruction of this kind keeps its jump offset, or -1 for the ones
+// that hold none. Both forms are relative to the byte after the offset.
+int jump_offset_at(char kind) {
+    if (kind == 'o') return 0;
+    if (kind == 'j') return 2;
+    return -1;
+}
+}
+
+void BytecodeCompiler::fuse_store_pairs() {
+    if (code_.empty()) return;
+    const size_t n = code_.size();
+
+    std::vector<uint32_t> starts;
+    for (size_t pc = 0; pc < n; ) {
+        Op op = static_cast<Op>(code_[pc]);
+        if (op >= Op::kCount) return;
+        starts.push_back(static_cast<uint32_t>(pc));
+        pc += 1 + static_cast<size_t>(op_operand_bytes(op));
+        if (pc > n) return;  // the last instruction runs off the end: leave it alone
+    }
+
+    // Anything control can arrive at directly keeps its own address. Handler
+    // bounds count too: end_pc is exclusive, so swallowing the instruction it
+    // names would pull code into a try region that was not in it.
+    std::vector<bool> pinned(n + 1, false);
+    for (uint32_t s : starts) {
+        const int off_at = jump_offset_at(op_operand_kind(static_cast<Op>(code_[s])));
+        if (off_at < 0) continue;
+        const size_t off_pos = s + 1 + static_cast<size_t>(off_at);
+        const int16_t off = static_cast<int16_t>(
+            static_cast<uint16_t>(code_[off_pos]) |
+            (static_cast<uint16_t>(code_[off_pos + 1]) << 8));
+        const ptrdiff_t target = static_cast<ptrdiff_t>(off_pos) + 2 + off;
+        if (target < 0 || static_cast<size_t>(target) > n) return;
+        pinned[static_cast<size_t>(target)] = true;
+    }
+    if (chunk_ && chunk_->handlers) {
+        for (const auto& e : *chunk_->handlers) {
+            for (uint32_t pc : {e.start_pc, e.end_pc, e.handler_pc}) {
+                if (pc <= n) pinned[pc] = true;
+            }
+            if (e.genreturn_pc >= 0 && static_cast<size_t>(e.genreturn_pc) <= n) {
+                pinned[static_cast<size_t>(e.genreturn_pc)] = true;
+            }
+        }
+    }
+
+    std::vector<uint8_t> out;
+    out.reserve(n);
+    // Old offset -> new offset, for every instruction start plus the end.
+    std::vector<uint32_t> moved(n + 1, 0);
+    // Where each instruction ended up, paired with where it came from, so the
+    // jump pass does not have to re-derive which pairs were fused.
+    std::vector<std::pair<uint32_t, uint32_t>> placed;  // {new_pc, old_pc}
+    placed.reserve(starts.size());
+    bool changed = false;
+
+    for (size_t i = 0; i < starts.size(); i++) {
+        const uint32_t s = starts[i];
+        moved[s] = static_cast<uint32_t>(out.size());
+        placed.push_back({static_cast<uint32_t>(out.size()), s});
+        const Op op = static_cast<Op>(code_[s]);
+        const int operands = op_operand_bytes(op);
+        const Op fused = fused_store_form(op);
+        if (fused != Op::kCount && i + 1 < starts.size() &&
+            static_cast<Op>(code_[starts[i + 1]]) == Op::Star && !pinned[starts[i + 1]]) {
+            out.push_back(static_cast<uint8_t>(fused));
+            for (int k = 0; k < operands; k++) out.push_back(code_[s + 1 + k]);
+            out.push_back(code_[starts[i + 1] + 1]);   // the Star's register
+            moved[starts[i + 1]] = static_cast<uint32_t>(out.size());
+            i++;
+            changed = true;
+            continue;
+        }
+        out.push_back(static_cast<uint8_t>(op));
+        for (int k = 0; k < operands; k++) out.push_back(code_[s + 1 + k]);
+    }
+    moved[n] = static_cast<uint32_t>(out.size());
+    if (!changed) return;
+
+    // Every jump was measured against the old layout; re-measure it against
+    // the new one. Only shrinking happens here, so an offset that fit before
+    // still fits.
+    for (const auto& [new_pc, old_pc] : placed) {
+        const int off_at = jump_offset_at(op_operand_kind(static_cast<Op>(out[new_pc])));
+        if (off_at < 0) continue;
+        const size_t old_off_pos = old_pc + 1 + static_cast<size_t>(off_at);
+        const int16_t old_off = static_cast<int16_t>(
+            static_cast<uint16_t>(code_[old_off_pos]) |
+            (static_cast<uint16_t>(code_[old_off_pos + 1]) << 8));
+        const size_t old_target = old_off_pos + 2 + old_off;
+        const size_t new_off_pos = new_pc + 1 + static_cast<size_t>(off_at);
+        const ptrdiff_t delta = static_cast<ptrdiff_t>(moved[old_target]) -
+                                static_cast<ptrdiff_t>(new_off_pos + 2);
+        if (delta < INT16_MIN || delta > INT16_MAX) { failed_ = true; return; }
+        const uint16_t enc = static_cast<uint16_t>(static_cast<int16_t>(delta));
+        out[new_off_pos] = static_cast<uint8_t>(enc & 0xFF);
+        out[new_off_pos + 1] = static_cast<uint8_t>(enc >> 8);
+    }
+
+    if (chunk_ && chunk_->handlers) {
+        for (auto& e : *chunk_->handlers) {
+            e.start_pc = moved[e.start_pc];
+            e.end_pc = moved[e.end_pc];
+            e.handler_pc = moved[e.handler_pc];
+            if (e.genreturn_pc >= 0) e.genreturn_pc = static_cast<int32_t>(moved[e.genreturn_pc]);
+        }
+    }
+    code_.swap(out);
 }
 
 void BytecodeCompiler::emit(Op op) {

@@ -117,6 +117,8 @@ const OpInfo& op_info(Op op) {
         {"CreateObject", 2, 'h'}, {"CreateArray", 2, 'h'},
         {"Jump", 2, 'o'}, {"JumpIfTrue", 2, 'o'}, {"JumpIfFalse", 2, 'o'},
         {"Return", 0, '-'}, {"Throw", 0, '-'}, {"ReraiseGeneratorReturn", 0, '-'},
+        {"LdarStar", 2, 'r'}, {"LdaSmiStar", 2, 'I'},
+        {"LdaConstStar", 3, 'K'}, {"LdaZeroStar", 1, 'r'},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");
@@ -124,6 +126,9 @@ const OpInfo& op_info(Op op) {
 }
 
 }
+
+int op_operand_bytes(Op op) { return op_info(op).operand_bytes; }
+char op_operand_kind(Op op) { return op_info(op).kind; }
 
 #ifdef QUANTA_VALIDATE_BYTECODE
 void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& name) {
@@ -173,6 +178,8 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'g': case 'f': case 'l': case 'm': case 's': check(0, "receiver"); break;
             case 'C': check(0, "closes the iterator in"); break;
             case 'x': case 'j': check(0, "reads"); check(1, "reads"); break;
+            case 'I': check(1, "stores into"); break;
+            case 'K': check(2, "stores into"); break;
             case 'p': check(0, "reads"); check(1, "key"); check(2, "raw key"); break;
             default: break;  // no register operands
         }
@@ -233,6 +240,17 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
             case 'i':
                 out << " #" << static_cast<int>(static_cast<int8_t>(chunk.code[operand_pc]));
                 break;
+            case 'I':
+                out << " #" << static_cast<int>(static_cast<int8_t>(chunk.code[operand_pc]))
+                    << " -> r" << static_cast<int>(chunk.code[operand_pc + 1]);
+                break;
+            case 'K': {
+                uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
+                               (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
+                out << " [" << idx << "] -> r" << static_cast<int>(chunk.code[operand_pc + 2])
+                    << " ; " << chunk.constants[idx].to_string();
+                break;
+            }
             case 'S':
                 out << " args=r" << static_cast<int>(chunk.code[operand_pc])
                     << " argc=" << static_cast<int>(chunk.code[operand_pc + 1]);
