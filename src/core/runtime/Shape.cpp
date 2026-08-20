@@ -127,7 +127,7 @@ std::vector<Shape::PropertyInfo> Shape::properties_in_order() const {
     std::vector<PropertyInfo> props;
     for (const Shape* s = this; s->parent_; s = s->parent_) {
         uint32_t width = s->is_accessor_added_ ? 2u : 1u;
-        props.push_back({*s->added_key_, s->slot_count_ - width, s->is_accessor_added_});
+        props.push_back({s->added_key_, s->slot_count_ - width, s->is_accessor_added_});
     }
     std::reverse(props.begin(), props.end());
     return props;
@@ -137,7 +137,7 @@ std::vector<std::string> Shape::keys_in_order() const {
     std::vector<std::string> keys;
     keys.reserve(slot_count_);
     for (const auto& p : properties_in_order()) {
-        keys.push_back(p.key);
+        keys.push_back(*p.key);
     }
     return keys;
 }

@@ -299,6 +299,12 @@ void Object::add_accessor_shape_property_cached(const std::string& key, const Va
 
 bool Object::set_shape_slot(const std::string& key, const Value& value) {
     if (!shape_) return false;
+    // An accessor holds two slots and neither of them is a place to put a data
+    // value; writing one there left the shape still calling the key an accessor
+    // with the getter overwritten. Refusing sends the caller down the path that
+    // replaces the property properly. The test leads with a flag the shape
+    // keeps, so a shape with no accessor at all pays one bool.
+    if (shape_->is_accessor_slot(key)) return false;
     if (Value* existing = find_shape_slot(key)) { *existing = value; return true; }
     Shape* next = shape_->transition(key);
     if (!next) return false;
@@ -328,14 +334,14 @@ void Object::migrate_to_dictionary_mode() {
             // later attribute change) already migrated this exact key --
             // in which case that entry is authoritative and must not be
             // clobbered by the (now stale) shape-slot pair.
-            if (!descs.find(prop.key)) {
+            if (!descs.find(*prop.key)) {
                 Object* getter = as_object_like(*shape_slot_ptr(prop.slot_index));
                 Object* setter = as_object_like(*shape_slot_ptr(prop.slot_index + 1));
-                descs[prop.key] = PropertyDescriptor(getter, setter);
+                descs[*prop.key] = PropertyDescriptor(getter, setter);
             }
             continue;
         }
-        auto* it = descs.find(prop.key);
+        auto* it = descs.find(*prop.key);
         if (it) {
             // Non-default attrs already live here; the shape slot was only
             // the value mirror. Overwriting would reset attributes.
@@ -343,7 +349,7 @@ void Object::migrate_to_dictionary_mode() {
                 it->set_value(*shape_slot_ptr(prop.slot_index));
             }
         } else {
-            descs[prop.key] = PropertyDescriptor(*shape_slot_ptr(prop.slot_index), PropertyAttributes::Default);
+            descs[*prop.key] = PropertyDescriptor(*shape_slot_ptr(prop.slot_index), PropertyAttributes::Default);
         }
     }
     // RareExtras becomes the sole order authority once shape_ goes null
@@ -351,7 +357,7 @@ void Object::migrate_to_dictionary_mode() {
     // current slot_count(), which would collapse them all to one snapshot).
     RareExtras& extras = ensure_extras();
     for (const auto& prop : shape_->properties_in_order()) {
-        extras.extra_property_order.push_back({prop.key, prop.slot_index});
+        extras.extra_property_order.push_back({*prop.key, prop.slot_index});
     }
     extras.next_order_snapshot = shape_->slot_count();
     // Leftover butterfly shape-slot capacity is left allocated (not shrunk,
@@ -1486,6 +1492,21 @@ bool Object::create_own_data_property(const std::string& key, const Value& value
         return set_element(index, value);
     }
     if (!is_extensible()) return false;
+    // An own accessor under this key is replaced by the data property, which is
+    // a define and not a store -- the ordinary path below would only try to put
+    // the value where the getter lives. Both tests lead with a flag, so an
+    // object with no accessor and no descriptor of its own pays two bools.
+    bool own_accessor = shape_ && shape_->is_accessor_slot(key);
+    if (!own_accessor && has_any_descriptor_override()) {
+        if (auto* d = descriptors()) {
+            auto* it = d->find(key);
+            own_accessor = it && it->is_accessor_descriptor();
+        }
+    }
+    if (own_accessor) {
+        PropertyDescriptor data_desc(value, PropertyAttributes::Default);
+        return set_property_descriptor(key, data_desc);
+    }
     return store_in_overflow(key, value);
 }
 
@@ -1936,8 +1957,8 @@ void Object::collect_named_keys_in_order(std::vector<std::string>& raw_keys) con
     const bool track_emitted = peek_extras() != nullptr;
     auto emit_shape_before = [&](uint32_t snapshot) {
         while (shape_idx < shape_props.size() && shape_props[shape_idx].slot_index < snapshot) {
-            if (track_emitted) emitted.insert(shape_props[shape_idx].key);
-            raw_keys.push_back(shape_props[shape_idx].key);
+            if (track_emitted) emitted.insert(*shape_props[shape_idx].key);
+            raw_keys.push_back(*shape_props[shape_idx].key);
             shape_idx++;
         }
     };

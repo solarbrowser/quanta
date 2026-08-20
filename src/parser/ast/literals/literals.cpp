@@ -72,6 +72,11 @@ static std::string literal_to_property_key(Context& ctx, const Value& val) {
 // ObjectLiteral::evaluate and the VM's Op::ObjectSpreadInto so the two cannot
 // drift -- the same reason append_spread_values exists for the array and
 // argument forms. Returns false with an exception pending on the context.
+// CopyDataProperties makes each property outright (CreateDataProperty), which
+// an assignment does not: [[Set]] walks the prototype chain, so a setter above
+// the target -- Object.prototype's, most easily -- ran instead of the property
+// being created, and the spread came back missing it. Object.assign is the one
+// that really is specified with Set, and stays as it is.
 bool object_spread_into(Context& ctx, Object* target, const Value& spread_value) {
         if (ctx.has_exception()) return false;
 
@@ -98,8 +103,8 @@ bool object_spread_into(Context& ctx, Object* target, const Value& spread_value)
             for (size_t u = 0; u < units; u++) {
                 const int32_t unit = src->code_unit_at(u);
                 if (unit < 0) break;
-                target->set_property(std::to_string(u),
-                                     Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
+                target->create_own_data_property(
+                    std::to_string(u), Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
                 if (ctx.has_exception()) return false;
             }
             return true;
@@ -123,13 +128,13 @@ bool object_spread_into(Context& ctx, Object* target, const Value& spread_value)
                     if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
                     if (!desc.is_enumerable()) continue;
                     Value prop_value = proxy->get_trap(key_value);
-                    target->set_property(prop_name, prop_value);
+                    target->create_own_data_property(prop_name, prop_value);
                 }
             } else {
                 auto property_names = spread_obj->get_enumerable_keys();
                 for (const auto& prop_name : property_names) {
                     Value prop_value = spread_obj->get_property(prop_name);
-                    target->set_property(prop_name, prop_value);
+                    target->create_own_data_property(prop_name, prop_value);
                 }
             }
         } catch (const std::exception& e) {
@@ -288,7 +293,10 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             PropertyDescriptor own_desc(value, PropertyAttributes::Default);
             object->set_property_descriptor(key, own_desc);
         } else {
-            object->set_property(key, value);
+            // PropertyDefinitionEvaluation creates the property outright; an
+            // assignment would walk the prototype chain and hand the value to
+            // an inherited setter instead, leaving the literal without it.
+            object->create_own_data_property(key, value);
         }
     }
 

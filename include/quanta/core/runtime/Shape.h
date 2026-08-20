@@ -86,7 +86,10 @@ public:
     // migrate_to_dictionary_mode() is the only consumer: it needs to know,
     // per key, where its value(s) live AND whether to read them as a plain
     // value or as a getter/setter pair.
-    struct PropertyInfo { std::string key; uint32_t slot_index; bool is_accessor; };
+    // The key is the interned pointer the shape already holds, not a copy of
+    // it: enumerating an object copied every one of its key strings, which for
+    // a spread or an Object.assign was most of the work.
+    struct PropertyInfo { const std::string* key; uint32_t slot_index; bool is_accessor; };
     std::vector<PropertyInfo> properties_in_order() const;
 
     // Canonicalizes `key` to a stable address. Backed by a thread_local set
