@@ -119,6 +119,8 @@ const OpInfo& op_info(Op op) {
         {"Return", 0, '-'}, {"Throw", 0, '-'}, {"ReraiseGeneratorReturn", 0, '-'},
         {"LdarStar", 2, 'r'}, {"LdaSmiStar", 2, 'I'},
         {"LdaConstStar", 3, 'K'}, {"LdaZeroStar", 1, 'r'},
+        {"LdaThisStar", 1, 'r'}, {"LdaEnvStar", 3, 'N'}, {"LdaLookupStar", 3, 'N'},
+        {"LdaEnvSlotStar", 4, 'F'}, {"GetNamedStar", 6, 'G'},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");
@@ -180,6 +182,9 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'x': case 'j': check(0, "reads"); check(1, "reads"); break;
             case 'I': check(1, "stores into"); break;
             case 'K': check(2, "stores into"); break;
+            case 'N': check(2, "stores into"); break;
+            case 'F': check(3, "stores into"); break;
+            case 'G': check(0, "receiver"); check(5, "stores into"); break;
             case 'p': check(0, "reads"); check(1, "key"); check(2, "raw key"); break;
             default: break;  // no register operands
         }
@@ -345,6 +350,32 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                                     (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
                     << " '" << chunk.name_at(name_idx) << "'";
+                break;
+            }
+            case 'N': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
+                out << " '" << chunk.name_at(name_idx) << "'"
+                    << " -> r" << static_cast<int>(chunk.code[operand_pc + 2]);
+                break;
+            }
+            case 'F': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                out << " slot" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.name_at(name_idx) << "'"
+                    << " -> r" << static_cast<int>(chunk.code[operand_pc + 3]);
+                break;
+            }
+            case 'G': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
+                                  (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.name_at(name_idx) << "'"
+                    << " fb=" << fb_idx
+                    << " -> r" << static_cast<int>(chunk.code[operand_pc + 5]);
                 break;
             }
             case 'e': {

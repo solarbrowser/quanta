@@ -4089,6 +4089,11 @@ Op fused_store_form(Op producer) {
         case Op::LdaSmi:   return Op::LdaSmiStar;
         case Op::LdaZero:  return Op::LdaZeroStar;
         case Op::LdaConst: return Op::LdaConstStar;
+        case Op::LdaThis:  return Op::LdaThisStar;
+        case Op::LdaEnv:   return Op::LdaEnvStar;
+        case Op::LdaLookup: return Op::LdaLookupStar;
+        case Op::LdaEnvSlot: return Op::LdaEnvSlotStar;
+        case Op::GetNamed: return Op::GetNamedStar;
         default:           return Op::kCount;
     }
 }

@@ -220,6 +220,11 @@ enum class Op : uint8_t {
     LdaSmiStar,    // i8, dst
     LdaConstStar,  // k16, dst
     LdaZeroStar,   // dst
+    LdaThisStar,   // dst
+    LdaEnvStar,    // n16, dst
+    LdaLookupStar, // n16, dst
+    LdaEnvSlotStar,// slot, n16, dst
+    GetNamedStar,  // recv, n16, fb16, dst
 
     kCount
 };

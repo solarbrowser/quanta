@@ -1402,6 +1402,46 @@ BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
         }                                                                  \
     } while (0)
 
+// A fused producer runs the very handler the plain one does; all it adds is
+// parking the result in the register named by the byte that follows the plain
+// form's operands. Both opcodes therefore map to the same function, which
+// reads which of the two it is off the instruction itself. `base` is the
+// plain form's total length.
+//
+// FUSED_TAIL is for an exit that still has `pc` on the opcode. It answers at
+// compile time, off the handler's own template argument, because answering at
+// run time cost more than the dispatch it saves: the test is paid by every
+// execution of the plain form too, and these are the hottest handlers there
+// are. FUSED_EPILOGUE is for a generated handler, which has already walked pc
+// past its operands and keeps the instruction's own address in instr_pc; it
+// runs rarely enough to read the answer off the instruction instead.
+//
+// The epilogue's pc test is what tells a body that ran to the end from one
+// that raised: CHECK_EXC inside a body does not leave the exception pending,
+// it clears it and points pc at the covering handler, so asking the context
+// afterwards learns nothing. Reaching the end leaves pc exactly one operand
+// run past the instruction, and every one of these has fixed-size operands.
+// A handler cannot itself start there, because that address is the fused
+// Star's own and fuse_store_pairs refuses to swallow a Star anything can
+// arrive at.
+#define FUSED_TAIL(base)                                                    \
+    do {                                                                     \
+        if constexpr (Fused) {                                               \
+            f.regs[f.code[pc + (base)]] = acc;                               \
+            pc += (base) + 1;                                                \
+        } else {                                                             \
+            pc += (base);                                                    \
+        }                                                                    \
+        DISPATCH();                                                          \
+    } while (0)
+
+#define FUSED_EPILOGUE(fused_op, base)                                      \
+    if (pc == instr_pc + (base) &&                                          \
+        f.code[instr_pc] == static_cast<uint8_t>(fused_op)) {               \
+        f.regs[f.code[instr_pc + (base)]] = acc;                            \
+        pc = instr_pc + (base) + 1;                                         \
+    } else ((void)0)
+
 // The check the switch ran after every case, for an opcode that set an
 // exception on the context without saying so. Unlike CHECK_EXC there is no
 // loop to continue to: it only moves pc, and the DISPATCH that follows
@@ -1577,6 +1617,7 @@ Value h_gen_LdaThis(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    FUSED_EPILOGUE(Op::LdaThisStar, 1);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -1978,6 +2019,7 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    FUSED_EPILOGUE(Op::LdaLookupStar, 3);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -2128,6 +2170,7 @@ Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
 // is most of the cost once the cache is warm. A script's top-level let/const
 // is reached this way on every access, so the warm path gets a handler of its
 // own and everything else tail-calls the generated one unchanged.
+template <bool Fused>
 Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
     const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
     if (LIKELY(entry.obj_shape)) {
@@ -2139,14 +2182,12 @@ Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
                    entry.descriptor_epoch == Object::descriptor_epoch())) {
             if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
                 acc = *s;
-                pc += 3;
-                DISPATCH();
+                FUSED_TAIL(3);
             }
         }
     } else if (LIKELY(entry.slot)) {
         acc = *entry.slot;
-        pc += 3;
-        DISPATCH();
+        FUSED_TAIL(3);
     }
     [[clang::musttail]] return h_gen_LdaLookup(f, pc, acc);
 }
@@ -2233,6 +2274,7 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc);
 // any environment, an object environment on the way has to be asked in the
 // order the full handler asks it, and a hole has to be reported -- all three
 // tail-call below.
+template <bool Fused>
 Value h_LdaEnvFast(Frame& f, uint32_t pc, Value acc) {
     static const std::string* kThis = Shape::intern("this");
     const std::string* key = f.chunk.names[read_u16(f.code, pc + 1)];
@@ -2241,8 +2283,7 @@ Value h_LdaEnvFast(Frame& f, uint32_t pc, Value acc) {
             Value out;
             if (LIKELY(env->try_read_declarative_chain(key, out))) {
                 acc = out;
-                pc += 3;
-                DISPATCH();
+                FUSED_TAIL(3);
             }
         }
     }
@@ -2309,6 +2350,7 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    FUSED_EPILOGUE(Op::LdaEnvStar, 3);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -2379,6 +2421,7 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc);
 // the compiler assigned. A TDZ hole, a name that is not there and the chain
 // walk behind it all tail-call the generated handler, so the common read
 // stops paying its prologue.
+template <bool Fused>
 Value h_LdaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const uint8_t slot = code[pc + 1];
@@ -2387,8 +2430,7 @@ Value h_LdaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
         if (auto* e = env->inline_slot_interned(slot, key)) {
             if (LIKELY(e->slot.initialized)) {
                 acc = e->slot.value;
-                pc += 4;
-                DISPATCH();
+                FUSED_TAIL(4);
             }
         }
     }
@@ -2433,6 +2475,7 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    FUSED_EPILOGUE(Op::LdaEnvSlotStar, 4);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -3442,6 +3485,7 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    FUSED_EPILOGUE(Op::GetNamedStar, 6);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -3452,13 +3496,14 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
 // a throw would ever need. The first feedback entry is the whole fast path
 // here: a miss, a polymorphic site or anything that is not a plain object
 // tail-calls the generated handler, which rescans from scratch.
-Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc);
+template <bool Fused> Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc);
 
 // Only the read that answers from the receiver's own shape slot, which is
 // seven in ten of them. Everything else -- an Array's length, an inherited
 // property, a primitive receiver, a miss -- tail-calls the handler below, so
 // the common read stops paying that handler's prologue: it saves five
 // callee-saved registers and a frame, for paths it does not take.
+template <bool Fused>
 Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const Value& receiver = f.regs[code[pc + 1]];
@@ -3474,15 +3519,15 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
                        !obj->has_any_descriptor_override())) {
                 if (const Value* slot = obj->get_shape_slot_unchecked(e.slot_index)) {
                     acc = *slot;
-                    pc += 6;
-                    DISPATCH();
+                    FUSED_TAIL(6);
                 }
             }
         }
     }
-    [[clang::musttail]] return h_GetNamedRest(f, pc, acc);
+    [[clang::musttail]] return h_GetNamedRest<Fused>(f, pc, acc);
 }
 
+template <bool Fused>
 Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const Value& receiver = f.regs[code[pc + 1]];
@@ -3499,8 +3544,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             fb.own_desc_epoch == Object::descriptor_epoch() &&
             as_object_like(receiver) == fb.own_desc_receiver) {
             acc = fb.own_desc_value;
-            pc += 6;
-            DISPATCH();
+            FUSED_TAIL(6);
         }
     }
     if (LIKELY(receiver.is_object())) {
@@ -3513,8 +3557,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             const FeedbackSlot& afb = f.chunk.feedback[read_u16(code, pc + 4)];
             if (LIKELY(afb.array_length && obj->has_only_dense_elements())) {
                 acc = Value(static_cast<double>(obj->element_count()));
-                pc += 6;
-                DISPATCH();
+                FUSED_TAIL(6);
             }
         } else if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
             const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
@@ -3540,8 +3583,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                 if (obj->has_any_descriptor_override()) break;
                 if (const Value* slot = obj->get_shape_slot_unchecked(cand.slot_index)) {
                     acc = *slot;
-                    pc += 6;
-                    DISPATCH();
+                    FUSED_TAIL(6);
                 }
                 break;
             }
@@ -3565,20 +3607,17 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                         // handler's epilogue is for.
                         if (pe.absent) {
                             acc = Value();
-                            pc += 6;
-                            DISPATCH();
+                            FUSED_TAIL(6);
                         }
                         if (pe.is_getter) break;
                         if (pe.from_descriptor) {
                             if (pe.desc_epoch == Object::descriptor_epoch()) {
                                 acc = pe.cached_value;
-                                pc += 6;
-                                DISPATCH();
+                                FUSED_TAIL(6);
                             }
                         } else if (const Value* hs = pe.holder->get_shape_slot_unchecked(pe.slot_index)) {
                             acc = *hs;
-                            pc += 6;
-                            DISPATCH();
+                            FUSED_TAIL(6);
                         }
                         break;
                     }
@@ -3611,8 +3650,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                                             : PK::Count;
             if (LIKELY(kind != PK::Count && Context::primitive_prototype(kind) == fb.prim_proto)) {
                 acc = fb.prim_value;
-                pc += 6;
-                DISPATCH();
+                FUSED_TAIL(6);
             }
         }
     }
@@ -4382,6 +4420,11 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaSmiStar)]    = &h_LdaSmiStar;
     t[static_cast<uint8_t>(Op::LdaZeroStar)]   = &h_LdaZeroStar;
     t[static_cast<uint8_t>(Op::LdaConstStar)]  = &h_LdaConstStar;
+    t[static_cast<uint8_t>(Op::LdaThisStar)]   = &h_gen_LdaThis;
+    t[static_cast<uint8_t>(Op::LdaEnvStar)] = &h_LdaEnvFast<true>;
+    t[static_cast<uint8_t>(Op::LdaLookupStar)] = &h_LdaLookupFast<true>;
+    t[static_cast<uint8_t>(Op::LdaEnvSlotStar)] = &h_LdaEnvSlotFast<true>;
+    t[static_cast<uint8_t>(Op::GetNamedStar)] = &h_GetNamedFast<true>;
     t[static_cast<uint8_t>(Op::LdaZero)]       = &h_LdaZero;
     t[static_cast<uint8_t>(Op::LdaUndefined)]  = &h_LdaUndefined;
     t[static_cast<uint8_t>(Op::LdaNull)]       = &h_LdaNull;
@@ -4430,15 +4473,15 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::ToTemplateString)] = &h_gen_ToTemplateString;
     t[static_cast<uint8_t>(Op::ToPropertyKey)] = &h_gen_ToPropertyKey;
     t[static_cast<uint8_t>(Op::CheckObjectCoercible)] = &h_gen_CheckObjectCoercible;
-    t[static_cast<uint8_t>(Op::LdaLookup)] = &h_LdaLookupFast;
+    t[static_cast<uint8_t>(Op::LdaLookup)] = &h_LdaLookupFast<false>;
     t[static_cast<uint8_t>(Op::LdaLookupTypeof)] = &h_gen_LdaLookupTypeof;
     t[static_cast<uint8_t>(Op::StaLookup)] = &h_StaLookupFast;
     t[static_cast<uint8_t>(Op::CheckLookupResolvable)] = &h_gen_CheckLookupResolvable;
     t[static_cast<uint8_t>(Op::StaLookupChecked)] = &h_gen_StaLookupChecked;
-    t[static_cast<uint8_t>(Op::LdaEnv)] = &h_LdaEnvFast;
+    t[static_cast<uint8_t>(Op::LdaEnv)] = &h_LdaEnvFast<false>;
     t[static_cast<uint8_t>(Op::StaEnv)] = &h_gen_StaEnv;
     t[static_cast<uint8_t>(Op::StaEnvInit)] = &h_gen_StaEnvInit;
-    t[static_cast<uint8_t>(Op::LdaEnvSlot)] = &h_LdaEnvSlotFast;
+    t[static_cast<uint8_t>(Op::LdaEnvSlot)] = &h_LdaEnvSlotFast<false>;
     t[static_cast<uint8_t>(Op::StaEnvSlot)] = &h_gen_StaEnvSlot;
     t[static_cast<uint8_t>(Op::StaEnvSlotInit)] = &h_gen_StaEnvSlotInit;
     t[static_cast<uint8_t>(Op::BindEnvLocals)] = &h_gen_BindEnvLocals;
@@ -4475,7 +4518,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::SuperCall)] = &h_gen_SuperCall;
     t[static_cast<uint8_t>(Op::SpreadInto)] = &h_gen_SpreadInto;
     t[static_cast<uint8_t>(Op::ObjectSpreadInto)] = &h_gen_ObjectSpreadInto;
-    t[static_cast<uint8_t>(Op::GetNamed)] = &h_GetNamedFast;
+    t[static_cast<uint8_t>(Op::GetNamed)] = &h_GetNamedFast<false>;
     t[static_cast<uint8_t>(Op::SetNamed)] = &h_SetNamedFast;
     t[static_cast<uint8_t>(Op::GetPrivate)] = &h_gen_GetPrivate;
     t[static_cast<uint8_t>(Op::SetPrivate)] = &h_gen_SetPrivate;
