@@ -664,6 +664,15 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
         }
             
         case Operator::EQUAL: {
+            // Two objects are compared as references and nothing is converted:
+            // the spec's first step is IsStrictlyEqual once the types match.
+            // Converting anyway turned every pair of plain objects into
+            // "[object Object]" and made them equal to each other -- and every
+            // pair of empty arrays into "", and two identical function
+            // literals into the same source text.
+            if (left_value.is_object_like() && right_value.is_object_like()) {
+                return Value(left_value.strict_equals(right_value));
+            }
             Value lp = toPrimitive(left_value, "default");
             if (ctx.has_exception()) return Value();
             Value rp = toPrimitive(right_value, "default");
@@ -671,6 +680,10 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
             return Value(lp.loose_equals(rp));
         }
         case Operator::NOT_EQUAL: {
+            // See EQUAL above.
+            if (left_value.is_object_like() && right_value.is_object_like()) {
+                return Value(!left_value.strict_equals(right_value));
+            }
             Value lp = toPrimitive(left_value, "default");
             if (ctx.has_exception()) return Value();
             Value rp = toPrimitive(right_value, "default");
