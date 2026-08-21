@@ -3876,13 +3876,25 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_closures().size() - 1));
     }
 
+    // A `using` at the top of the body disposes when the body ends, exactly as
+    // one inside a block does; the body is that block's scope here.
+    bool body_has_using = false;
     for (const auto& stmt : block->get_statements()) {
-        if (!compiler.compile_statement(stmt.get())) return nullptr;
+        if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) { body_has_using = true; break; }
+    }
+    FinallyScope body_escaped;
+    if (body_has_using) {
+        if (!compiler.emit_dispose_scope_body(block, body_escaped)) return nullptr;
+    } else {
+        for (const auto& stmt : block->get_statements()) {
+            if (!compiler.compile_statement(stmt.get())) return nullptr;
+        }
     }
 
     // Falling off the end returns undefined.
     compiler.emit(Op::LdaUndefined);
     compiler.emit(Op::Return);
+    if (body_has_using && !compiler.emit_finally_pads(body_escaped)) return nullptr;
 
     compiler.chunk_->register_count = static_cast<uint16_t>(compiler.temp_watermark_);
     compiler.chunk_->parameter_count = static_cast<uint8_t>(param_names.size());
@@ -6012,7 +6024,24 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
                     bool is_const = vd->get_kind() == VariableDeclarator::Kind::CONST;
                     for (const auto& d : vd->get_declarations()) {
-                        if (d->get_id()) header_vars.push_back({d->get_id()->get_name(), true, is_const, true});
+                        if (!d->get_id()) continue;
+                        const std::string& hname = d->get_id()->get_name();
+                        if (!hname.empty()) {
+                            header_vars.push_back({hname, true, is_const, true});
+                            continue;
+                        }
+                        // A destructuring declarator carries no name of its own;
+                        // each name the pattern binds needs its own copy-forward
+                        // slot, or the body reads a binding nothing declared.
+                        if (d->get_init() &&
+                            d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                            std::vector<std::string> bound;
+                            static_cast<const DestructuringAssignment*>(d->get_init())
+                                ->collect_bound_names(bound);
+                            for (const auto& bn : bound) {
+                                if (!bn.empty()) header_vars.push_back({bn, true, is_const, true});
+                            }
+                        }
                     }
                 }
             }
@@ -6116,15 +6145,6 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             const ASTNode* finally_node = stmt->get_finally_block();
             if (!catch_node && !finally_node) return false;
 
-            // A finally must run on every exit. The try block's return, break
-            // and continue each get a pad below; an escape out of the catch
-            // body would need pads of its own and is still refused rather than
-            // silently skipped.
-            if (finally_node && catch_node &&
-                contains_control_escape(static_cast<const CatchClause*>(catch_node)->get_body())) {
-                return false;
-            }
-
             // A throw skips straight to the handler, bypassing any loop
             // Environment pop inside the try -- see VM::run's env_saves side-stack.
             bool save_env = env_mode_;
@@ -6158,6 +6178,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             size_t handler_idx_try = SIZE_MAX, handler_idx_catch = SIZE_MAX;
 
             size_t catch_body_start = 0, catch_body_end = 0, jump_catch_ok = 0;
+            // A return/break/continue leaving the catch body owes the finally the
+            // same pad the try block's escapes get, and its own one: the catch
+            // body runs under a separate SaveEnv.
+            FinallyScope catch_escaped_scope;
             if (catch_node) {
                 const auto* clause = static_cast<const CatchClause*>(catch_node);
                 size_t catch_pc = code_.size();
@@ -6193,7 +6217,19 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 // else: optional catch binding (`catch {}`) -- exception in
                 // acc is simply discarded, nothing to store.
                 catch_body_start = code_.size();
-                if (!compile_statement(clause->get_body())) return false;
+                if (finally_node) {
+                    FinallyScope cfs;
+                    cfs.finally_node = finally_node;
+                    cfs.save_env = save_env_for_catch_body;
+                    cfs.loop_depth = loop_stack_.size();
+                    finally_stack_.push_back(std::move(cfs));
+                }
+                bool catch_body_ok = compile_statement(clause->get_body());
+                if (finally_node) {
+                    catch_escaped_scope = std::move(finally_stack_.back());
+                    finally_stack_.pop_back();
+                }
+                if (!catch_body_ok) return false;
                 catch_body_end = code_.size();
                 if (catch_env_idx >= 0) { emit(Op::ExitLoopEnv); env_depth_--; }
                 if (save_env_for_catch_body) {
@@ -6272,6 +6308,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             }
 
             if (!emit_finally_pads(escaped_scope)) return false;
+            if (!emit_finally_pads(catch_escaped_scope)) return false;
             return true;
         }
 
@@ -7125,13 +7162,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     // Anything that is not a reference is `true` without
                     // being evaluated, same as the tree-walker.
                     if (operand->get_type() == ASTNode::Type::IDENTIFIER) {
-                        // Inside a `with` the name may belong to the object,
-                        // where deleting is a property delete, not a binding one.
-                        if (with_depth_ > 0) return false;
                         const std::string& name = static_cast<const Identifier*>(operand)->get_name();
                         emit(Op::DeleteLookup);
                         emit_u16(add_name(name));
-                        emit_u8(is_local(name) && !env_names_.count(name) ? 1 : 0);
+                        // A register local answers false without a lookup, but an
+                        // open `with` can carry the same name on its object, and
+                        // then the delete belongs to that object.
+                        const bool reg_local = is_local(name) && !env_names_.count(name);
+                        emit_u8(reg_local ? (with_depth_ > 0 ? 2 : 1) : 0);
                         return !failed_;
                     }
                     // Not a reference: the answer is true, but the operand is

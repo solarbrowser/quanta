@@ -4696,12 +4696,28 @@ Value h_gen_DeleteLookup(Frame& f, uint32_t pc, Value acc) {
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
     const std::string* name = chunk.names[read_u16(code, pc + 1)];
-    const bool known_local = code[pc + 3] != 0;
+    const uint8_t mode = code[pc + 3];
     pc += 4;
     if (ctx.is_strict_mode()) {
         ctx.throw_syntax_error("Delete of an unqualified identifier in strict mode");
+    } else if (mode == 1) {
+        acc = Value(false);
+    } else if (mode == 2) {
+        // The frame local stands unless a with object nearer on the chain owns
+        // the name; HasBinding there is a HasProperty a Proxy can throw from.
+        acc = Value(false);
+        Context* prev_cc = Object::current_context_;
+        Object::current_context_ = &ctx;
+        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+            const bool has = e->has_own_binding(*name);
+            if (ctx.has_exception()) break;
+            if (!has) continue;
+            if (e->is_with_environment()) acc = Value(e->delete_binding(*name));
+            break;
+        }
+        Object::current_context_ = prev_cc;
     } else {
-        acc = Value(known_local ? false : ctx.delete_binding(*name));
+        acc = Value(ctx.delete_binding(*name));
     }
     CHECK_EXC_TAIL();
     DISPATCH();

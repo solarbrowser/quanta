@@ -271,7 +271,7 @@ enum class Op : uint8_t {
     // local of this frame: a declared binding is not configurable, so the
     // answer is false, and a chain lookup would otherwise find and delete some
     // outer binding of the same name.
-    DeleteLookup,              // n16, u8: 1 when the name is a frame local
+    DeleteLookup,              // n16, u8: 0 chain lookup, 1 frame local, 2 frame local under a with
 
     // `using`/`await using`. A block that declares one opens a dispose scope on
     // entry and runs it on every exit, which is the same shape a finally has,

@@ -974,23 +974,6 @@ Value ForStatement::evaluate(Context& ctx) {
         bool has_per_iteration_scope = false;
         std::vector<std::string> iter_var_names;
 
-        // Destructuring for-init (`for (let [x] = ...;;)`) is a bare AssignmentExpression, not a VariableDeclaration -- pre-create its lexical bindings before evaluating so they don't leak to the outer scope.
-        if (init_ && (init_decl_kind_ == 1 || init_decl_kind_ == 2)) {
-            ASTNode* destr_node = init_.get();
-            if (destr_node->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-                destr_node = static_cast<AssignmentExpression*>(destr_node)->get_left();
-            }
-            if (auto* destr = dynamic_cast<DestructuringAssignment*>(destr_node)) {
-                std::vector<std::string> bound;
-                destr->collect_bound_names(bound);
-                for (const auto& tname : bound) {
-                    ctx.create_lexical_binding(tname, Value(), true);
-                    if (init_decl_kind_ == 1) iter_var_names.push_back(tname);
-                }
-                has_per_iteration_scope = !iter_var_names.empty();
-            }
-        }
-
         if (init_) {
             init_->evaluate(ctx);
             if (ctx.has_exception()) {
@@ -1007,7 +990,18 @@ Value ForStatement::evaluate(Context& ctx) {
         if (var_decl->get_kind() == VariableDeclarator::Kind::LET) {
             has_per_iteration_scope = true;
             for (const auto& decl : var_decl->get_declarations()) {
-                iter_var_names.push_back(decl->get_id()->get_name());
+                const std::string& dname = decl->get_id()->get_name();
+                if (!dname.empty()) {
+                    iter_var_names.push_back(dname);
+                    continue;
+                }
+                // A destructuring declarator has no name of its own; the names
+                // it declares are the pattern's, and each needs its own copy.
+                if (decl->get_init() &&
+                    decl->get_init()->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                    static_cast<DestructuringAssignment*>(decl->get_init())
+                        ->collect_bound_names(iter_var_names);
+                }
             }
         }
     }

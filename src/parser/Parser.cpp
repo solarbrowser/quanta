@@ -4240,16 +4240,20 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                         return nullptr;
                     }
 
-                    Position assign_start = destructuring->get_start();
-                    Position assign_end = initializer->get_end();
-                    auto assignment = std::make_unique<AssignmentExpression>(
-                        std::move(destructuring),
-                        AssignmentExpression::Operator::ASSIGN,
-                        std::move(initializer),
-                        assign_start,
-                        assign_end
-                    );
-                    init = std::move(assignment);
+                    // An initializer settles it: this head declares, it does not
+                    // assign, so it takes the same shape `const [a] = x;` does
+                    // outside a for. Wrapping it in an AssignmentExpression left
+                    // the two indistinguishable, and a pattern that assigns
+                    // writes its names outward instead of binding them.
+                    Position pat_start = destructuring->get_start();
+                    static_cast<DestructuringAssignment*>(destructuring.get())
+                        ->set_source(std::move(initializer));
+                    std::vector<std::unique_ptr<VariableDeclarator>> declarations;
+                    declarations.push_back(std::make_unique<VariableDeclarator>(
+                        std::make_unique<Identifier>("", pat_start, pat_start),
+                        std::move(destructuring), kind, pat_start, get_current_position()));
+                    init = std::make_unique<VariableDeclaration>(
+                        std::move(declarations), kind, decl_start, get_current_position());
                 } else {
                     init = std::move(destructuring);
                 }
