@@ -238,6 +238,17 @@ enum class Op : uint8_t {
     // than awaiting undefined.
     Await,   // u8: 1 when the expression had an operand
 
+    LdaNewTarget,
+    LdaImportMeta,
+
+    // Runs the completion half of a `return` in a suspendable body on the
+    // accumulator. Emitted before Op::Return, never instead of it.
+    SettleReturn,   // u8: 1 when the return had an operand
+
+    // `yield*` on the accumulator: the whole delegation protocol, which
+    // suspends as many times as the inner iterator has values.
+    YieldStar,
+
     kCount
 };
 

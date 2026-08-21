@@ -40,6 +40,10 @@ bool object_spread_into(Context&, Object*, const Value&);
 // From language.cpp, backing Op::Yield: the fiber switch a plain `yield` is,
 // shared with YieldExpression::evaluate so the two cannot drift.
 Value perform_yield(Context& ctx, Value yield_value);
+// And backing Op::YieldStar.
+Value perform_yield_delegate(Context& ctx, Value iterable);
+// From statements.cpp, backing Op::SettleReturn.
+Value perform_return_completion(Context& ctx, Value return_value, bool has_argument);
 // Likewise from language.cpp, backing Op::Await.
 Value perform_await(Context& ctx, Value awaited, bool has_argument);
 // From the tree-walker's misc.cpp, backing Op::CreateRegExp.
@@ -1875,6 +1879,49 @@ Value h_gen_Await(Frame& f, uint32_t pc, Value acc) {
     const bool has_argument = f.code[pc + 1] != 0;
     pc += 2;
     acc = perform_await(ctx, acc, has_argument);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_YieldStar(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    acc = perform_yield_delegate(ctx, acc);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_SettleReturn(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const bool has_argument = f.code[pc + 1] != 0;
+    pc += 2;
+    acc = perform_return_completion(ctx, acc, has_argument);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_LdaNewTarget(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    pc += 1;
+    acc = ctx.get_new_target();
+    DISPATCH();
+}
+
+Value h_gen_LdaImportMeta(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    // Unlike new.target this builds the object on first use, so it can throw.
+    acc = ctx.get_import_meta();
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -4471,6 +4518,10 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaSmiStar)]    = &h_LdaSmiStar;
     t[static_cast<uint8_t>(Op::LdaZeroStar)]   = &h_LdaZeroStar;
     t[static_cast<uint8_t>(Op::LdaConstStar)]  = &h_LdaConstStar;
+    t[static_cast<uint8_t>(Op::YieldStar)]     = &h_gen_YieldStar;
+    t[static_cast<uint8_t>(Op::SettleReturn)]  = &h_gen_SettleReturn;
+    t[static_cast<uint8_t>(Op::LdaNewTarget)]  = &h_gen_LdaNewTarget;
+    t[static_cast<uint8_t>(Op::LdaImportMeta)] = &h_gen_LdaImportMeta;
     t[static_cast<uint8_t>(Op::LdaThisStar)]   = &h_gen_LdaThis;
     t[static_cast<uint8_t>(Op::LdaEnvStar)] = &h_LdaEnvFast<true>;
     t[static_cast<uint8_t>(Op::LdaLookupStar)] = &h_LdaLookupFast<true>;

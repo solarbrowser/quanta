@@ -2819,28 +2819,33 @@ std::unique_ptr<ASTNode> WithStatement::clone() const {
 }
 
 
+// What `return` does once its value is in hand, shared by
+// ReturnStatement::evaluate and Op::SettleReturn so the two cannot drift.
+// Only an async *generator*'s `return <expr>` Awaits: a plain async function's
+// return has no Await step, and a bare `return;` has nothing to Await, which
+// costs one fewer microtask tick. Recording the value is what tells
+// `return undefined` apart from falling off the end.
+Value perform_return_completion(Context& ctx, Value return_value, bool has_argument) {
+    AsyncGenerator* async_gen = AsyncGenerator::get_current();
+    if (has_argument && async_gen && async_gen->get_generator_context() == &ctx) {
+        Value awaited;
+        bool threw = await_value(ctx, return_value, awaited);
+        if (threw) { ctx.throw_exception(awaited, true); return Value(); }
+        return_value = awaited;
+    }
+    ctx.set_return_value(return_value);
+    return return_value;
+}
+
 Value ReturnStatement::evaluate(Context& ctx) {
     Value return_value;
 
     if (has_argument()) {
         return_value = argument_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-
-        // Only an async *generator*'s `return <expr>;` explicitly Awaits the value -- a plain
-        // async function's return has no separate Await step.
-        AsyncGenerator* async_gen = AsyncGenerator::get_current();
-        if (async_gen && async_gen->get_generator_context() == &ctx) {
-            Value awaited;
-            bool threw = await_value(ctx, return_value, awaited);
-            if (threw) { ctx.throw_exception(awaited, true); return Value(); }
-            return_value = awaited;
-        }
-    } else {
-        return_value = Value();
     }
 
-    ctx.set_return_value(return_value);
-    return return_value;
+    return perform_return_completion(ctx, return_value, has_argument());
 }
 
 std::string ReturnStatement::to_string() const {

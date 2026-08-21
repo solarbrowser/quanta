@@ -2376,172 +2376,142 @@ Value perform_yield(Context& ctx, Value yield_value) {
     return current_gen->sent_value_;
 }
 
-Value YieldExpression::evaluate(Context& ctx) {
+// The `yield*` protocol: drive another iterator, forwarding next/throw/return
+// into it and every result back out, until it reports done. Shared by
+// YieldExpression::evaluate and Op::YieldStar so the two cannot drift. The
+// operand is already evaluated.
+Value perform_yield_delegate(Context& ctx, Value iterable) {
     Generator* current_gen = Generator::get_current_generator();
 
-    if (is_delegate_) {
-        Value iterable = argument_ ? argument_->evaluate(ctx) : Value();
-        if (ctx.has_exception()) return Value();
 
-        // In async generator context: iterate and throw/yield each value
-        if (!current_gen) {
-            AsyncGenerator* async_gen = AsyncGenerator::get_current();
-            if (!async_gen) return Value();
+    // In async generator context: iterate and throw/yield each value
+    if (!current_gen) {
+        AsyncGenerator* async_gen = AsyncGenerator::get_current();
+        if (!async_gen) return Value();
 
-            // Resolve the iterable -- get iterator
-            Object* iterable_obj = nullptr;
-            if (iterable.is_object()) iterable_obj = iterable.as_object();
-            else if (iterable.is_function()) iterable_obj = iterable.as_function();
+        // Resolve the iterable -- get iterator
+        Object* iterable_obj = nullptr;
+        if (iterable.is_object()) iterable_obj = iterable.as_object();
+        else if (iterable.is_function()) iterable_obj = iterable.as_function();
 
-            if (!iterable_obj) { ctx.throw_type_error("yield* requires iterable"); return Value(); }
+        if (!iterable_obj) { ctx.throw_type_error("yield* requires iterable"); return Value(); }
 
-            // Set current_context_ so getters use the right context for exceptions
-            Context* prev_ctx = Object::current_context_;
-            Object::current_context_ = &ctx;
+        // Set current_context_ so getters use the right context for exceptions
+        Context* prev_ctx = Object::current_context_;
+        Object::current_context_ = &ctx;
 
-            // Try Symbol.asyncIterator first, then Symbol.iterator
-            // Getter access itself may throw (abrupt completion on GetIterator)
-            Value iter_val;
-            bool used_async_iterator = false;
-            Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
-            if (async_iter_sym) {
-                Value iter_fn = iterable_obj->get_property(async_iter_sym->to_property_key());
+        // Try Symbol.asyncIterator first, then Symbol.iterator
+        // Getter access itself may throw (abrupt completion on GetIterator)
+        Value iter_val;
+        bool used_async_iterator = false;
+        Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
+        if (async_iter_sym) {
+            Value iter_fn = iterable_obj->get_property(async_iter_sym->to_property_key());
+            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+            bool async_iter_defined = false;
+            if (!iter_fn.is_undefined() && !iter_fn.is_null()) {
+                async_iter_defined = true;
+                used_async_iterator = true;
+                if (!iter_fn.is_function()) {
+                    Object::current_context_ = prev_ctx;
+                    ctx.throw_type_error("[Symbol.asyncIterator] is not callable");
+                    return Value();
+                }
+                iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
                 if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                bool async_iter_defined = false;
-                if (!iter_fn.is_undefined() && !iter_fn.is_null()) {
-                    async_iter_defined = true;
-                    used_async_iterator = true;
-                    if (!iter_fn.is_function()) {
-                        Object::current_context_ = prev_ctx;
-                        ctx.throw_type_error("[Symbol.asyncIterator] is not callable");
-                        return Value();
-                    }
+                // If asyncIterator() returned non-object, throw TypeError immediately (don't fall back)
+                if (!iter_val.is_undefined() && !iter_val.is_object() && !iter_val.is_function()) {
+                    Object::current_context_ = prev_ctx;
+                    ctx.throw_type_error("[Symbol.asyncIterator]() returned a non-object");
+                    return Value();
+                }
+                if (iter_val.is_undefined()) {
+                    Object::current_context_ = prev_ctx;
+                    ctx.throw_type_error("[Symbol.asyncIterator]() returned undefined");
+                    return Value();
+                }
+            }
+        }
+        if (iter_val.is_undefined() && !ctx.has_exception()) {
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym) {
+                Value iter_fn = iterable_obj->get_property(iter_sym->to_property_key());
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                if (iter_fn.is_function()) {
                     iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
                     if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    // If asyncIterator() returned non-object, throw TypeError immediately (don't fall back)
-                    if (!iter_val.is_undefined() && !iter_val.is_object() && !iter_val.is_function()) {
-                        Object::current_context_ = prev_ctx;
-                        ctx.throw_type_error("[Symbol.asyncIterator]() returned a non-object");
-                        return Value();
-                    }
-                    if (iter_val.is_undefined()) {
-                        Object::current_context_ = prev_ctx;
-                        ctx.throw_type_error("[Symbol.asyncIterator]() returned undefined");
-                        return Value();
-                    }
                 }
             }
-            if (iter_val.is_undefined() && !ctx.has_exception()) {
-                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                if (iter_sym) {
-                    Value iter_fn = iterable_obj->get_property(iter_sym->to_property_key());
-                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    if (iter_fn.is_function()) {
-                        iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
-                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    }
-                }
-            }
-            Object::current_context_ = prev_ctx;
-            if (iter_val.is_undefined()) {
-                ctx.throw_type_error("yield* requires iterable with [Symbol.asyncIterator]");
-                return Value();
-            }
-            // Iterator result must be an object
-            if (!iter_val.is_object() && !iter_val.is_function()) {
-                ctx.throw_type_error("[Symbol.asyncIterator]() returned a non-object iterator");
-                return Value();
-            }
+        }
+        Object::current_context_ = prev_ctx;
+        if (iter_val.is_undefined()) {
+            ctx.throw_type_error("yield* requires iterable with [Symbol.asyncIterator]");
+            return Value();
+        }
+        // Iterator result must be an object
+        if (!iter_val.is_object() && !iter_val.is_function()) {
+            ctx.throw_type_error("[Symbol.asyncIterator]() returned a non-object iterator");
+            return Value();
+        }
 
-            Object* iter_obj = iter_val.is_object() ? iter_val.as_object() : iter_val.as_function();
-            if (!iter_obj) { ctx.throw_type_error("iterator is not an object"); return Value(); }
+        Object* iter_obj = iter_val.is_object() ? iter_val.as_object() : iter_val.as_function();
+        if (!iter_obj) { ctx.throw_type_error("iterator is not an object"); return Value(); }
 
-            Object::current_context_ = &ctx;
-            Value next_fn_val = iter_obj->get_property("next");
-            Object::current_context_ = prev_ctx;
-            if (ctx.has_exception()) return Value();
-            if (!next_fn_val.is_function()) { ctx.throw_type_error("iterator missing next()"); return Value(); }
+        Object::current_context_ = &ctx;
+        Value next_fn_val = iter_obj->get_property("next");
+        Object::current_context_ = prev_ctx;
+        if (ctx.has_exception()) return Value();
+        if (!next_fn_val.is_function()) { ctx.throw_type_error("iterator missing next()"); return Value(); }
 
-            // Fiber-based yield* in async generator: drive the inner iterator,
-            // yield each value (with await on each next() result), return final value.
-            Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
-                                                           : async_gen->get_generator_context();
+        // Fiber-based yield* in async generator: drive the inner iterator,
+        // yield each value (with await on each next() result), return final value.
+        Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
+                                                       : async_gen->get_generator_context();
 
-            // AsyncGeneratorYield step 5: Await(value) unconditionally, even a plain value (1 tick).
-            auto await_before_yield = [&](Value& v) -> bool {
-                Promise* p;
-                Value wrapped_keepalive;
-                if (AsyncUtils::is_promise(v)) {
-                    p = static_cast<Promise*>(v.as_object());
+        // AsyncGeneratorYield step 5: Await(value) unconditionally, even a plain value (1 tick).
+        auto await_before_yield = [&](Value& v) -> bool {
+            Promise* p;
+            Value wrapped_keepalive;
+            if (AsyncUtils::is_promise(v)) {
+                p = static_cast<Promise*>(v.as_object());
+            } else {
+                // Get(v, "then") must be read exactly once -- a getter with side effects
+                // (as several test262 cases use) must not be observed firing twice.
+                Value then_val;
+                if (v.is_object()) then_val = v.as_object()->get_property("then");
+                if (then_val.is_function()) {
+                    auto wrapped_obj = ObjectFactory::create_promise(gctx);
+                    Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+                    auto res_fn = ObjectFactory::create_native_function("",
+                        [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
+                            wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
+                        }, 1);
+                    auto rej_fn = ObjectFactory::create_native_function("",
+                        [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
+                            wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
+                        }, 1);
+                    wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
+                    wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
+                    Value r = wrapped_raw->get_internal_slot("__tr_");
+                    Value j = wrapped_raw->get_internal_slot("__tj_");
+                    AsyncUtils::call_thenable_job(gctx, then_val.as_function(), v, r, j, wrapped_raw);
+                    p = wrapped_raw;
+                    wrapped_keepalive = Value(wrapped_obj.release());
                 } else {
-                    // Get(v, "then") must be read exactly once -- a getter with side effects
-                    // (as several test262 cases use) must not be observed firing twice.
-                    Value then_val;
-                    if (v.is_object()) then_val = v.as_object()->get_property("then");
-                    if (then_val.is_function()) {
-                        auto wrapped_obj = ObjectFactory::create_promise(gctx);
-                        Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
-                        auto res_fn = ObjectFactory::create_native_function("",
-                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
-                            }, 1);
-                        auto rej_fn = ObjectFactory::create_native_function("",
-                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
-                            }, 1);
-                        wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
-                        wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
-                        Value r = wrapped_raw->get_internal_slot("__tr_");
-                        Value j = wrapped_raw->get_internal_slot("__tj_");
-                        AsyncUtils::call_thenable_job(gctx, then_val.as_function(), v, r, j, wrapped_raw);
-                        p = wrapped_raw;
-                        wrapped_keepalive = Value(wrapped_obj.release());
-                    } else {
-                        auto wrapped_obj = ObjectFactory::create_promise(gctx);
-                        Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
-                        wrapped_raw->fulfill(v);
-                        p = wrapped_raw;
-                        wrapped_keepalive = Value(wrapped_obj.release());
-                    }
+                    auto wrapped_obj = ObjectFactory::create_promise(gctx);
+                    Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+                    wrapped_raw->fulfill(v);
+                    p = wrapped_raw;
+                    wrapped_keepalive = Value(wrapped_obj.release());
                 }
-                if (p->get_state() == PromiseState::FULFILLED || p->get_state() == PromiseState::REJECTED) {
-                    // Await always costs a tick, even for an already-settled promise.
-                    bool was_rejected = (p->get_state() == PromiseState::REJECTED);
-                    Value settled = p->take_settled_value();
-                    if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
-                        async_gen->resume_from_await(settled, was_rejected);
-                    }, {Value(async_gen), settled});
-                    async_gen->await_result_ = wrapped_keepalive.is_undefined() ? v : wrapped_keepalive;
-                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                    Collector::write_barrier(async_gen);
-                    quanta_fiber_yield(async_gen->fiber_.get());
-                    if (async_gen->await_is_throw_) {
-                        ctx.throw_exception(async_gen->await_result_, true);
-                        async_gen->await_is_throw_ = false;
-                        async_gen->await_result_ = Value();
-                        return false;
-                    }
-                    v = async_gen->await_result_;
-                    async_gen->await_result_ = Value();
-                    return true;
-                }
-                auto on_f = ObjectFactory::create_native_function("",
-                    [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                        Value val = args.empty() ? Value() : args[0];
-                        async_gen->resume_from_await(val, false);
-                        return Value();
-                    });
-                auto on_r = ObjectFactory::create_native_function("",
-                    [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                        Value reason = args.empty() ? Value() : args[0];
-                        async_gen->resume_from_await(reason, true);
-                        return Value();
-                    });
-                std::string aw_key = "ydv_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
-                Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
-                p->set_internal_slot("__af_" + aw_key, Value(on_f.release()));
-                p->set_internal_slot("__ar_" + aw_key, Value(on_r.release()));
-                p->then(ff_tmp, fr_tmp);
+            }
+            if (p->get_state() == PromiseState::FULFILLED || p->get_state() == PromiseState::REJECTED) {
+                // Await always costs a tick, even for an already-settled promise.
+                bool was_rejected = (p->get_state() == PromiseState::REJECTED);
+                Value settled = p->take_settled_value();
+                if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
+                    async_gen->resume_from_await(settled, was_rejected);
+                }, {Value(async_gen), settled});
                 async_gen->await_result_ = wrapped_keepalive.is_undefined() ? v : wrapped_keepalive;
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                 Collector::write_barrier(async_gen);
@@ -2555,615 +2525,562 @@ Value YieldExpression::evaluate(Context& ctx) {
                 v = async_gen->await_result_;
                 async_gen->await_result_ = Value();
                 return true;
-            };
-
-            Value last_val;
-            bool delegate_done = false;
-            bool first_iter = true;
-            while (!delegate_done) {
-                Value nr;
-
-                // Spec 27.6.3.9: forward throw()/next(sentValue) to the inner iterator.
-                if (!first_iter && async_gen->throwing_) {
-                    async_gen->throwing_ = false;
-                    Context* prev_oc_t = Object::current_context_;
-                    Object::current_context_ = &ctx;
-                    Value throw_fn_v = iter_obj->get_property("throw");
-                    Object::current_context_ = prev_oc_t;
-                    if (ctx.has_exception()) return Value();
-                    if (throw_fn_v.is_function()) {
-                        nr = throw_fn_v.as_function()->call(ctx, {async_gen->sent_value_}, iter_val);
-                    } else {
-                        // No throw method -- IteratorClose first; a failure while closing
-                        // (return getter or call throwing) wins over the pending TypeError.
-                        Object::current_context_ = &ctx;
-                        Value ret_fn_v = iter_obj->get_property("return");
-                        Object::current_context_ = prev_oc_t;
-                        if (ctx.has_exception()) return Value();
-                        if (ret_fn_v.is_function()) {
-                            ret_fn_v.as_function()->call(ctx, {}, iter_val);
-                            if (ctx.has_exception()) return Value();
-                        }
-                        ctx.throw_type_error("The iterator does not have a 'throw' method");
-                        return Value();
-                    }
-                } else {
-                    // IteratorNext(iterator, received.[[Value]]): always pass value, undefined on first
-                    Value call_arg = first_iter ? Value() : async_gen->sent_value_;
-                    nr = next_fn_val.as_function()->call(ctx, {call_arg}, iter_val);
-                }
-                first_iter = false;
-
-                if (ctx.has_exception()) return Value();
-
-                // innerResult itself is Awaited unconditionally (27.6.3.9), separately from
-                // and before the "Await(value) before yield" step further below.
-                if (!await_before_yield(nr)) return Value();
-
-                if (!nr.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
-                {
-                    Context* prev_oc = Object::current_context_;
-                    Object::current_context_ = &ctx;
-                    Value done_val_tmp = nr.as_object()->get_property("done");
-                    Object::current_context_ = prev_oc;
-                    if (ctx.has_exception()) return Value();
-                    last_val = [&]() -> Value {
-                        Context* p2 = Object::current_context_;
-                        Object::current_context_ = &ctx;
-                        Value v = nr.as_object()->get_property("value");
-                        Object::current_context_ = p2;
-                        return v;
-                    }();
-                    if (ctx.has_exception()) return Value();
-                    if (done_val_tmp.to_boolean()) { delegate_done = true; break; }
-                }
-
-                if (!used_async_iterator) {
-                    // AsyncFromSyncIteratorContinuation with closeOnRejection: PromiseResolve
-                    // reads value.constructor, and a rejected value closes the sync iterator
-                    // before the rejection propagates. Close failures are swallowed.
-                    bool value_threw = false;
-                    if (AsyncUtils::is_promise(last_val)) {
-                        Context* prev_oc_v = Object::current_context_;
-                        Object::current_context_ = &ctx;
-                        last_val.as_object()->get_property("constructor");
-                        Object::current_context_ = prev_oc_v;
-                        value_threw = ctx.has_exception();
-                    }
-                    if (!value_threw && !await_before_yield(last_val)) value_threw = true;
-                    if (value_threw) {
-                        Value original_err = ctx.get_exception();
-                        ctx.clear_exception();
-                        Context* prev_oc_c = Object::current_context_;
-                        Object::current_context_ = &ctx;
-                        Value close_fn = iter_obj->get_property("return");
-                        if (!ctx.has_exception() && close_fn.is_function()) {
-                            close_fn.as_function()->call(ctx, {}, iter_val);
-                        }
-                        Object::current_context_ = prev_oc_c;
-                        ctx.clear_exception();
-                        ctx.throw_exception(original_err, true);
-                        return Value();
-                    }
-                }
-                async_gen->yield_value_    = last_val;
-                async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
-                Collector::write_barrier(async_gen);
-                quanta_fiber_yield(async_gen->fiber_.get());
-                // AsyncGeneratorUnwrapYieldResumption step 2: a `return` resumption value is itself
-                // Awaited before this completion reaches the Repeat loop's return-handling below.
-                if (async_gen->returning_) {
-                    Value awaited_resume;
-                    bool resume_threw = await_value(ctx, async_gen->return_arg_, awaited_resume);
-                    if (resume_threw) { ctx.throw_exception(awaited_resume, true); return Value(); }
-                    async_gen->return_arg_ = awaited_resume;
-                }
-                // `while` not `if`: a !done forwarded result suspends again, and a repeat
-                // iter.return() before the next resumption must be forwarded too.
-                while (async_gen->returning_) {
-                    async_gen->returning_ = false;
-                    Value ret_arg = async_gen->return_arg_;
-                    Context* prev_oc_r = Object::current_context_;
-                    Object::current_context_ = &ctx;
-                    Value ret_fn_v = iter_obj->get_property("return");
-                    Object::current_context_ = prev_oc_r;
-                    if (ctx.has_exception()) return Value();
-                    if (!ret_fn_v.is_function()) {
-                        // No return method: Await the arg, then terminate the whole generator.
-                        Value awaited_ret_arg;
-                        bool ret_arg_threw = await_value(ctx, ret_arg, awaited_ret_arg);
-                        if (ret_arg_threw) { ctx.throw_exception(awaited_ret_arg, true); return Value(); }
-                        throw GeneratorReturnException(awaited_ret_arg);
-                    }
-                    Value ret_result = ret_fn_v.as_function()->call(ctx, {ret_arg}, iter_val);
-                    if (ctx.has_exception()) return Value();
-                    // Await the return() result
-                    if (AsyncUtils::is_promise(ret_result)) {
-                        Promise* rp = static_cast<Promise*>(ret_result.as_object());
-                        if (rp->get_state() == PromiseState::FULFILLED || rp->get_state() == PromiseState::REJECTED) {
-                            // Await always costs a tick, even for an already-settled promise.
-                            bool was_rejected = (rp->get_state() == PromiseState::REJECTED);
-                            Value settled = rp->take_settled_value();
-                            if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
-                                async_gen->resume_from_await(settled, was_rejected);
-                            }, {Value(async_gen), settled});
-                            async_gen->await_result_ = ret_result;
-                            async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                            Collector::write_barrier(async_gen);
-                            quanta_fiber_yield(async_gen->fiber_.get());
-                            if (async_gen->await_is_throw_) {
-                                ctx.throw_exception(async_gen->await_result_, true);
-                                async_gen->await_is_throw_ = false;
-                                async_gen->await_result_ = Value();
-                                return Value();
-                            }
-                            ret_result = async_gen->await_result_;
-                            async_gen->await_result_ = Value();
-                        } else {
-                            auto on_f2 = ObjectFactory::create_native_function("",
-                                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                    Value val = args.empty() ? Value() : args[0];
-                                    async_gen->resume_from_await(val, false);
-                                    return Value();
-                                });
-                            auto on_r2 = ObjectFactory::create_native_function("",
-                                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                    Value reason = args.empty() ? Value() : args[0];
-                                    async_gen->resume_from_await(reason, true);
-                                    return Value();
-                                });
-                            std::string rkey = "yr_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
-                            Function* frf = on_f2.get(); Function* frr = on_r2.get();
-                            rp->set_internal_slot("__af_" + rkey, Value(on_f2.release()));
-                            rp->set_internal_slot("__ar_" + rkey, Value(on_r2.release()));
-                            rp->then(frf, frr);
-                            async_gen->await_result_ = ret_result;
-                            async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                            Collector::write_barrier(async_gen);
-                            quanta_fiber_yield(async_gen->fiber_.get());
-                            if (async_gen->await_is_throw_) {
-                                ctx.throw_exception(async_gen->await_result_, true);
-                                async_gen->await_is_throw_ = false;
-                                async_gen->await_result_ = Value();
-                                return Value();
-                            }
-                            ret_result = async_gen->await_result_;
-                            async_gen->await_result_ = Value();
-                        }
-                    } else if (ret_result.is_object()) {
-                        // Custom thenable: get 'then' (may throw), call then(resolve, reject)
-                        Context* prev_oc3 = Object::current_context_;
-                        Object::current_context_ = &ctx;
-                        Value rr_then = ret_result.as_object()->get_property("then");
-                        Object::current_context_ = prev_oc3;
-                        if (ctx.has_exception()) return Value();
-                        if (rr_then.is_function()) {
-                            auto on_f3 = ObjectFactory::create_native_function("",
-                                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                    Value val = args.empty() ? Value() : args[0];
-                                    async_gen->resume_from_await(val, false);
-                                    return Value();
-                                });
-                            auto on_r3 = ObjectFactory::create_native_function("",
-                                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                    Value reason = args.empty() ? Value() : args[0];
-                                    async_gen->resume_from_await(reason, true);
-                                    return Value();
-                                });
-                            Function* rf3 = on_f3.get(); Function* rjf3 = on_r3.get();
-                            ret_result.as_object()->set_internal_slot("__th_rf3_", Value(on_f3.release()));
-                            ret_result.as_object()->set_internal_slot("__th_rjf3_", Value(on_r3.release()));
-                            // NewPromiseResolveThenableJob: `then` is called in its own queued
-                            // microtask (on the global context, for chronological ordering
-                            // against unrelated Promise chains), not synchronously.
-                            if (gctx) {
-                                Function* then_fn3 = rr_then.as_function();
-                                Value ret_result_capture = ret_result;
-                                Context* queue_ctx_tn3 = ctx.get_engine() && ctx.get_engine()->get_global_context()
-                                    ? ctx.get_engine()->get_global_context() : gctx;
-                                queue_ctx_tn3->queue_microtask([gctx, then_fn3, ret_result_capture, rf3, rjf3]() {
-                                    then_fn3->call(*gctx, {Value(rf3), Value(rjf3)}, ret_result_capture);
-                                    if (gctx->has_exception()) {
-                                        Value exc = gctx->get_exception();
-                                        gctx->clear_exception();
-                                        rjf3->call(*gctx, {exc});
-                                    }
-                                }, {Value(then_fn3), ret_result_capture, Value(rf3), Value(rjf3)});
-                            }
-                            async_gen->await_result_ = ret_result;
-                            async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                            Collector::write_barrier(async_gen);
-                            quanta_fiber_yield(async_gen->fiber_.get());
-                            if (async_gen->await_is_throw_) {
-                                ctx.throw_exception(async_gen->await_result_, true);
-                                async_gen->await_is_throw_ = false;
-                                async_gen->await_result_ = Value();
-                                return Value();
-                            }
-                            ret_result = async_gen->await_result_;
-                            async_gen->await_result_ = Value();
-                        }
-                    }
-                    if (!ret_result.is_object()) { ctx.throw_type_error("iterator return result is not an object"); return Value(); }
-                    {
-                        Context* prev_oc_rd = Object::current_context_;
-                        Object::current_context_ = &ctx;
-                        Value ret_done = ret_result.as_object()->get_property("done");
-                        Object::current_context_ = prev_oc_rd;
-                        if (ctx.has_exception()) return Value();
-                        Object::current_context_ = &ctx;
-                        last_val = ret_result.as_object()->get_property("value");
-                        Object::current_context_ = prev_oc_rd;
-                        if (ctx.has_exception()) return Value();
-                        if (ret_done.to_boolean()) {
-                            // Spec 27.6.3.9 step 8.b.iv.viii: a Return completion, not a
-                            // normal yield* result -- terminates the outer generator here.
-                            if (!await_before_yield(last_val)) return Value();
-                            throw GeneratorReturnException(last_val);
-                        }
-                    }
-                    // Not done: yield and suspend -- the `while` condition re-forwards
-                    // on resume if the consumer called iter.return() again.
-                    if (!used_async_iterator && !await_before_yield(last_val)) return Value();
-                    async_gen->yield_value_ = last_val;
-                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
-                    Collector::write_barrier(async_gen);
-                    quanta_fiber_yield(async_gen->fiber_.get());
-                }
-                // throwing_ is handled at the top of the next iteration
             }
-            return last_val;
-        }
-
-        // Fiber-based generators: yield* directly swaps context for each element
-        // (target_yield_index_ stays 0 since fiber doesn't use replay)
-        if (current_gen->fiber_.co != nullptr) {
-            // Set current_context_ so accessor getters (poisoned properties in tests) can execute.
-            Context* prev_ctx = Object::current_context_;
-            Object::current_context_ = &ctx;
-
-            // Get iterator from iterable
-            Value iter_val;
-            if (iterable.is_string()) {
-                // Box string to call Symbol.iterator
-                auto boxed = ObjectFactory::create_object();
-                boxed->set_property("length", Value(0.0));
-                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                if (iter_sym) {
-                    Value str_ctor = ctx.get_binding("String");
-                    if (str_ctor.is_function()) {
-                        Value proto = str_ctor.as_function()->get_property("prototype");
-                        if (proto.is_object()) {
-                            Value iter_fn = proto.as_object()->get_property(iter_sym->to_property_key());
-                            if (iter_fn.is_function()) {
-                                iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
-                                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                            }
-                        }
-                    }
-                }
-            } else if (iterable.is_boolean() || iterable.is_number()) {
-                // Box to call a custom Symbol.iterator on Boolean.prototype/Number.prototype
-                // (GetIterator works on any value, not just objects -- ToObject boxes first).
-                std::string ctor_name = iterable.is_boolean() ? "Boolean" : "Number";
-                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                if (iter_sym) {
-                    Value ctor = ctx.get_binding(ctor_name);
-                    if (ctor.is_function()) {
-                        Value proto = ctor.as_function()->get_property("prototype");
-                        if (proto.is_object()) {
-                            Value iter_fn = proto.as_object()->get_property(iter_sym->to_property_key());
-                            if (iter_fn.is_function()) {
-                                iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
-                                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                            }
-                        }
-                    }
-                }
-            } else if (iterable.is_object() || iterable.is_function()) {
-                Object* itbl = iterable.is_object() ? iterable.as_object() : iterable.as_function();
-                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                if (iter_sym) {
-                    Value iter_fn = itbl->get_property(iter_sym->to_property_key());
-                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    if (iter_fn.is_function()) {
-                        iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
-                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    }
-                }
-                if (iter_val.is_undefined() || iter_val.is_null()) iter_val = iterable;
-            } else {
-                iter_val = iterable;
-            }
-            Object* iter_obj = iter_val.is_object() ? iter_val.as_object()
-                : (iter_val.is_function() ? iter_val.as_function() : nullptr);
-            if (!iter_obj) { Object::current_context_ = prev_ctx; ctx.throw_type_error("yield* requires iterable"); return Value(); }
-
-            Value next_fn = iter_obj->get_property("next");
-            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-            if (!next_fn.is_function()) { Object::current_context_ = prev_ctx; ctx.throw_type_error("yield* iterator missing next()"); return Value(); }
-
-            Value final_val;
-            Value next_arg; // undefined for first call; updated to sent_value_ after each resume
-            while (true) {
-                Value result = next_fn.as_function()->call(ctx, {next_arg}, iter_val);
-                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                if (!result.is_object()) {
-                    Object::current_context_ = prev_ctx;
-                    ctx.throw_type_error("Iterator result is not an object");
+            auto on_f = ObjectFactory::create_native_function("",
+                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                    Value val = args.empty() ? Value() : args[0];
+                    async_gen->resume_from_await(val, false);
                     return Value();
-                }
-                Value done = result.as_object()->get_property("done");
-                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                if (done.to_boolean()) {
-                    // done=true: access value to return from yield* expression
-                    Value val = result.as_object()->get_property("value");
-                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    final_val = val;
-                    break;
-                }
-                // done=false: yield the WHOLE inner result object without accessing value (spec 14.4.14)
-                current_gen->yielded_result_ = result;
-                current_gen->yield_raw_result_ = true;
-                current_gen->set_state(Generator::State::SuspendedYield);
-                // Direct-assigned traced field: re-gray for an open incremental cycle.
-                Collector::write_barrier(current_gen);
-                quanta_fiber_yield(&current_gen->fiber_);
-                // Caller side may have repointed this thread-local during suspension -- restore it.
-                Object::current_context_ = &ctx;
-                // Resumed -- forward the value sent to outer generator into inner next()
-                next_arg = current_gen->sent_value_;
-                // `while` not `if`: each subsequent .return()/.throw() on the outer generator
-                // must delegate again until the inner iterator reports done=true (Repeat).
-                bool delegate_done = false;
-                while (current_gen->returning_ || current_gen->throwing_) {
-                    bool is_return = current_gen->returning_;
-                    current_gen->returning_ = false;
-                    current_gen->throwing_ = false;
-                    Value deleg_fn = iter_obj->get_property(is_return ? "return" : "throw");
-                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    if (!deleg_fn.is_function()) {
-                        if (is_return) {
-                            // No return method: propagate the return with original argument.
-                            Object::current_context_ = prev_ctx;
-                            throw GeneratorReturnException(current_gen->return_argument_);
-                        }
-                        // No throw method: IteratorClose, then throw TypeError.
-                        Value close_fn = iter_obj->get_property("return");
-                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                        if (close_fn.is_function()) {
-                            close_fn.as_function()->call(ctx, {}, iter_val);
-                            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                        }
-                        Object::current_context_ = prev_ctx;
-                        ctx.throw_type_error("The iterator does not provide a throw method");
-                        return Value();
-                    }
-                    Value deleg_arg = is_return ? current_gen->return_argument_ : current_gen->throw_value_;
-                    Value deleg_result = deleg_fn.as_function()->call(ctx, {deleg_arg}, iter_val);
-                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    if (!deleg_result.is_object()) {
-                        Object::current_context_ = prev_ctx;
-                        ctx.throw_type_error(is_return ? "Iterator return() result is not an Object"
-                                                        : "Iterator throw() result is not an Object");
-                        return Value();
-                    }
-                    Value deleg_done = deleg_result.as_object()->get_property("done");
-                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                    if (deleg_done.to_boolean()) {
-                        // done=true: access value and complete.
-                        Value deleg_val = deleg_result.as_object()->get_property("value");
-                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
-                        if (is_return) {
-                            current_gen->return_argument_ = deleg_val;
-                            Collector::write_barrier(current_gen);
-                            Object::current_context_ = prev_ctx;
-                            throw GeneratorReturnException(deleg_val);
-                        }
-                        final_val = deleg_val;
-                        delegate_done = true;
-                        break;
-                    }
-                    // done=false: yield the inner result, then wait for the next resumption.
-                    current_gen->yielded_result_ = deleg_result;
-                    current_gen->yield_raw_result_ = true;
-                    current_gen->set_state(Generator::State::SuspendedYield);
-                    Collector::write_barrier(current_gen);
-                    quanta_fiber_yield(&current_gen->fiber_);
-                    Object::current_context_ = &ctx;
-                    next_arg = current_gen->sent_value_;
-                }
-                if (delegate_done) break;
+                });
+            auto on_r = ObjectFactory::create_native_function("",
+                [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                    Value reason = args.empty() ? Value() : args[0];
+                    async_gen->resume_from_await(reason, true);
+                    return Value();
+                });
+            std::string aw_key = "ydv_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+            Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
+            p->set_internal_slot("__af_" + aw_key, Value(on_f.release()));
+            p->set_internal_slot("__ar_" + aw_key, Value(on_r.release()));
+            p->then(ff_tmp, fr_tmp);
+            async_gen->await_result_ = wrapped_keepalive.is_undefined() ? v : wrapped_keepalive;
+            async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+            Collector::write_barrier(async_gen);
+            quanta_fiber_yield(async_gen->fiber_.get());
+            if (async_gen->await_is_throw_) {
+                ctx.throw_exception(async_gen->await_result_, true);
+                async_gen->await_is_throw_ = false;
+                async_gen->await_result_ = Value();
+                return false;
             }
-            Object::current_context_ = prev_ctx;
-            return final_val;
-        }
-
-        size_t delegate_start = Generator::increment_yield_counter();
-
-        size_t needed_idx = current_gen->target_yield_index_ >= delegate_start
-            ? current_gen->target_yield_index_ - delegate_start
-            : 0;
-
-        std::vector<Value> elements;
-        bool delegate_exhausted = false;
-
-        auto collect_from_iterator = [&](Value iter_val) {
-            Object* iter_obj = nullptr;
-            if (iter_val.is_object()) iter_obj = iter_val.as_object();
-            else if (iter_val.is_function()) iter_obj = iter_val.as_function();
-            if (!iter_obj) { delegate_exhausted = true; return; }
-
-            Value next_fn = iter_obj->get_property("next");
-            if (!next_fn.is_function()) { delegate_exhausted = true; return; }
-
-            Generator* saved_gen = Generator::get_current_generator();
-            Generator::set_current_generator(nullptr);
-
-            for (size_t i = 0; i <= needed_idx; i++) {
-                std::vector<Value> no_args;
-                Value next_result = next_fn.as_function()->call(ctx, no_args, iter_val);
-                if (ctx.has_exception()) { delegate_exhausted = true; break; }
-
-                Value done_val;
-                Value val;
-                if (next_result.is_object()) {
-                    done_val = next_result.as_object()->get_property("done");
-                    val = next_result.as_object()->get_property("value");
-                }
-
-                if (done_val.to_boolean()) {
-                    delegate_exhausted = true;
-                    break;
-                }
-                elements.push_back(val);
-            }
-
-            Generator::set_current_generator(saved_gen);
-        };
-
-        auto throw_at_iterator = [&](Value iter_val) -> bool {
-            Object* iter_obj = nullptr;
-            if (iter_val.is_object()) iter_obj = iter_val.as_object();
-            else if (iter_val.is_function()) iter_obj = iter_val.as_function();
-            if (!iter_obj) return false;
-
-            Value next_fn = iter_obj->get_property("next");
-            if (!next_fn.is_function()) return false;
-
-            Generator* saved_gen = Generator::get_current_generator();
-            Generator::set_current_generator(nullptr);
-
-            bool iter_done = false;
-            for (size_t i = 0; i < needed_idx && !iter_done; i++) {
-                std::vector<Value> no_args;
-                Value nr = next_fn.as_function()->call(ctx, no_args, iter_val);
-                if (ctx.has_exception()) { iter_done = true; break; }
-                if (nr.is_object() && nr.as_object()->get_property("done").to_boolean()) {
-                    iter_done = true;
-                }
-            }
-
-            if (!iter_done) {
-                Value throw_fn = iter_obj->get_property("throw");
-                if (throw_fn.is_function()) {
-                    std::vector<Value> throw_args = {current_gen->throw_value_};
-                    Value throw_result = throw_fn.as_function()->call(ctx, throw_args, iter_val);
-                    Generator::set_current_generator(saved_gen);
-                    if (ctx.has_exception()) return false;
-                    if (throw_result.is_object()) {
-                        Value done_v = throw_result.as_object()->get_property("done");
-                        if (!done_v.to_boolean()) {
-                            Value val = throw_result.as_object()->get_property("value");
-                            current_gen->throwing_ = false;
-                            throw YieldException(val);
-                        }
-                    }
-                } else {
-                    Value return_fn_v = iter_obj->get_property("return");
-                    if (return_fn_v.is_function()) {
-                        std::vector<Value> ret_args;
-                        return_fn_v.as_function()->call(ctx, ret_args, iter_val);
-                        ctx.clear_exception();
-                    }
-                    Generator::set_current_generator(saved_gen);
-                    ctx.throw_exception(current_gen->throw_value_, true);
-                    return false;
-                }
-            }
-            Generator::set_current_generator(saved_gen);
+            v = async_gen->await_result_;
+            async_gen->await_result_ = Value();
             return true;
         };
 
-        if (current_gen->throwing_) {
-            bool handled = false;
-            if (iterable.is_object() || iterable.is_function()) {
-                Object* obj = iterable.is_object() ? iterable.as_object() : iterable.as_function();
-                Value sym_iter_fn = obj->get_property("Symbol.iterator");
-                if (sym_iter_fn.is_function()) {
-                    Generator* saved_gen = Generator::get_current_generator();
-                    Generator::set_current_generator(nullptr);
-                    std::vector<Value> no_args;
-                    Value iter_val = sym_iter_fn.as_function()->call(ctx, no_args, iterable);
-                    Generator::set_current_generator(saved_gen);
-                    if (!ctx.has_exception()) {
-                        handled = throw_at_iterator(iter_val);
-                    }
+        Value last_val;
+        bool delegate_done = false;
+        bool first_iter = true;
+        while (!delegate_done) {
+            Value nr;
+
+            // Spec 27.6.3.9: forward throw()/next(sentValue) to the inner iterator.
+            if (!first_iter && async_gen->throwing_) {
+                async_gen->throwing_ = false;
+                Context* prev_oc_t = Object::current_context_;
+                Object::current_context_ = &ctx;
+                Value throw_fn_v = iter_obj->get_property("throw");
+                Object::current_context_ = prev_oc_t;
+                if (ctx.has_exception()) return Value();
+                if (throw_fn_v.is_function()) {
+                    nr = throw_fn_v.as_function()->call(ctx, {async_gen->sent_value_}, iter_val);
                 } else {
-                    Value next_fn = obj->get_property("next");
-                    if (next_fn.is_function()) {
-                        handled = throw_at_iterator(iterable);
+                    // No throw method -- IteratorClose first; a failure while closing
+                    // (return getter or call throwing) wins over the pending TypeError.
+                    Object::current_context_ = &ctx;
+                    Value ret_fn_v = iter_obj->get_property("return");
+                    Object::current_context_ = prev_oc_t;
+                    if (ctx.has_exception()) return Value();
+                    if (ret_fn_v.is_function()) {
+                        ret_fn_v.as_function()->call(ctx, {}, iter_val);
+                        if (ctx.has_exception()) return Value();
                     }
+                    ctx.throw_type_error("The iterator does not have a 'throw' method");
+                    return Value();
+                }
+            } else {
+                // IteratorNext(iterator, received.[[Value]]): always pass value, undefined on first
+                Value call_arg = first_iter ? Value() : async_gen->sent_value_;
+                nr = next_fn_val.as_function()->call(ctx, {call_arg}, iter_val);
+            }
+            first_iter = false;
+
+            if (ctx.has_exception()) return Value();
+
+            // innerResult itself is Awaited unconditionally (27.6.3.9), separately from
+            // and before the "Await(value) before yield" step further below.
+            if (!await_before_yield(nr)) return Value();
+
+            if (!nr.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
+            {
+                Context* prev_oc = Object::current_context_;
+                Object::current_context_ = &ctx;
+                Value done_val_tmp = nr.as_object()->get_property("done");
+                Object::current_context_ = prev_oc;
+                if (ctx.has_exception()) return Value();
+                last_val = [&]() -> Value {
+                    Context* p2 = Object::current_context_;
+                    Object::current_context_ = &ctx;
+                    Value v = nr.as_object()->get_property("value");
+                    Object::current_context_ = p2;
+                    return v;
+                }();
+                if (ctx.has_exception()) return Value();
+                if (done_val_tmp.to_boolean()) { delegate_done = true; break; }
+            }
+
+            if (!used_async_iterator) {
+                // AsyncFromSyncIteratorContinuation with closeOnRejection: PromiseResolve
+                // reads value.constructor, and a rejected value closes the sync iterator
+                // before the rejection propagates. Close failures are swallowed.
+                bool value_threw = false;
+                if (AsyncUtils::is_promise(last_val)) {
+                    Context* prev_oc_v = Object::current_context_;
+                    Object::current_context_ = &ctx;
+                    last_val.as_object()->get_property("constructor");
+                    Object::current_context_ = prev_oc_v;
+                    value_threw = ctx.has_exception();
+                }
+                if (!value_threw && !await_before_yield(last_val)) value_threw = true;
+                if (value_threw) {
+                    Value original_err = ctx.get_exception();
+                    ctx.clear_exception();
+                    Context* prev_oc_c = Object::current_context_;
+                    Object::current_context_ = &ctx;
+                    Value close_fn = iter_obj->get_property("return");
+                    if (!ctx.has_exception() && close_fn.is_function()) {
+                        close_fn.as_function()->call(ctx, {}, iter_val);
+                    }
+                    Object::current_context_ = prev_oc_c;
+                    ctx.clear_exception();
+                    ctx.throw_exception(original_err, true);
+                    return Value();
                 }
             }
-            current_gen->throwing_ = false;
-            (void)handled;
-            return Value();
-        }
-
-        if (current_gen->returning_) {
-            if (iterable.is_object() || iterable.is_function()) {
-                Object* obj = iterable.is_object() ? iterable.as_object() : iterable.as_function();
-                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                Value iter_val;
-
-                Generator* saved_gen = Generator::get_current_generator();
-                Generator::set_current_generator(nullptr);
-
-                if (iter_sym) {
-                    Value sym_iter_fn = obj->get_property(iter_sym->to_property_key());
-                    if (sym_iter_fn.is_function()) {
-                        std::vector<Value> no_args;
-                        iter_val = sym_iter_fn.as_function()->call(ctx, no_args, iterable);
+            async_gen->yield_value_    = last_val;
+            async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
+            Collector::write_barrier(async_gen);
+            quanta_fiber_yield(async_gen->fiber_.get());
+            // AsyncGeneratorUnwrapYieldResumption step 2: a `return` resumption value is itself
+            // Awaited before this completion reaches the Repeat loop's return-handling below.
+            if (async_gen->returning_) {
+                Value awaited_resume;
+                bool resume_threw = await_value(ctx, async_gen->return_arg_, awaited_resume);
+                if (resume_threw) { ctx.throw_exception(awaited_resume, true); return Value(); }
+                async_gen->return_arg_ = awaited_resume;
+            }
+            // `while` not `if`: a !done forwarded result suspends again, and a repeat
+            // iter.return() before the next resumption must be forwarded too.
+            while (async_gen->returning_) {
+                async_gen->returning_ = false;
+                Value ret_arg = async_gen->return_arg_;
+                Context* prev_oc_r = Object::current_context_;
+                Object::current_context_ = &ctx;
+                Value ret_fn_v = iter_obj->get_property("return");
+                Object::current_context_ = prev_oc_r;
+                if (ctx.has_exception()) return Value();
+                if (!ret_fn_v.is_function()) {
+                    // No return method: Await the arg, then terminate the whole generator.
+                    Value awaited_ret_arg;
+                    bool ret_arg_threw = await_value(ctx, ret_arg, awaited_ret_arg);
+                    if (ret_arg_threw) { ctx.throw_exception(awaited_ret_arg, true); return Value(); }
+                    throw GeneratorReturnException(awaited_ret_arg);
+                }
+                Value ret_result = ret_fn_v.as_function()->call(ctx, {ret_arg}, iter_val);
+                if (ctx.has_exception()) return Value();
+                // Await the return() result
+                if (AsyncUtils::is_promise(ret_result)) {
+                    Promise* rp = static_cast<Promise*>(ret_result.as_object());
+                    if (rp->get_state() == PromiseState::FULFILLED || rp->get_state() == PromiseState::REJECTED) {
+                        // Await always costs a tick, even for an already-settled promise.
+                        bool was_rejected = (rp->get_state() == PromiseState::REJECTED);
+                        Value settled = rp->take_settled_value();
+                        if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
+                            async_gen->resume_from_await(settled, was_rejected);
+                        }, {Value(async_gen), settled});
+                        async_gen->await_result_ = ret_result;
+                        async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                        Collector::write_barrier(async_gen);
+                        quanta_fiber_yield(async_gen->fiber_.get());
+                        if (async_gen->await_is_throw_) {
+                            ctx.throw_exception(async_gen->await_result_, true);
+                            async_gen->await_is_throw_ = false;
+                            async_gen->await_result_ = Value();
+                            return Value();
+                        }
+                        ret_result = async_gen->await_result_;
+                        async_gen->await_result_ = Value();
+                    } else {
+                        auto on_f2 = ObjectFactory::create_native_function("",
+                            [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                                Value val = args.empty() ? Value() : args[0];
+                                async_gen->resume_from_await(val, false);
+                                return Value();
+                            });
+                        auto on_r2 = ObjectFactory::create_native_function("",
+                            [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                                Value reason = args.empty() ? Value() : args[0];
+                                async_gen->resume_from_await(reason, true);
+                                return Value();
+                            });
+                        std::string rkey = "yr_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+                        Function* frf = on_f2.get(); Function* frr = on_r2.get();
+                        rp->set_internal_slot("__af_" + rkey, Value(on_f2.release()));
+                        rp->set_internal_slot("__ar_" + rkey, Value(on_r2.release()));
+                        rp->then(frf, frr);
+                        async_gen->await_result_ = ret_result;
+                        async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                        Collector::write_barrier(async_gen);
+                        quanta_fiber_yield(async_gen->fiber_.get());
+                        if (async_gen->await_is_throw_) {
+                            ctx.throw_exception(async_gen->await_result_, true);
+                            async_gen->await_is_throw_ = false;
+                            async_gen->await_result_ = Value();
+                            return Value();
+                        }
+                        ret_result = async_gen->await_result_;
+                        async_gen->await_result_ = Value();
+                    }
+                } else if (ret_result.is_object()) {
+                    // Custom thenable: get 'then' (may throw), call then(resolve, reject)
+                    Context* prev_oc3 = Object::current_context_;
+                    Object::current_context_ = &ctx;
+                    Value rr_then = ret_result.as_object()->get_property("then");
+                    Object::current_context_ = prev_oc3;
+                    if (ctx.has_exception()) return Value();
+                    if (rr_then.is_function()) {
+                        auto on_f3 = ObjectFactory::create_native_function("",
+                            [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                                Value val = args.empty() ? Value() : args[0];
+                                async_gen->resume_from_await(val, false);
+                                return Value();
+                            });
+                        auto on_r3 = ObjectFactory::create_native_function("",
+                            [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                                Value reason = args.empty() ? Value() : args[0];
+                                async_gen->resume_from_await(reason, true);
+                                return Value();
+                            });
+                        Function* rf3 = on_f3.get(); Function* rjf3 = on_r3.get();
+                        ret_result.as_object()->set_internal_slot("__th_rf3_", Value(on_f3.release()));
+                        ret_result.as_object()->set_internal_slot("__th_rjf3_", Value(on_r3.release()));
+                        // NewPromiseResolveThenableJob: `then` is called in its own queued
+                        // microtask (on the global context, for chronological ordering
+                        // against unrelated Promise chains), not synchronously.
+                        if (gctx) {
+                            Function* then_fn3 = rr_then.as_function();
+                            Value ret_result_capture = ret_result;
+                            Context* queue_ctx_tn3 = ctx.get_engine() && ctx.get_engine()->get_global_context()
+                                ? ctx.get_engine()->get_global_context() : gctx;
+                            queue_ctx_tn3->queue_microtask([gctx, then_fn3, ret_result_capture, rf3, rjf3]() {
+                                then_fn3->call(*gctx, {Value(rf3), Value(rjf3)}, ret_result_capture);
+                                if (gctx->has_exception()) {
+                                    Value exc = gctx->get_exception();
+                                    gctx->clear_exception();
+                                    rjf3->call(*gctx, {exc});
+                                }
+                            }, {Value(then_fn3), ret_result_capture, Value(rf3), Value(rjf3)});
+                        }
+                        async_gen->await_result_ = ret_result;
+                        async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                        Collector::write_barrier(async_gen);
+                        quanta_fiber_yield(async_gen->fiber_.get());
+                        if (async_gen->await_is_throw_) {
+                            ctx.throw_exception(async_gen->await_result_, true);
+                            async_gen->await_is_throw_ = false;
+                            async_gen->await_result_ = Value();
+                            return Value();
+                        }
+                        ret_result = async_gen->await_result_;
+                        async_gen->await_result_ = Value();
                     }
                 }
-                if (iter_val.is_undefined()) iter_val = iterable;
-
-                Object* iter_obj = iter_val.is_object() ? iter_val.as_object()
-                                 : iter_val.is_function() ? static_cast<Object*>(iter_val.as_function()) : nullptr;
-
-                if (iter_obj && !ctx.has_exception()) {
-                    Value next_fn_v = iter_obj->get_property("next");
-                    for (size_t i = 0; i < needed_idx && next_fn_v.is_function(); i++) {
-                        std::vector<Value> no_args;
-                        Value nr = next_fn_v.as_function()->call(ctx, no_args, iter_val);
-                        if (ctx.has_exception()) break;
-                        if (nr.is_object() && nr.as_object()->get_property("done").to_boolean()) break;
+                if (!ret_result.is_object()) { ctx.throw_type_error("iterator return result is not an object"); return Value(); }
+                {
+                    Context* prev_oc_rd = Object::current_context_;
+                    Object::current_context_ = &ctx;
+                    Value ret_done = ret_result.as_object()->get_property("done");
+                    Object::current_context_ = prev_oc_rd;
+                    if (ctx.has_exception()) return Value();
+                    Object::current_context_ = &ctx;
+                    last_val = ret_result.as_object()->get_property("value");
+                    Object::current_context_ = prev_oc_rd;
+                    if (ctx.has_exception()) return Value();
+                    if (ret_done.to_boolean()) {
+                        // Spec 27.6.3.9 step 8.b.iv.viii: a Return completion, not a
+                        // normal yield* result -- terminates the outer generator here.
+                        if (!await_before_yield(last_val)) return Value();
+                        throw GeneratorReturnException(last_val);
                     }
-                    if (!ctx.has_exception()) {
-                        Value return_fn_v = iter_obj->get_property("return");
-                        if (return_fn_v.is_function()) {
-                            std::vector<Value> ret_args = {current_gen->return_argument_};
-                            return_fn_v.as_function()->call(ctx, ret_args, iter_val);
-                            ctx.clear_exception();
+                }
+                // Not done: yield and suspend -- the `while` condition re-forwards
+                // on resume if the consumer called iter.return() again.
+                if (!used_async_iterator && !await_before_yield(last_val)) return Value();
+                async_gen->yield_value_ = last_val;
+                async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
+                Collector::write_barrier(async_gen);
+                quanta_fiber_yield(async_gen->fiber_.get());
+            }
+            // throwing_ is handled at the top of the next iteration
+        }
+        return last_val;
+    }
+
+    // Fiber-based generators: yield* directly swaps context for each element
+    // (target_yield_index_ stays 0 since fiber doesn't use replay)
+    if (current_gen->fiber_.co != nullptr) {
+        // Set current_context_ so accessor getters (poisoned properties in tests) can execute.
+        Context* prev_ctx = Object::current_context_;
+        Object::current_context_ = &ctx;
+
+        // Get iterator from iterable
+        Value iter_val;
+        if (iterable.is_string()) {
+            // Box string to call Symbol.iterator
+            auto boxed = ObjectFactory::create_object();
+            boxed->set_property("length", Value(0.0));
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym) {
+                Value str_ctor = ctx.get_binding("String");
+                if (str_ctor.is_function()) {
+                    Value proto = str_ctor.as_function()->get_property("prototype");
+                    if (proto.is_object()) {
+                        Value iter_fn = proto.as_object()->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
+                            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                         }
                     }
                 }
-                Generator::set_current_generator(saved_gen);
             }
-            return Value();
+        } else if (iterable.is_boolean() || iterable.is_number()) {
+            // Box to call a custom Symbol.iterator on Boolean.prototype/Number.prototype
+            // (GetIterator works on any value, not just objects -- ToObject boxes first).
+            std::string ctor_name = iterable.is_boolean() ? "Boolean" : "Number";
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym) {
+                Value ctor = ctx.get_binding(ctor_name);
+                if (ctor.is_function()) {
+                    Value proto = ctor.as_function()->get_property("prototype");
+                    if (proto.is_object()) {
+                        Value iter_fn = proto.as_object()->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
+                            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                        }
+                    }
+                }
+            }
+        } else if (iterable.is_object() || iterable.is_function()) {
+            Object* itbl = iterable.is_object() ? iterable.as_object() : iterable.as_function();
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym) {
+                Value iter_fn = itbl->get_property(iter_sym->to_property_key());
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                if (iter_fn.is_function()) {
+                    iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                }
+            }
+            if (iter_val.is_undefined() || iter_val.is_null()) iter_val = iterable;
+        } else {
+            iter_val = iterable;
+        }
+        Object* iter_obj = iter_val.is_object() ? iter_val.as_object()
+            : (iter_val.is_function() ? iter_val.as_function() : nullptr);
+        if (!iter_obj) { Object::current_context_ = prev_ctx; ctx.throw_type_error("yield* requires iterable"); return Value(); }
+
+        Value next_fn = iter_obj->get_property("next");
+        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+        if (!next_fn.is_function()) { Object::current_context_ = prev_ctx; ctx.throw_type_error("yield* iterator missing next()"); return Value(); }
+
+        Value final_val;
+        Value next_arg; // undefined for first call; updated to sent_value_ after each resume
+        while (true) {
+            Value result = next_fn.as_function()->call(ctx, {next_arg}, iter_val);
+            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+            if (!result.is_object()) {
+                Object::current_context_ = prev_ctx;
+                ctx.throw_type_error("Iterator result is not an object");
+                return Value();
+            }
+            Value done = result.as_object()->get_property("done");
+            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+            if (done.to_boolean()) {
+                // done=true: access value to return from yield* expression
+                Value val = result.as_object()->get_property("value");
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                final_val = val;
+                break;
+            }
+            // done=false: yield the WHOLE inner result object without accessing value (spec 14.4.14)
+            current_gen->yielded_result_ = result;
+            current_gen->yield_raw_result_ = true;
+            current_gen->set_state(Generator::State::SuspendedYield);
+            // Direct-assigned traced field: re-gray for an open incremental cycle.
+            Collector::write_barrier(current_gen);
+            quanta_fiber_yield(&current_gen->fiber_);
+            // Caller side may have repointed this thread-local during suspension -- restore it.
+            Object::current_context_ = &ctx;
+            // Resumed -- forward the value sent to outer generator into inner next()
+            next_arg = current_gen->sent_value_;
+            // `while` not `if`: each subsequent .return()/.throw() on the outer generator
+            // must delegate again until the inner iterator reports done=true (Repeat).
+            bool delegate_done = false;
+            while (current_gen->returning_ || current_gen->throwing_) {
+                bool is_return = current_gen->returning_;
+                current_gen->returning_ = false;
+                current_gen->throwing_ = false;
+                Value deleg_fn = iter_obj->get_property(is_return ? "return" : "throw");
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                if (!deleg_fn.is_function()) {
+                    if (is_return) {
+                        // No return method: propagate the return with original argument.
+                        Object::current_context_ = prev_ctx;
+                        throw GeneratorReturnException(current_gen->return_argument_);
+                    }
+                    // No throw method: IteratorClose, then throw TypeError.
+                    Value close_fn = iter_obj->get_property("return");
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                    if (close_fn.is_function()) {
+                        close_fn.as_function()->call(ctx, {}, iter_val);
+                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                    }
+                    Object::current_context_ = prev_ctx;
+                    ctx.throw_type_error("The iterator does not provide a throw method");
+                    return Value();
+                }
+                Value deleg_arg = is_return ? current_gen->return_argument_ : current_gen->throw_value_;
+                Value deleg_result = deleg_fn.as_function()->call(ctx, {deleg_arg}, iter_val);
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                if (!deleg_result.is_object()) {
+                    Object::current_context_ = prev_ctx;
+                    ctx.throw_type_error(is_return ? "Iterator return() result is not an Object"
+                                                    : "Iterator throw() result is not an Object");
+                    return Value();
+                }
+                Value deleg_done = deleg_result.as_object()->get_property("done");
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                if (deleg_done.to_boolean()) {
+                    // done=true: access value and complete.
+                    Value deleg_val = deleg_result.as_object()->get_property("value");
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                    if (is_return) {
+                        current_gen->return_argument_ = deleg_val;
+                        Collector::write_barrier(current_gen);
+                        Object::current_context_ = prev_ctx;
+                        throw GeneratorReturnException(deleg_val);
+                    }
+                    final_val = deleg_val;
+                    delegate_done = true;
+                    break;
+                }
+                // done=false: yield the inner result, then wait for the next resumption.
+                current_gen->yielded_result_ = deleg_result;
+                current_gen->yield_raw_result_ = true;
+                current_gen->set_state(Generator::State::SuspendedYield);
+                Collector::write_barrier(current_gen);
+                quanta_fiber_yield(&current_gen->fiber_);
+                Object::current_context_ = &ctx;
+                next_arg = current_gen->sent_value_;
+            }
+            if (delegate_done) break;
+        }
+        Object::current_context_ = prev_ctx;
+        return final_val;
+    }
+
+    size_t delegate_start = Generator::increment_yield_counter();
+
+    size_t needed_idx = current_gen->target_yield_index_ >= delegate_start
+        ? current_gen->target_yield_index_ - delegate_start
+        : 0;
+
+    std::vector<Value> elements;
+    bool delegate_exhausted = false;
+
+    auto collect_from_iterator = [&](Value iter_val) {
+        Object* iter_obj = nullptr;
+        if (iter_val.is_object()) iter_obj = iter_val.as_object();
+        else if (iter_val.is_function()) iter_obj = iter_val.as_function();
+        if (!iter_obj) { delegate_exhausted = true; return; }
+
+        Value next_fn = iter_obj->get_property("next");
+        if (!next_fn.is_function()) { delegate_exhausted = true; return; }
+
+        Generator* saved_gen = Generator::get_current_generator();
+        Generator::set_current_generator(nullptr);
+
+        for (size_t i = 0; i <= needed_idx; i++) {
+            std::vector<Value> no_args;
+            Value next_result = next_fn.as_function()->call(ctx, no_args, iter_val);
+            if (ctx.has_exception()) { delegate_exhausted = true; break; }
+
+            Value done_val;
+            Value val;
+            if (next_result.is_object()) {
+                done_val = next_result.as_object()->get_property("done");
+                val = next_result.as_object()->get_property("value");
+            }
+
+            if (done_val.to_boolean()) {
+                delegate_exhausted = true;
+                break;
+            }
+            elements.push_back(val);
         }
 
-        if (iterable.is_string()) {
-            std::string str = iterable.to_string();
-            size_t byte_idx = 0;
-            size_t char_idx = 0;
-            while (byte_idx < str.size() && char_idx <= needed_idx) {
-                unsigned char c = (unsigned char)str[byte_idx];
-                size_t char_len = 1;
-                if (c >= 0xF0) char_len = 4;
-                else if (c >= 0xE0) char_len = 3;
-                else if (c >= 0xC0) char_len = 2;
-                elements.push_back(Value(str.substr(byte_idx, char_len)));
-                byte_idx += char_len;
-                char_idx++;
+        Generator::set_current_generator(saved_gen);
+    };
+
+    auto throw_at_iterator = [&](Value iter_val) -> bool {
+        Object* iter_obj = nullptr;
+        if (iter_val.is_object()) iter_obj = iter_val.as_object();
+        else if (iter_val.is_function()) iter_obj = iter_val.as_function();
+        if (!iter_obj) return false;
+
+        Value next_fn = iter_obj->get_property("next");
+        if (!next_fn.is_function()) return false;
+
+        Generator* saved_gen = Generator::get_current_generator();
+        Generator::set_current_generator(nullptr);
+
+        bool iter_done = false;
+        for (size_t i = 0; i < needed_idx && !iter_done; i++) {
+            std::vector<Value> no_args;
+            Value nr = next_fn.as_function()->call(ctx, no_args, iter_val);
+            if (ctx.has_exception()) { iter_done = true; break; }
+            if (nr.is_object() && nr.as_object()->get_property("done").to_boolean()) {
+                iter_done = true;
             }
-            if (elements.size() < needed_idx + 1) delegate_exhausted = true;
-        } else if (iterable.is_object() || iterable.is_function()) {
+        }
+
+        if (!iter_done) {
+            Value throw_fn = iter_obj->get_property("throw");
+            if (throw_fn.is_function()) {
+                std::vector<Value> throw_args = {current_gen->throw_value_};
+                Value throw_result = throw_fn.as_function()->call(ctx, throw_args, iter_val);
+                Generator::set_current_generator(saved_gen);
+                if (ctx.has_exception()) return false;
+                if (throw_result.is_object()) {
+                    Value done_v = throw_result.as_object()->get_property("done");
+                    if (!done_v.to_boolean()) {
+                        Value val = throw_result.as_object()->get_property("value");
+                        current_gen->throwing_ = false;
+                        throw YieldException(val);
+                    }
+                }
+            } else {
+                Value return_fn_v = iter_obj->get_property("return");
+                if (return_fn_v.is_function()) {
+                    std::vector<Value> ret_args;
+                    return_fn_v.as_function()->call(ctx, ret_args, iter_val);
+                    ctx.clear_exception();
+                }
+                Generator::set_current_generator(saved_gen);
+                ctx.throw_exception(current_gen->throw_value_, true);
+                return false;
+            }
+        }
+        Generator::set_current_generator(saved_gen);
+        return true;
+    };
+
+    if (current_gen->throwing_) {
+        bool handled = false;
+        if (iterable.is_object() || iterable.is_function()) {
             Object* obj = iterable.is_object() ? iterable.as_object() : iterable.as_function();
-
             Value sym_iter_fn = obj->get_property("Symbol.iterator");
-
             if (sym_iter_fn.is_function()) {
                 Generator* saved_gen = Generator::get_current_generator();
                 Generator::set_current_generator(nullptr);
@@ -3171,31 +3088,122 @@ Value YieldExpression::evaluate(Context& ctx) {
                 Value iter_val = sym_iter_fn.as_function()->call(ctx, no_args, iterable);
                 Generator::set_current_generator(saved_gen);
                 if (!ctx.has_exception()) {
-                    collect_from_iterator(iter_val);
+                    handled = throw_at_iterator(iter_val);
                 }
             } else {
                 Value next_fn = obj->get_property("next");
                 if (next_fn.is_function()) {
-                    collect_from_iterator(iterable);
-                } else {
-                    delegate_exhausted = true;
+                    handled = throw_at_iterator(iterable);
                 }
             }
+        }
+        current_gen->throwing_ = false;
+        (void)handled;
+        return Value();
+    }
+
+    if (current_gen->returning_) {
+        if (iterable.is_object() || iterable.is_function()) {
+            Object* obj = iterable.is_object() ? iterable.as_object() : iterable.as_function();
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            Value iter_val;
+
+            Generator* saved_gen = Generator::get_current_generator();
+            Generator::set_current_generator(nullptr);
+
+            if (iter_sym) {
+                Value sym_iter_fn = obj->get_property(iter_sym->to_property_key());
+                if (sym_iter_fn.is_function()) {
+                    std::vector<Value> no_args;
+                    iter_val = sym_iter_fn.as_function()->call(ctx, no_args, iterable);
+                }
+            }
+            if (iter_val.is_undefined()) iter_val = iterable;
+
+            Object* iter_obj = iter_val.is_object() ? iter_val.as_object()
+                             : iter_val.is_function() ? static_cast<Object*>(iter_val.as_function()) : nullptr;
+
+            if (iter_obj && !ctx.has_exception()) {
+                Value next_fn_v = iter_obj->get_property("next");
+                for (size_t i = 0; i < needed_idx && next_fn_v.is_function(); i++) {
+                    std::vector<Value> no_args;
+                    Value nr = next_fn_v.as_function()->call(ctx, no_args, iter_val);
+                    if (ctx.has_exception()) break;
+                    if (nr.is_object() && nr.as_object()->get_property("done").to_boolean()) break;
+                }
+                if (!ctx.has_exception()) {
+                    Value return_fn_v = iter_obj->get_property("return");
+                    if (return_fn_v.is_function()) {
+                        std::vector<Value> ret_args = {current_gen->return_argument_};
+                        return_fn_v.as_function()->call(ctx, ret_args, iter_val);
+                        ctx.clear_exception();
+                    }
+                }
+            }
+            Generator::set_current_generator(saved_gen);
+        }
+        return Value();
+    }
+
+    if (iterable.is_string()) {
+        std::string str = iterable.to_string();
+        size_t byte_idx = 0;
+        size_t char_idx = 0;
+        while (byte_idx < str.size() && char_idx <= needed_idx) {
+            unsigned char c = (unsigned char)str[byte_idx];
+            size_t char_len = 1;
+            if (c >= 0xF0) char_len = 4;
+            else if (c >= 0xE0) char_len = 3;
+            else if (c >= 0xC0) char_len = 2;
+            elements.push_back(Value(str.substr(byte_idx, char_len)));
+            byte_idx += char_len;
+            char_idx++;
+        }
+        if (elements.size() < needed_idx + 1) delegate_exhausted = true;
+    } else if (iterable.is_object() || iterable.is_function()) {
+        Object* obj = iterable.is_object() ? iterable.as_object() : iterable.as_function();
+
+        Value sym_iter_fn = obj->get_property("Symbol.iterator");
+
+        if (sym_iter_fn.is_function()) {
+            Generator* saved_gen = Generator::get_current_generator();
+            Generator::set_current_generator(nullptr);
+            std::vector<Value> no_args;
+            Value iter_val = sym_iter_fn.as_function()->call(ctx, no_args, iterable);
+            Generator::set_current_generator(saved_gen);
+            if (!ctx.has_exception()) {
+                collect_from_iterator(iter_val);
+            }
         } else {
-            delegate_exhausted = true;
+            Value next_fn = obj->get_property("next");
+            if (next_fn.is_function()) {
+                collect_from_iterator(iterable);
+            } else {
+                delegate_exhausted = true;
+            }
         }
+    } else {
+        delegate_exhausted = true;
+    }
 
-        size_t delegate_count = elements.size();
-        for (size_t i = 1; i < delegate_count; i++) {
-            Generator::increment_yield_counter();
-        }
+    size_t delegate_count = elements.size();
+    for (size_t i = 1; i < delegate_count; i++) {
+        Generator::increment_yield_counter();
+    }
 
-        if (current_gen->target_yield_index_ >= delegate_start + delegate_count) {
-            return Value();
-        }
+    if (current_gen->target_yield_index_ >= delegate_start + delegate_count) {
+        return Value();
+    }
 
-        size_t element_idx = current_gen->target_yield_index_ - delegate_start;
-        throw YieldException(elements[element_idx]);
+    size_t element_idx = current_gen->target_yield_index_ - delegate_start;
+    throw YieldException(elements[element_idx]);
+}
+
+Value YieldExpression::evaluate(Context& ctx) {
+    if (is_delegate_) {
+        Value iterable = argument_ ? argument_->evaluate(ctx) : Value();
+        if (ctx.has_exception()) return Value();
+        return perform_yield_delegate(ctx, iterable);
     }
 
     Value yield_value = Value();

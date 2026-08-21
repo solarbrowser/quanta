@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include "quanta/core/vm/BytecodeCompiler.h"
+#include "quanta/core/runtime/BigInt.h"
 #include <algorithm>
 #include "quanta/parser/AST.h"
 #include "quanta/core/runtime/Shape.h"
@@ -2646,10 +2647,20 @@ bool is_named_evaluation_rhs(const ASTNode* node) {
 // A class cannot take its inferred name from Op::SetFunctionNameIfUnnamed:
 // ClassDefinitionEvaluation applies the name before running static
 // initializers, which can observe it (`class { static f = this.name }`),
-// whereas the opcode only runs once the class is already built. Such a
-// declaration/assignment goes to the tree-walker whole.
-bool named_evaluation_needs_delegate(const ASTNode* node) {
+// whereas the opcode only runs once the class is already built.
+bool named_evaluation_is_class(const ASTNode* node) {
     return node && node->get_type() == ASTNode::Type::CLASS_DECLARATION;
+}
+
+// So the name goes on the node instead, as the tree-walker does before
+// evaluating. A site's inferred name never varies between evaluations, so
+// stamping it once while compiling says what the tree-walker says every time.
+void stamp_inferred_class_name(const ASTNode* init, const std::string& name) {
+    if (!named_evaluation_is_class(init)) return;
+    auto* cd = const_cast<ClassDeclaration*>(static_cast<const ClassDeclaration*>(init));
+    if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
+        cd->set_inferred_name(name);
+    }
 }
 
 // Maps each nested lexical/class declaration to its "declaring region": a
@@ -3416,7 +3427,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 // A class default has to be named before its static
                 // initializers run, which Op::SetFunctionNameIfUnnamed is too
                 // late for -- same reason the assignment forms delegate.
-                if (named_evaluation_needs_delegate(p->get_default_value())) return nullptr;
+                stamp_inferred_class_name(p->get_default_value(), pname);
                 size_t skip = compiler.emit_jump(Op::JumpIfNotUndefined);
                 if (!compiler.compile_expression(p->get_default_value())) return nullptr;
                 if (!p->has_destructuring() && is_named_evaluation_rhs(p->get_default_value())) {
@@ -4303,7 +4314,7 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 // A class on the right needs its name applied before its static
                 // initializers run, which only the tree-walker's own
                 // ClassDefinitionEvaluation ordering gives.
-                if (named_evaluation_needs_delegate(ae->get_right())) return false;
+                if (named_evaluation_is_class(ae->get_right())) return false;
                 target = ae->get_left();
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -4328,7 +4339,7 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
             }
             if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
                 const auto* ae = static_cast<const AssignmentExpression*>(target);
-                if (named_evaluation_needs_delegate(ae->get_right())) return false;
+                if (named_evaluation_is_class(ae->get_right())) return false;
                 target = ae->get_left();
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -4781,9 +4792,7 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     if (expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER) {
         const std::string& name = static_cast<const Identifier*>(expr->get_left())->get_name();
         if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
-        if (named_evaluation_needs_delegate(expr->get_right())) {
-            return emit_treewalker_delegate(expr);
-        }
+        stamp_inferred_class_name(expr->get_right(), name);
         // NamedEvaluation applies to the RHS of a logical assignment too
         // (spec 13.15.2 step 1.e.i): `f ??= function(){}` names it "f". The
         // opcode no-ops when the value already has a name.
@@ -5023,10 +5032,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     // Top-level script declaration: the binding pre-exists
                     // (vars on the global object, let/const uninitialized in
                     // the script env).
-                    if (named_evaluation_needs_delegate(d->get_init())) {
-                        if (!emit_treewalker_delegate(node)) return false;
-                        break;
-                    }
+                    stamp_inferred_class_name(d->get_init(), name);
                     bool is_lex = decl->get_kind() != VariableDeclarator::Kind::VAR;
                     if (!d->get_init()) {
                         if (is_var) continue;
@@ -5057,10 +5063,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (is_var) continue;
                     emit(Op::LdaUndefined);
                 } else {
-                    if (named_evaluation_needs_delegate(d->get_init())) {
-                        if (!emit_treewalker_delegate(node)) return false;
-                        break;
-                    }
+                    stamp_inferred_class_name(d->get_init(), name);
                     if (!compile_expression(d->get_init())) return false;
                     // NamedEvaluation for a register-resident binding.
                     if (is_named_evaluation_rhs(d->get_init())) {
@@ -5324,17 +5327,15 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         case ASTNode::Type::RETURN_STATEMENT: {
             const auto* stmt = static_cast<const ReturnStatement*>(node);
             if (stmt->get_argument()) {
-                // ReturnStatement::evaluate carries semantics Op::Return lacks: an
-                // async generator's `return <expr>` awaits the value, and its
-                // set_return_value tells `return undefined` from falling off.
-                if (suspendable_) {
-                    if (!emit_treewalker_delegate(node)) return false;
-                    emit(Op::Return);
-                    return true;
-                }
                 if (!compile_expression(stmt->get_argument())) return false;
             } else {
                 emit(Op::LdaUndefined);
+            }
+            // Emitted with or without an argument: `return;` still has to be
+            // distinguishable from falling off the end.
+            if (suspendable_) {
+                emit(Op::SettleReturn);
+                emit_u8(stmt->get_argument() ? 1 : 0);
             }
             // Return abruptly completes every enclosing for-of/for-in:
             // IteratorClose innermost-first (mode 0 leaves acc untouched).
@@ -5746,6 +5747,32 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         case ASTNode::Type::STRING_LITERAL: {
             emit(Op::LdaConst);
             emit_u16(add_constant(Value(static_cast<const StringLiteral*>(node)->get_value())));
+            return !failed_;
+        }
+        case ASTNode::Type::META_PROPERTY: {
+            const auto* n = static_cast<const MetaProperty*>(node);
+            if (n->get_meta() == "new" && n->get_property() == "target") {
+                emit(Op::LdaNewTarget);
+                return !failed_;
+            }
+            if (n->get_meta() == "import" && n->get_property() == "meta") {
+                emit(Op::LdaImportMeta);
+                return !failed_;
+            }
+            return false;
+        }
+        case ASTNode::Type::BIGINT_LITERAL: {
+            // A BigInt has no identity anything can observe, so one cell in
+            // the constant pool serves every evaluation, as a string's does.
+            const std::string& text = static_cast<const BigIntLiteral*>(node)->get_value();
+            BigInt* parsed = nullptr;
+            try {
+                parsed = new BigInt(text);
+            } catch (const std::exception&) {
+                return false;
+            }
+            emit(Op::LdaConst);
+            emit_u16(add_constant(Value(parsed)));
             return !failed_;
         }
         case ASTNode::Type::TEMPLATE_LITERAL: {
@@ -6329,9 +6356,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 if (!is_local(name)) {
                     // Outer/global write via chain lookup.
                     if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
-                    if (!compound && named_evaluation_needs_delegate(expr->get_right())) {
-                        return emit_treewalker_delegate(node);
-                    }
+                    if (!compound) stamp_inferred_class_name(expr->get_right(), name);
                     if (!compound) {
                         // Spec 13.15.2: ResolveBinding happens before the RHS
                         // evaluates, so an unresolvable reference throws (in
@@ -6380,9 +6405,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     // Same NamedEvaluation the outer/global branch above does:
                     // a local target names its anonymous RHS too, and a class
                     // has to be named before its static initializers run.
-                    if (named_evaluation_needs_delegate(expr->get_right())) {
-                        return emit_treewalker_delegate(node);
-                    }
+                    stamp_inferred_class_name(expr->get_right(), name);
                     if (!compile_expression(expr->get_right())) return false;
                     if (!expr->is_lhs_paren() && is_named_evaluation_rhs(expr->get_right())) {
                         emit(Op::SetFunctionNameIfUnnamed);
@@ -6944,18 +6967,15 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         // the suspension and the sent/resolved value lands in the accumulator.
         case ASTNode::Type::YIELD_EXPRESSION: {
             const auto* n = static_cast<const YieldExpression*>(node);
-            // A plain yield is one fiber switch and Op::Yield is exactly that.
-            // `yield*` is a protocol loop over another iterator, a different
-            // thing entirely, and still goes to the tree-walker -- as does a
-            // yield outside a suspendable body, which valid code cannot
-            // produce but which must not be compiled to a suspend if it does.
-            if (!suspendable_ || n->is_delegate()) return emit_treewalker_delegate(node);
+            // Valid code cannot yield outside a suspendable body, but such a
+            // node must still not compile to a suspend.
+            if (!suspendable_) return emit_treewalker_delegate(node);
             if (n->get_argument()) {
                 if (!compile_expression(n->get_argument())) return false;
             } else {
                 emit(Op::LdaUndefined);
             }
-            emit(Op::Yield);
+            emit(n->is_delegate() ? Op::YieldStar : Op::Yield);
             return !failed_;
         }
 
