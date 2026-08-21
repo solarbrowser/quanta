@@ -149,9 +149,19 @@ private:
     // Emits a destructuring pattern. Consumes the source value from the
     // accumulator. pattern_is_emittable decides first, so a shape the emitter
     // cannot express costs no half-written bytecode.
-    bool emit_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const);
-    bool pattern_is_emittable(const ASTNode* pattern, bool is_lexical) const;
-    bool emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const);
+    // `is_assignment` switches the same emitter from a declaration to the
+    // assignment form (`[a, b] = [b, a]`), where a target need not be a name
+    // this chunk owns and the write is not an initialisation.
+    bool emit_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const,
+                           bool is_assignment = false);
+    bool pattern_is_emittable(const ASTNode* pattern, bool is_lexical,
+                              bool is_assignment = false) const;
+    bool emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const,
+                                 bool is_assignment = false);
+    bool emit_pattern_target_store(const ASTNode* target, bool is_lexical, bool is_const,
+                                   bool is_assignment);
+    bool emit_pattern_assign(const ASTNode* pattern, const ASTNode* source);
+    bool pattern_target_is_writable(const std::string& name) const;
 
     bool member_is_supported(const class MemberExpression* mem) const;
     static bool member_is_super(const class MemberExpression* mem);

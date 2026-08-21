@@ -1128,6 +1128,11 @@ if (source_value.is_string()) {
         pos += cl;
         char_idx++;
     }
+} else if (!source_obj) {
+    // A number, boolean or symbol source boxes to a wrapper with no own
+    // enumerable properties of its own, so the rest object is simply empty.
+    // Only null and undefined are an error, and CheckObjectCoercible has
+    // already refused those before this runs.
 } else if (source_obj->get_type() == Object::ObjectType::Proxy) {
     // get_enumerable_keys()/get_property() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec.
     Proxy* proxy = static_cast<Proxy*>(source_obj);

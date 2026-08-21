@@ -209,6 +209,76 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
 }
 
 // True if `name` is ever an assignment or ++/-- target anywhere in `node`.
+// Whether a pattern suspends while it runs. A `return()` on the generator
+// resumes such a suspension by unwinding a C++ exception, which travels past
+// the handler-table entry the emitter uses to close the iterator, so a pattern
+// like `[ {} = yield ] = vals` stays on the tree-walker.
+bool pattern_contains_suspension(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::YIELD_EXPRESSION:
+        case ASTNode::Type::AWAIT_EXPRESSION:
+            return true;
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& prop : n->get_properties()) {
+                if (prop->computed && pattern_contains_suspension(prop->key.get())) return true;
+                if (prop->value && pattern_contains_suspension(prop->value.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el && pattern_contains_suspension(el.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return pattern_contains_suspension(n->get_left()) ||
+                   pattern_contains_suspension(n->get_right());
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return pattern_contains_suspension(
+                static_cast<const SpreadElement*>(node)->get_argument());
+        default:
+            return false;
+    }
+}
+
+// Every name a destructuring pattern writes to, at any depth. The cover
+// grammar parses a pattern as an object/array literal, so the targets sit where
+// property values and array elements do, under an optional default or spread.
+void collect_pattern_target_names(const ASTNode* pattern, std::vector<std::string>& out) {
+    if (!pattern) return;
+    auto take = [&out](const ASTNode* t) {
+        if (t && t->get_type() == ASTNode::Type::IDENTIFIER) {
+            out.push_back(static_cast<const Identifier*>(t)->get_name());
+        } else {
+            collect_pattern_target_names(t, out);
+        }
+    };
+    auto unwrap = [](const ASTNode* t) {
+        if (t && t->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+            t = static_cast<const SpreadElement*>(t)->get_argument();
+        }
+        if (t && t->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+            t = static_cast<const AssignmentExpression*>(t)->get_left();
+        }
+        return t;
+    };
+    if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+        for (const auto& prop : static_cast<const ObjectLiteral*>(pattern)->get_properties()) {
+            if (prop->value) take(unwrap(prop->value.get()));
+        }
+    } else if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        for (const auto& el : static_cast<const ArrayLiteral*>(pattern)->get_elements()) {
+            if (el) take(unwrap(el.get()));
+        }
+    }
+}
+
 // Runtime const-immutability isn't implemented, so this is the compile-time check.
 bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
     if (!node) return false;
@@ -292,11 +362,21 @@ bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
-            if (n->get_left()->get_type() == ASTNode::Type::IDENTIFIER &&
-                static_cast<const Identifier*>(n->get_left())->get_name() == name) {
+            const ASTNode* left = n->get_left();
+            if (left->get_type() == ASTNode::Type::IDENTIFIER &&
+                static_cast<const Identifier*>(left)->get_name() == name) {
                 return true;
             }
-            return assigns_to_identifier(n->get_left(), name) ||
+            // A pattern on the left writes to every name it holds, and those
+            // sit where an ordinary literal's values do -- walking the left as
+            // an expression would read them as mere mentions.
+            if (left->get_type() == ASTNode::Type::ARRAY_LITERAL ||
+                left->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+                std::vector<std::string> targets;
+                collect_pattern_target_names(left, targets);
+                for (const auto& t : targets) if (t == name) return true;
+            }
+            return assigns_to_identifier(left, name) ||
                    assigns_to_identifier(n->get_right(), name);
         }
         case ASTNode::Type::UNARY_EXPRESSION: {
@@ -4391,7 +4471,18 @@ uint16_t BytecodeCompiler::alloc_keyed_feedback() {
 
 // True if every leaf of this pattern is a shape emit_pattern_bind can express.
 // Checked up front so a refusal costs no half-emitted bytecode.
-bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexical) const {
+// Whether an assignment pattern may write this name from a register. A `let`
+// still inside its own initialiser (`let y = [y] = []`) has to raise a
+// ReferenceError, and a register carries no such state, so that case goes to
+// the tree-walker rather than storing in silence.
+bool BytecodeCompiler::pattern_target_is_writable(const std::string& name) const {
+    if (env_names_.count(name)) return true;
+    int reg = lookup_local(name);
+    if (reg < 0) return true;  // resolved through the chain at run time
+    return !(lexical_registers_.count(reg) && !initialized_lexicals_.count(reg));
+}
+
+bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexical, bool is_assignment) const {
     if (!pattern) return false;
     if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
         for (const auto& prop : static_cast<const ObjectLiteral*>(pattern)->get_properties()) {
@@ -4404,7 +4495,8 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
                 if (!rt || rt->get_type() != ASTNode::Type::IDENTIFIER) return false;
                 const std::string& rn = static_cast<const Identifier*>(rt)->get_name();
-                if (!env_names_.count(rn) && lookup_local(rn) < 0) return false;
+                if (!is_assignment && !env_names_.count(rn) && lookup_local(rn) < 0) return false;
+                if (is_assignment && !pattern_target_is_writable(rn)) return false;
                 continue;
             }
             if (!prop->computed && prop->key->get_type() != ASTNode::Type::IDENTIFIER &&
@@ -4420,13 +4512,14 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 target = ae->get_left();
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
-                // The name has to be a binding this chunk already knows how to
-                // write; otherwise emit_write_local has nowhere to put it.
+                // A declaration writes a name this chunk owns; an assignment can
+                // also name something further out, which a chain write reaches.
                 const std::string& n = static_cast<const Identifier*>(target)->get_name();
-                if (!env_names_.count(n) && lookup_local(n) < 0) return false;
+                if (!is_assignment && !env_names_.count(n) && lookup_local(n) < 0) return false;
+                if (is_assignment && !pattern_target_is_writable(n)) return false;
                 continue;
             }
-            if (!pattern_is_emittable(target, is_lexical)) return false;
+            if (!pattern_is_emittable(target, is_lexical, is_assignment)) return false;
         }
         return true;
     }
@@ -4446,22 +4539,60 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
                 const std::string& n = static_cast<const Identifier*>(target)->get_name();
-                if (!env_names_.count(n) && lookup_local(n) < 0) return false;
+                if (!is_assignment && !env_names_.count(n) && lookup_local(n) < 0) return false;
+                if (is_assignment && !pattern_target_is_writable(n)) return false;
                 continue;
             }
-            if (!pattern_is_emittable(target, is_lexical)) return false;
+            if (!pattern_is_emittable(target, is_lexical, is_assignment)) return false;
         }
         return true;
     }
     return false;
 }
 
+// `pattern = source` as an expression: the pattern writes through, and the
+// expression itself answers with the source, which is why it is parked in a
+// register rather than left to the binder's own bookkeeping.
+bool BytecodeCompiler::emit_pattern_assign(const ASTNode* pattern, const ASTNode* source) {
+    if (!compile_expression(source)) return false;
+    int src_reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(src_reg));
+    if (!emit_pattern_bind(pattern, /*is_lexical=*/false, /*is_const=*/false,
+                           /*is_assignment=*/true)) {
+        return false;
+    }
+    emit(Op::Ldar);
+    emit_u8(static_cast<uint8_t>(src_reg));
+    free_temp(src_reg);
+    return !failed_;
+}
+
+// Where a pattern element's value lands. A declaration always writes a name
+// this chunk owns; an assignment can also name something further out, and only
+// a chain write reaches that.
+bool BytecodeCompiler::emit_pattern_target_store(const ASTNode* target, bool is_lexical,
+                                                 bool is_const, bool is_assignment) {
+    if (target->get_type() == ASTNode::Type::IDENTIFIER) {
+        const std::string& name = static_cast<const Identifier*>(target)->get_name();
+        if (is_assignment && !env_names_.count(name) && lookup_local(name) < 0) {
+            emit(Op::StaLookup);
+            emit_u16(add_name(name));
+            return !failed_;
+        }
+        emit_write_local(name, is_assignment ? false : is_lexical);
+        return !failed_;
+    }
+    return emit_pattern_bind(target, is_lexical, is_const, is_assignment);
+}
+
 // Object pattern: read each property off the source, apply the element's own
 // default when it comes back undefined, then bind or recurse.
-bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const) {
+bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const, bool is_assignment) {
     (void)is_const;
     if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
-        return emit_array_pattern_bind(pattern, is_lexical, is_const);
+        return emit_array_pattern_bind(pattern, is_lexical, is_const, is_assignment);
     }
     int src_reg = alloc_temp();
     if (failed_) return false;
@@ -4518,7 +4649,7 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
             emit_u8(static_cast<uint8_t>(src_reg));
             emit_u8(static_cast<uint8_t>(keys_reg));
             const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
-            emit_write_local(static_cast<const Identifier*>(rt)->get_name(), is_lexical);
+            if (!emit_pattern_target_store(rt, is_lexical, is_const, is_assignment)) return false;
             continue;
         }
         const ASTNode* target = prop->value.get();
@@ -4571,11 +4702,7 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
             if (!patch_jump(skip)) return false;
         }
 
-        if (target->get_type() == ASTNode::Type::IDENTIFIER) {
-            emit_write_local(static_cast<const Identifier*>(target)->get_name(), is_lexical);
-        } else if (!emit_pattern_bind(target, is_lexical, is_const)) {
-            return false;
-        }
+        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment)) return false;
     }
     if (has_rest) { free_temp(keys_idx_reg); free_temp(keys_reg); }
     free_temp(src_reg);
@@ -4588,7 +4715,7 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
 // without another next() call. The whole pattern sits inside a handler that
 // closes the iterator if anything in it throws, mirroring what
 // compile_for_each_loop does for a for-of body.
-bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const) {
+bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const, bool is_assignment) {
     int next_fn_reg = alloc_temp();
     if (failed_) return false;
     emit(Op::GetIterator);
@@ -4682,7 +4809,7 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             emit_u8(static_cast<uint8_t>(arr_reg));
             size_t rest_span = code_.size();
             if (rest_target->get_type() == ASTNode::Type::IDENTIFIER) {
-                emit_write_local(static_cast<const Identifier*>(rest_target)->get_name(), is_lexical);
+                if (!emit_pattern_target_store(rest_target, is_lexical, is_const, is_assignment)) return false;
             } else if (!emit_pattern_bind(rest_target, is_lexical, is_const)) {
                 return false;
             }
@@ -4714,11 +4841,7 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             }
             if (!patch_jump(skip)) return false;
         }
-        if (target->get_type() == ASTNode::Type::IDENTIFIER) {
-            emit_write_local(static_cast<const Identifier*>(target)->get_name(), is_lexical);
-        } else if (!emit_pattern_bind(target, is_lexical, is_const)) {
-            return false;
-        }
+        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment)) return false;
         if (code_.size() > span_start) guarded.emplace_back(span_start, code_.size());
     }
 
@@ -6553,10 +6676,15 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             }
 
             // Bare destructuring (`[a,b]=[b,a];`): array/object-literal LHS,
-            // plain `=` only. AssignmentExpression::evaluate() handles it.
+            // plain `=` only.
             if (!compound && (expr->get_left()->get_type() == ASTNode::Type::ARRAY_LITERAL ||
                               expr->get_left()->get_type() == ASTNode::Type::OBJECT_LITERAL)) {
-                return emit_treewalker_delegate(node);
+                if (pattern_contains_suspension(expr->get_left()) ||
+                    !pattern_is_emittable(expr->get_left(), /*is_lexical=*/false,
+                                          /*is_assignment=*/true)) {
+                    return emit_treewalker_delegate(node);
+                }
+                return emit_pattern_assign(expr->get_left(), expr->get_right());
             }
 
             if (expr->get_left()->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return false;
@@ -7397,10 +7525,17 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             return !failed_;
         }
 
-        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT:
-            // Bare form: targets can be arbitrary AssignmentTargets, so
-            // delegate whole rather than reuse the pattern emitter.
-            return emit_treewalker_delegate(node);
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            const ASTNode* lit = n->get_pattern_literal();
+            // An arbitrary AssignmentTarget (a member expression) still goes to
+            // the tree-walker whole; plain names the pattern emitter can write.
+            if (!lit || !n->get_source() || pattern_contains_suspension(lit) ||
+                !pattern_is_emittable(lit, /*is_lexical=*/false, /*is_assignment=*/true)) {
+                return emit_treewalker_delegate(node);
+            }
+            return emit_pattern_assign(lit, n->get_source());
+        }
 
         default:
             return false;

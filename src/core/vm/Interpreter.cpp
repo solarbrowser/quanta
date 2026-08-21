@@ -2603,6 +2603,14 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                 const std::string& name = *key;
                 pc += 2;
                 if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
+                    // The slot is a shortcut past the chain walk, not past the
+                    // checks: the matching load asks this too, and a write to a
+                    // binding still in its own initialiser has to raise.
+                    if (!e->slot.initialized) {
+                        ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                        CHECK_EXC();
+                        break;
+                    }
                     // The refusal used to be spelled as a silent skip, so a
                     // const write here vanished instead of raising.
                     if (!e->slot.mutable_flag) {
