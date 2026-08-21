@@ -418,6 +418,20 @@ const std::vector<std::unique_ptr<Parameter>>& Function::get_parameter_objects()
     return executable_ ? executable_->parameter_objects : empty;
 }
 
+// A destructuring parameter names its own bindings, which have to exist in the
+// function's scope before the pattern runs: evaluate_with_value assigns, and an
+// assignment with nothing to assign to walks out to whatever else carries that
+// name. Same order the catch clause uses for its parameter.
+static void declare_pattern_parameter_names(Context& function_context, ASTNode* pattern) {
+    auto* destr = dynamic_cast<DestructuringAssignment*>(pattern);
+    if (!destr) return;
+    std::vector<std::string> bound;
+    destr->collect_bound_names(bound);
+    for (const auto& n : bound) {
+        if (!n.empty()) function_context.create_lexical_binding(n, Value(), true);
+    }
+}
+
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     switch (get_function_kind()) {
         case FunctionKind::Async: return static_cast<AsyncFunction*>(this)->call(ctx, args, this_value);
@@ -1068,18 +1082,11 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
             if (p->has_default() || p->is_rest() || p->has_destructuring()) { has_complex = true; break; }
         }
         if (has_complex && !function_context.has_binding("arguments")) {
-            auto early_args = ObjectFactory::create_array(args.size());
-            // Retype before touching length: an array's is non-configurable,
-            // and Arguments needs a configurable one.
-            early_args->set_type(Object::ObjectType::Arguments);
-            for (size_t i = 0; i < args.size(); ++i) early_args->set_element(i, args[i]);
-            {
-                PropertyDescriptor ld(Value(static_cast<double>(args.size())),
-                    static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-                early_args->set_property_descriptor("length", ld);
-            }
-            early_args->set_type(Object::ObjectType::Arguments);
-            function_context.create_binding("arguments", Value(early_args.release()), true, false);
+            // The same object the ordinary path builds, which is where the
+            // prototype, @@iterator and the callee poison-pill come from. A
+            // non-simple parameter list makes it unmapped, which is what the
+            // spec asks for here anyway.
+            create_arguments_object(function_context, args);
         }
     }
 
@@ -1127,6 +1134,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                 if (param->has_destructuring()) {
                     auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
                     if (destr) {
+                        declare_pattern_parameter_names(function_context, param->get_destructuring_pattern());
                         destr->evaluate_with_value(function_context, rest_val);
                         if (function_context.has_exception()) {
                             function_context.set_in_param_eval(false);
@@ -1179,6 +1187,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                     auto* pattern = param->get_destructuring_pattern();
                     auto* destructuring = dynamic_cast<DestructuringAssignment*>(pattern);
                     if (destructuring) {
+                        declare_pattern_parameter_names(function_context, pattern);
                         destructuring->evaluate_with_value(function_context, arg_value);
                         if (function_context.has_exception()) {
                             function_context.set_in_param_eval(false);

@@ -382,8 +382,59 @@ bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
         }
         case ASTNode::Type::CLASS_STATIC_BLOCK:
             return assigns_to_identifier(static_cast<const ClassStaticBlock*>(node)->get_body(), name);
-        default:
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el.expression && assigns_to_identifier(el.expression.get(), name)) return true;
+            }
             return false;
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            return assigns_to_identifier(n->get_left(), name) ||
+                   assigns_to_identifier(n->get_right(), name);
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (assigns_to_identifier(n->get_constructor(), name)) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (assigns_to_identifier(arg.get(), name)) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            return assigns_to_identifier(n->get_object(), name) ||
+                   assigns_to_identifier(n->get_property(), name);
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return assigns_to_identifier(static_cast<const SpreadElement*>(node)->get_argument(), name);
+        case ASTNode::Type::THROW_STATEMENT:
+            return assigns_to_identifier(static_cast<const ThrowStatement*>(node)->get_expression(), name);
+
+        // Leaves: nothing inside them to assign through. Everything else falls
+        // to the answer below.
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::REGEX_LITERAL:
+        case ASTNode::Type::IDENTIFIER:
+        case ASTNode::Type::META_PROPERTY:
+        case ASTNode::Type::ENGINE_HELPER:
+        case ASTNode::Type::EMPTY_STATEMENT:
+        case ASTNode::Type::BREAK_STATEMENT:
+        case ASTNode::Type::CONTINUE_STATEMENT:
+            return false;
+
+        default:
+            // A node shape this walk does not know could hold an assignment
+            // anywhere inside it, and answering "no" would let a const be given
+            // a register and then overwritten in silence. The callers all treat
+            // "yes" as a reason to be careful, so an unknown shape says yes.
+            return true;
     }
 }
 
@@ -511,8 +562,56 @@ bool contains_closure(const ASTNode* node) {
             }
             return false;
         }
-        default:
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el.expression && contains_closure(el.expression.get())) return true;
+            }
             return false;
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            return contains_closure(n->get_left()) || contains_closure(n->get_right());
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (contains_closure(n->get_constructor())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (contains_closure(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            return contains_closure(n->get_object()) || contains_closure(n->get_property());
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return contains_closure(static_cast<const SpreadElement*>(node)->get_argument());
+        case ASTNode::Type::THROW_STATEMENT:
+            return contains_closure(static_cast<const ThrowStatement*>(node)->get_expression());
+
+        // Leaves: nothing inside them to hold a closure.
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::REGEX_LITERAL:
+        case ASTNode::Type::IDENTIFIER:
+        case ASTNode::Type::META_PROPERTY:
+        case ASTNode::Type::ENGINE_HELPER:
+        case ASTNode::Type::EMPTY_STATEMENT:
+        case ASTNode::Type::BREAK_STATEMENT:
+        case ASTNode::Type::CONTINUE_STATEMENT:
+            return false;
+
+        default:
+            // An unknown shape could hold a closure, and answering "no" leaves
+            // env_mode off, which is what every closure-emitting instruction
+            // refuses to run without -- the whole function goes to the
+            // tree-walker instead. Saying yes only costs its registers.
+            return true;
     }
 }
 
