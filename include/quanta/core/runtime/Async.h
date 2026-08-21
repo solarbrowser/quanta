@@ -37,10 +37,10 @@ class AsyncGeneratorFunction;
 // call resume() to mco_resume back in.
 class AsyncExecutor : public std::enable_shared_from_this<AsyncExecutor> {
 public:
-    // body is non-owning: it points into owner_fn's own body, kept
-    // reachable by the GC-trace lambda passed to FiberRegistry below.
-    AsyncExecutor(ASTNode* body,
-                  AsyncFunction* owner_fn,
+    // The tree is not held: it is asked of owner_fn when the uncompiled path
+    // actually wants it, so a suspended async call does not pin its function's
+    // parse tree for as long as it is suspended.
+    AsyncExecutor(AsyncFunction* owner_fn,
                   std::unique_ptr<Context> exec_ctx,
                   Promise* outer_promise,
                   Engine* engine);
@@ -65,7 +65,6 @@ public:
     std::unique_ptr<FiberState> fiber_ = std::make_unique<FiberState>();
 
 private:
-    ASTNode* body_;
     AsyncFunction* owner_fn_;
     static constinit thread_local AsyncExecutor* current_;
     static void fiber_entry(mco_coro* co);
@@ -130,9 +129,6 @@ private:
 public:
     Context* get_generator_context() const { return context_owned_.get(); }
     Context* get_outer_context() const { return outer_context_; }
-    // Non-owning: points into owner_fn_'s own body, kept reachable by
-    // trace() visiting owner_fn_.
-    ASTNode* body_;
     AsyncGeneratorFunction* owner_fn_ = nullptr;
 
     State state_;
@@ -172,7 +168,7 @@ public:
     std::vector<Request> request_queue_;
 
 public:
-    AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body, AsyncGeneratorFunction* owner_fn,
+    AsyncGenerator(std::unique_ptr<Context> ctx, AsyncGeneratorFunction* owner_fn,
                    Context* outer_ctx = nullptr);
     void trace(Visitor& v);
     // Non-virtual: the GC sweep (Collector.cpp) reads get_custom_kind() and

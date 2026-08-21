@@ -1583,6 +1583,12 @@ public:
     // Where the body starts, without materializing it -- see
     // FunctionExecutable::body_start.
     Position body_start_position() const;
+    // Whether this function has a body to run at all -- true for one that has
+    // been handed back to its tokens as well as one still holding its tree, so
+    // asking does not drag the tree back in just to find out.
+    bool has_runnable_body() const {
+        return executable_ && (executable_->has_body() || executable_->body_is_deferred());
+    }
 
     // Non-virtual: switches on get_function_kind(), same reasoning as
     // trace() above. call_default() is the plain-Function body.

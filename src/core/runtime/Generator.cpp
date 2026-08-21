@@ -23,8 +23,11 @@
 
 namespace Quanta {
 
+// 120, which the heap rounds to its 128 class -- the same cell it occupied
+// when it also carried a body pointer, so dropping that one costs nothing
+// here and buys the parse tree back everywhere else.
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Generator) == 128);
+static_assert(sizeof(Generator) == 120);
 #else
 static_assert(sizeof(Generator) <= 192);
 #endif
@@ -55,7 +58,10 @@ void Generator::fiber_entry(mco_coro* co) {
 
 void Generator::run_body() {
     try {
-        if (body_) {
+        // Asked of the function rather than held as a pointer: the compiled
+        // form below never reads the tree, so keeping one here meant every
+        // live generator pinned its function's parse tree for nothing.
+        if (generator_function_ && generator_function_->has_runnable_body()) {
             // Bindings already live in generator_context_; a delegated yield
             // suspends the fiber from inside the VM dispatch loop, so the
             // compiled form needs no resumable state of its own.
@@ -68,7 +74,11 @@ void Generator::run_body() {
                     generator_context_->set_return_value(vm_result);
                 }
             } else {
-                body_->evaluate(*generator_context_);
+                // Only the uncompiled path wants the tree, and only then is
+                // it rebuilt.
+                if (ASTNode* body = generator_function_->ast_body()) {
+                    body->evaluate(*generator_context_);
+                }
             }
         }
     } catch (const GeneratorReturnException& e) {
@@ -85,9 +95,9 @@ void Generator::run_body() {
     quanta_fiber_yield(&fiber_);
 }
 
-Generator::Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx)
+Generator::Generator(Function* gen_func, Context* ctx, Context* outer_ctx)
     : CustomObjectBase(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
-      body_(body), state_(State::SuspendedStart), outer_context_(outer_ctx) {
+      state_(State::SuspendedStart), outer_context_(outer_ctx) {
     set_custom_kind(CustomKind::Generator);
     if (gen_func) {
         Value fn_proto = gen_func->get_property("prototype");
@@ -789,9 +799,8 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
 
     // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
     // the function body before it executes (see AsyncFunction::call for rationale).
-    ASTNode* body_ = ast_body();
-    if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body_, gen_context);
+    if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        scan_for_var_declarations(body, gen_context);
     }
 
     // &ctx (the caller's own context, not a fresh one) is captured into the
@@ -799,7 +808,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     // Generator object is -- ContextSurvivorGuard consults this instead of
     // registering unconditionally.
     ctx.mark_exposed_to_escape();
-    return std::make_unique<Generator>(this, gen_context_ptr.release(), body_, &ctx);
+    return std::make_unique<Generator>(this, gen_context_ptr.release(), &ctx);
 }
 
 const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx) {

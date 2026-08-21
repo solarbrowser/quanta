@@ -75,9 +75,6 @@ public:
 private:
     Function* generator_function_;
     Context* generator_context_;
-    // Non-owning: points into generator_function_'s own body, kept alive by
-    // trace() visiting generator_function_.
-    ASTNode* body_;
 
     // Fiber-based (stackful coroutine) implementation
     
@@ -113,7 +110,7 @@ public:
     Value sent_value_;
     Value throw_value_;
     Value return_argument_;
-    Generator(Function* gen_func, Context* ctx, ASTNode* body, Context* outer_ctx = nullptr);
+    Generator(Function* gen_func, Context* ctx, Context* outer_ctx = nullptr);
     void trace(Visitor& v);
     // Non-virtual: the GC sweep (Collector.cpp) reads get_custom_kind() and
     // destructs through the correct concrete type itself.

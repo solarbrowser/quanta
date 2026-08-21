@@ -30,7 +30,9 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(AsyncGenerator) == 160);
+// 152, which the heap rounds to its 160 class -- the same cell it filled when
+// it also carried a body pointer.
+static_assert(sizeof(AsyncGenerator) == 152);
 #else
 static_assert(sizeof(AsyncGenerator) <= 256);
 #endif
@@ -56,8 +58,7 @@ void AsyncGenerator::trace(Visitor& v) {
 
 constinit thread_local AsyncExecutor* AsyncExecutor::current_ = nullptr;
 
-AsyncExecutor::AsyncExecutor(ASTNode* body,
-                              AsyncFunction* owner_fn,
+AsyncExecutor::AsyncExecutor(AsyncFunction* owner_fn,
                               std::unique_ptr<Context> exec_ctx,
                               Promise* outer_promise,
                               Engine* engine)
@@ -65,7 +66,6 @@ AsyncExecutor::AsyncExecutor(ASTNode* body,
       exec_context_owned_(std::move(exec_ctx)),
       exec_context_(exec_context_owned_.get()),
       engine_(engine),
-      body_(body),
       owner_fn_(owner_fn) {
     mco_desc desc = mco_desc_init(fiber_entry, STACK_SIZE);
     desc.user_data = this;
@@ -93,7 +93,9 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
 
     Context* ctx = self->exec_context_;
     try {
-        if (self->body_) {
+        // Asked of the function rather than held: the compiled form below
+        // never reads the tree.
+        if (self->owner_fn_ && self->owner_fn_->has_runnable_body()) {
             // Bindings already live in exec_context_; a delegated await suspends
             // the fiber from inside the VM dispatch loop (see Generator::run_body).
             const BytecodeChunk* chunk = self->owner_fn_ ? self->owner_fn_->get_suspendable_chunk(*ctx) : nullptr;
@@ -103,7 +105,7 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
                     ctx->set_return_value(vm_result);
                 }
             } else {
-                self->body_->evaluate(*ctx);
+                if (ASTNode* body = self->owner_fn_->ast_body()) body->evaluate(*ctx);
             }
         }
     } catch (const std::exception& e) {
@@ -198,8 +200,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // run without this frame and fall back to CallStack's own no-frame path
     // (see resolve_private_storage_key).
     CallStack& stack = CallStack::instance();
-    ASTNode* body_ = ast_body();
-    Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
+    Position call_position = body_start_position();
     CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
     // &ctx (the caller's own context, not a fresh one) is captured into the
@@ -407,13 +408,15 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // the function body, creating bindings initialized to `undefined` before
     // the body executes (so e.g. `with` blocks resolve the local shadowing
     // binding rather than falling through to an outer scope).
-    if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body_, *exec_ctx);
+    // Wanted only here, for this call: asked for and let go of again, rather
+    // than kept on the executor for the whole suspension.
+    if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        scan_for_var_declarations(body, *exec_ctx);
     }
 
     // Shared with every call, like an ordinary function's body -- no clone.
     auto executor = std::make_shared<AsyncExecutor>(
-        body_, this, std::move(exec_ctx), promise_raw, ctx.get_engine());
+        this, std::move(exec_ctx), promise_raw, ctx.get_engine());
 
     // Taken before run(), not after: a body with no await runs to completion
     // inside run(), and fiber_entry's matching release fires there. Retaining
@@ -462,11 +465,11 @@ constinit thread_local Object* AsyncGenerator::s_async_generator_prototype_ = nu
 constinit thread_local Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
 constinit thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 
-AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, ASTNode* body,
+AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx,
                                AsyncGeneratorFunction* owner_fn, Context* outer_ctx)
     : CustomObjectBase(ObjectType::Custom), context_owned_(std::move(ctx)),
       outer_context_(outer_ctx),
-      body_(body), owner_fn_(owner_fn), state_(State::SuspendedStart) {
+      owner_fn_(owner_fn), state_(State::SuspendedStart) {
     set_custom_kind(CustomKind::AsyncGenerator);
     mco_desc desc = mco_desc_init(fiber_entry, STACK_SIZE);
     desc.user_data = this;
@@ -500,7 +503,7 @@ void AsyncGenerator::fiber_entry(mco_coro* co) {
 
     Context* ctx = self->get_generator_context();
     try {
-        if (self->body_) {
+        if (self->owner_fn_ && self->owner_fn_->has_runnable_body()) {
             // Same VM-or-treewalk split as Generator::run_body.
             const BytecodeChunk* chunk = self->owner_fn_ ? self->owner_fn_->get_suspendable_chunk(*ctx) : nullptr;
             if (chunk) {
@@ -509,7 +512,7 @@ void AsyncGenerator::fiber_entry(mco_coro* co) {
                     ctx->set_return_value(vm_result);
                 }
             } else {
-                self->body_->evaluate(*ctx);
+                if (ASTNode* body = self->owner_fn_->ast_body()) body->evaluate(*ctx);
             }
         }
     } catch (const GeneratorReturnException& ret_ex) {
@@ -1709,13 +1712,12 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
 
     // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
     // the function body before it executes (see AsyncFunction::call for rationale).
-    ASTNode* body_ = ast_body();
-    if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body_, *gen_ctx);
+    if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        scan_for_var_declarations(body, *gen_ctx);
     }
 
     Context* outer_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
-    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), body_, this, outer_ctx);
+    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), this, outer_ctx);
     // OrdinaryCreateFromConstructor: the instance inherits from this function's
     // own "prototype" object, not %AsyncGeneratorPrototype% directly.
     Value own_proto = get_property("prototype");
