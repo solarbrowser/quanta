@@ -1297,6 +1297,10 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 bool deleted = ctx.delete_binding(name);
                 return Value(deleted);
             } else {
+                // Not a reference, so the answer is true -- but the operand is
+                // still evaluated (spec 13.5.1.2 step 1), side effects and all.
+                operand_->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
                 return Value(true);
             }
         }

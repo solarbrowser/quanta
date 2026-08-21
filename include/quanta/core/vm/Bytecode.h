@@ -267,6 +267,12 @@ enum class Op : uint8_t {
     // decision, so this is only emitted where it applies.
     SetLiteralProto,           // r_obj
 
+    // `delete name`. The operand byte says the name is a register-resident
+    // local of this frame: a declared binding is not configurable, so the
+    // answer is false, and a chain lookup would otherwise find and delete some
+    // outer binding of the same name.
+    DeleteLookup,              // n16, u8: 1 when the name is a frame local
+
     kCount
 };
 

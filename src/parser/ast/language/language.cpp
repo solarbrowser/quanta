@@ -614,7 +614,9 @@ Value declare_function(Context& ctx, const ClosureTemplate& tpl) {
                 ctx.create_lexical_binding_force(function_name, function_value);
             }
         } else {
-            if (!ctx.create_binding(function_name, function_value, true)) {
+            // Same rule as a `var`: the binding is not deletable outside eval
+            // code (spec 10.2.11 step 36, CreateMutableBinding(fn, false)).
+            if (!ctx.create_var_binding(function_name, function_value, true)) {
                 if (ctx.get_type() == Context::Type::Eval && !ctx.is_strict_mode()) {
                     ctx.create_global_function_binding(function_name, function_value, true);
                 } else {
@@ -2184,27 +2186,56 @@ Value perform_await(Context& ctx, Value awaited, bool has_argument) {
     if (!arg_value.is_object()) return arg_value;
     Object* obj = arg_value.as_object();
     if (!obj) return arg_value;
+
+    Context* gctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
+    Promise* promise = nullptr;
+    Value wrapped_keepalive;  // pins a freshly created wrapper promise as a GC root
     if (obj->get_type() == Object::ObjectType::Promise) {
-        Promise* promise = static_cast<Promise*>(obj);
-        if (promise && promise->get_state() == PromiseState::PENDING) {
-            // Quanta has no suspension mechanism for top-level await in modules
-            // (no fiber executor here) -- force the promise to settle by draining
-            // the microtask queue, bounded against one that never settles.
-            Context* gctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
-            int spins = 0;
-            while (promise->get_state() == PromiseState::PENDING && spins < 100000) {
-                if (!gctx || !gctx->has_pending_microtasks()) break;
-                gctx->drain_microtasks();
-                spins++;
-            }
+        promise = static_cast<Promise*>(obj);
+    } else if (AsyncUtils::is_thenable(arg_value)) {
+        // PromiseResolve step 2: a non-Promise thenable is adopted by a real
+        // promise, and the job that calls its `then` lands on the very queue
+        // the drain below turns.
+        auto wrapped_obj = ObjectFactory::create_promise(gctx);
+        Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+        auto res_fn = ObjectFactory::create_native_function("",
+            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
+                wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
+            }, 1);
+        auto rej_fn = ObjectFactory::create_native_function("",
+            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
+                wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
+            }, 1);
+        wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
+        wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
+        Value then_val = obj->get_property("then");
+        if (then_val.is_function()) {
+            Value r = wrapped_raw->get_internal_slot("__tr_");
+            Value j = wrapped_raw->get_internal_slot("__tj_");
+            AsyncUtils::call_thenable_job(gctx, then_val.as_function(), arg_value, r, j, wrapped_raw);
         }
-        if (promise && promise->get_state() == PromiseState::FULFILLED) {
-            return promise->take_settled_value();
+        promise = wrapped_raw;
+        wrapped_keepalive = Value(wrapped_obj.release());
+    }
+    if (!promise) return arg_value;
+
+    if (promise->get_state() == PromiseState::PENDING) {
+        // Quanta has no suspension mechanism for top-level await in modules
+        // (no fiber executor here) -- force the promise to settle by draining
+        // the microtask queue, bounded against one that never settles.
+        int spins = 0;
+        while (promise->get_state() == PromiseState::PENDING && spins < 100000) {
+            if (!gctx || !gctx->has_pending_microtasks()) break;
+            gctx->drain_microtasks();
+            spins++;
         }
-        if (promise && promise->get_state() == PromiseState::REJECTED) {
-            ctx.throw_exception(promise->take_settled_value(), true);
-            return Value();
-        }
+    }
+    if (promise->get_state() == PromiseState::FULFILLED) {
+        return promise->take_settled_value();
+    }
+    if (promise->get_state() == PromiseState::REJECTED) {
+        ctx.throw_exception(promise->take_settled_value(), true);
+        return Value();
     }
     return arg_value;
 }

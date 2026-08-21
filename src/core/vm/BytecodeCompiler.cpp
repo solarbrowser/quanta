@@ -5239,9 +5239,6 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::FOR_OF_STATEMENT: {
             const auto* stmt = static_cast<const ForOfStatement*>(node);
-            // A `for await` outside a suspendable body is module top-level
-            // await, which has no fiber to suspend here.
-            if (stmt->is_await() && !suspendable_) return false;
             return compile_for_each_loop(stmt->get_left(), stmt->get_right(), stmt->get_body(), false,
                                           stmt->get_left_decl_kind(), stmt->is_await());
         }
@@ -5857,10 +5854,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // ("this" isn't here -- Function::call already resolves it;
             // "arguments" is a plain lookup too once needs_arguments made
             // Function::call materialize the binding.)
-            if ((name == "arguments" && !allow_arguments_) || name == "eval" ||
-                name == "super" || name == "new") {
-                return false;
-            }
+            // Reading `eval` is an ordinary global lookup; only a direct call
+            // through that name needs the caller's scope, and the call site
+            // refuses that on its own. What comes out of a read can only be
+            // called indirectly, which runs in global scope anyway.
+            if (name == "arguments" && !allow_arguments_) return false;
+            if (name == "super" || name == "new") return false;
             emit(Op::LdaLookup);
             emit_u16(add_name(name));
             return !failed_;
@@ -6082,7 +6081,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             emit(Op::LdaThis);
                         } else if (is_local(name)) {
                             emit_read_local(name);
-                        } else if ((name == "arguments" && !allow_arguments_) || name == "eval" ||
+                        } else if ((name == "arguments" && !allow_arguments_) ||
                                    name == "super" || name == "new") {
                             return false;
                         } else {
@@ -6310,10 +6309,18 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         free_temp(obj_reg);
                         return !failed_;
                     }
-                    // Identifier deletes (sloppy binding removal, strict
-                    // SyntaxError) bail; any other operand is `true` without
-                    // evaluation, same as the tree-walker.
-                    if (operand->get_type() == ASTNode::Type::IDENTIFIER) return false;
+                    // Anything that is not a reference is `true` without
+                    // being evaluated, same as the tree-walker.
+                    if (operand->get_type() == ASTNode::Type::IDENTIFIER) {
+                        const std::string& name = static_cast<const Identifier*>(operand)->get_name();
+                        emit(Op::DeleteLookup);
+                        emit_u16(add_name(name));
+                        emit_u8(is_local(name) && !env_names_.count(name) ? 1 : 0);
+                        return !failed_;
+                    }
+                    // Not a reference: the answer is true, but the operand is
+                    // still evaluated for its side effects.
+                    if (!compile_expression(operand, /*discard=*/true)) return false;
                     emit(Op::LdaTrue);
                     return true;
                 }
@@ -6615,6 +6622,13 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     static_cast<const Identifier*>(callee)->get_name() == "super") {
                     return emit_treewalker_delegate(node);
                 }
+                // A spread does not stop `eval(...)` being a direct eval, and
+                // this branch resolves the callee as an ordinary expression,
+                // which would quietly make it an indirect one in global scope.
+                if (callee->get_type() == ASTNode::Type::IDENTIFIER &&
+                    static_cast<const Identifier*>(callee)->get_name() == "eval") {
+                    return false;
+                }
             }
             if (spread_args &&
                 callee->get_type() != ASTNode::Type::MEMBER_EXPRESSION &&
@@ -6833,7 +6847,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u8(static_cast<uint8_t>(call_args.size()));
                 return !failed_;
             }
-            if (named_callee && (callee_name == "eval" || callee_name == "import")) {
+            // Direct eval needs the caller's scope, which a compiled frame
+            // does not hand over. `import(...)` used to sit here with it, but
+            // the callee is an ordinary global function and a reserved word no
+            // one can shadow, so the plain call form below is already right.
+            if (named_callee && callee_name == "eval") {
                 return false;
             }
 
@@ -6984,7 +7002,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
         case ASTNode::Type::AWAIT_EXPRESSION: {
             const auto* n = static_cast<const AwaitExpression*>(node);
-            if (!suspendable_) return emit_treewalker_delegate(node);
+            // No gate on suspendable_: perform_await asks the running fiber
+            // itself, and answers a module top level -- which has none -- by
+            // draining microtasks, exactly as the tree-walker does.
             if (n->get_argument()) {
                 if (!compile_expression(n->get_argument())) return false;
             } else {
@@ -7224,7 +7244,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* lit = static_cast<const ArrayLiteral*>(node);
-            if (lit->get_elements().size() > 200) return false;
+            // Op::CreateArray's u16 count is the only real limit: an element's
+            // temp is freed within its own iteration, so a long literal costs
+            // no more registers than a short one.
+            if (lit->get_elements().size() > 0xFFFF) return false;
             for (const auto& el : lit->get_elements()) {
                 if (!el) return false;
             }

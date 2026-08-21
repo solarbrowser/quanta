@@ -1182,7 +1182,11 @@ bool Environment::create_binding_interned(const std::string* key, const Value& v
     }
     // Same refusal as create_binding: an existing binding is not redefined.
     if (slots_.find_interned(key)) return false;
-    slots_.get_or_create_interned(key) = BindingSlot{value, mutable_binding, true, true};
+    // Never deletable: every caller is seeding a scope the compiler emitted --
+    // parameters, function-level vars, a block or a catch parameter -- and the
+    // spec creates all of those with CreateMutableBinding(N, false). Only eval
+    // code makes a deletable var, and eval is never compiled.
+    slots_.get_or_create_interned(key) = BindingSlot{value, mutable_binding, true, false};
     return true;
 }
 

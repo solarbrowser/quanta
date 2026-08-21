@@ -4451,6 +4451,24 @@ Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_DeleteLookup(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const std::string* name = chunk.names[read_u16(code, pc + 1)];
+    const bool known_local = code[pc + 3] != 0;
+    pc += 4;
+    if (ctx.is_strict_mode()) {
+        ctx.throw_syntax_error("Delete of an unqualified identifier in strict mode");
+    } else {
+        acc = Value(known_local ? false : ctx.delete_binding(*name));
+    }
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_SetLiteralProto(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Value* regs = f.regs;
@@ -4748,6 +4766,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::AsyncIteratorClose)] = &h_gen_AsyncIteratorClose;
     t[static_cast<uint8_t>(Op::FinalizeComputedAccessor)] = &h_gen_FinalizeComputedAccessor;
     t[static_cast<uint8_t>(Op::SetLiteralProto)] = &h_gen_SetLiteralProto;
+    t[static_cast<uint8_t>(Op::DeleteLookup)] = &h_gen_DeleteLookup;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;
