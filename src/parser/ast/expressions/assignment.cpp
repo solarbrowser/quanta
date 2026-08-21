@@ -49,6 +49,18 @@ void super_set_on(Context&, Object*, const std::string&, const Value&);
 
 static bool is_anonymous_function_def(const ASTNode* node);
 
+// NamedEvaluation for a pattern default: an anonymous class has to carry its
+// inferred name before it is evaluated, because a static initializer can read
+// it. Everything else can be renamed afterwards, once the value exists.
+static void stamp_pattern_default_class(ASTNode* rhs, const ASTNode* target) {
+    if (!rhs || rhs->get_type() != ASTNode::Type::CLASS_DECLARATION) return;
+    if (!target || target->get_type() != ASTNode::Type::IDENTIFIER) return;
+    auto* cd = static_cast<ClassDeclaration*>(rhs);
+    if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
+        cd->set_inferred_name(static_cast<const Identifier*>(target)->get_name());
+    }
+}
+
 Value AssignmentExpression::evaluate(Context& ctx) {
     // Declare right_value at function scope (will be evaluated at the right time)
     Value right_value;
@@ -1165,6 +1177,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 auto* assign = static_cast<AssignmentExpression*>(prop->value.get());
                 ASTNode* lhs = assign->left_.get();
                 if (prop_value.is_undefined()) {
+                    stamp_pattern_default_class(assign->right_.get(), lhs);
                     prop_value = assign->right_->evaluate(ctx);
                     if (ctx.has_exception()) return;
                     if (prop_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
@@ -1184,6 +1197,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 auto* assign = static_cast<AssignmentExpression*>(target);
                 ASTNode* lhs = assign->left_.get();
                 if (prop_value.is_undefined()) {
+                    stamp_pattern_default_class(assign->right_.get(), lhs);
                     prop_value = assign->right_->evaluate(ctx);
                     if (ctx.has_exception()) return;
                     if (prop_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
@@ -1545,6 +1559,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 auto* assign = static_cast<AssignmentExpression*>(target);
                 ASTNode* lhs = assign->left_.get();
                 if (elem_value.is_undefined()) {
+                    stamp_pattern_default_class(assign->right_.get(), lhs);
                     // Default may yield/return. On GeneratorReturnException, close iter first.
                     if (deferred_iter_close_needed) {
                         try {

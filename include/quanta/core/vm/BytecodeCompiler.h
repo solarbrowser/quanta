@@ -141,7 +141,9 @@ private:
     void emit(Op op);
     void emit_u8(uint8_t v);
     void emit_u16(uint16_t v);
-    uint16_t add_constant(const Value& v);
+    uint32_t add_constant(const Value& v);
+    void emit_load_const(const Value& v);
+    void emit_u32(uint32_t v);
     uint16_t add_name(const std::string& name);
     uint16_t alloc_feedback_slot();
     uint16_t alloc_private_feedback();
@@ -159,8 +161,10 @@ private:
                               bool is_assignment = false) const;
     bool emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const,
                                  bool is_assignment = false);
+    int emit_with_target_resolve(const ASTNode* target, bool is_lexical);
     bool emit_pattern_target_store(const ASTNode* target, bool is_lexical, bool is_const,
-                                   bool is_assignment);
+                                   bool is_assignment,
+                                   int with_target_reg = -1);
     bool emit_pattern_assign(const ASTNode* pattern, const ASTNode* source);
     bool pattern_target_is_writable(const std::string& name) const;
     bool emit_tagged_template_args(const class CallExpression* call, int& args_start, uint8_t& argc);

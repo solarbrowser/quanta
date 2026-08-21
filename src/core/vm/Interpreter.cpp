@@ -1373,6 +1373,14 @@ Value h_LdaConst(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_LdaConstWide(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* c = f.code + pc + 1;
+    acc = f.constants[static_cast<uint32_t>(c[0]) | (static_cast<uint32_t>(c[1]) << 8) |
+                      (static_cast<uint32_t>(c[2]) << 16) | (static_cast<uint32_t>(c[3]) << 24)];
+    pc += 5;
+    DISPATCH();
+}
+
 Value h_Return(Frame& f, uint32_t pc, Value acc) {
     (void)f; (void)pc;
     return acc;
@@ -5029,6 +5037,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::ResolveWithTarget)] = &h_gen_ResolveWithTarget;
     t[static_cast<uint8_t>(Op::LdaWithResolved)] = &h_gen_LdaWithResolved;
     t[static_cast<uint8_t>(Op::StaWithResolved)] = &h_gen_StaWithResolved;
+    t[static_cast<uint8_t>(Op::LdaConstWide)] = &h_LdaConstWide;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;

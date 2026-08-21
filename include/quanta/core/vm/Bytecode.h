@@ -300,6 +300,10 @@ enum class Op : uint8_t {
     LdaWithResolved,           // r_target n16
     StaWithResolved,           // r_target n16
 
+    // A constant past the 65535th: the pool index no longer fits the narrow
+    // form's operand. Only a literal large enough to fill the pool reaches it.
+    LdaConstWide,              // k32
+
     kCount
 };
 

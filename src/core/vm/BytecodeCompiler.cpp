@@ -217,6 +217,10 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
             }
             return true;
         }
+        case ASTNode::Type::WITH_STATEMENT:
+            // The object expression declares nothing; the body does, and it is
+            // ordinary statements -- the with only changes how names resolve.
+            return prescan_declarations(static_cast<const WithStatement*>(node)->get_body(), out);
         case ASTNode::Type::LABELED_STATEMENT:
             return prescan_declarations(static_cast<const LabeledStatement*>(node)->get_statement(), out);
         default:
@@ -4677,10 +4681,32 @@ void BytecodeCompiler::emit_u16(uint16_t v) {
     code_.push_back(static_cast<uint8_t>(v >> 8));
 }
 
-uint16_t BytecodeCompiler::add_constant(const Value& v) {
-    if (constants_.size() >= 0xFFFF) { failed_ = true; return 0; }
+uint32_t BytecodeCompiler::add_constant(const Value& v) {
+    // A chunk that needs more than 4 billion constants is not one this
+    // compiler could hold anyway; the narrow operand's limit is not the pool's.
+    if (constants_.size() >= 0xFFFFFFFEu) { failed_ = true; return 0; }
     constants_.push_back(v);
-    return static_cast<uint16_t>(constants_.size() - 1);
+    return static_cast<uint32_t>(constants_.size() - 1);
+}
+
+// The narrow operand carries the index directly; past its range the wide form
+// does, so a long literal is not a reason to refuse the whole function.
+void BytecodeCompiler::emit_load_const(const Value& v) {
+    uint32_t idx = add_constant(v);
+    if (idx <= 0xFFFFu) {
+        emit(Op::LdaConst);
+        emit_u16(static_cast<uint16_t>(idx));
+        return;
+    }
+    emit(Op::LdaConstWide);
+    emit_u32(idx);
+}
+
+void BytecodeCompiler::emit_u32(uint32_t v) {
+    code_.push_back(static_cast<uint8_t>(v & 0xFF));
+    code_.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+    code_.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
+    code_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
 }
 
 uint16_t BytecodeCompiler::add_name(const std::string& name) {
@@ -4727,9 +4753,6 @@ bool BytecodeCompiler::pattern_target_is_writable(const std::string& name) const
 
 bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexical, bool is_assignment) const {
     if (!pattern) return false;
-    // Same reason as compile_logical_assignment: each target is a reference the
-    // with object must be asked about first.
-    if (with_depth_ > 0) return false;
     if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
         for (const auto& prop : static_cast<const ObjectLiteral*>(pattern)->get_properties()) {
             if (!prop->value) return false;
@@ -4741,7 +4764,8 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
                 if (!rt || rt->get_type() != ASTNode::Type::IDENTIFIER) return false;
                 const std::string& rn = static_cast<const Identifier*>(rt)->get_name();
-                if (!is_assignment && !env_names_.count(rn) && lookup_local(rn) < 0) return false;
+                if (!is_assignment && !script_mode_ && !env_names_.count(rn) &&
+                    lookup_local(rn) < 0) return false;
                 if (is_assignment && !pattern_target_is_writable(rn)) return false;
                 continue;
             }
@@ -4750,18 +4774,14 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 prop->key->get_type() != ASTNode::Type::NUMBER_LITERAL) return false;
             const ASTNode* target = prop->value.get();
             if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-                const auto* ae = static_cast<const AssignmentExpression*>(target);
-                // A class on the right needs its name applied before its static
-                // initializers run, which only the tree-walker's own
-                // ClassDefinitionEvaluation ordering gives.
-                if (named_evaluation_is_class(ae->get_right())) return false;
-                target = ae->get_left();
+                target = static_cast<const AssignmentExpression*>(target)->get_left();
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
                 // A declaration writes a name this chunk owns; an assignment can
                 // also name something further out, which a chain write reaches.
                 const std::string& n = static_cast<const Identifier*>(target)->get_name();
-                if (!is_assignment && !env_names_.count(n) && lookup_local(n) < 0) return false;
+                if (!is_assignment && !script_mode_ && !env_names_.count(n) &&
+                    lookup_local(n) < 0) return false;
                 if (is_assignment && !pattern_target_is_writable(n)) return false;
                 continue;
             }
@@ -4779,13 +4799,12 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 target = static_cast<const SpreadElement*>(target)->get_argument();
             }
             if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-                const auto* ae = static_cast<const AssignmentExpression*>(target);
-                if (named_evaluation_is_class(ae->get_right())) return false;
-                target = ae->get_left();
+                target = static_cast<const AssignmentExpression*>(target)->get_left();
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
                 const std::string& n = static_cast<const Identifier*>(target)->get_name();
-                if (!is_assignment && !env_names_.count(n) && lookup_local(n) < 0) return false;
+                if (!is_assignment && !script_mode_ && !env_names_.count(n) &&
+                    lookup_local(n) < 0) return false;
                 if (is_assignment && !pattern_target_is_writable(n)) return false;
                 continue;
             }
@@ -4810,8 +4829,7 @@ bool BytecodeCompiler::emit_tagged_template_args(const CallExpression* call,
     args_start = next_register_;
     int reg = alloc_temp();
     if (failed_) return false;
-    emit(Op::LdaConst);
-    emit_u16(add_constant(tmpl_obj));
+    emit_load_const(tmpl_obj);
     emit(Op::Star);
     emit_u8(static_cast<uint8_t>(reg));
     size_t count = 1;
@@ -5090,12 +5108,42 @@ bool BytecodeCompiler::emit_pattern_assign(const ASTNode* pattern, const ASTNode
 // Where a pattern element's value lands. A declaration always writes a name
 // this chunk owns; an assignment can also name something further out, and only
 // a chain write reaches that.
+// A pattern target under a `with` is a reference the object has to be asked
+// about before the element is read, and the answer decides where the store
+// lands (spec ResolveBinding runs ahead of GetV). A lexical target is declared
+// inside the with, where no object stands in front of it.
+int BytecodeCompiler::emit_with_target_resolve(const ASTNode* target, bool is_lexical) {
+    if (with_depth_ == 0 || is_lexical) return -1;
+    if (!target || target->get_type() != ASTNode::Type::IDENTIFIER) return -1;
+    emit(Op::ResolveWithTarget);
+    emit_u16(add_name(static_cast<const Identifier*>(target)->get_name()));
+    int reg = alloc_temp();
+    if (failed_) return -1;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(reg));
+    return reg;
+}
+
 bool BytecodeCompiler::emit_pattern_target_store(const ASTNode* target, bool is_lexical,
-                                                 bool is_const, bool is_assignment) {
+                                                 bool is_const, bool is_assignment,
+                                                 int with_target_reg) {
     if (target->get_type() == ASTNode::Type::IDENTIFIER) {
         const std::string& name = static_cast<const Identifier*>(target)->get_name();
-        if (is_assignment && !env_names_.count(name) && lookup_local(name) < 0) {
-            emit(Op::StaLookup);
+        if (with_target_reg >= 0) {
+            emit(Op::StaWithResolved);
+            emit_u8(static_cast<uint8_t>(with_target_reg));
+            emit_u16(add_name(name));
+            return !failed_;
+        }
+        if (!env_names_.count(name) && lookup_local(name) < 0) {
+            if (is_assignment || !script_mode_) {
+                emit(Op::StaLookup);
+                emit_u16(add_name(name));
+                return !failed_;
+            }
+            // Top-level declaration: the binding pre-exists -- a var on the
+            // global object, a let/const uninitialized in the script env.
+            emit(is_lexical ? Op::StaEnvInit : Op::StaLookup);
             emit_u16(add_name(name));
             return !failed_;
         }
@@ -5163,11 +5211,15 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
 
     for (const auto& prop : props) {
         if (!prop->key) {  // `...rest`
+            const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
+            const int rest_with = emit_with_target_resolve(rt, is_lexical);
             emit(Op::CopyRestProperties);
             emit_u8(static_cast<uint8_t>(src_reg));
             emit_u8(static_cast<uint8_t>(keys_reg));
-            const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
-            if (!emit_pattern_target_store(rt, is_lexical, is_const, is_assignment)) return false;
+            if (!emit_pattern_target_store(rt, is_lexical, is_const, is_assignment, rest_with)) {
+                return false;
+            }
+            if (rest_with >= 0) free_temp(rest_with);
             continue;
         }
         const ASTNode* target = prop->value.get();
@@ -5178,10 +5230,22 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
             target = ae->get_left();
         }
 
+        int with_reg = -1;
         if (prop->computed) {
             if (!compile_expression(prop->key.get())) return false;
             emit(Op::ToPropertyKey);
             record_key();
+            if (with_depth_ > 0 && !is_lexical &&
+                target->get_type() == ASTNode::Type::IDENTIFIER) {
+                int key_hold = alloc_temp();
+                if (failed_) return false;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(key_hold));
+                with_reg = emit_with_target_resolve(target, is_lexical);
+                emit(Op::Ldar);
+                emit_u8(static_cast<uint8_t>(key_hold));
+                free_temp(key_hold);
+            }
             emit(Op::GetKeyed);
             emit_u8(static_cast<uint8_t>(src_reg));
             emit_u16(alloc_keyed_feedback());
@@ -5197,10 +5261,10 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
                           .to_property_key();
             }
             if (has_rest) {
-                emit(Op::LdaConst);
-                emit_u16(add_constant(Value(key)));
+                emit_load_const(Value(key));
                 record_key();
             }
+            with_reg = emit_with_target_resolve(target, is_lexical);
             emit(Op::GetNamed);
             emit_u8(static_cast<uint8_t>(src_reg));
             emit_u16(add_name(key));
@@ -5209,6 +5273,10 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
 
         if (default_expr) {
             size_t skip = emit_jump(Op::JumpIfNotUndefined);
+            if (target->get_type() == ASTNode::Type::IDENTIFIER) {
+                stamp_inferred_class_name(default_expr,
+                                          static_cast<const Identifier*>(target)->get_name());
+            }
             if (!compile_expression(default_expr)) return false;
             // NamedEvaluation: an anonymous function on the right of a
             // pattern default takes the name it is being bound to.
@@ -5220,7 +5288,10 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
             if (!patch_jump(skip)) return false;
         }
 
-        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment)) return false;
+        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment, with_reg)) {
+            return false;
+        }
+        if (with_reg >= 0) free_temp(with_reg);
     }
     if (has_rest) { free_temp(keys_idx_reg); free_temp(keys_reg); }
     free_temp(src_reg);
@@ -5286,6 +5357,7 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
 
         if (el->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
             const ASTNode* rest_target = static_cast<const SpreadElement*>(el)->get_argument();
+            const int rest_with = emit_with_target_resolve(rest_target, is_lexical);
             emit(Op::CreateArray);
             emit_u16(0);
             int arr_reg = alloc_temp();
@@ -5327,10 +5399,14 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             emit_u8(static_cast<uint8_t>(arr_reg));
             size_t rest_span = code_.size();
             if (rest_target->get_type() == ASTNode::Type::IDENTIFIER) {
-                if (!emit_pattern_target_store(rest_target, is_lexical, is_const, is_assignment)) return false;
+                if (!emit_pattern_target_store(rest_target, is_lexical, is_const, is_assignment,
+                                               rest_with)) {
+                    return false;
+                }
             } else if (!emit_pattern_bind(rest_target, is_lexical, is_const)) {
                 return false;
             }
+            if (rest_with >= 0) free_temp(rest_with);
             if (code_.size() > rest_span) guarded.emplace_back(rest_span, code_.size());
             free_temp(idx_reg);
             free_temp(arr_reg);
@@ -5345,10 +5421,15 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             target = ae->get_left();
         }
 
+        const int with_reg = emit_with_target_resolve(target, is_lexical);
         if (!step()) return false;
         size_t span_start = code_.size();
         if (default_expr) {
             size_t skip = emit_jump(Op::JumpIfNotUndefined);
+            if (target->get_type() == ASTNode::Type::IDENTIFIER) {
+                stamp_inferred_class_name(default_expr,
+                                          static_cast<const Identifier*>(target)->get_name());
+            }
             if (!compile_expression(default_expr)) return false;
             // NamedEvaluation: an anonymous function on the right of a
             // pattern default takes the name it is being bound to.
@@ -5359,7 +5440,10 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             }
             if (!patch_jump(skip)) return false;
         }
-        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment)) return false;
+        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment, with_reg)) {
+            return false;
+        }
+        if (with_reg >= 0) free_temp(with_reg);
         if (code_.size() > span_start) guarded.emplace_back(span_start, code_.size());
     }
 
@@ -6576,14 +6660,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit(Op::LdaSmi);
                 emit_u8(static_cast<uint8_t>(static_cast<int8_t>(v)));
             } else {
-                emit(Op::LdaConst);
-                emit_u16(add_constant(Value(v)));
+                emit_load_const(Value(v));
             }
             return !failed_;
         }
         case ASTNode::Type::STRING_LITERAL: {
-            emit(Op::LdaConst);
-            emit_u16(add_constant(Value(static_cast<const StringLiteral*>(node)->get_value())));
+            emit_load_const(Value(static_cast<const StringLiteral*>(node)->get_value()));
             return !failed_;
         }
         case ASTNode::Type::META_PROPERTY: {
@@ -6608,8 +6690,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             } catch (const std::exception&) {
                 return false;
             }
-            emit(Op::LdaConst);
-            emit_u16(add_constant(Value(parsed)));
+            emit_load_const(Value(parsed));
             return !failed_;
         }
         case ASTNode::Type::TEMPLATE_LITERAL: {
@@ -6625,8 +6706,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             for (const auto& el : elements) {
                 if (el.type == Elem::Type::TEXT) {
                     if (el.text.empty()) continue;
-                    emit(Op::LdaConst);
-                    emit_u16(add_constant(Value(el.text)));
+                    emit_load_const(Value(el.text));
                 } else {
                     if (!compile_expression(el.expression.get())) return false;
                     emit(Op::ToTemplateString);
@@ -6641,8 +6721,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             }
             // Nothing but empty text: the result is the empty string.
             if (!seeded) {
-                emit(Op::LdaConst);
-                emit_u16(add_constant(Value(std::string())));
+                emit_load_const(Value(std::string()));
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(result_reg));
             }
@@ -8237,10 +8316,6 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* lit = static_cast<const ArrayLiteral*>(node);
-            // Op::CreateArray's u16 count is the only real limit: an element's
-            // temp is freed within its own iteration, so a long literal costs
-            // no more registers than a short one.
-            if (lit->get_elements().size() > 0xFFFF) return false;
             for (const auto& el : lit->get_elements()) {
                 if (!el) return false;
             }
@@ -8253,8 +8328,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 return !failed_;
             }
 
+            // CreateArray's count is a u16. A longer literal starts empty and
+            // takes its length from a store after its elements instead; an
+            // element's temp is freed within its own iteration, so length is
+            // the only thing that scales with the literal.
+            const size_t elem_count = lit->get_elements().size();
+            const bool long_literal = elem_count > 0xFFFF;
             emit(Op::CreateArray);
-            emit_u16(static_cast<uint16_t>(lit->get_elements().size()));
+            emit_u16(static_cast<uint16_t>(long_literal ? 0 : elem_count));
             int obj_reg = alloc_temp();
             if (failed_) return false;
             emit(Op::Star);
@@ -8272,8 +8353,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     emit(Op::LdaSmi);
                     emit_u8(static_cast<uint8_t>(static_cast<int8_t>(i)));
                 } else {
-                    emit(Op::LdaConst);
-                    emit_u16(add_constant(Value(static_cast<double>(i))));
+                    emit_load_const(Value(static_cast<double>(i)));
                 }
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(key_reg));
@@ -8284,6 +8364,13 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u8(static_cast<uint8_t>(key_reg));
                 free_temp(key_reg);
+            }
+            if (long_literal) {
+                emit_load_const(Value(static_cast<double>(elem_count)));
+                emit(Op::SetNamed);
+                emit_u8(static_cast<uint8_t>(obj_reg));
+                emit_u16(add_name("length"));
+                emit_u16(alloc_feedback_slot());
             }
             emit(Op::Ldar);
             emit_u8(static_cast<uint8_t>(obj_reg));
