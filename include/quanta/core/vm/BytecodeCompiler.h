@@ -208,6 +208,20 @@ private:
         bool iterator_is_async = false;  // for-await-of: closing it Awaits, so a different opcode
     };
 
+    // A `return` inside a try/finally cannot just return: the finally has to
+    // run first. The escape parks its value and jumps to a pad emitted after
+    // the try statement, which is where it must live -- inside the try's own
+    // handler range, a throw from the finally copy would reach that try's
+    // catch instead of leaving.
+    struct FinallyScope {
+        const ASTNode* finally_node = nullptr;
+        bool save_env = false;
+        int value_reg = -1;
+        std::vector<size_t> return_jumps;
+    };
+    std::vector<FinallyScope> finally_stack_;
+    bool emit_return_completion(bool has_argument, bool already_awaited);
+
     std::vector<std::string> take_pending_labels();
 
     std::unique_ptr<BytecodeChunk> chunk_;

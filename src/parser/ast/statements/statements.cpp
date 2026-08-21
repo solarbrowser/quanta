@@ -2620,7 +2620,8 @@ std::unique_ptr<ASTNode> WithStatement::clone() const {
 // return has no Await step, and a bare `return;` has nothing to Await, which
 // costs one fewer microtask tick. Recording the value is what tells
 // `return undefined` apart from falling off the end.
-Value perform_return_completion(Context& ctx, Value return_value, bool has_argument) {
+Value perform_return_completion(Context& ctx, Value return_value, bool has_argument,
+                                bool do_record) {
     AsyncGenerator* async_gen = AsyncGenerator::get_current();
     if (has_argument && async_gen && async_gen->get_generator_context() == &ctx) {
         Value awaited;
@@ -2628,7 +2629,10 @@ Value perform_return_completion(Context& ctx, Value return_value, bool has_argum
         if (threw) { ctx.throw_exception(awaited, true); return Value(); }
         return_value = awaited;
     }
-    ctx.set_return_value(return_value);
+    // Recording is what a finally can still take back: a `break` inside one
+    // cancels the pending return, and a value written here before the finally
+    // ran would outlive the completion it belonged to.
+    if (do_record) ctx.set_return_value(return_value);
     return return_value;
 }
 
@@ -2640,7 +2644,7 @@ Value ReturnStatement::evaluate(Context& ctx) {
         if (ctx.has_exception()) return Value();
     }
 
-    return perform_return_completion(ctx, return_value, has_argument());
+    return perform_return_completion(ctx, return_value, has_argument(), /*do_record=*/true);
 }
 
 std::string ReturnStatement::to_string() const {

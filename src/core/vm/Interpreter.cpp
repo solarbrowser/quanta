@@ -48,7 +48,7 @@ bool async_iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
                          bool from_sync, Value& value_out);
 void async_iterator_close(Context& ctx, const Value& iterator);
 // From statements.cpp, backing Op::SettleReturn.
-Value perform_return_completion(Context& ctx, Value return_value, bool has_argument);
+Value perform_return_completion(Context& ctx, Value return_value, bool has_argument, bool do_record);
 // Likewise from language.cpp, backing Op::Await.
 Value perform_await(Context& ctx, Value awaited, bool has_argument);
 // From the tree-walker's misc.cpp, backing Op::CreateRegExp.
@@ -1909,9 +1909,9 @@ Value h_gen_SettleReturn(Frame& f, uint32_t pc, Value acc) {
     Context& ctx = f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
-    const bool has_argument = f.code[pc + 1] != 0;
+    const uint8_t bits = f.code[pc + 1];
     pc += 2;
-    acc = perform_return_completion(ctx, acc, has_argument);
+    acc = perform_return_completion(ctx, acc, (bits & 1) != 0, (bits & 2) != 0);
     CHECK_EXC_TAIL();
     DISPATCH();
 }

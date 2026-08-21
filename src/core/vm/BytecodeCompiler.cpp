@@ -2742,24 +2742,31 @@ bool collect_direct_lexical_decls(const ASTNode* node,
 
 // True if a return/break/continue could escape `node` (keeps `finally`
 // "always runs" simple; conservative-true just costs a tree-walker fallback).
-bool contains_control_escape(const ASTNode* node) {
+// `kind_mask` picks which escapes count: bit 0 return, bit 1 break, bit 2
+// continue. A finally has to run before any of them, and they are implemented
+// one at a time.
+bool contains_control_escape(const ASTNode* node, int kind_mask = 7);
+
+bool contains_control_escape(const ASTNode* node, int kind_mask) {
     if (!node) return false;
     switch (node->get_type()) {
         case ASTNode::Type::RETURN_STATEMENT:
+            return (kind_mask & 1) != 0;
         case ASTNode::Type::BREAK_STATEMENT:
+            return (kind_mask & 2) != 0;
         case ASTNode::Type::CONTINUE_STATEMENT:
-            return true;
+            return (kind_mask & 4) != 0;
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
             for (const auto& stmt : n->get_statements()) {
-                if (contains_control_escape(stmt.get())) return true;
+                if (contains_control_escape(stmt.get(), kind_mask)) return true;
             }
             return false;
         }
         case ASTNode::Type::IF_STATEMENT: {
             const auto* n = static_cast<const IfStatement*>(node);
-            return contains_control_escape(n->get_consequent()) ||
-                   contains_control_escape(n->get_alternate());
+            return contains_control_escape(n->get_consequent(), kind_mask) ||
+                   contains_control_escape(n->get_alternate(), kind_mask);
         }
         case ASTNode::Type::WHILE_STATEMENT:
             return contains_control_escape(static_cast<const WhileStatement*>(node)->get_body());
@@ -2773,17 +2780,17 @@ bool contains_control_escape(const ASTNode* node) {
             return contains_control_escape(static_cast<const ForInStatement*>(node)->get_body());
         case ASTNode::Type::TRY_STATEMENT: {
             const auto* n = static_cast<const TryStatement*>(node);
-            if (contains_control_escape(n->get_try_block())) return true;
+            if (contains_control_escape(n->get_try_block(), kind_mask)) return true;
             if (const ASTNode* cc = n->get_catch_clause()) {
                 if (contains_control_escape(static_cast<const CatchClause*>(cc)->get_body())) return true;
             }
-            return contains_control_escape(n->get_finally_block());
+            return contains_control_escape(n->get_finally_block(), kind_mask);
         }
         case ASTNode::Type::SWITCH_STATEMENT: {
             const auto* n = static_cast<const SwitchStatement*>(node);
             for (const auto& c : n->get_cases()) {
                 for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
-                    if (contains_control_escape(s.get())) return true;
+                    if (contains_control_escape(s.get(), kind_mask)) return true;
                 }
             }
             return false;
@@ -4610,6 +4617,47 @@ bool BytecodeCompiler::emit_tagged_template_args(const CallExpression* call,
     return !failed_;
 }
 
+// Everything a `return` does once its value is in the accumulator. A finally
+// between here and the function's edge takes the value first and runs; only
+// when none is left does the return actually happen.
+bool BytecodeCompiler::emit_return_completion(bool has_argument, bool already_awaited) {
+    // Op::SettleReturn does two things, and a finally in the way separates
+    // them: the Await belongs to the return statement, the recording to the
+    // completion that actually leaves.
+    const uint8_t kAwait = 1, kRecord = 2;
+    if (!finally_stack_.empty()) {
+        if (suspendable_ && !already_awaited && has_argument) {
+            emit(Op::SettleReturn);
+            emit_u8(kAwait);
+        }
+        FinallyScope& fs = finally_stack_.back();
+        if (fs.value_reg < 0) {
+            fs.value_reg = alloc_temp();
+            if (failed_) return false;
+        }
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(fs.value_reg));
+        fs.return_jumps.push_back(emit_jump(Op::Jump));
+        return !failed_;
+    }
+    if (suspendable_) {
+        uint8_t bits = kRecord;
+        if (!already_awaited && has_argument) bits |= kAwait;
+        emit(Op::SettleReturn);
+        emit_u8(bits);
+    }
+    // Return abruptly completes every enclosing for-of/for-in:
+    // IteratorClose innermost-first (mode 0 leaves acc untouched).
+    for (auto it = loop_stack_.rbegin(); it != loop_stack_.rend(); ++it) {
+        if (it->iterator_reg < 0) continue;
+        emit(it->iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
+        emit_u8(static_cast<uint8_t>(it->iterator_reg));
+        emit_u8(0);
+    }
+    emit(Op::Return);
+    return !failed_;
+}
+
 // `pattern = source` as an expression: the pattern writes through, and the
 // expression itself answers with the source, which is why it is parked in a
 // register rather than left to the binder's own bookkeeping.
@@ -5613,22 +5661,8 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             } else {
                 emit(Op::LdaUndefined);
             }
-            // Emitted with or without an argument: `return;` still has to be
-            // distinguishable from falling off the end.
-            if (suspendable_) {
-                emit(Op::SettleReturn);
-                emit_u8(stmt->get_argument() ? 1 : 0);
-            }
-            // Return abruptly completes every enclosing for-of/for-in:
-            // IteratorClose innermost-first (mode 0 leaves acc untouched).
-            for (auto it = loop_stack_.rbegin(); it != loop_stack_.rend(); ++it) {
-                if (it->iterator_reg < 0) continue;
-                emit(it->iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
-                emit_u8(static_cast<uint8_t>(it->iterator_reg));
-                emit_u8(0);
-            }
-            emit(Op::Return);
-            return true;
+            return emit_return_completion(stmt->get_argument() != nullptr,
+                                         /*already_awaited=*/false);
         }
 
         case ASTNode::Type::THROW_STATEMENT: {
@@ -5644,10 +5678,12 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             const ASTNode* finally_node = stmt->get_finally_block();
             if (!catch_node && !finally_node) return false;
 
-            // A finally must run on every exit; return/break/continue aren't
-            // implemented, so refuse rather than silently skip it.
+            // A finally must run on every exit. `return` out of the try block
+            // has a pad below; break, continue, and any escape out of the catch
+            // body would each need their own and are still refused rather than
+            // silently skipped.
             if (finally_node) {
-                bool escapes = contains_control_escape(stmt->get_try_block()) ||
+                bool escapes = contains_control_escape(stmt->get_try_block(), /*break+continue=*/6) ||
                     (catch_node && contains_control_escape(
                         static_cast<const CatchClause*>(catch_node)->get_body()));
                 if (escapes) return false;
@@ -5661,9 +5697,17 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit(Op::SaveEnv);
             }
 
+            if (finally_node) {
+                finally_stack_.push_back({finally_node, save_env, -1, {}});
+            }
             size_t try_start = code_.size();
             if (!compile_statement(stmt->get_try_block())) return false;
             size_t try_end = code_.size();
+            FinallyScope escaped_scope;
+            if (finally_node) {
+                escaped_scope = std::move(finally_stack_.back());
+                finally_stack_.pop_back();
+            }
             if (save_env) {
                 emit(Op::PopEnvSave);  // no exception: already correctly restored
                 try_env_depth_--;
@@ -5785,6 +5829,29 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             if (catch_node && !patch_jump(jump_catch_ok)) return false;
             if (finally_node) {
                 if (!compile_statement(finally_node)) return false;
+            }
+
+            // The return pad: outside the handler range, so a throw from this
+            // copy of the finally leaves the statement instead of reaching its
+            // own catch.
+            if (!escaped_scope.return_jumps.empty()) {
+                size_t skip_pad = emit_jump(Op::Jump);
+                for (size_t site : escaped_scope.return_jumps) {
+                    if (!patch_jump(site)) return false;
+                }
+                if (escaped_scope.save_env) emit(Op::RestoreEnv);
+                if (!compile_statement(finally_node)) return false;
+                emit(Op::Ldar);
+                emit_u8(static_cast<uint8_t>(escaped_scope.value_reg));
+                // Any finally further out takes it from here in turn, and
+                // allocates its own parking register while doing so. Freeing
+                // this one now would rewind past that register -- free_temp is
+                // a LIFO watermark -- and the outer finally body would then
+                // reuse it and overwrite the value in flight. It stays held for
+                // the rest of the function instead.
+                if (!emit_return_completion(/*has_argument=*/false,
+                                            /*already_awaited=*/true)) return false;
+                if (!patch_jump(skip_pad)) return false;
             }
             return true;
         }
