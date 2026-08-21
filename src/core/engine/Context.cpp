@@ -664,6 +664,8 @@ void Context::throw_uri_error(const std::string& message) {
 Value Context::get_import_meta() {
     if (import_meta_.is_undefined()) {
         auto meta_obj = ObjectFactory::create_object();
+        // Null prototype, spec 13.3.12.1.
+        meta_obj->initialize_prototype(nullptr);
         meta_obj->set_property("url", Value(std::string("file://") + *current_filename_));
         import_meta_ = Value(meta_obj.release());
     }
