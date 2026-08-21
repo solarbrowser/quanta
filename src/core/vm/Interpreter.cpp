@@ -4580,7 +4580,18 @@ Value h_gen_LdaWithResolved(Frame& f, uint32_t pc, Value acc) {
         if (target.is_object()) {
             Context* prev_cc = Object::current_context_;
             Object::current_context_ = &ctx;
-            acc = target.as_object()->get_property(name);
+            // GetBindingValue asks HasProperty first (spec 9.1.1.2.6 step 2):
+            // the property may be gone since the reference was bound.
+            const bool still_exists = target.as_object()->has_property(name);
+            if (!ctx.has_exception()) {
+                if (still_exists) {
+                    acc = target.as_object()->get_property(name);
+                } else if (ctx.is_strict_mode()) {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                } else {
+                    acc = Value();
+                }
+            }
             Object::current_context_ = prev_cc;
             break;
         }
@@ -4609,7 +4620,18 @@ Value h_gen_StaWithResolved(Frame& f, uint32_t pc, Value acc) {
         if (target.is_object()) {
             Context* prev_cc = Object::current_context_;
             Object::current_context_ = &ctx;
-            target.as_object()->set_property(name, acc);
+            // SetMutableBinding on an object environment asks HasProperty once
+            // more before writing (spec 9.1.1.2.5 step 2): the right side may
+            // have deleted the property, and in strict code that is a
+            // ReferenceError rather than a fresh one.
+            const bool still_exists = target.as_object()->has_property(name);
+            if (!ctx.has_exception()) {
+                if (!still_exists && ctx.is_strict_mode()) {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                } else {
+                    target.as_object()->set_property(name, acc);
+                }
+            }
             Object::current_context_ = prev_cc;
             break;
         }

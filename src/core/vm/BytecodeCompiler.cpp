@@ -4019,7 +4019,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
         }
     }
 
-    BytecodeCompiler compiler({}, /*env_mode=*/true, &env_resident);
+    // A `with` anywhere puts an object on the chain, and then no name can live
+    // in a register -- the same reason compile() forces full env mode for one.
+    bool script_has_with = false;
+    for (const auto& st : statements) {
+        if (contains_with(st.get())) { script_has_with = true; break; }
+    }
+    BytecodeCompiler compiler({}, /*env_mode=*/true,
+                              script_has_with ? nullptr : &env_resident);
     if (compiler.failed_) return nullptr;
     compiler.script_mode_ = true;
     // Same global_decl_count_ bookkeeping as compile()'s param/declared/rest
@@ -5823,6 +5830,29 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             bool is_const = decl->get_kind() == VariableDeclarator::Kind::CONST;
             for (const auto& d : decl->get_declarations()) {
                 const std::string& name = d->get_id()->get_name();
+
+                // A `var` inside a `with` resolves its binding before the
+                // initializer runs, and the with object can own that name --
+                // so the write may belong to the object. A lexical declaration
+                // binds in its own scope and no object can stand in front of it.
+                if (with_depth_ > 0 && is_var && !name.empty() && d->get_init()) {
+                    emit(Op::ResolveWithTarget);
+                    emit_u16(add_name(name));
+                    int target = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(target));
+                    if (!compile_expression(d->get_init())) return false;
+                    if (is_named_evaluation_rhs(d->get_init())) {
+                        emit(Op::SetFunctionNameIfUnnamed);
+                        emit_u16(add_name(name));
+                    }
+                    emit(Op::StaWithResolved);
+                    emit_u8(static_cast<uint8_t>(target));
+                    emit_u16(add_name(name));
+                    free_temp(target);
+                    continue;
+                }
 
                 if (name.empty() && d->get_init() &&
                     d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
