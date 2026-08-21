@@ -1605,6 +1605,201 @@ void ForOfStatement::iterator_close(Context& ctx, const Value& iterator, bool va
     // itself failed" completion.
 }
 
+// The three steps `for await...of` is made of, shared by
+// ForOfStatement::evaluate and the compiled loop so the two cannot drift.
+// A getter reached here can throw through Object::current_context_ rather than
+// ctx, which would otherwise be lost.
+static void rescue_getter_exception(Context& ctx) {
+    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+            && Object::current_context_->has_exception()) {
+        ctx.throw_exception(Object::current_context_->get_exception(), true);
+        Object::current_context_->clear_exception();
+    }
+}
+
+// The context a promise made for this Await belongs to: the running fiber's,
+// so the job it queues is ordered against everything else on that queue.
+static Context* async_promise_context(Context& ctx) {
+    AsyncGenerator* async_gen = AsyncGenerator::get_current();
+    if (async_gen && async_gen->fiber_->co != nullptr) {
+        return async_gen->get_outer_context() ? async_gen->get_outer_context()
+                                              : async_gen->get_generator_context();
+    }
+    AsyncExecutor* exec = AsyncExecutor::get_current();
+    if (exec && exec->fiber_->co != nullptr) {
+        return exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
+    }
+    return &ctx;
+}
+
+// closeOnRejection: an abrupt continuation closes the sync iterator before the
+// rejection propagates, and a failure while closing is dropped in its favour.
+static void close_sync_iterator_quietly(Context& ctx, const Value& iterator, bool is_done) {
+    if (is_done || !iterator.is_object()) return;
+    Value close_fn = iterator.as_object()->get_property("return");
+    if (!ctx.has_exception() && close_fn.is_function()) {
+        close_fn.as_function()->call(ctx, {}, iterator);
+    }
+    ctx.clear_exception();
+}
+
+// GetIterator(obj, async): @@asyncIterator when the object has one, otherwise
+// the sync iterator, whose results then go through
+// AsyncFromSyncIteratorContinuation -- which is what `from_sync_out` reports.
+Value get_async_iterator(Context& ctx, const Value& iterable, Value& next_fn_out, bool& from_sync_out) {
+    from_sync_out = true;
+    if (iterable.is_object()) {
+        Object* iterable_obj = iterable.as_object();
+        if (Symbol* async_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR)) {
+            Value iter_method = iterable_obj->get_property(async_sym->to_property_key());
+            rescue_getter_exception(ctx);
+            if (ctx.has_exception()) return Value();
+            if (iter_method.is_function()) {
+                Value iterator = iter_method.as_function()->call(ctx, {}, iterable);
+                rescue_getter_exception(ctx);
+                if (ctx.has_exception()) return Value();
+                if (!iterator.is_object()) {
+                    ctx.throw_type_error("for-await-of: iterator is not an object");
+                    return Value();
+                }
+                next_fn_out = iterator.as_object()->get_property("next");
+                rescue_getter_exception(ctx);
+                if (ctx.has_exception()) return Value();
+                if (!next_fn_out.is_function()) {
+                    ctx.throw_type_error("for-await-of: iterator has no next method");
+                    return Value();
+                }
+                from_sync_out = false;
+                return iterator;
+            }
+        }
+    }
+
+    // No @@asyncIterator: the sync iterator, obtained exactly as a plain
+    // for-of obtains it, so a boxed string and the dense-array index form both
+    // work here too.
+    Value iterator;
+    if (!ForOfStatement::get_iterator(ctx, iterable, iterator, next_fn_out)) return Value();
+    return iterator;
+}
+
+// AsyncIteratorClose without a pending completion: call return() and Await it.
+void async_iterator_close(Context& ctx, const Value& iterator) {
+    if (!iterator.is_object()) return;
+    Value return_method = iterator.as_object()->get_property("return");
+    rescue_getter_exception(ctx);
+    if (ctx.has_exception()) return;
+    if (return_method.is_null() || return_method.is_undefined()) return;
+    if (!return_method.is_function()) {
+        ctx.throw_type_error("iterator return method is not callable");
+        return;
+    }
+    Value result = return_method.as_function()->call(ctx, {}, iterator);
+    if (ctx.has_exception()) return;
+    Value awaited;
+    if (await_value(ctx, result, awaited)) { ctx.throw_exception(awaited, true); return; }
+    if (!awaited.is_object()) {
+        ctx.throw_type_error("iterator return method returned a non-object");
+    }
+}
+
+// One step. Answers true when the iterator is done, in which case value_out is
+// untouched; on an abrupt completion it answers true with ctx holding the
+// exception, so a caller that checks ctx sees both the same way. next_fn is
+// mutable because the sync dense-array form carries its index there.
+bool async_iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
+                         bool from_sync, Value& value_out) {
+    if (!from_sync) {
+        Value result = next_fn.as_function()->call(ctx, {}, iterator);
+        rescue_getter_exception(ctx);
+        if (ctx.has_exception()) return true;
+        Value awaited;
+        if (await_value(ctx, result, awaited)) { ctx.throw_exception(awaited, true); return true; }
+        if (!awaited.is_object()) {
+            ctx.throw_type_error("for-await-of: iterator result must be an object");
+            return true;
+        }
+        Value done = awaited.as_object()->get_property("done");
+        rescue_getter_exception(ctx);
+        if (ctx.has_exception()) return true;
+        if (done.to_boolean()) return true;
+        value_out = awaited.as_object()->get_property("value");
+        rescue_getter_exception(ctx);
+        return ctx.has_exception();
+    }
+
+    // AsyncFromSyncIteratorContinuation: the sync result's `value` is
+    // PromiseResolve'd, and the {value, done} that produces comes back through
+    // a promise of the continuation's own, which the loop Awaits in turn. Two
+    // PromiseResolve calls, so two `constructor` reads and two ticks, and a
+    // rejection travels through the second promise rather than around it.
+    bool is_done = false;
+    Value raw_value;
+    if (!ForOfStatement::iterator_step(ctx, iterator, next_fn, is_done, raw_value)) return true;
+
+    Context* gctx = async_promise_context(ctx);
+    auto nr_obj = ObjectFactory::create_promise(gctx);
+    Promise* next_result = static_cast<Promise*>(nr_obj.release());
+
+    Promise* value_wrapper = nullptr;
+    if (AsyncUtils::is_promise(raw_value)) {
+        value_wrapper = static_cast<Promise*>(raw_value.as_object());
+        value_wrapper->get_property("constructor");
+        rescue_getter_exception(ctx);
+        if (ctx.has_exception()) {
+            Value err = ctx.get_exception();
+            ctx.clear_exception();
+            close_sync_iterator_quietly(ctx, iterator, is_done);
+            next_result->reject(err);
+            value_wrapper = nullptr;
+        }
+    } else {
+        auto vw_obj = ObjectFactory::create_promise(gctx);
+        static_cast<Promise*>(vw_obj.get())->fulfill(raw_value);
+        value_wrapper = static_cast<Promise*>(vw_obj.release());
+    }
+
+    if (value_wrapper) {
+        auto unwrap_f = ObjectFactory::create_native_function("",
+            [next_result, is_done](Context&, std::span<const Value> args, Value receiver) -> Value {
+                Value val = args.empty() ? Value() : args[0];
+                auto res_obj = ObjectFactory::create_object();
+                res_obj->set_property("value", val);
+                res_obj->set_property("done", Value(is_done));
+                next_result->fulfill(Value(res_obj.release()));
+                return Value();
+            });
+        auto unwrap_r = ObjectFactory::create_native_function("",
+            [next_result, is_done, iterator, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                Value reason = args.empty() ? Value() : args[0];
+                if (gctx) close_sync_iterator_quietly(*gctx, iterator, is_done);
+                next_result->reject(reason);
+                return Value();
+            });
+        static thread_local size_t afsi_ctr = 0;
+        const std::string key = "afsi_" + std::to_string(afsi_ctr++);
+        Function* uf = unwrap_f.get();
+        Function* ur = unwrap_r.get();
+        value_wrapper->set_internal_slot("__af_" + key, Value(unwrap_f.release()));
+        value_wrapper->set_internal_slot("__ar_" + key, Value(unwrap_r.release()));
+        value_wrapper->then(uf, ur);
+    }
+
+    Value settled;
+    if (await_value(ctx, Value(next_result), settled)) { ctx.throw_exception(settled, true); return true; }
+    if (!settled.is_object()) {
+        ctx.throw_type_error("for-await-of: iterator result must be an object");
+        return true;
+    }
+    Value settled_done = settled.as_object()->get_property("done");
+    rescue_getter_exception(ctx);
+    if (ctx.has_exception()) return true;
+    if (settled_done.to_boolean()) return true;
+    value_out = settled.as_object()->get_property("value");
+    rescue_getter_exception(ctx);
+    return ctx.has_exception();
+}
+
 Value ForOfStatement::evaluate(Context& ctx) {
     // A continue targeting an outer construct must keep propagating past
     // this loop -- only one that's unlabeled or matches this loop's own
@@ -1656,46 +1851,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
     if (ctx.has_exception()) return Value();
 
     if (is_await_) {
-        // AsyncExecutor::current_ is thread-local and survives AsyncGenerator::enter_fiber's mco_resume, so it can still point at an unrelated outer exec -- check the async-generator fiber first to avoid yielding into the wrong coroutine.
-        AsyncGenerator* async_gen = AsyncGenerator::get_current();
-        bool in_async_gen_fiber = async_gen && async_gen->fiber_->co != nullptr;
-        AsyncExecutor* exec = in_async_gen_fiber ? nullptr : AsyncExecutor::get_current();
-        Context* gctx = in_async_gen_fiber
-            ? (async_gen->get_outer_context() ? async_gen->get_outer_context() : async_gen->get_generator_context())
-            : (exec && exec->engine_) ? exec->engine_->get_current_context() : &ctx;
-
-        if (!iterable.is_object()) {
-            ctx.throw_type_error("for-await-of: value is not iterable");
-            return Value();
-        }
-
-        Object* iterable_obj = iterable.as_object();
-
-        Value iter_method;
-        bool used_async_iterator = false;
-        Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
-        if (async_iter_sym) {
-            iter_method = iterable_obj->get_property(async_iter_sym->to_property_key());
-            if (iter_method.is_function()) used_async_iterator = true;
-        }
-        if (!iter_method.is_function()) {
-            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-            if (iter_sym) {
-                iter_method = iterable_obj->get_property(iter_sym->to_property_key());
-            }
-        }
-        if (!iter_method.is_function()) {
-            ctx.throw_exception(Value(std::string("for-await-of: object is not iterable")));
-            return Value();
-        }
-
-        Value iterator_val = iter_method.as_function()->call(ctx, {}, iterable);
+        Value next_fn;
+        bool from_sync = false;
+        Value iterator = get_async_iterator(ctx, iterable, next_fn, from_sync);
         if (ctx.has_exception()) return Value();
-        if (!iterator_val.is_object()) {
-            ctx.throw_exception(Value(std::string("for-await-of: iterator must be an object")));
-            return Value();
-        }
-        Object* iterator_obj = iterator_val.as_object();
 
         std::string var_name;
         VariableDeclarator::Kind var_kind = VariableDeclarator::Kind::VAR;
@@ -1720,405 +1879,26 @@ Value ForOfStatement::evaluate(Context& ctx) {
             return Value();
         }
 
-        // AsyncIteratorClose (spec 27.7.4): called when the loop exits via `break`
-        // before the iterator naturally finished. GetMethod(iterator, "return") is
-        // accessed (and any getter exception/non-callable value surfaces) even
-        // though `return` is frequently absent and there is nothing further to call.
-        auto close_async_iterator_on_break = [&ctx](Object* iter_obj) {
-            Value return_method = iter_obj->get_property("return");
-            if (ctx.has_exception()) return;
-            if (return_method.is_null() || return_method.is_undefined()) return;
-            if (!return_method.is_function()) {
-                ctx.throw_type_error("iterator return method is not callable");
-                return;
-            }
-            return_method.as_function()->call(ctx, {}, Value(iter_obj));
+        // AsyncIteratorClose (spec 27.7.4): on `break` and on a `return` that
+        // leaves the loop, the iterator is closed before control goes on.
+        auto close_it = [&ctx, &iterator]() {
+            async_iterator_close(ctx, iterator);
+        };
+        // The pending exception is what leaves, so a close failure is dropped.
+        auto close_on_throw = [&ctx, &iterator]() {
+            Value pending = ctx.get_exception();
+            ctx.clear_exception();
+            async_iterator_close(ctx, iterator);
+            if (ctx.has_exception()) ctx.clear_exception();
+            ctx.throw_exception(pending, true);
         };
 
-        for (uint32_t i = 0;; i++) {
+        for (;;) {
             Collector::safepoint();
-            Value awaited;
-            if (in_async_gen_fiber) {
-                // Fiber-based (async generator's own fiber): call next(), await the result
-                Value next_method_val = iterator_obj->get_property("next");
-                if (!next_method_val.is_function()) {
-                    ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
-                    return Value();
-                }
-                Value next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
+            Value value;
+            if (async_iterator_step(ctx, iterator, next_fn, from_sync, value)) {
                 if (ctx.has_exception()) return Value();
-
-                bool is_pending = false;
-                bool settled_throw = false;
-                Value settled_val;
-
-                if (AsyncUtils::is_promise(next_result)) {
-                    Promise* prom = static_cast<Promise*>(next_result.as_object());
-                    // PromiseResolve on an already-Promise value still Gets "constructor"
-                    // (step 1a) -- side effect only, no subclass rewrap.
-                    prom->get_property("constructor");
-                    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-                            && Object::current_context_->has_exception()) {
-                        ctx.throw_exception(Object::current_context_->get_exception(), true);
-                        Object::current_context_->clear_exception();
-                    }
-                    if (ctx.has_exception()) return Value();
-                    if (prom->get_state() == PromiseState::FULFILLED) {
-                        settled_val = prom->take_settled_value();
-                    } else if (prom->get_state() == PromiseState::REJECTED) {
-                        settled_val = prom->take_settled_value();
-                        settled_throw = true;
-                    } else {
-                        is_pending = true;
-                        auto self = async_gen;
-                        auto on_f = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                Value val = args.empty() ? Value() : args[0];
-                                self->resume_from_await(val, false);
-                                return Value();
-                            });
-                        auto on_r = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                Value reason = args.empty() ? Value() : args[0];
-                                self->resume_from_await(reason, true);
-                                return Value();
-                            });
-                        std::string key = std::to_string(i) + "_ag_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
-                        Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-                        prom->set_internal_slot("__af_" + key, Value(on_f.release()));
-                        prom->set_internal_slot("__ar_" + key, Value(on_r.release()));
-                        prom->then(ff_tmp_, fr_tmp_);
-                    }
-                } else {
-                    settled_val = next_result;
-                }
-
-                if (!is_pending) {
-                    auto self = async_gen;
-                    Value val = settled_val;
-                    bool thr = settled_throw;
-                    if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); }, {Value(self), val});
-                }
-
-                async_gen->await_result_ = next_result;  // pin promise as GC root during suspension
-                async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                quanta_fiber_yield(async_gen->fiber_.get());
-                Object::current_context_ = &ctx;
-
-                if (async_gen->await_is_throw_) {
-                    ctx.throw_exception(async_gen->await_result_, true);
-                    async_gen->await_is_throw_ = false;
-                    async_gen->await_result_ = Value();
-                    return Value();
-                }
-                awaited = async_gen->await_result_;
-                async_gen->await_result_ = Value();
-            } else if (exec && exec->fiber_->co != nullptr) {
-                // Fiber-based: call next(), await the result
-                Value next_method_val = iterator_obj->get_property("next");
-                if (!next_method_val.is_function()) {
-                    ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
-                    return Value();
-                }
-
-                bool is_pending = false;
-                bool settled_throw = false;
-                Value settled_val;
-                Value next_result;
-
-                if (!used_async_iterator) {
-                    // AsyncFromSyncIteratorContinuation: the sync iterator's `.value` is
-                    // PromiseResolve'd and awaited first, then the resulting {value,done} is
-                    // delivered through a SEPARATE promise that this loop's own Await(nextResult)
-                    // awaits again -- two independent PromiseResolve calls, each its own tick.
-                    // A getter invoked here may throw via Object::current_context_ instead of
-                    // ctx -- rescue it.
-                    auto rescue_getter_exception = [&ctx]() {
-                        if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-                                && Object::current_context_->has_exception()) {
-                            ctx.throw_exception(Object::current_context_->get_exception(), true);
-                            Object::current_context_->clear_exception();
-                        }
-                    };
-
-                    Value sync_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
-                    rescue_getter_exception();
-                    if (ctx.has_exception()) return Value();
-                    if (!sync_result.is_object()) {
-                        ctx.throw_type_error("for-await-of: iterator result must be an object");
-                        return Value();
-                    }
-                    Value sync_done_val = sync_result.as_object()->get_property("done");
-                    rescue_getter_exception();
-                    if (ctx.has_exception()) return Value();
-                    Value sync_value_val = sync_result.as_object()->get_property("value");
-                    rescue_getter_exception();
-                    if (ctx.has_exception()) return Value();
-                    bool sync_done = sync_done_val.to_boolean();
-
-                    auto nr_obj = ObjectFactory::create_promise(gctx);
-                    Promise* next_result_promise = static_cast<Promise*>(nr_obj.release());
-
-                    Promise* value_wrapper = nullptr;
-                    if (AsyncUtils::is_promise(sync_value_val)) {
-                        value_wrapper = static_cast<Promise*>(sync_value_val.as_object());
-                        value_wrapper->get_property("constructor");
-                        rescue_getter_exception();
-                        if (ctx.has_exception()) {
-                            Value err = ctx.get_exception();
-                            ctx.clear_exception();
-                            // Continuation step 6: an abrupt PromiseResolve with done false
-                            // closes the sync iterator; close failures are swallowed.
-                            if (!sync_done) {
-                                Value close_fn = iterator_obj->get_property("return");
-                                rescue_getter_exception();
-                                if (!ctx.has_exception() && close_fn.is_function()) {
-                                    close_fn.as_function()->call(ctx, {}, iterator_val);
-                                    rescue_getter_exception();
-                                }
-                                ctx.clear_exception();
-                            }
-                            next_result_promise->reject(err);
-                            value_wrapper = nullptr;
-                        }
-                    } else {
-                        auto vw_obj = ObjectFactory::create_promise(gctx);
-                        Promise* vw_raw = static_cast<Promise*>(vw_obj.get());
-                        vw_raw->fulfill(sync_value_val);
-                        value_wrapper = static_cast<Promise*>(vw_obj.release());
-                    }
-
-                    if (value_wrapper) {
-                        auto unwrap_f = ObjectFactory::create_native_function("",
-                            [next_result_promise, sync_done](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                Value val = args.empty() ? Value() : args[0];
-                                auto res_obj = ObjectFactory::create_object();
-                                res_obj->set_property("value", val);
-                                res_obj->set_property("done", Value(sync_done));
-                                next_result_promise->fulfill(Value(res_obj.release()));
-                                return Value();
-                            });
-                        auto unwrap_r = ObjectFactory::create_native_function("",
-                            [next_result_promise, sync_done, iterator_val, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                Value reason = args.empty() ? Value() : args[0];
-                                // closeOnRejection: a rejected value closes the sync iterator
-                                // before the rejection propagates; close failures are swallowed.
-                                if (!sync_done && iterator_val.is_object() && gctx) {
-                                    Value close_fn = iterator_val.as_object()->get_property("return");
-                                    if (!gctx->has_exception() && close_fn.is_function()) {
-                                        close_fn.as_function()->call(*gctx, {}, iterator_val);
-                                    }
-                                    gctx->clear_exception();
-                                }
-                                next_result_promise->reject(reason);
-                                return Value();
-                            });
-                        std::string vw_key = "afsi_" + std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
-                        Function* uf = unwrap_f.get(); Function* ur = unwrap_r.get();
-                        value_wrapper->set_internal_slot("__af_" + vw_key, Value(unwrap_f.release()));
-                        value_wrapper->set_internal_slot("__ar_" + vw_key, Value(unwrap_r.release()));
-                        value_wrapper->then(uf, ur);
-                    }
-
-                    // Outer Await(nextResultPromise) pays its own constructor lookup + tick,
-                    // even when next_result_promise was just rejected directly above.
-                    next_result_promise->get_property("constructor");
-                    rescue_getter_exception();
-                    if (ctx.has_exception()) return Value();
-
-                    next_result = Value(next_result_promise);
-                    is_pending = true;
-                    auto self = exec->shared_from_this();
-                    auto on_f2 = ObjectFactory::create_native_function("",
-                        [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                            Value val = args.empty() ? Value() : args[0];
-                            self->resume(val, false);
-                            return Value();
-                        });
-                    auto on_r2 = ObjectFactory::create_native_function("",
-                        [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                            Value reason = args.empty() ? Value() : args[0];
-                            self->resume(reason, true);
-                            return Value();
-                        });
-                    std::string nrkey = "afsi_outer_" + std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
-                    Function* ff2 = on_f2.get(); Function* fr2 = on_r2.get();
-                    next_result_promise->set_internal_slot("__af_" + nrkey, Value(on_f2.release()));
-                    next_result_promise->set_internal_slot("__ar_" + nrkey, Value(on_r2.release()));
-                    next_result_promise->then(ff2, fr2);
-                } else {
-                next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
-                if (ctx.has_exception()) return Value();
-                if (AsyncUtils::is_promise(next_result)) {
-                    Promise* prom = static_cast<Promise*>(next_result.as_object());
-                    // PromiseResolve on an already-Promise value still Gets "constructor"
-                    // (step 1a) -- side effect only, no subclass rewrap.
-                    prom->get_property("constructor");
-                    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-                            && Object::current_context_->has_exception()) {
-                        ctx.throw_exception(Object::current_context_->get_exception(), true);
-                        Object::current_context_->clear_exception();
-                    }
-                    if (ctx.has_exception()) return Value();
-                    if (prom->get_state() == PromiseState::FULFILLED) {
-                        settled_val = prom->take_settled_value();
-                    } else if (prom->get_state() == PromiseState::REJECTED) {
-                        settled_val = prom->take_settled_value();
-                        settled_throw = true;
-                    } else {
-                        is_pending = true;
-                        auto self = exec->shared_from_this();
-                        auto on_f = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                Value val = args.empty() ? Value() : args[0];
-                                self->resume(val, false);
-                                return Value();
-                            });
-                        auto on_r = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                Value reason = args.empty() ? Value() : args[0];
-                                self->resume(reason, true);
-                                return Value();
-                            });
-                        std::string key = std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
-                        Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
-                        prom->set_internal_slot("__af_" + key, Value(on_f.release()));
-                        prom->set_internal_slot("__ar_" + key, Value(on_r.release()));
-                        prom->then(ff_tmp_, fr_tmp_);
-                    }
-                } else {
-                    if (ctx.has_exception()) return Value();
-                    settled_val = next_result;
-                }
-                }
-
-                if (!is_pending) {
-                    auto self = exec->shared_from_this();
-                    Value val = settled_val;
-                    bool thr = settled_throw;
-                    if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); }, {val});
-                }
-
-                exec->await_result_ = next_result;  // pin promise as GC root during suspension
-                quanta_fiber_yield(exec->fiber_.get());
-                Object::current_context_ = &ctx;
-
-                if (exec->await_is_throw_) {
-                    ctx.throw_exception(exec->await_result_, true);
-                    exec->await_is_throw_ = false;
-                    exec->await_result_ = Value();
-                    return Value();
-                }
-                awaited = exec->await_result_;
-                exec->await_result_ = Value();
-            } else {
-                Value next_method_val2 = iterator_obj->get_property("next");
-                if (!next_method_val2.is_function()) {
-                    ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
-                    return Value();
-                }
-                Value next_result2 = next_method_val2.as_function()->call(ctx, {}, iterator_val);
-                if (ctx.has_exception()) return Value();
-                if (AsyncUtils::is_promise(next_result2)) {
-                    Promise* p = static_cast<Promise*>(next_result2.as_object());
-                    if (p->get_state() == PromiseState::FULFILLED) {
-                        awaited = p->take_settled_value();
-                    } else if (p->get_state() == PromiseState::REJECTED) {
-                        ctx.throw_exception(p->take_settled_value());
-                        return Value();
-                    } else {
-                        ctx.throw_exception(Value(std::string("for-await-of: pending promise outside async context")));
-                        return Value();
-                    }
-                } else {
-                    awaited = next_result2;
-                }
-            }
-
-            if (!awaited.is_object()) {
-                ctx.throw_exception(Value(std::string("for-await-of: iterator result must be an object")));
-                return Value();
-            }
-            Object* iter_result = awaited.as_object();
-            Value done = iter_result->get_property("done");
-            if (done.to_boolean()) break;
-            Value value = iter_result->get_property("value");
-
-            // CreateAsyncFromSyncIterator (spec 27.1.4.2/.3): for sync-only iterables,
-            // each yielded value is PromiseResolve'd and Awaited -- e.g.
-            // `for await (const x of [Promise.resolve(1)])` must yield `1`, not the Promise.
-            if (!used_async_iterator) {
-                if (in_async_gen_fiber) {
-                    bool v_is_pending = false;
-                    bool v_settled_throw = false;
-                    Value v_settled_val;
-                    if (AsyncUtils::is_promise(value)) {
-                        Promise* vp = static_cast<Promise*>(value.as_object());
-                        if (vp->get_state() == PromiseState::FULFILLED) {
-                            v_settled_val = vp->take_settled_value();
-                        } else if (vp->get_state() == PromiseState::REJECTED) {
-                            v_settled_val = vp->take_settled_value();
-                            v_settled_throw = true;
-                        } else {
-                            v_is_pending = true;
-                            auto self = async_gen;
-                            auto on_f = ObjectFactory::create_native_function("",
-                                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                    Value val = args.empty() ? Value() : args[0];
-                                    self->resume_from_await(val, false);
-                                    return Value();
-                                });
-                            auto on_r = ObjectFactory::create_native_function("",
-                                [self, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                    Value reason = args.empty() ? Value() : args[0];
-                                    self->resume_from_await(reason, true);
-                                    return Value();
-                                });
-                            std::string vkey = "fav_" + std::to_string(i) + "_ag_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
-                            Function* vff = on_f.get(); Function* vfr = on_r.get();
-                            vp->set_internal_slot("__af_" + vkey, Value(on_f.release()));
-                            vp->set_internal_slot("__ar_" + vkey, Value(on_r.release()));
-                            vp->then(vff, vfr);
-                        }
-                    } else {
-                        v_settled_val = value;
-                    }
-                    if (!v_is_pending) {
-                        auto self = async_gen;
-                        Value vv = v_settled_val;
-                        bool vthr = v_settled_throw;
-                        if (gctx) gctx->queue_microtask([self, vv, vthr]() mutable { self->resume_from_await(vv, vthr); }, {Value(self), vv});
-                    }
-                    async_gen->await_result_ = value;  // pin as GC root during suspension
-                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                    quanta_fiber_yield(async_gen->fiber_.get());
-                    Object::current_context_ = &ctx;
-                    if (async_gen->await_is_throw_) {
-                        ctx.throw_exception(async_gen->await_result_, true);
-                        async_gen->await_is_throw_ = false;
-                        async_gen->await_result_ = Value();
-                        return Value();
-                    }
-                    value = async_gen->await_result_;
-                    async_gen->await_result_ = Value();
-                } else if (exec && exec->fiber_->co != nullptr) {
-                    // `value` was already fully wrapped, awaited, and unwrapped by the
-                    // AsyncFromSyncIteratorContinuation step above (next_result_promise's
-                    // resolution) -- nothing further to await here.
-                } else {
-                    if (AsyncUtils::is_promise(value)) {
-                        Promise* vp = static_cast<Promise*>(value.as_object());
-                        if (vp->get_state() == PromiseState::FULFILLED) {
-                            value = vp->take_settled_value();
-                        } else if (vp->get_state() == PromiseState::REJECTED) {
-                            ctx.throw_exception(vp->take_settled_value());
-                            return Value();
-                        } else {
-                            ctx.throw_exception(Value(std::string("for-await-of: pending promise outside async context")));
-                            return Value();
-                        }
-                    }
-                }
+                break;
             }
 
             if (var_name == "__destr__") {
@@ -2134,17 +1914,17 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     ctx.throw_exception(Object::current_context_->get_exception(), true);
                     Object::current_context_->clear_exception();
                 }
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) { close_on_throw(); return Value(); }
                 body_->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) { close_on_throw(); return Value(); }
                 if (ctx.has_break()) {
                     ctx.clear_break_continue();
-                    close_async_iterator_on_break(iterator_obj);
+                    close_it();
                     if (ctx.has_exception()) return Value();
                     break;
                 }
                 if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
-                if (ctx.has_return_value()) return Value();
+                if (ctx.has_return_value()) { close_it(); return Value(); }
                 continue;
             }
 
@@ -2164,15 +1944,15 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
             body_->evaluate(ctx);
             if (per_iter) ctx.pop_block_scope();
-            if (ctx.has_exception()) return Value();
+            if (ctx.has_exception()) { close_on_throw(); return Value(); }
             if (ctx.has_break()) {
                 ctx.clear_break_continue();
-                close_async_iterator_on_break(iterator_obj);
+                close_it();
                 if (ctx.has_exception()) return Value();
                 break;
             }
             if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
-            if (ctx.has_return_value()) return Value();
+            if (ctx.has_return_value()) { close_it(); return Value(); }
         }
         return Value();
     }

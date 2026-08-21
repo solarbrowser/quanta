@@ -547,18 +547,10 @@ bool object_literal_is_complex(const ObjectLiteral* lit) {
     for (const auto& prop : lit->get_properties()) {
         // A spread has a null key and is emitted by Op::ObjectSpreadInto.
         if (!prop->key) continue;
-        bool is_accessor = prop->type == ObjectLiteral::PropertyType::Getter ||
-                            prop->type == ObjectLiteral::PropertyType::Setter;
-        if (prop->computed) {
-            if (is_accessor) return true;
-            continue;
-        }
+        if (prop->computed) continue;
         auto kt = prop->key->get_type();
-        if (kt == ASTNode::Type::IDENTIFIER) {
-            if (static_cast<const Identifier*>(prop->key.get())->get_name() == "__proto__") return true;
-        } else if (kt == ASTNode::Type::STRING_LITERAL) {
-            if (static_cast<const StringLiteral*>(prop->key.get())->get_value() == "__proto__") return true;
-        } else if (kt != ASTNode::Type::NUMBER_LITERAL) {
+        if (kt != ASTNode::Type::IDENTIFIER && kt != ASTNode::Type::STRING_LITERAL &&
+            kt != ASTNode::Type::NUMBER_LITERAL) {
             return true;
         }
     }
@@ -3832,7 +3824,7 @@ std::vector<std::string> BytecodeCompiler::take_pending_labels() {
 
 bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode* right,
                                               const ASTNode* body, bool is_for_in,
-                                              int left_decl_kind) {
+                                              int left_decl_kind, bool is_await) {
     // Supported targets: a simple identifier, or a destructuring pattern WITH
     // a declaration keyword (keywordless `for ({a} of arr)` reports kind -1
     // and needs arbitrary-AssignmentTarget writeback this path doesn't have).
@@ -3905,8 +3897,17 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
 
     int next_fn_reg = alloc_temp();
     if (failed_) return false;
-    emit(Op::GetIterator);
-    emit_u8(static_cast<uint8_t>(next_fn_reg));
+    int from_sync_reg = -1;
+    if (is_await) {
+        from_sync_reg = alloc_temp();
+        if (failed_) return false;
+        emit(Op::GetAsyncIterator);
+        emit_u8(static_cast<uint8_t>(next_fn_reg));
+        emit_u8(static_cast<uint8_t>(from_sync_reg));
+    } else {
+        emit(Op::GetIterator);
+        emit_u8(static_cast<uint8_t>(next_fn_reg));
+    }
     int iterator_reg = alloc_temp();
     if (failed_) return false;
     emit(Op::Star);
@@ -3924,9 +3925,10 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     }
 
     size_t loop_start = code_.size();
-    emit(Op::IteratorNextOrJump);
+    emit(is_await ? Op::AsyncIteratorNextOrJump : Op::IteratorNextOrJump);
     emit_u8(static_cast<uint8_t>(iterator_reg));
     emit_u8(static_cast<uint8_t>(next_fn_reg));
+    if (is_await) emit_u8(static_cast<uint8_t>(from_sync_reg));
     size_t next_jump = code_.size();
     emit_u16(0);  // patched below to pre_exit (done, or the iterator threw)
 
@@ -3954,7 +3956,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     }
 
     size_t body_start = code_.size();
-    loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels(), iterator_reg});
+    loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels(), iterator_reg, is_await});
     if (!compile_statement(body)) return false;
     LoopScope scope = std::move(loop_stack_.back());
     loop_stack_.pop_back();
@@ -3974,7 +3976,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     for (size_t pos : scope.break_patches) {
         if (!patch_jump(pos)) return false;
     }
-    emit(Op::IteratorClose);
+    emit(is_await ? Op::AsyncIteratorClose : Op::IteratorClose);
     emit_u8(static_cast<uint8_t>(iterator_reg));
     emit_u8(0);  // mode 0: validate, no pending exception
 
@@ -3985,7 +3987,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     // handler below (reached only via CHECK_EXC's handler-table jump).
     size_t skip_cleanup = emit_jump(Op::Jump);
     size_t cleanup_pc = code_.size();
-    emit(Op::IteratorClose);
+    emit(is_await ? Op::AsyncIteratorClose : Op::IteratorClose);
     emit_u8(static_cast<uint8_t>(iterator_reg));
     emit_u8(1);  // mode 1: acc holds the pending exception -- restore + re-raise
     chunk_->ensure_handlers().push_back({static_cast<uint32_t>(body_start),
@@ -4134,6 +4136,7 @@ Op fused_store_form(Op producer) {
 int jump_offset_at(char kind) {
     if (kind == 'o') return 0;
     if (kind == 'j') return 2;
+    if (kind == 'J') return 3;
     return -1;
 }
 }
@@ -5236,11 +5239,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::FOR_OF_STATEMENT: {
             const auto* stmt = static_cast<const ForOfStatement*>(node);
-            // for-await-of: fiber/async machinery, permanent fallback (same
-            // reasoning as generators -- see vm-architecture.md 2.9).
-            if (stmt->is_await()) return false;
+            // A `for await` outside a suspendable body is module top-level
+            // await, which has no fiber to suspend here.
+            if (stmt->is_await() && !suspendable_) return false;
             return compile_for_each_loop(stmt->get_left(), stmt->get_right(), stmt->get_body(), false,
-                                          stmt->get_left_decl_kind());
+                                          stmt->get_left_decl_kind(), stmt->is_await());
         }
 
         case ASTNode::Type::FOR_IN_STATEMENT: {
@@ -5267,7 +5270,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // (the target's own iterator is closed by its landing pad).
             for (int i = static_cast<int>(loop_stack_.size()) - 1; i > target; i--) {
                 if (loop_stack_[i].iterator_reg < 0) continue;
-                emit(Op::IteratorClose);
+                emit(loop_stack_[i].iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
                 emit_u8(static_cast<uint8_t>(loop_stack_[i].iterator_reg));
                 emit_u8(0);
             }
@@ -5305,7 +5308,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // (the target itself keeps iterating).
             for (int i = static_cast<int>(loop_stack_.size()) - 1; i > target; i--) {
                 if (loop_stack_[i].iterator_reg < 0) continue;
-                emit(Op::IteratorClose);
+                emit(loop_stack_[i].iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
                 emit_u8(static_cast<uint8_t>(loop_stack_[i].iterator_reg));
                 emit_u8(0);
             }
@@ -5341,7 +5344,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // IteratorClose innermost-first (mode 0 leaves acc untouched).
             for (auto it = loop_stack_.rbegin(); it != loop_stack_.rend(); ++it) {
                 if (it->iterator_reg < 0) continue;
-                emit(Op::IteratorClose);
+                emit(it->iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
                 emit_u8(static_cast<uint8_t>(it->iterator_reg));
                 emit_u8(0);
             }
@@ -7124,6 +7127,15 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
                     if (!compile_expression(prop->value.get())) return false;
 
+                    // Only this spelling sets [[Prototype]]: the shorthand,
+                    // `__proto__(){}` and a computed key are all properties.
+                    if (key == "__proto__" && !prop->shorthand &&
+                        prop->type == ObjectLiteral::PropertyType::Value) {
+                        emit(Op::SetLiteralProto);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        continue;
+                    }
+
                     if (is_method || is_getter || is_setter) {
                         uint16_t key_name_idx = add_name(key);
                         std::string display_name = is_getter ? ("get " + key)
@@ -7181,12 +7193,21 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
                     if (!compile_expression(prop->value.get())) return false;
 
-                    uint8_t kind = is_method ? 2
-                                 : (is_anon_fn_def(prop->value.get()) ? 1 : 0);
-                    if (is_method && !method_references_super(prop->value.get())) {
+                    // An accessor names itself "get k"/"set k" and merges
+                    // with the other half of its pair, so it takes its own
+                    // instruction rather than a fourth kind of this one.
+                    const bool is_accessor = is_getter || is_setter;
+                    uint8_t kind;
+                    if (is_accessor) {
+                        kind = is_getter ? 1 : 2;
+                    } else {
+                        kind = is_method ? 2 : (is_anon_fn_def(prop->value.get()) ? 1 : 0);
+                    }
+                    if ((is_accessor || is_method) &&
+                        !method_references_super(prop->value.get())) {
                         kind |= kSuperFreeFlag;
                     }
-                    emit(Op::FinalizeComputedProperty);
+                    emit(is_accessor ? Op::FinalizeComputedAccessor : Op::FinalizeComputedProperty);
                     emit_u8(static_cast<uint8_t>(obj_reg));
                     emit_u8(static_cast<uint8_t>(key_reg));
                     emit_u8(static_cast<uint8_t>(raw_key_reg));

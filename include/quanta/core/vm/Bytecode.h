@@ -249,6 +249,24 @@ enum class Op : uint8_t {
     // suspends as many times as the inner iterator has values.
     YieldStar,
 
+    // `for await...of`: the async forms of the three above. The extra register
+    // says whether the iterator came from @@asyncIterator or is a sync one
+    // driven through AsyncFromSyncIteratorContinuation, which decides what
+    // each step Awaits.
+    GetAsyncIterator,          // r_next_fn r_from_sync
+    AsyncIteratorNextOrJump,   // r_iter r_next_fn r_from_sync o
+    AsyncIteratorClose,        // r_iter mode (0=validate, 1=re-raise pending)
+
+    // A getter or setter whose key is only known at run time. Separate from
+    // FinalizeComputedProperty because an accessor merges with the other half
+    // of its pair rather than replacing what is there.
+    FinalizeComputedAccessor,  // r_obj r_key r_raw_key kind
+
+    // `__proto__: v` written literally in an object literal: sets [[Prototype]]
+    // rather than creating a property. Which spellings count is the compiler's
+    // decision, so this is only emitted where it applies.
+    SetLiteralProto,           // r_obj
+
     kCount
 };
 

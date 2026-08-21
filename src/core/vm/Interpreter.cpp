@@ -42,6 +42,11 @@ bool object_spread_into(Context&, Object*, const Value&);
 Value perform_yield(Context& ctx, Value yield_value);
 // And backing Op::YieldStar.
 Value perform_yield_delegate(Context& ctx, Value iterable);
+// From statements.cpp, backing the three `for await...of` opcodes.
+Value get_async_iterator(Context& ctx, const Value& iterable, Value& next_fn_out, bool& from_sync_out);
+bool async_iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
+                         bool from_sync, Value& value_out);
+void async_iterator_close(Context& ctx, const Value& iterator);
 // From statements.cpp, backing Op::SettleReturn.
 Value perform_return_completion(Context& ctx, Value return_value, bool has_argument);
 // Likewise from language.cpp, backing Op::Await.
@@ -920,8 +925,13 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
         // -- fall through to the general path below.
     }
 
-    PropertyDescriptor desc = obj->has_own_property(key)
+    // Merging is what makes a getter and a setter written for one key end up
+    // in a single descriptor. It is only right when what is already there is
+    // an accessor: turning a data property into one discards its value and
+    // writable rather than keeping them alongside (spec 10.1.6.3 step 6.b).
+    PropertyDescriptor existing = obj->has_own_property(key)
         ? obj->get_property_descriptor(key) : PropertyDescriptor();
+    PropertyDescriptor desc = existing.is_accessor_descriptor() ? existing : PropertyDescriptor();
     if (is_getter) desc.set_getter(fn); else desc.set_setter(fn);
     desc.set_enumerable(true);
     desc.set_configurable(true);
@@ -2921,6 +2931,82 @@ Value h_gen_IteratorClose(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_GetAsyncIterator(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t next_fn_reg = code[pc + 1];
+    uint8_t from_sync_reg = code[pc + 2];
+    pc += 3;
+    do {
+        Value next_fn;
+        bool from_sync = false;
+        Value iterator = get_async_iterator(ctx, acc, next_fn, from_sync);
+        // CHECK_EXC_TAIL redirects pc and puts the exception in acc, so
+        // nothing below may run once one is pending.
+        if (ctx.has_exception()) break;
+        regs[next_fn_reg] = next_fn;
+        regs[from_sync_reg] = Value(from_sync);
+        acc = iterator;
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_AsyncIteratorNextOrJump(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t iter_reg = code[pc + 1];
+    uint8_t next_fn_reg = code[pc + 2];
+    uint8_t from_sync_reg = code[pc + 3];
+    int16_t off = read_i16(code, pc + 4);
+    pc += 6;
+    do {
+        Value value;
+        const bool done = async_iterator_step(ctx, regs[iter_reg], regs[next_fn_reg],
+                                              regs[from_sync_reg].to_boolean(), value);
+        if (ctx.has_exception()) break;
+        if (done) {
+            pc += off;
+        } else {
+            acc = value;
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_AsyncIteratorClose(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t iter_reg = code[pc + 1];
+    uint8_t mode = code[pc + 2];
+    pc += 3;
+    if (mode == 0) {
+        async_iterator_close(ctx, regs[iter_reg]);
+    } else {
+        // Unwinding: the pending exception is what leaves, so a failure while
+        // closing is dropped rather than replacing it.
+        Value pending = acc;
+        async_iterator_close(ctx, regs[iter_reg]);
+        if (ctx.has_exception()) ctx.clear_exception();
+        ctx.throw_exception(pending, true);
+    }
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4365,6 +4451,65 @@ Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_SetLiteralProto(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint8_t obj_reg = code[pc + 1];
+    pc += 2;
+    if (Object* obj = as_object_like(regs[obj_reg])) {
+        // Anything that is neither an object nor null is ignored, not an error.
+        if (acc.is_object()) {
+            obj->set_prototype(acc.as_object());
+        } else if (acc.is_null()) {
+            obj->set_prototype(nullptr);
+        }
+    }
+    DISPATCH();
+}
+
+Value h_gen_FinalizeComputedAccessor(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint8_t key_reg = code[pc + 2];
+    uint8_t raw_key_reg = code[pc + 3];
+    uint8_t raw_kind = code[pc + 4];
+    pc += 5;
+    do {
+        const uint8_t kind = raw_kind & 0x3;
+        const bool super_free = (raw_kind & 0x4) != 0;
+        Object* obj = as_object_like(regs[obj_reg]);
+        if (!acc.is_function()) break;
+        Function* fn = acc.as_function();
+        std::string key = regs[key_reg].to_property_key();
+        if (ctx.has_exception()) break;
+        if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+            const Value& raw_key = regs[raw_key_reg];
+            std::string display;
+            if (raw_key.is_symbol()) {
+                std::string desc = raw_key.as_symbol()->get_description();
+                display = desc.empty() ? "" : "[" + desc + "]";
+            } else {
+                display = key;
+            }
+            fn->set_name((kind == 1 ? "get " : "set ") + display);
+        }
+        if (!super_free && obj) fn->set_home_object(obj);
+        if (fn->is_constructor()) fn->set_function_prototype(nullptr);
+        // No feedback slot, unlike the static form: the transition cache is
+        // keyed by shape alone, and this instruction sees a different key each
+        // time it runs, so a learned transition would install another key's.
+        if (obj) define_accessor_cached(obj, key, fn, kind == 1, nullptr);
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_SetFunctionNameIfUnnamed(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4598,6 +4743,11 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::GetIterator)] = &h_gen_GetIterator;
     t[static_cast<uint8_t>(Op::IteratorNextOrJump)] = &h_gen_IteratorNextOrJump;
     t[static_cast<uint8_t>(Op::IteratorClose)] = &h_gen_IteratorClose;
+    t[static_cast<uint8_t>(Op::GetAsyncIterator)] = &h_gen_GetAsyncIterator;
+    t[static_cast<uint8_t>(Op::AsyncIteratorNextOrJump)] = &h_gen_AsyncIteratorNextOrJump;
+    t[static_cast<uint8_t>(Op::AsyncIteratorClose)] = &h_gen_AsyncIteratorClose;
+    t[static_cast<uint8_t>(Op::FinalizeComputedAccessor)] = &h_gen_FinalizeComputedAccessor;
+    t[static_cast<uint8_t>(Op::SetLiteralProto)] = &h_gen_SetLiteralProto;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;

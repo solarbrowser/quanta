@@ -73,7 +73,8 @@ private:
 
     bool compile_for_each_loop(const ASTNode* left, const ASTNode* right,
                                const ASTNode* body, bool is_for_in,
-                               int left_decl_kind = -1);
+                               int left_decl_kind = -1,
+                               bool is_await = false);
     bool compile_logical_assignment(const class AssignmentExpression* expr);
 
     bool is_local(const std::string& name) const;
@@ -193,6 +194,7 @@ private:
         bool is_switch = false;  // break-only: continue skips past this to the enclosing loop
         std::vector<std::string> labels;  // labels a labeled break/continue can target this by
         int iterator_reg = -1;  // for-of/for-in only: IteratorClose target for an escaping return
+        bool iterator_is_async = false;  // for-await-of: closing it Awaits, so a different opcode
     };
 
     std::vector<std::string> take_pending_labels();

@@ -124,6 +124,9 @@ const OpInfo& op_info(Op op) {
         {"Yield", 0, '-'}, {"Await", 1, 'i'},
         {"LdaNewTarget", 0, '-'}, {"LdaImportMeta", 0, '-'},
         {"SettleReturn", 1, 'i'}, {"YieldStar", 0, '-'},
+        {"GetAsyncIterator", 2, 'r'}, {"AsyncIteratorNextOrJump", 5, 'J'},
+        {"AsyncIteratorClose", 2, 'C'}, {"FinalizeComputedAccessor", 4, 'p'},
+        {"SetLiteralProto", 1, 'r'},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");
@@ -183,6 +186,7 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'g': case 'f': case 'l': case 'm': case 's': check(0, "receiver"); break;
             case 'C': check(0, "closes the iterator in"); break;
             case 'x': case 'j': check(0, "reads"); check(1, "reads"); break;
+            case 'J': check(0, "reads"); check(1, "reads"); check(2, "reads"); break;
             case 'I': check(1, "stores into"); break;
             case 'K': check(2, "stores into"); break;
             case 'N': check(2, "stores into"); break;
@@ -442,6 +446,16 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
                     << " r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " -> " << (operand_pc + 4 + off);
+                break;
+            }
+            case 'J': {
+                uint16_t raw = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
+                               (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
+                int16_t off = static_cast<int16_t>(raw);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " sync=r" << static_cast<int>(chunk.code[operand_pc + 2])
+                    << " -> " << (operand_pc + 5 + off);
                 break;
             }
             default:

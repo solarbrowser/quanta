@@ -266,9 +266,13 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             // Getter/setter functions must not expose [[Construct]] -- remove prototype.
             value.as_function()->set_function_prototype(nullptr);
 
+            // Merging pairs a getter with a setter written for one key, but
+            // a data property becomes an accessor instead, losing value and
+            // writable (spec 10.1.6.3 step 6.b).
             PropertyDescriptor desc;
             if (object->has_own_property(key)) {
-                desc = object->get_property_descriptor(key);
+                PropertyDescriptor existing = object->get_property_descriptor(key);
+                if (existing.is_accessor_descriptor()) desc = existing;
             }
 
             if (prop->type == ObjectLiteral::PropertyType::Getter) {
