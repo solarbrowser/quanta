@@ -4175,9 +4175,30 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     emit(is_await ? Op::AsyncIteratorClose : Op::IteratorClose);
     emit_u8(static_cast<uint8_t>(iterator_reg));
     emit_u8(1);  // mode 1: acc holds the pending exception -- restore + re-raise
+    const size_t handler_idx = chunk_->ensure_handlers().size();
     chunk_->ensure_handlers().push_back({static_cast<uint32_t>(body_start),
                                  static_cast<uint32_t>(body_end),
                                  static_cast<uint32_t>(cleanup_pc)});
+
+    // A `return()` on the generator resumes a suspension in the body by
+    // unwinding a C++ exception, which reaches run() rather than this handler,
+    // so it needs a landing pad of its own -- the loop's iterator has to be
+    // closed before the completion goes on out. Same shape try/finally uses.
+    if (suspendable_ && contains_suspend(body)) {
+        size_t genreturn_pc = code_.size();
+        int gr_temp = alloc_temp();
+        if (failed_) return false;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(gr_temp));
+        emit(is_await ? Op::AsyncIteratorClose : Op::IteratorClose);
+        emit_u8(static_cast<uint8_t>(iterator_reg));
+        emit_u8(0);  // mode 0: validate, the completion is a return, not a throw
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(gr_temp));
+        free_temp(gr_temp);
+        emit(Op::ReraiseGeneratorReturn);
+        chunk_->ensure_handlers()[handler_idx].genreturn_pc = static_cast<int32_t>(genreturn_pc);
+    }
     if (!patch_jump(skip_cleanup)) return false;
 
     free_temp(next_fn_reg);  // frees next_fn_reg and iterator_reg (contiguous, LIFO)

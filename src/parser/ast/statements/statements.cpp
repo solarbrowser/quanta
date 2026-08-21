@@ -2075,6 +2075,21 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             }
                         };
 
+                        // A `return()` on the generator this loop is running in
+                        // resumes a suspension in the body by unwinding a C++
+                        // exception, which none of the completion checks below
+                        // ever see. The iterator still has to be closed before
+                        // it travels on.
+                        struct CloseOnUnwind {
+                            const std::function<void(bool)>& close;
+                            int entry_uncaught;
+                            ~CloseOnUnwind() {
+                                if (std::uncaught_exceptions() > entry_uncaught) close(false);
+                            }
+                        };
+                        const std::function<void(bool)> close_fn = close_iterator;
+                        CloseOnUnwind close_on_unwind{close_fn, std::uncaught_exceptions()};
+
                         Context* loop_ctx = &ctx;
                         Value V_iter;
 
