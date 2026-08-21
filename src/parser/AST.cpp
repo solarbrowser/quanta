@@ -74,7 +74,7 @@ Value NumberLiteral::evaluate(Context& ctx) {
 }
 
 std::string NumberLiteral::to_string() const {
-    return std::to_string(value_);
+    return Value(value_).to_string();
 }
 
 std::unique_ptr<ASTNode> NumberLiteral::clone() const {

@@ -469,53 +469,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         if (ctx.has_exception()) return Value();
 
         std::string str_value = object_value.is_string() ? object_value.to_string() : "";
-        if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:" && member->is_computed()) {
-            int index = static_cast<int>(computed_key_value.to_number());
-            if (index >= 0) {
-                std::string array_content = str_value.substr(6);
-                array_content = array_content.substr(1, array_content.length() - 2);
-                
-                std::vector<std::string> elements;
-                if (!array_content.empty()) {
-                    std::stringstream ss(array_content);
-                    std::string item;
-                    while (std::getline(ss, item, ',')) {
-                        elements.push_back(item);
-                    }
-                }
-                
-                while (static_cast<int>(elements.size()) <= index) {
-                    elements.push_back("undefined");
-                }
-                
-                std::string value_str = right_value.to_string();
-                if (right_value.is_number()) {
-                    value_str = std::to_string(right_value.as_number());
-                } else if (right_value.is_boolean()) {
-                    value_str = right_value.as_boolean() ? "true" : "false";
-                } else if (right_value.is_null()) {
-                    value_str = "null";
-                }
-                elements[index] = value_str;
-                
-                std::string new_array = "ARRAY:[";
-                for (size_t i = 0; i < elements.size(); ++i) {
-                    if (i > 0) new_array += ",";
-                    new_array += elements[i];
-                }
-                new_array += "]";
-                
-                if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
-                    Identifier* array_id = static_cast<Identifier*>(member->get_object());
-                    ctx.set_binding(array_id->get_name(), Value(new_array));
-                }
-                
-                return right_value;
-            }
-        }
         
         Object* obj = nullptr;
-        bool is_string_object = false;
 
         // Stores the final value. A super write is not an ordinary write to `this`:
         // the lookup walks the super base's chain, so a setter or a read-only data
@@ -558,55 +513,51 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             obj = effective_object.as_function();
         } else if (effective_object.is_string() || effective_object.is_number() || effective_object.is_boolean() || effective_object.is_symbol()) {
             std::string str_val = effective_object.is_string() ? effective_object.to_string() : "";
-            if (effective_object.is_string() && str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
-                is_string_object = true;
-            } else {
-                // ES5: Check for accessor setter on prototype before failing
-                std::string ctor_name = effective_object.is_string() ? "String" :
-                    (effective_object.is_number() ? "Number" :
-                    (effective_object.is_boolean() ? "Boolean" : "Symbol"));
-                std::string prop_name;
-                if (member->is_computed()) {
-                    if (computed_key_value.is_symbol()) {
-                        prop_name = computed_key_value.as_symbol()->to_property_key();
-                    } else {
-                        prop_name = computed_key_value.to_string();
-                    }
-                } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                    prop_name = static_cast<Identifier*>(member->get_property())->get_name();
+            // ES5: Check for accessor setter on prototype before failing
+            std::string ctor_name = effective_object.is_string() ? "String" :
+                (effective_object.is_number() ? "Number" :
+                (effective_object.is_boolean() ? "Boolean" : "Symbol"));
+            std::string prop_name;
+            if (member->is_computed()) {
+                if (computed_key_value.is_symbol()) {
+                    prop_name = computed_key_value.as_symbol()->to_property_key();
+                } else {
+                    prop_name = computed_key_value.to_string();
                 }
-                if (!prop_name.empty()) {
-                    Value ctor = ctx.get_binding(ctor_name);
-                    if (ctor.is_function()) {
-                        Value proto = ctor.as_function()->get_property("prototype");
-                        // Walk the whole prototype chain (not just XPrototype) for an inherited
-                        // setter/Proxy trap, passing the original primitive as receiver.
-                        Object* level = proto.is_object() ? proto.as_object() : nullptr;
-                        while (level) {
-                            if (level->get_type() == Object::ObjectType::Proxy) {
-                                static_cast<Proxy*>(level)->set_trap(Value(prop_name), right_value, object_value);
-                                if (ctx.has_exception()) return Value();
-                                return right_value;
-                            }
-                            PropertyDescriptor desc = level->get_property_descriptor(prop_name);
-                            if (desc.is_accessor_descriptor()) {
-                                if (desc.has_setter()) {
-                                    Function* setter = as_function(desc.get_setter());
-                                    if (setter) setter->call(ctx, {right_value}, object_value);
-                                }
-                                return right_value;
-                            }
-                            if (desc.has_value()) break; // non-writable (or shadowed) data property: stop, fall through to no-op/throw below
-                            level = level->get_prototype();
-                        }
-                    }
-                }
-                // No setter found - silently fail or throw in strict mode
-                if (ctx.is_strict_mode()) {
-                    ctx.throw_type_error("Cannot set property on primitive");
-                }
-                return right_value;
+            } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                prop_name = static_cast<Identifier*>(member->get_property())->get_name();
             }
+            if (!prop_name.empty()) {
+                Value ctor = ctx.get_binding(ctor_name);
+                if (ctor.is_function()) {
+                    Value proto = ctor.as_function()->get_property("prototype");
+                    // Walk the whole prototype chain (not just XPrototype) for an inherited
+                    // setter/Proxy trap, passing the original primitive as receiver.
+                    Object* level = proto.is_object() ? proto.as_object() : nullptr;
+                    while (level) {
+                        if (level->get_type() == Object::ObjectType::Proxy) {
+                            static_cast<Proxy*>(level)->set_trap(Value(prop_name), right_value, object_value);
+                            if (ctx.has_exception()) return Value();
+                            return right_value;
+                        }
+                        PropertyDescriptor desc = level->get_property_descriptor(prop_name);
+                        if (desc.is_accessor_descriptor()) {
+                            if (desc.has_setter()) {
+                                Function* setter = as_function(desc.get_setter());
+                                if (setter) setter->call(ctx, {right_value}, object_value);
+                            }
+                            return right_value;
+                        }
+                        if (desc.has_value()) break; // non-writable (or shadowed) data property: stop, fall through to no-op/throw below
+                        level = level->get_prototype();
+                    }
+                }
+            }
+            // No setter found - silently fail or throw in strict mode
+            if (ctx.is_strict_mode()) {
+                ctx.throw_type_error("Cannot set property on primitive");
+            }
+            return right_value;
         } else {
             // ES1: In non-strict mode, setting property on primitive fails silently
             if (ctx.is_strict_mode()) {
@@ -702,7 +653,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // Only the literal `.#name` syntax is a private reference -- a computed
         // key that happens to spell "#name" is an ordinary property.
         Object* private_owner = nullptr;
-        if (obj && !is_string_object && !member->is_computed() &&
+        if (obj && !member->is_computed() &&
             !prop_name.empty() && prop_name[0] == '#') {
             if (!private_brand_check(ctx, obj, prop_name, false)) {
                 ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
@@ -862,7 +813,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         Object* read_base = is_super_assignment ? super_lookup_proto : (private_owner ? private_owner : obj);
 
         // For a Proxy, [[Set]] must go straight to set_trap; this descriptor pre-check would fire an extra getOwnPropertyDescriptor trap call.
-        if (read_base && !is_string_object && read_base->get_type() != Object::ObjectType::Proxy) {
+        if (read_base && read_base->get_type() != Object::ObjectType::Proxy) {
             // Check own descriptor first, then prototype chain for setter
             PropertyDescriptor desc = read_base->get_property_descriptor(prop_name);
             bool found_inherited = false;
@@ -923,101 +874,20 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         
         switch (operator_) {
             case Operator::ASSIGN:
-                if (is_string_object) {
-                    std::string str_val = object_value.to_string();
-                    std::string new_prop = prop_name + "=" + right_value.to_string();
-                    
-                    if (str_val == "OBJECT:{}") {
-                        str_val = "OBJECT:{" + new_prop + "}";
-                    } else {
-                        size_t close_pos = str_val.rfind('}');
-                        if (close_pos != std::string::npos) {
-                            str_val = str_val.substr(0, close_pos) + "," + new_prop + "}";
-                        }
-                    }
-                    
-                    if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Identifier* obj_id = static_cast<Identifier*>(member->get_object());
-                        std::string var_name = obj_id->get_name();
-                        ctx.set_binding(var_name, Value(str_val));
-                        
-                        if (var_name == "this") {
-                            ctx.set_binding("this", Value(str_val));
-                        }
-                    }
-                } else {
-                    if (!store(prop_name, right_value)) return Value();
-                }
+                if (!store(prop_name, right_value)) return Value();
                 break;
             case Operator::PLUS_ASSIGN: {
-                if (is_string_object) {
-                    std::string str_val = object_value.to_string();
-                    
-                    std::string search_pattern = prop_name + "=";
-                    size_t prop_start = str_val.find(search_pattern);
-                    Value current_value = Value(0);
-                    
-                    if (prop_start != std::string::npos) {
-                        size_t value_start = prop_start + search_pattern.length();
-                        size_t value_end = str_val.find(",", value_start);
-                        if (value_end == std::string::npos) {
-                            value_end = str_val.find("}", value_start);
-                        }
-                        
-                        if (value_end != std::string::npos) {
-                            std::string current_value_str = str_val.substr(value_start, value_end - value_start);
-                            try {
-                                double num = std::stod(current_value_str);
-                                current_value = Value(num);
-                            } catch (...) {
-                                current_value = Value(0);
-                            }
-                        }
-                    }
-                    
-                    double new_value = current_value.to_number() + right_value.to_number();
-                    std::string new_value_str = std::to_string(new_value);
-                    
-                    if (prop_start != std::string::npos) {
-                        size_t value_start = prop_start + search_pattern.length();
-                        size_t value_end = str_val.find(",", value_start);
-                        if (value_end == std::string::npos) {
-                            value_end = str_val.find("}", value_start);
-                        }
-                        
-                        if (value_end != std::string::npos) {
-                            str_val = str_val.substr(0, value_start) + new_value_str + str_val.substr(value_end);
-                        }
-                    } else {
-                        std::string new_prop = prop_name + "=" + new_value_str;
-                        size_t close_pos = str_val.rfind('}');
-                        if (close_pos != std::string::npos) {
-                            str_val = str_val.substr(0, close_pos) + "," + new_prop + "}";
-                        }
-                    }
-                    
-                    if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Identifier* obj_id = static_cast<Identifier*>(member->get_object());
-                        std::string var_name = obj_id->get_name();
-                        ctx.set_binding(var_name, Value(str_val));
-                        
-                        if (var_name == "this") {
-                            ctx.set_binding("this", Value(str_val));
-                        }
-                    }
+                Value current_value = read_base ? read_base->get_property(prop_name) : Value();
+                if (ctx.has_exception()) return Value();
+                // String concatenation or numeric addition
+                Value computed;
+                if (current_value.is_string() || right_value.is_string()) {
+                    computed = Value(current_value.to_string() + right_value.to_string());
                 } else {
-                    Value current_value = read_base ? read_base->get_property(prop_name) : Value();
-                    if (ctx.has_exception()) return Value();
-                    // String concatenation or numeric addition
-                    Value computed;
-                    if (current_value.is_string() || right_value.is_string()) {
-                        computed = Value(current_value.to_string() + right_value.to_string());
-                    } else {
-                        computed = Value(current_value.to_number() + right_value.to_number());
-                    }
-                    if (!store(prop_name, computed)) return Value();
-                    return computed;
+                    computed = Value(current_value.to_number() + right_value.to_number());
                 }
+                if (!store(prop_name, computed)) return Value();
+                return computed;
                 break;
             }
             case Operator::MINUS_ASSIGN:

@@ -270,55 +270,6 @@ Value BinaryExpression::evaluate(Context& ctx) {
             }
             
             std::string str_value = object_value.to_string();
-            if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:" && member->is_computed()) {
-                Value index_value = member->get_property()->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                
-                int index = static_cast<int>(index_value.to_number());
-                if (index >= 0) {
-                    std::string array_content = str_value.substr(6);
-                    array_content = array_content.substr(1, array_content.length() - 2);
-                    
-                    std::vector<std::string> elements;
-                    if (!array_content.empty()) {
-                        std::stringstream ss(array_content);
-                        std::string item;
-                        while (std::getline(ss, item, ',')) {
-                            elements.push_back(item);
-                        }
-                    }
-                    
-                    while (static_cast<int>(elements.size()) <= index) {
-                        elements.push_back("undefined");
-                    }
-                    
-                    std::string value_str;
-                    if (result_value.is_number()) {
-                        value_str = std::to_string(result_value.as_number());
-                    } else if (result_value.is_boolean()) {
-                        value_str = result_value.as_boolean() ? "true" : "false";
-                    } else if (result_value.is_null()) {
-                        value_str = "null";
-                    } else {
-                        value_str = result_value.to_string();
-                    }
-                    elements[index] = value_str;
-                    
-                    std::string new_array = "ARRAY:[";
-                    for (size_t i = 0; i < elements.size(); ++i) {
-                        if (i > 0) new_array += ",";
-                        new_array += elements[i];
-                    }
-                    new_array += "]";
-                    
-                    if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Identifier* array_id = static_cast<Identifier*>(member->get_object());
-                        ctx.set_binding(array_id->get_name(), Value(new_array));
-                    }
-                    
-                    return result_value;
-                }
-            }
             
             Object* obj = nullptr;
             if (object_value.is_object()) {
@@ -369,64 +320,8 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 return result_value;
             } else if (object_value.is_string()) {
                 std::string str_val = object_value.to_string();
-                if (str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
-                    std::string prop_name;
-                    if (member->is_computed()) {
-                        Value prop_value = member->get_property()->evaluate(ctx);
-                        if (ctx.has_exception()) return Value();
-                        prop_name = prop_value.to_string();
-                    } else {
-                        if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                            Identifier* id = static_cast<Identifier*>(member->get_property());
-                            prop_name = id->get_name();
-                        } else {
-                            ctx.throw_exception(Value(std::string("Invalid property access")));
-                            return Value();
-                        }
-                    }
-                    
-                    std::string new_prop = prop_name + "=" + result_value.to_string();
-                    
-                    if (str_val == "OBJECT:{}") {
-                        str_val = "OBJECT:{" + new_prop + "}";
-                    } else {
-                        std::string search_pattern = prop_name + "=";
-                        size_t prop_start = str_val.find(search_pattern);
-                        
-                        if (prop_start != std::string::npos) {
-                            size_t value_start = prop_start + search_pattern.length();
-                            size_t value_end = str_val.find(",", value_start);
-                            if (value_end == std::string::npos) {
-                                value_end = str_val.find("}", value_start);
-                            }
-                            
-                            if (value_end != std::string::npos) {
-                                str_val = str_val.substr(0, value_start) + result_value.to_string() + str_val.substr(value_end);
-                            }
-                        } else {
-                            size_t close_pos = str_val.rfind('}');
-                            if (close_pos != std::string::npos) {
-                                str_val = str_val.substr(0, close_pos) + "," + new_prop + "}";
-                            }
-                        }
-                    }
-                    
-                    if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Identifier* obj_id = static_cast<Identifier*>(member->get_object());
-                        std::string var_name = obj_id->get_name();
-                        ctx.set_binding(var_name, Value(str_val));
-                        
-                        if (var_name == "this") {
-                            ctx.set_binding("this", Value(str_val));
-                            
-                        }
-                    }
-                    
-                    return result_value;
-                } else {
-                    ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
-                    return Value();
-                }
+                ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
+                return Value();
             } else {
                 ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
                 return Value();
