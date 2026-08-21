@@ -49,6 +49,8 @@ bool async_iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
 void async_iterator_close(Context& ctx, const Value& iterator);
 // And backing Op::RegisterDisposable.
 bool register_disposable_resource(Context& ctx, const Value& val, bool is_await);
+// And backing Op::PushWithEnv.
+bool perform_with_push(Context& ctx, const Value& obj_value);
 // From statements.cpp, backing Op::SettleReturn.
 Value perform_return_completion(Context& ctx, Value return_value, bool has_argument, bool do_record);
 // Likewise from language.cpp, backing Op::Await.
@@ -2099,9 +2101,19 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 }
                 Environment* env = ctx.get_lexical_environment();
                 bool found = false;
-                for (; env; env = env->get_outer()) {
-                    if (env->try_get_binding_interned(key, acc, &ctx)) { found = true; break; }
-                    CHECK_EXC();
+                {
+                    // A `with` asks HasProperty on its object, which a Proxy
+                    // traps: the trap reports through whichever context is
+                    // current, and losing that leaves a bare "not defined"
+                    // where a TypeError or the trap's own throw belongs. This
+                    // is the cache-miss path, so the save costs nothing hot.
+                    Context* prev_cc = Object::current_context_;
+                    Object::current_context_ = &ctx;
+                    for (; env; env = env->get_outer()) {
+                        if (env->try_get_binding_interned(key, acc, &ctx)) { found = true; break; }
+                        if (ctx.has_exception()) break;
+                    }
+                    Object::current_context_ = prev_cc;
                 }
                 CHECK_EXC();
                 if (found) {
@@ -4482,6 +4494,162 @@ Value h_gen_RegisterDisposable(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_LdaWith(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const std::string* key = chunk.names[read_u16(code, pc + 1)];
+    const bool for_typeof = code[pc + 3] != 0;
+    pc += 4;
+    do {
+        bool found = false;
+        Environment* home = nullptr;
+        Context* prev_cc = Object::current_context_;
+        Object::current_context_ = &ctx;
+        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+            if (e->try_get_binding_interned(key, acc, &ctx)) { found = true; home = e; break; }
+            if (ctx.has_exception()) break;
+            // A dead-zone binding still ends the search: the name resolved, it
+            // just cannot be read yet, and `typeof` does not excuse that. Only
+            // a declarative environment has one, and asking a with environment
+            // again would fire its HasBinding -- Proxy traps and all -- twice.
+            if (!e->is_with_environment() && e->has_own_binding_interned(key)) { home = e; break; }
+        }
+        Object::current_context_ = prev_cc;
+        if (ctx.has_exception()) break;
+        if (home && home->binding_in_tdz(*key)) {
+            acc = Value();
+            ctx.throw_reference_error("Cannot access '" + *key + "' before initialization");
+            break;
+        }
+        if (!found) {
+            acc = Value();
+            if (!for_typeof) ctx.throw_reference_error("'" + *key + "' is not defined");
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_ResolveWithTarget(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const std::string& name = chunk.name_at(read_u16(code, pc + 1));
+    pc += 3;
+    acc = Value();
+    Context* prev_cc = Object::current_context_;
+    Object::current_context_ = &ctx;
+    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        // HasBinding on a with environment is a HasProperty, which a Proxy can
+        // trap and throw from.
+        const bool has = e->has_own_binding(name);
+        if (ctx.has_exception()) break;
+        if (!has) continue;
+        // Only a with object is worth remembering: an ordinary binding cannot
+        // move or vanish while the right side runs, so the store can find it
+        // again -- as long as it skips any with that gained the name meanwhile.
+        if (e->is_with_environment()) {
+            if (Object* obj = e->get_binding_object()) acc = Value(obj);
+        }
+        break;
+    }
+    Object::current_context_ = prev_cc;
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// The read half, for a compound assignment or an update: the same verdict
+// decides where the old value comes from.
+Value h_gen_LdaWithResolved(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t target_reg = code[pc + 1];
+    const std::string& name = chunk.name_at(read_u16(code, pc + 2));
+    pc += 4;
+    do {
+        const Value& target = regs[target_reg];
+        if (target.is_object()) {
+            Context* prev_cc = Object::current_context_;
+            Object::current_context_ = &ctx;
+            acc = target.as_object()->get_property(name);
+            Object::current_context_ = prev_cc;
+            break;
+        }
+        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+            if (e->is_with_environment()) continue;
+            Value out;
+            if (e->try_get_binding(name, out, &ctx)) { acc = out; break; }
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_StaWithResolved(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t target_reg = code[pc + 1];
+    const std::string& name = chunk.name_at(read_u16(code, pc + 2));
+    pc += 4;
+    do {
+        const Value& target = regs[target_reg];
+        if (target.is_object()) {
+            Context* prev_cc = Object::current_context_;
+            Object::current_context_ = &ctx;
+            target.as_object()->set_property(name, acc);
+            Object::current_context_ = prev_cc;
+            break;
+        }
+        Environment* found = nullptr;
+        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+            if (e->is_with_environment()) continue;  // gained the name after the verdict
+            if (e->has_own_binding(name)) { found = e; break; }
+        }
+        if (found) {
+            if (found->binding_in_tdz(name)) {
+                ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                break;
+            }
+            if (!found->set_binding_direct(name, acc, &ctx) &&
+                (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+            }
+            break;
+        }
+        if (ctx.is_strict_mode()) {
+            ctx.throw_reference_error("'" + name + "' is not defined");
+            break;
+        }
+        if (Object* g = ctx.get_global_object()) g->set_property(name, acc);
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_PushWithEnv(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    perform_with_push(ctx, acc);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_DisposeScope(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4818,6 +4986,11 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::PushDisposeScope)] = &h_gen_PushDisposeScope;
     t[static_cast<uint8_t>(Op::RegisterDisposable)] = &h_gen_RegisterDisposable;
     t[static_cast<uint8_t>(Op::DisposeScope)] = &h_gen_DisposeScope;
+    t[static_cast<uint8_t>(Op::PushWithEnv)] = &h_gen_PushWithEnv;
+    t[static_cast<uint8_t>(Op::LdaWith)] = &h_gen_LdaWith;
+    t[static_cast<uint8_t>(Op::ResolveWithTarget)] = &h_gen_ResolveWithTarget;
+    t[static_cast<uint8_t>(Op::LdaWithResolved)] = &h_gen_LdaWithResolved;
+    t[static_cast<uint8_t>(Op::StaWithResolved)] = &h_gen_StaWithResolved;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;

@@ -215,9 +215,12 @@ private:
     // catch instead of leaving.
     struct FinallyScope {
         const ASTNode* finally_node = nullptr;
-        // A block that declares `using` runs one instruction where a finally
-        // runs a statement, and needs the same pads to run it on every exit.
-        bool dispose_only = false;
+        // What the pads run before letting the completion travel on: a
+        // statement for `try/finally`, one instruction for a `using` block, and
+        // nothing at all for `with`, whose whole cleanup is the RestoreEnv the
+        // pads already emit.
+        enum class Cleanup { Finally, Dispose, RestoreOnly };
+        Cleanup cleanup = Cleanup::Finally;
         bool save_env = false;
         int value_reg = -1;
         // loop_stack_ depth when the try was entered: a break or continue whose
@@ -233,6 +236,10 @@ private:
     // outside one has nothing to register into, which is the function body's
     // own top level -- that scope belongs to the call, not to a block.
     int dispose_scope_depth_ = 0;
+    // Nonzero inside a `with` body. An assignment there has to bind its target
+    // before the right side runs, which the ordinary write-time resolution
+    // cannot express.
+    int with_depth_ = 0;
     bool emit_return_completion(bool has_argument, bool already_awaited);
     bool emit_loop_escape(bool is_continue, const std::string& label);
     void emit_iterator_closes_above(size_t from);

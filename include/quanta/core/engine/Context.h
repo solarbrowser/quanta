@@ -360,6 +360,7 @@ public:
     void clear_exception();
     
     void throw_error(const std::string& message);
+    Value intrinsic_error_constructor(const std::string& name);
     void throw_type_error(const std::string& message);
     void throw_reference_error(const std::string& message);
     void throw_syntax_error(const std::string& message);

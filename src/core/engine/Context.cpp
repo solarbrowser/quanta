@@ -573,7 +573,7 @@ void Context::clear_exception() {
 void Context::throw_error(const std::string& message) {
     auto error = Error::create_error(message);
     error->generate_stack_trace();
-    Value error_ctor = get_binding("Error");
+    Value error_ctor = intrinsic_error_constructor("Error");
     if (error_ctor.is_function()) {
         Value proto = error_ctor.as_function()->get_property("prototype");
         if (proto.is_object()) error->set_prototype(proto.as_object());
@@ -581,11 +581,32 @@ void Context::throw_error(const std::string& message) {
     throw_exception(Value(error.release()));
 }
 
+// The scope chain answers first, so code that shadowed the constructor still
+// sees its own. But a `with` object in the way can refuse the name or throw
+// outright -- a revoked Proxy does both -- and an engine error must not come
+// out prototype-less because of that, so the realm's global answers then. Any
+// exception the chain lookup raised belongs to nobody and is dropped.
+Value Context::intrinsic_error_constructor(const std::string& name) {
+    const bool had_exception = has_exception();
+    Value saved = had_exception ? get_exception() : Value();
+    Value ctor = get_binding(name);
+    if (!had_exception && has_exception()) clear_exception();
+    if (!ctor.is_function()) {
+        if (Object* global = get_global_object()) {
+            Value from_realm = global->get_property(name);
+            if (!had_exception && has_exception()) clear_exception();
+            if (from_realm.is_function()) ctor = from_realm;
+        }
+    }
+    if (had_exception && !has_exception()) throw_exception(saved, true);
+    return ctor;
+}
+
 void Context::throw_type_error(const std::string& message) {
     auto error = Error::create_type_error(message);
     error->generate_stack_trace();
 
-    Value type_error_ctor = get_binding("TypeError");
+    Value type_error_ctor = intrinsic_error_constructor("TypeError");
     if (type_error_ctor.is_function()) {
         Function* ctor_fn = type_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
@@ -601,7 +622,7 @@ void Context::throw_reference_error(const std::string& message) {
     auto error = Error::create_reference_error(message);
     error->generate_stack_trace();
 
-    Value ref_error_ctor = get_binding("ReferenceError");
+    Value ref_error_ctor = intrinsic_error_constructor("ReferenceError");
     if (ref_error_ctor.is_function()) {
         Function* ctor_fn = ref_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
@@ -617,7 +638,7 @@ void Context::throw_syntax_error(const std::string& message) {
     auto error = Error::create_syntax_error(message);
     error->generate_stack_trace();
 
-    Value syntax_error_ctor = get_binding("SyntaxError");
+    Value syntax_error_ctor = intrinsic_error_constructor("SyntaxError");
     if (syntax_error_ctor.is_function()) {
         Function* ctor_fn = syntax_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
@@ -633,7 +654,7 @@ void Context::throw_range_error(const std::string& message) {
     auto error = Error::create_range_error(message);
     error->generate_stack_trace();
 
-    Value range_error_ctor = get_binding("RangeError");
+    Value range_error_ctor = intrinsic_error_constructor("RangeError");
     if (range_error_ctor.is_function()) {
         Function* ctor_fn = range_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
@@ -649,7 +670,7 @@ void Context::throw_uri_error(const std::string& message) {
     auto error = Error::create_uri_error(message);
     error->generate_stack_trace();
 
-    Value uri_error_ctor = get_binding("URIError");
+    Value uri_error_ctor = intrinsic_error_constructor("URIError");
     if (uri_error_ctor.is_function()) {
         Function* ctor_fn = uri_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");

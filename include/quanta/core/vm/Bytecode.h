@@ -280,6 +280,26 @@ enum class Op : uint8_t {
     RegisterDisposable,        // u8: 1 for `await using`
     DisposeScope,              // u8 mode (0=plain, 1=acc holds a pending exception)
 
+    // Enters a `with`: the accumulator holds the object, and what goes on the
+    // chain is an object Environment. Leaving is Op::RestoreEnv, since the
+    // scope push is the whole of what has to be undone.
+    PushWithEnv,
+
+    // Assignment inside a `with` resolves its target before the right side
+    // runs, which is observable: the right side can delete the property the
+    // reference was bound to, and the write must recreate it there rather than
+    // land further out. ResolveWithTarget answers with the with object the name
+    // was found on, or undefined when it resolved to an ordinary binding, and
+    // the store honours that verdict.
+    // Reading a name inside a `with`: one walk of the chain, no name cache. The
+    // cache remembers which environment answered last time, and a with object
+    // that has to be asked first -- observably, through a Proxy trap -- is
+    // exactly what it would skip.
+    LdaWith,                   // n16, u8: 1 when a miss yields undefined (typeof)
+    ResolveWithTarget,         // n16
+    LdaWithResolved,           // r_target n16
+    StaWithResolved,           // r_target n16
+
     kCount
 };
 

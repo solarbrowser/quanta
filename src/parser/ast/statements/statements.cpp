@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/gc/FiberRegistry.h"
+#include "quanta/core/engine/builtins/ObjectBuiltin.h"
 #include <span>
 #include "quanta/parser/AST.h"
 #include "quanta/core/gc/Collector.h"
@@ -2562,38 +2563,35 @@ std::unique_ptr<ASTNode> DoWhileStatement::clone() const {
 }
 
 
-Value WithStatement::evaluate(Context& ctx) {
+// Entering a `with`: the strict-mode refusal, ToObject, and the scope push,
+// shared with the compiled Op::PushWithEnv so the two cannot drift. Answers
+// false when it threw.
+bool perform_with_push(Context& ctx, const Value& obj_value) {
     if (ctx.is_strict_mode()) {
         ctx.throw_syntax_error("Strict mode code may not include a with statement");
-        return Value();
+        return false;
     }
-
-    Value obj_value = object_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
-
-    // ToObject: null/undefined throw TypeError, primitives get wrapper objects
+    // ToObject: null and undefined throw, and a primitive is boxed into the
+    // wrapper its own prototype gives it -- `with ("s")` sees `length`, which
+    // an empty object stood in for before.
     if (obj_value.is_null() || obj_value.is_undefined()) {
         ctx.throw_type_error("Cannot convert undefined or null to object in with statement");
-        return Value();
+        return false;
     }
-
-    Object* obj = nullptr;
-    if (obj_value.is_object()) {
-        obj = obj_value.as_object();
-    } else if (obj_value.is_function()) {
-        obj = obj_value.as_function();
-    } else {
-        // Number, String, Boolean, Symbol primitives -- create a wrapper object
-        // The wrapper has no own properties so with(primitive) essentially adds nothing to scope
-        auto wrapper = ObjectFactory::create_object();
-        obj = wrapper.release();
-    }
-    if (!obj) {
-        ctx.throw_type_error("with statement: failed to create object");
-        return Value();
+    Object* obj = to_object_or_throw(ctx, obj_value);
+    if (!obj || ctx.has_exception()) {
+        if (!ctx.has_exception()) ctx.throw_type_error("with statement: failed to create object");
+        return false;
     }
 
     ctx.push_with_scope(obj);
+    return true;
+}
+
+Value WithStatement::evaluate(Context& ctx) {
+    Value obj_value = object_->evaluate(ctx);
+    if (ctx.has_exception()) return Value();
+    if (!perform_with_push(ctx, obj_value)) return Value();
 
     try {
         Value result = body_->evaluate(ctx);

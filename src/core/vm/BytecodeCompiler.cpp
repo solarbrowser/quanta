@@ -2409,6 +2409,169 @@ bool uses_super_or_private(const ASTNode* node) {
 // code (descends into arrows, stops at nested function/class-body boundaries --
 // same rule as uses_arguments, since yield/await belong to the enclosing
 // suspendable function).
+// Whether a `with` appears anywhere in this body, nested functions excluded --
+// theirs is their own body's problem. A shape this walk does not know answers
+// no, which only costs the function its compilation: the `with` case refuses
+// without full env_mode rather than emitting something wrong.
+bool contains_with(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::WITH_STATEMENT:
+            return true;
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+        case ASTNode::Type::FUNCTION_DECLARATION:
+        case ASTNode::Type::CLASS_DECLARATION:
+            return false;
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+            const auto* n = static_cast<const AsyncFunctionExpression*>(node);
+            return n->is_arrow() && contains_with(n->get_body());
+        }
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+            return contains_with(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& s : n->get_statements()) if (contains_with(s.get())) return true;
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return contains_with(n->get_test()) || contains_with(n->get_consequent()) ||
+                   contains_with(n->get_alternate());
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            return contains_with(n->get_test()) || contains_with(n->get_body());
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            return contains_with(n->get_body()) || contains_with(n->get_test());
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            return contains_with(n->get_init()) || contains_with(n->get_test()) ||
+                   contains_with(n->get_update()) || contains_with(n->get_body());
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            return contains_with(n->get_right()) || contains_with(n->get_body());
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            return contains_with(n->get_right()) || contains_with(n->get_body());
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (contains_with(n->get_try_block())) return true;
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                if (contains_with(static_cast<const CatchClause*>(cc)->get_body())) return true;
+            }
+            return contains_with(n->get_finally_block());
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (contains_with(n->get_discriminant())) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (cc->get_test() && contains_with(cc->get_test())) return true;
+                for (const auto& s : cc->get_consequent()) if (contains_with(s.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_with(static_cast<const LabeledStatement*>(node)->get_statement());
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return contains_with(static_cast<const ExpressionStatement*>(node)->get_expression());
+        case ASTNode::Type::RETURN_STATEMENT: {
+            const auto* n = static_cast<const ReturnStatement*>(node);
+            return n->get_argument() && contains_with(n->get_argument());
+        }
+        case ASTNode::Type::THROW_STATEMENT:
+            return contains_with(static_cast<const ThrowStatement*>(node)->get_expression());
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations()) {
+                if (d->get_init() && contains_with(d->get_init())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            if (n->get_source() && contains_with(n->get_source())) return true;
+            bool found = false;
+            n->for_each_expression([&](const ASTNode* e) { if (!found && contains_with(e)) found = true; });
+            return found;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return contains_with(n->get_left()) || contains_with(n->get_right());
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return contains_with(static_cast<const UnaryExpression*>(node)->get_operand());
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            return contains_with(n->get_left()) || contains_with(n->get_right());
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            return contains_with(n->get_left()) || contains_with(n->get_right());
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            return contains_with(n->get_test()) || contains_with(n->get_consequent()) ||
+                   contains_with(n->get_alternate());
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            if (contains_with(n->get_callee())) return true;
+            for (const auto& a : n->get_arguments()) if (contains_with(a.get())) return true;
+            return false;
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (contains_with(n->get_constructor())) return true;
+            for (const auto& a : n->get_arguments()) if (contains_with(a.get())) return true;
+            return false;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* n = static_cast<const MemberExpression*>(node);
+            return contains_with(n->get_object()) ||
+                   (n->is_computed() && contains_with(n->get_property()));
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            return contains_with(n->get_object()) ||
+                   (n->is_computed() && contains_with(n->get_property()));
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return contains_with(static_cast<const SpreadElement*>(node)->get_argument());
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION &&
+                    contains_with(el.expression.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& p : n->get_properties()) {
+                if (p->value && contains_with(p->value.get())) return true;
+                if (p->computed && p->key && contains_with(p->key.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el && contains_with(el.get())) return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
 bool contains_suspend(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
@@ -3246,9 +3409,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // bound names instead (see collect_closure_names' DESTRUCTURING_ASSIGNMENT
     // case, which already inserts them).
     const bool has_destructuring = contains_destructuring(body);
+    // A `with` puts an object on the scope chain, so every name inside it has
+    // to resolve by walking that chain -- no register, no slot index.
     bool full_env = has_complex_params || needs_arguments ||
                     an_class || an_unknown ||
-                    an_super;
+                    an_super || contains_with(body);
 
     // Selective env_mode: only names a closure (or a suspendable body's own
     // yield/await/return delegate) can observe, or that need a runtime
@@ -4536,6 +4701,9 @@ bool BytecodeCompiler::pattern_target_is_writable(const std::string& name) const
 
 bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexical, bool is_assignment) const {
     if (!pattern) return false;
+    // Same reason as compile_logical_assignment: each target is a reference the
+    // with object must be asked about first.
+    if (with_depth_ > 0) return false;
     if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
         for (const auto& prop : static_cast<const ObjectLiteral*>(pattern)->get_properties()) {
             if (!prop->value) return false;
@@ -4648,7 +4816,7 @@ bool BytecodeCompiler::emit_dispose_scope_body(const BlockStatement* block,
     emit(Op::PushDisposeScope);
 
     FinallyScope scope;
-    scope.dispose_only = true;
+    scope.cleanup = FinallyScope::Cleanup::Dispose;
     scope.save_env = save_env;
     scope.loop_depth = loop_stack_.size();
     finally_stack_.push_back(std::move(scope));
@@ -4716,10 +4884,15 @@ void BytecodeCompiler::emit_iterator_closes_above(size_t from) {
 // What a finally runs: a statement for `try/finally`, one instruction for a
 // block that declared `using`.
 bool BytecodeCompiler::emit_finally_body(const FinallyScope& scope) {
-    if (scope.dispose_only) {
-        emit(Op::DisposeScope);
-        emit_u8(0);
-        return !failed_;
+    switch (scope.cleanup) {
+        case FinallyScope::Cleanup::RestoreOnly:
+            return !failed_;
+        case FinallyScope::Cleanup::Dispose:
+            emit(Op::DisposeScope);
+            emit_u8(0);
+            return !failed_;
+        case FinallyScope::Cleanup::Finally:
+            break;
     }
     return compile_statement(scope.finally_node);
 }
@@ -5329,6 +5502,10 @@ int BytecodeCompiler::emit_spread_array(const std::vector<std::unique_ptr<ASTNod
 // fails the operator's test; the skip jump leaves the old value in the
 // accumulator as the expression result, matching the tree-walker.
 bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* expr) {
+    // A logical assignment reads and writes one reference, and inside a `with`
+    // that reference has to be bound once against the object first. Rare enough
+    // there to leave to the tree-walker rather than build a third path for.
+    if (with_depth_ > 0) return false;
     using AsOp = AssignmentExpression::Operator;
     Op skip_op = expr->get_operator() == AsOp::LOGICAL_AND_ASSIGN ? Op::JumpIfFalse
                : expr->get_operator() == AsOp::LOGICAL_OR_ASSIGN  ? Op::JumpIfTrue
@@ -5583,6 +5760,56 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 emit_write_local(b.name, /*is_declaration=*/true);
             }
             return !failed_;
+        }
+
+        case ASTNode::Type::WITH_STATEMENT: {
+            const auto* stmt = static_cast<const WithStatement*>(node);
+            // Every name inside resolves by walking the chain, which is what
+            // full env_mode gives; without it a local would sit in a register
+            // the with object could never shadow.
+            if (!env_mode_ || !full_env_) return false;
+            if (!compile_expression(stmt->get_object())) return false;
+            if (++try_env_depth_ > 64) return false;
+            emit(Op::SaveEnv);
+            emit(Op::PushWithEnv);
+
+            FinallyScope scope;
+            scope.cleanup = FinallyScope::Cleanup::RestoreOnly;
+            scope.save_env = true;
+            scope.loop_depth = loop_stack_.size();
+            finally_stack_.push_back(std::move(scope));
+
+            size_t body_start = code_.size();
+            with_depth_++;
+            bool body_ok = compile_statement(stmt->get_body());
+            with_depth_--;
+            size_t body_end = code_.size();
+            FinallyScope escaped = std::move(finally_stack_.back());
+            finally_stack_.pop_back();
+            if (!body_ok) return false;
+
+            // Leaving is the restore, on every path.
+            emit(Op::RestoreEnv);
+            try_env_depth_--;
+            size_t jump_ok = emit_jump(Op::Jump);
+
+            size_t cleanup_pc = code_.size();
+            emit(Op::RestoreEnv);
+            emit(Op::Throw);
+            const size_t handler_idx = chunk_->ensure_handlers().size();
+            chunk_->ensure_handlers().push_back({static_cast<uint32_t>(body_start),
+                                         static_cast<uint32_t>(body_end),
+                                         static_cast<uint32_t>(cleanup_pc)});
+
+            if (suspendable_ && contains_suspend(stmt->get_body())) {
+                size_t genreturn_pc = code_.size();
+                emit(Op::RestoreEnv);
+                emit(Op::ReraiseGeneratorReturn);
+                chunk_->ensure_handlers()[handler_idx].genreturn_pc = static_cast<int32_t>(genreturn_pc);
+            }
+
+            if (!patch_jump(jump_ok)) return false;
+            return emit_finally_pads(escaped);
         }
 
         case ASTNode::Type::EXPRESSION_STATEMENT: {
@@ -6357,6 +6584,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit(Op::LdaThis);
                 return true;
             }
+            if (with_depth_ > 0) {
+                // The with object is asked first, whatever the name would
+                // otherwise resolve to.
+                emit(Op::LdaWith);
+                emit_u16(add_name(name));
+                emit_u8(0);
+                return !failed_;
+            }
             if (is_local(name)) {
                 emit_read_local(name);
                 return !failed_;
@@ -6590,6 +6825,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             // Register frames no longer bind "this" -- a chain
                             // lookup would find some outer frame's binding.
                             emit(Op::LdaThis);
+                        } else if (with_depth_ > 0) {
+                            // The with object is asked first, local or not.
+                            emit(Op::LdaWith);
+                            emit_u16(add_name(name));
+                            emit_u8(1);  // a miss is undefined, not a throw
                         } else if (is_local(name)) {
                             emit_read_local(name);
                         } else if ((name == "arguments" && !allow_arguments_) ||
@@ -6752,6 +6992,38 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     if (operand->get_type() != ASTNode::Type::IDENTIFIER) return false;
                     const std::string& name = static_cast<const Identifier*>(operand)->get_name();
                     if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
+                    if (with_depth_ > 0) {
+                        // One resolution serves both the read and the write,
+                        // which is what the spec's single Reference means.
+                        emit(Op::ResolveWithTarget);
+                        emit_u16(add_name(name));
+                        int target = alloc_temp();
+                        if (failed_) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(target));
+                        emit(Op::LdaWithResolved);
+                        emit_u8(static_cast<uint8_t>(target));
+                        emit_u16(add_name(name));
+                        int old_reg = -1;
+                        if (is_post) {
+                            emit(Op::ToNumeric);
+                            old_reg = alloc_temp();
+                            if (failed_) return false;
+                            emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(old_reg));
+                        }
+                        emit(is_inc ? Op::Inc : Op::Dec);
+                        emit(Op::StaWithResolved);
+                        emit_u8(static_cast<uint8_t>(target));
+                        emit_u16(add_name(name));
+                        if (is_post) {
+                            emit(Op::Ldar);
+                            emit_u8(static_cast<uint8_t>(old_reg));
+                            free_temp(old_reg);
+                        }
+                        free_temp(target);
+                        return !failed_;
+                    }
                     if (!is_local(name)) {
                         emit(Op::LdaLookup);
                         emit_u16(add_name(name));
@@ -6823,6 +7095,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     // Anything that is not a reference is `true` without
                     // being evaluated, same as the tree-walker.
                     if (operand->get_type() == ASTNode::Type::IDENTIFIER) {
+                        // Inside a `with` the name may belong to the object,
+                        // where deleting is a property delete, not a binding one.
+                        if (with_depth_ > 0) return false;
                         const std::string& name = static_cast<const Identifier*>(operand)->get_name();
                         emit(Op::DeleteLookup);
                         emit_u16(add_name(name));
@@ -6878,6 +7153,24 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     // Outer/global write via chain lookup.
                     if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
                     if (!compound) stamp_inferred_class_name(expr->get_right(), name);
+                    if (!compound && with_depth_ > 0) {
+                        emit(Op::ResolveWithTarget);
+                        emit_u16(add_name(name));
+                        int target = alloc_temp();
+                        if (failed_) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(target));
+                        if (!compile_expression(expr->get_right())) return false;
+                        if (!expr->is_lhs_paren() && is_named_evaluation_rhs(expr->get_right())) {
+                            emit(Op::SetFunctionNameIfUnnamed);
+                            emit_u16(add_name(name));
+                        }
+                        emit(Op::StaWithResolved);
+                        emit_u8(static_cast<uint8_t>(target));
+                        emit_u16(add_name(name));
+                        free_temp(target);
+                        return !failed_;
+                    }
                     if (!compound) {
                         // Spec 13.15.2: ResolveBinding happens before the RHS
                         // evaluates, so an unresolvable reference throws (in
@@ -6905,6 +7198,30 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         free_temp(resolved);
                         return !failed_;
                     }
+                    if (with_depth_ > 0) {
+                        emit(Op::ResolveWithTarget);
+                        emit_u16(add_name(name));
+                        int target = alloc_temp();
+                        if (failed_) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(target));
+                        emit(Op::LdaWithResolved);
+                        emit_u8(static_cast<uint8_t>(target));
+                        emit_u16(add_name(name));
+                        int old_reg = alloc_temp();
+                        if (failed_) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(old_reg));
+                        if (!compile_expression(expr->get_right())) return false;
+                        emit(vm_op);
+                        emit_u8(static_cast<uint8_t>(old_reg));
+                        free_temp(old_reg);
+                        emit(Op::StaWithResolved);
+                        emit_u8(static_cast<uint8_t>(target));
+                        emit_u16(add_name(name));
+                        free_temp(target);
+                        return !failed_;
+                    }
                     // Spec order: the old value is read (and an unresolvable
                     // reference throws) BEFORE the rhs runs.
                     emit(Op::LdaLookup);
@@ -6919,6 +7236,28 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     free_temp(temp);
                     emit(Op::StaLookup);
                     emit_u16(add_name(name));
+                    return !failed_;
+                }
+
+                if (!compound && with_depth_ > 0) {
+                    // A with object can hold this name too, and the reference
+                    // is bound before the right side runs.
+                    stamp_inferred_class_name(expr->get_right(), name);
+                    emit(Op::ResolveWithTarget);
+                    emit_u16(add_name(name));
+                    int target = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(target));
+                    if (!compile_expression(expr->get_right())) return false;
+                    if (!expr->is_lhs_paren() && is_named_evaluation_rhs(expr->get_right())) {
+                        emit(Op::SetFunctionNameIfUnnamed);
+                        emit_u16(add_name(name));
+                    }
+                    emit(Op::StaWithResolved);
+                    emit_u8(static_cast<uint8_t>(target));
+                    emit_u16(add_name(name));
+                    free_temp(target);
                     return !failed_;
                 }
 
@@ -6939,6 +7278,32 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 // right side cannot disturb it. The copy exists only because
                 // evaluating the right side lands in the accumulator, which is
                 // where the old left value would otherwise be sitting.
+                if (with_depth_ > 0) {
+                    // One resolution serves both the read and the write, and it
+                    // happens before the right side can move the target.
+                    emit(Op::ResolveWithTarget);
+                    emit_u16(add_name(name));
+                    int wtarget = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(wtarget));
+                    emit(Op::LdaWithResolved);
+                    emit_u8(static_cast<uint8_t>(wtarget));
+                    emit_u16(add_name(name));
+                    int old_reg = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(old_reg));
+                    if (!compile_expression(expr->get_right())) return false;
+                    emit(vm_op);
+                    emit_u8(static_cast<uint8_t>(old_reg));
+                    free_temp(old_reg);
+                    emit(Op::StaWithResolved);
+                    emit_u8(static_cast<uint8_t>(wtarget));
+                    emit_u16(add_name(name));
+                    free_temp(wtarget);
+                    return !failed_;
+                }
                 int target_reg = plain_local_register(name);
                 if (target_reg >= 0 && leaves_locals_untouched(expr->get_right())) {
                     if (!compile_expression(expr->get_right())) return false;
