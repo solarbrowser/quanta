@@ -31,6 +31,12 @@ inline bool is_chain_link_type(ASTNode::Type t) {
 // is a real null). Cleared before evaluating a new chain's first base.
 extern thread_local bool g_optional_chain_shortcircuit;
 
+// A literal `.#name` read: the brand check, then the storage the name actually
+// uses. True means the read is finished and `out` holds its value; false means
+// only `prop_name` was resolved and the ordinary read should carry on with it.
+bool private_member_get(Context& ctx, Object* obj, const Value& object_value,
+                        std::string& prop_name, Value& out);
+
 void increment_loop_depth();
 void decrement_loop_depth();
 

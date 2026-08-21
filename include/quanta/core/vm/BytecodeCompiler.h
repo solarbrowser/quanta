@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <functional>
 #include <vector>
 
 namespace Quanta {
@@ -169,6 +170,7 @@ private:
     bool super_member_emittable(const class MemberExpression* mem) const;
     bool emit_super_load(const class MemberExpression* mem);
     bool emit_treewalker_delegate(const ASTNode* node);
+    bool deleg_at(int line, const ASTNode* node);
 
     // Builds a fresh Array from `elements`, expanding any SpreadElement
     // through the iterator protocol, and leaves it in the returned temp
@@ -243,7 +245,9 @@ private:
     bool emit_return_completion(bool has_argument, bool already_awaited);
     bool emit_loop_escape(bool is_continue, const std::string& label);
     void emit_iterator_closes_above(size_t from);
-    bool emit_dispose_scope_body(const class BlockStatement* block, FinallyScope& escaped);
+    bool emit_dispose_scope_body(const ASTNode* suspend_scope,
+                                 const std::function<bool()>& emit_body,
+                                 FinallyScope& escaped);
     bool emit_finally_body(const FinallyScope& scope);
     bool emit_finally_pads(FinallyScope& scope);
 

@@ -280,6 +280,84 @@ void super_set(Context& ctx, const std::string& prop_name, const Value& value) {
     super_set_on(ctx, resolve_super_base(ctx), prop_name, value);
 }
 
+
+// A literal `.#name` read: the brand check, then the storage the name
+// actually uses -- a field's qualified slot, or the declaring prototype's
+// entry for a method or accessor. Returns true when the read is finished
+// and `out` holds its value; false means only `prop_name` was resolved and
+// the ordinary property read should carry on with it.
+bool private_member_get(Context& ctx, Object* obj, const Value& object_value,
+                        std::string& prop_name, Value& out) {
+    if (!private_brand_check(ctx, obj, prop_name)) {
+        ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
+        out = Value(); return true;
+    }
+    // Fields live under a qualified key; accessors/methods live on the declaring
+    // class's own prototype (not necessarily the closest "#name" in obj's chain).
+    std::string qualified = resolve_private_storage_key(prop_name, obj);
+    if (obj->has_private_slot(qualified)) {
+        // Private slot access is fully raw: it never fires Proxy traps
+        // or exotic overrides (e.g. a deferred namespace's evaluating
+        // [[Get]]) -- spec: private state bypasses [[Get]] entirely.
+        PropertyDescriptor own_d;
+        if (obj->get_private_slot_descriptor(qualified, own_d) && own_d.is_accessor_descriptor()) {
+            if (!own_d.has_getter()) {
+                ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                out = Value(); return true;
+            }
+            Function* getter_fn = as_function(own_d.get_getter());
+            if (getter_fn) { out = getter_fn->call(ctx, {}, object_value); return true; }
+            out = Value(); return true;
+        }
+        { out = obj->get_private_slot_value(qualified); return true; }
+    } else {
+        Object* owner = resolve_private_accessor_owner(prop_name);
+        if (owner) {
+            // Methods/accessors are stored under the qualified key on
+            // the declaring prototype/constructor (bare fallback for
+            // paths resumed without a declaring frame).
+            PropertyDescriptor d = owner->get_property_descriptor(qualified);
+            if (!d.is_accessor_descriptor() && !d.has_value()) {
+                d = owner->get_property_descriptor(prop_name);
+            } else {
+                prop_name = qualified;
+            }
+            if (d.is_accessor_descriptor()) {
+                if (!d.has_getter()) {
+                    ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                    out = Value(); return true;
+                }
+                Function* getter_fn = as_function(d.get_getter());
+                if (getter_fn) { out = getter_fn->call(ctx, {}, object_value); return true; }
+                out = Value(); return true;
+            }
+            // get_property(), not d.get_value(): a data field's value can live in
+            // overflow storage while descriptors_ still holds a stale pre-write value.
+            if (d.has_value()) { out = owner->get_property(prop_name); return true; }
+        }
+        // Fallback: no frame declared this name (e.g. resumed after await/yield).
+        Object* lookup = obj;
+        while (lookup) {
+            PropertyDescriptor d = lookup->get_property_descriptor(qualified);
+            if (!d.is_accessor_descriptor() && !d.has_value()) {
+                d = lookup->get_property_descriptor(prop_name);
+            } else {
+                prop_name = qualified;
+            }
+            if (d.is_accessor_descriptor()) {
+                if (!d.has_getter()) {
+                    ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                    out = Value(); return true;
+                }
+                break;
+            }
+            if (d.has_value()) break;
+            lookup = lookup->get_prototype();
+        }
+    }
+    return false;
+}
+
 Value MemberExpression::evaluate(Context& ctx) {
     // ES6: super.prop / super[expr] looks up on parent prototype, not the constructor itself
     if (object_->get_type() == ASTNode::Type::IDENTIFIER &&
@@ -420,73 +498,11 @@ Value MemberExpression::evaluate(Context& ctx) {
                 return Value(static_cast<double>(obj->get_length()));
             }
 
-            if (!prop_name.empty() && prop_name[0] == '#') {
-                if (!private_brand_check(ctx, obj, prop_name)) {
-                    ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
-                    return Value();
-                }
-                // Fields live under a qualified key; accessors/methods live on the declaring
-                // class's own prototype (not necessarily the closest "#name" in obj's chain).
-                std::string qualified = resolve_private_storage_key(prop_name, obj);
-                if (obj->has_private_slot(qualified)) {
-                    // Private slot access is fully raw: it never fires Proxy traps
-                    // or exotic overrides (e.g. a deferred namespace's evaluating
-                    // [[Get]]) -- spec: private state bypasses [[Get]] entirely.
-                    PropertyDescriptor own_d;
-                    if (obj->get_private_slot_descriptor(qualified, own_d) && own_d.is_accessor_descriptor()) {
-                        if (!own_d.has_getter()) {
-                            ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
-                            return Value();
-                        }
-                        Function* getter_fn = as_function(own_d.get_getter());
-                        if (getter_fn) return getter_fn->call(ctx, {}, object_value);
-                        return Value();
-                    }
-                    return obj->get_private_slot_value(qualified);
-                } else {
-                    Object* owner = resolve_private_accessor_owner(prop_name);
-                    if (owner) {
-                        // Methods/accessors are stored under the qualified key on
-                        // the declaring prototype/constructor (bare fallback for
-                        // paths resumed without a declaring frame).
-                        PropertyDescriptor d = owner->get_property_descriptor(qualified);
-                        if (!d.is_accessor_descriptor() && !d.has_value()) {
-                            d = owner->get_property_descriptor(prop_name);
-                        } else {
-                            prop_name = qualified;
-                        }
-                        if (d.is_accessor_descriptor()) {
-                            if (!d.has_getter()) {
-                                ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
-                                return Value();
-                            }
-                            Function* getter_fn = as_function(d.get_getter());
-                            if (getter_fn) return getter_fn->call(ctx, {}, object_value);
-                            return Value();
-                        }
-                        // get_property(), not d.get_value(): a data field's value can live in
-                        // overflow storage while descriptors_ still holds a stale pre-write value.
-                        if (d.has_value()) return owner->get_property(prop_name);
-                    }
-                    // Fallback: no frame declared this name (e.g. resumed after await/yield).
-                    Object* lookup = obj;
-                    while (lookup) {
-                        PropertyDescriptor d = lookup->get_property_descriptor(qualified);
-                        if (!d.is_accessor_descriptor() && !d.has_value()) {
-                            d = lookup->get_property_descriptor(prop_name);
-                        } else {
-                            prop_name = qualified;
-                        }
-                        if (d.is_accessor_descriptor()) {
-                            if (!d.has_getter()) {
-                                ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
-                                return Value();
-                            }
-                            break;
-                        }
-                        if (d.has_value()) break;
-                        lookup = lookup->get_prototype();
-                    }
+            {
+                Value pv;
+                if (!prop_name.empty() && prop_name[0] == '#' &&
+                    private_member_get(ctx, obj, object_value, prop_name, pv)) {
+                    return pv;
                 }
             }
 

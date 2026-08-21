@@ -371,10 +371,21 @@ Value CallExpression::evaluate(Context& ctx) {
             prop_name = static_cast<Identifier*>(opt->get_property())->get_name();
         }
         Value method_val;
-        if (base.is_object()) {
-            method_val = base.as_object()->get_property(prop_name);
-        } else if (base.is_function()) {
-            method_val = base.as_function()->get_property(prop_name);
+        Object* base_obj = base.is_object() ? base.as_object()
+                         : base.is_function() ? static_cast<Object*>(base.as_function())
+                         : nullptr;
+        if (base_obj) {
+            // A private method lives in a slot on the declaring prototype, not
+            // as an ordinary property, so the plain read finds nothing.
+            Value pv;
+            if (!prop_name.empty() && prop_name[0] == '#' &&
+                private_member_get(ctx, base_obj, base, prop_name, pv)) {
+                if (ctx.has_exception()) return Value();
+                method_val = pv;
+            } else {
+                if (ctx.has_exception()) return Value();
+                method_val = base_obj->get_property(prop_name);
+            }
         }
         // `o?.g?.()`: the call's own `?.` still gets to short-circuit after the
         // base survived the chain's first one.

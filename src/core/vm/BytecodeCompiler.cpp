@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include "quanta/core/vm/BytecodeCompiler.h"
+#include <functional>
 #include "quanta/core/runtime/BigInt.h"
 #include <algorithm>
 #include "quanta/parser/AST.h"
@@ -1397,7 +1398,7 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             // Suspendable: return's argument also delegates to the tree-walker.
             const auto* n = static_cast<const ReturnStatement*>(node);
             collect_closure_names(n->get_argument(), suspendable ? true : inside_closure,
-                                  out, saw_eval, saw_class, unknown, suspendable);
+                                  out, saw_eval, saw_class, unknown, suspendable, super_only);
             return;
         }
         case ASTNode::Type::THROW_STATEMENT:
@@ -3884,7 +3885,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
     FinallyScope body_escaped;
     if (body_has_using) {
-        if (!compiler.emit_dispose_scope_body(block, body_escaped)) return nullptr;
+        const bool ok = compiler.emit_dispose_scope_body(block, [&]() -> bool {
+            for (const auto& stmt : block->get_statements()) {
+                if (!compiler.compile_statement(stmt.get())) return false;
+            }
+            return true;
+        }, body_escaped);
+        if (!ok) return nullptr;
     } else {
         for (const auto& stmt : block->get_statements()) {
             if (!compiler.compile_statement(stmt.get())) return nullptr;
@@ -4825,7 +4832,8 @@ bool BytecodeCompiler::emit_tagged_template_args(const CallExpression* call,
 // A block whose statements include `using`: the dispose scope opens on entry
 // and has to run on every way out -- falling off the end, an exception, a
 // generator return(), and each of return/break/continue.
-bool BytecodeCompiler::emit_dispose_scope_body(const BlockStatement* block,
+bool BytecodeCompiler::emit_dispose_scope_body(const ASTNode* suspend_scope,
+                                               const std::function<bool()>& emit_body,
                                                FinallyScope& escaped) {
     const bool save_env = env_mode_;
     if (save_env) {
@@ -4843,9 +4851,7 @@ bool BytecodeCompiler::emit_dispose_scope_body(const BlockStatement* block,
     size_t body_start = code_.size();
     bool body_ok = true;
     dispose_scope_depth_++;
-    for (const auto& st : block->get_statements()) {
-        if (!compile_statement(st.get())) { body_ok = false; break; }
-    }
+    body_ok = emit_body();
     dispose_scope_depth_--;
     size_t body_end = code_.size();
     escaped = std::move(finally_stack_.back());
@@ -4870,7 +4876,7 @@ bool BytecodeCompiler::emit_dispose_scope_body(const BlockStatement* block,
                                  static_cast<uint32_t>(body_end),
                                  static_cast<uint32_t>(cleanup_pc)});
 
-    if (suspendable_ && contains_suspend(block)) {
+    if (suspendable_ && contains_suspend(suspend_scope)) {
         size_t genreturn_pc = code_.size();
         if (save_env) emit(Op::RestoreEnv);
         int gr_temp = alloc_temp();
@@ -5744,7 +5750,12 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             }
             FinallyScope escaped;
             if (has_using) {
-                if (!emit_dispose_scope_body(block, escaped)) return false;
+                if (!emit_dispose_scope_body(block, [&]() -> bool {
+                        for (const auto& st : block->get_statements()) {
+                            if (!compile_statement(st.get())) return false;
+                        }
+                        return true;
+                    }, escaped)) return false;
             } else {
                 for (const auto& stmt : block->get_statements()) {
                     if (!compile_statement(stmt.get())) return false;
@@ -6017,88 +6028,109 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::FOR_STATEMENT: {
             const auto* stmt = static_cast<const ForStatement*>(node);
-            // Only a let/const header needs a per-iteration copy-forward binding.
-            std::vector<BytecodeChunk::LoopEnvVar> header_vars;
-            if (stmt->get_init() && stmt->get_init()->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
-                const auto* vd = static_cast<const VariableDeclaration*>(stmt->get_init());
-                if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
-                    bool is_const = vd->get_kind() == VariableDeclarator::Kind::CONST;
-                    for (const auto& d : vd->get_declarations()) {
-                        if (!d->get_id()) continue;
-                        const std::string& hname = d->get_id()->get_name();
-                        if (!hname.empty()) {
-                            header_vars.push_back({hname, true, is_const, true});
-                            continue;
-                        }
-                        // A destructuring declarator carries no name of its own;
-                        // each name the pattern binds needs its own copy-forward
-                        // slot, or the body reads a binding nothing declared.
-                        if (d->get_init() &&
-                            d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-                            std::vector<std::string> bound;
-                            static_cast<const DestructuringAssignment*>(d->get_init())
-                                ->collect_bound_names(bound);
-                            for (const auto& bn : bound) {
-                                if (!bn.empty()) header_vars.push_back({bn, true, is_const, true});
+            // `for (using x = r; ;)` holds the resource for the whole
+            // statement, so the scope wraps the loop rather than sitting
+            // inside it -- the init is where the resource is registered.
+            const bool head_using = stmt->get_init() &&
+                stmt->get_init()->get_type() == ASTNode::Type::USING_DECLARATION;
+            auto emit_for = [&]() -> bool {
+                // Only a let/const header needs a per-iteration copy-forward binding.
+                std::vector<BytecodeChunk::LoopEnvVar> header_vars;
+                if (stmt->get_init() && stmt->get_init()->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                    const auto* vd = static_cast<const VariableDeclaration*>(stmt->get_init());
+                    if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                        bool is_const = vd->get_kind() == VariableDeclarator::Kind::CONST;
+                        for (const auto& d : vd->get_declarations()) {
+                            if (!d->get_id()) continue;
+                            const std::string& hname = d->get_id()->get_name();
+                            if (!hname.empty()) {
+                                header_vars.push_back({hname, true, is_const, true});
+                                continue;
+                            }
+                            // A destructuring declarator carries no name of its own;
+                            // each name the pattern binds needs its own copy-forward
+                            // slot, or the body reads a binding nothing declared.
+                            if (d->get_init() &&
+                                d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                                std::vector<std::string> bound;
+                                static_cast<const DestructuringAssignment*>(d->get_init())
+                                    ->collect_bound_names(bound);
+                                for (const auto& bn : bound) {
+                                    if (!bn.empty()) header_vars.push_back({bn, true, is_const, true});
+                                }
                             }
                         }
                     }
+                } else if (head_using) {
+                    // `using` binds like a const, and the header is where that
+                    // binding lives, so the loop scope has to carry the flag
+                    // that makes an assignment to it refuse.
+                    for (const auto& b :
+                         static_cast<const UsingDeclaration*>(stmt->get_init())->get_bindings()) {
+                        if (!b.name.empty()) header_vars.push_back({b.name, true, true, true});
+                    }
                 }
-            }
-            int loop_env_idx = setup_loop_env(std::move(header_vars), stmt->get_body(), false,
-                                               {stmt->get_init(), stmt->get_test(), stmt->get_update()});
-            if (loop_env_idx >= 0) {
-                emit(Op::EnterLoopEnv);
-                emit_u16(static_cast<uint16_t>(loop_env_idx));
-                env_depth_++;
-            }
-            if (stmt->get_init()) {
-                if (stmt->get_init()->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
-                    if (!compile_statement(stmt->get_init())) return false;
-                } else {
-                    if (!compile_expression(stmt->get_init())) return false;
+                int loop_env_idx = setup_loop_env(std::move(header_vars), stmt->get_body(), false,
+                                                   {stmt->get_init(), stmt->get_test(), stmt->get_update()});
+                if (loop_env_idx >= 0) {
+                    emit(Op::EnterLoopEnv);
+                    emit_u16(static_cast<uint16_t>(loop_env_idx));
+                    env_depth_++;
                 }
-            }
-            if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
-                // Spec 14.7.4.3 ForBodyEvaluation step 1: CreatePerIterationEnvironment
-                // runs once more right after the init, before the first test --
-                // a closure created during init (e.g. a second declarator's
-                // initializer) must NOT alias the environment the first test/
-                // body/update mutate. Skipped when no closure anywhere in this
-                // for-statement can observe it -- see loop_vars_may_be_captured.
-                emit(Op::AdvanceLoopEnv);
-                emit_u16(static_cast<uint16_t>(loop_env_idx));
-            }
-            size_t loop_start = code_.size();
-            size_t exit_jump = 0;
-            bool has_test = stmt->get_test() != nullptr;
-            if (has_test) {
-                if (!compile_expression(stmt->get_test())) return false;
-                exit_jump = emit_jump(Op::JumpIfFalse);
-            }
+                if (stmt->get_init()) {
+                    const auto init_type = stmt->get_init()->get_type();
+                    if (init_type == ASTNode::Type::VARIABLE_DECLARATION ||
+                        init_type == ASTNode::Type::USING_DECLARATION) {
+                        if (!compile_statement(stmt->get_init())) return false;
+                    } else {
+                        if (!compile_expression(stmt->get_init())) return false;
+                    }
+                }
+                if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
+                    // Spec 14.7.4.3 ForBodyEvaluation step 1: CreatePerIterationEnvironment
+                    // runs once more right after the init, before the first test --
+                    // a closure created during init (e.g. a second declarator's
+                    // initializer) must NOT alias the environment the first test/
+                    // body/update mutate. Skipped when no closure anywhere in this
+                    // for-statement can observe it -- see loop_vars_may_be_captured.
+                    emit(Op::AdvanceLoopEnv);
+                    emit_u16(static_cast<uint16_t>(loop_env_idx));
+                }
+                size_t loop_start = code_.size();
+                size_t exit_jump = 0;
+                bool has_test = stmt->get_test() != nullptr;
+                if (has_test) {
+                    if (!compile_expression(stmt->get_test())) return false;
+                    exit_jump = emit_jump(Op::JumpIfFalse);
+                }
 
-            loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels()});
-            if (!compile_statement(stmt->get_body())) return false;
-            LoopScope scope = std::move(loop_stack_.back());
-            loop_stack_.pop_back();
+                loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels()});
+                if (!compile_statement(stmt->get_body())) return false;
+                LoopScope scope = std::move(loop_stack_.back());
+                loop_stack_.pop_back();
 
-            for (size_t pos : scope.continue_patches) {
-                if (!patch_jump(pos)) return false;  // continue lands on the advance step / update
-            }
-            if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
-                emit(Op::AdvanceLoopEnv);
-                emit_u16(static_cast<uint16_t>(loop_env_idx));
-            }
-            if (stmt->get_update()) {
-                if (!compile_expression(stmt->get_update(), /*discard=*/true)) return false;
-            }
-            if (!emit_jump_back(Op::Jump, loop_start)) return false;
-            if (has_test && !patch_jump(exit_jump)) return false;
-            for (size_t pos : scope.break_patches) {
-                if (!patch_jump(pos)) return false;
-            }
-            if (loop_env_idx >= 0) { emit(Op::ExitLoopEnv); env_depth_--; }
-            return true;
+                for (size_t pos : scope.continue_patches) {
+                    if (!patch_jump(pos)) return false;  // continue lands on the advance step / update
+                }
+                if (loop_env_idx >= 0 && loop_env_needs_fresh(loop_env_idx)) {
+                    emit(Op::AdvanceLoopEnv);
+                    emit_u16(static_cast<uint16_t>(loop_env_idx));
+                }
+                if (stmt->get_update()) {
+                    if (!compile_expression(stmt->get_update(), /*discard=*/true)) return false;
+                }
+                if (!emit_jump_back(Op::Jump, loop_start)) return false;
+                if (has_test && !patch_jump(exit_jump)) return false;
+                for (size_t pos : scope.break_patches) {
+                    if (!patch_jump(pos)) return false;
+                }
+                if (loop_env_idx >= 0) { emit(Op::ExitLoopEnv); env_depth_--; }
+                return true;
+            };
+            if (!head_using) return emit_for();
+            FinallyScope for_escaped;
+            if (!emit_dispose_scope_body(stmt, emit_for, for_escaped)) return false;
+            return emit_finally_pads(for_escaped);
         }
 
         case ASTNode::Type::FOR_OF_STATEMENT: {
@@ -6731,10 +6763,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 static_cast<const Identifier*>(mem->get_object())->get_name() == "super") {
                 return false;
             }
+            bool priv = false;
             if (!mem->is_computed()) {
                 if (mem->get_property()->get_type() != ASTNode::Type::IDENTIFIER) return false;
                 const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
-                if (!name.empty() && name[0] == '#') return false;  // private field: tree-walker's job
+                priv = !name.empty() && name[0] == '#';
             }
             if (!compile_expression(mem->get_object())) return false;
             int obj_reg = alloc_temp();
@@ -6749,10 +6782,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
             if (!mem->is_computed()) {
                 const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
-                emit(Op::GetNamed);
+                emit(priv ? Op::GetPrivate : Op::GetNamed);
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u16(add_name(name));
-                emit_u16(alloc_feedback_slot());
+                emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
             } else {
                 {
                     ChainMaskScope mask(chain_shortcircuit_jumps_);

@@ -243,13 +243,8 @@ Value OptionalChainingExpression::evaluate(Context& ctx) {
                     ? static_cast<Object*>(object_value.as_function())
                     : object_value.as_object();
                 if (!prop_name.empty() && prop_name[0] == '#') {
-                    if (!private_brand_check(ctx, obj, prop_name)) {
-                        ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
-                        return Value();
-                    }
-                    // Instance fields are stored under a per-class-qualified key (see resolve_private_storage_key).
-                    std::string qualified = resolve_private_storage_key(prop_name, obj);
-                    if (obj->has_private_slot(qualified)) prop_name = qualified;
+                    Value pv;
+                    if (private_member_get(ctx, obj, object_value, prop_name, pv)) return pv;
                 }
                 return obj->get_property(prop_name);
             }
