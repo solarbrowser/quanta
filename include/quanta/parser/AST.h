@@ -630,7 +630,11 @@ public:
 private:
     Value handle_array_method_call(Object* array, const std::string& method_name, Context& ctx);
     Value handle_string_method_call(const std::string& str, const std::string& method_name, Context& ctx);
-    Value handle_member_expression_call(Context& ctx);
+    // `preset_args` is for a tagged template, whose arguments are the template
+    // object plus its substitutions rather than an argument list this can walk.
+    Value handle_member_expression_call(Context& ctx,
+                                        const std::vector<Value>* preset_args = nullptr);
+    bool build_tagged_template_arguments(Context& ctx, std::vector<Value>& out);
 };
 
 

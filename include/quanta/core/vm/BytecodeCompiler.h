@@ -162,6 +162,7 @@ private:
                                    bool is_assignment);
     bool emit_pattern_assign(const ASTNode* pattern, const ASTNode* source);
     bool pattern_target_is_writable(const std::string& name) const;
+    bool emit_tagged_template_args(const class CallExpression* call, int& args_start, uint8_t& argc);
 
     bool member_is_supported(const class MemberExpression* mem) const;
     static bool member_is_super(const class MemberExpression* mem);

@@ -16,6 +16,12 @@
 
 namespace Quanta {
 
+// From call.cpp: the site's frozen template object, the one the tree-walker
+// hands a tag. Asked for once while compiling and parked in the constants, so
+// the chunk keeps the object rather than the node it was built from.
+Value get_template_object(class TemplateLiteral* tmpl);
+
+
 // Defined in the tree-walker's language.cpp: the per-decl-site description a
 // function literal instantiates from, so the compiled and interpreted paths
 // build closures from the identical data.
@@ -4550,6 +4556,39 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
     return false;
 }
 
+// A tag's arguments: the template object first, then each substitution. The
+// object is a compile-time constant because the site has exactly one, however
+// often it runs.
+bool BytecodeCompiler::emit_tagged_template_args(const CallExpression* call,
+                                                 int& args_start, uint8_t& argc) {
+    const auto& args = call->get_arguments();
+    if (args.size() != 1 || args[0]->get_type() != ASTNode::Type::TEMPLATE_LITERAL) return false;
+    auto* tmpl = const_cast<TemplateLiteral*>(static_cast<const TemplateLiteral*>(args[0].get()));
+    Value tmpl_obj = get_template_object(tmpl);
+    if (!tmpl_obj.is_object()) return false;
+
+    args_start = next_register_;
+    int reg = alloc_temp();
+    if (failed_) return false;
+    emit(Op::LdaConst);
+    emit_u16(add_constant(tmpl_obj));
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(reg));
+    size_t count = 1;
+    for (const auto& el : tmpl->get_elements()) {
+        if (el.type != TemplateLiteral::Element::Type::EXPRESSION) continue;
+        int r = alloc_temp();
+        if (failed_) return false;
+        if (!compile_expression(el.expression.get())) return false;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(r));
+        count++;
+    }
+    if (count > 255) return false;
+    argc = static_cast<uint8_t>(count);
+    return !failed_;
+}
+
 // `pattern = source` as an expression: the pattern writes through, and the
 // expression itself answers with the source, which is why it is parked in a
 // register rather than left to the binder's own bookkeeping.
@@ -6676,7 +6715,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             }
 
             // Bare destructuring (`[a,b]=[b,a];`): array/object-literal LHS,
-            // plain `=` only.
+            // plain `=` only. A DestructuringAssignment node here is NOT the
+            // same thing: `let [x] = [1]` parses as a declarator whose init is
+            // an assignment carrying one, so treating it as an assignment would
+            // write the names into the enclosing scope instead of declaring
+            // them, and nothing on the node itself tells the two apart.
             if (!compound && (expr->get_left()->get_type() == ASTNode::Type::ARRAY_LITERAL ||
                               expr->get_left()->get_type() == ASTNode::Type::OBJECT_LITERAL)) {
                 if (pattern_contains_suspension(expr->get_left()) ||
@@ -6829,7 +6872,6 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* call = static_cast<const CallExpression*>(node);
-            if (call->is_tagged_template()) return false;
             // Optional forms need the chain wrapper's short-circuit collector;
             // without it (non-expression contexts) bail like before.
             if ((call->is_optional() || chain_contains_optional(call)) &&
@@ -7015,22 +7057,26 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 }
 
                 int args_start = next_register_;
-                {
+                uint8_t argc = static_cast<uint8_t>(call_args.size());
+                if (call->is_tagged_template()) {
                     ChainMaskScope mask(chain_shortcircuit_jumps_);
-                for (const auto& arg : call_args) {
-                    int arg_reg = alloc_temp();
-                    if (failed_) return false;
-                    if (!compile_expression(arg.get())) return false;
-                    emit(Op::Star);
-                    emit_u8(static_cast<uint8_t>(arg_reg));
-                }
+                    if (!emit_tagged_template_args(call, args_start, argc)) return false;
+                } else {
+                    ChainMaskScope mask(chain_shortcircuit_jumps_);
+                    for (const auto& arg : call_args) {
+                        int arg_reg = alloc_temp();
+                        if (failed_) return false;
+                        if (!compile_expression(arg.get())) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(arg_reg));
+                    }
                 }
 
                 emit(Op::CallResolved);
                 emit_u8(static_cast<uint8_t>(func_reg));
                 emit_u8(static_cast<uint8_t>(obj_reg));
                 emit_u8(static_cast<uint8_t>(args_start));
-                emit_u8(static_cast<uint8_t>(call_args.size()));
+                emit_u8(argc);
                 emit_u16(add_name(method_name));
                 free_temp(obj_reg);
                 return !failed_;
@@ -7124,21 +7170,25 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // Arguments occupy consecutive temps: each argument expression
             // balances its own temps, so alloc_temp stays contiguous here.
             int args_start = next_register_;
-            {
+            uint8_t argc = static_cast<uint8_t>(call_args.size());
+            if (call->is_tagged_template()) {
                 ChainMaskScope mask(chain_shortcircuit_jumps_);
-            for (const auto& arg : call_args) {
-                int arg_reg = alloc_temp();
-                if (failed_) return false;
-                if (!compile_expression(arg.get())) return false;
-                emit(Op::Star);
-                emit_u8(static_cast<uint8_t>(arg_reg));
-            }
+                if (!emit_tagged_template_args(call, args_start, argc)) return false;
+            } else {
+                ChainMaskScope mask(chain_shortcircuit_jumps_);
+                for (const auto& arg : call_args) {
+                    int arg_reg = alloc_temp();
+                    if (failed_) return false;
+                    if (!compile_expression(arg.get())) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(arg_reg));
+                }
             }
 
             emit(Op::Call);
             emit_u8(static_cast<uint8_t>(callee_reg));
             emit_u8(static_cast<uint8_t>(args_start));
-            emit_u8(static_cast<uint8_t>(call_args.size()));
+            emit_u8(argc);
             emit_u16(add_name(callee_name));
             free_temp(callee_reg);
             return !failed_;

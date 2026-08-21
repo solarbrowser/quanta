@@ -285,6 +285,68 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
     }
 }
 
+// GetTemplateObject: one frozen object per template site, reused by every
+// call through it, which is the whole reason a tag can compare identities.
+// Shared with the compiler, which asks for it once and parks it in the
+// chunk's constants rather than keeping the node to ask again.
+Value get_template_object(TemplateLiteral* tmpl) {
+    Value cached_strings = tmpl->cached_template_object();
+    if (!cached_strings.is_object()) {
+        const auto& elements = tmpl->get_elements();
+        std::vector<std::string> cooked_parts;
+        std::vector<std::string> raw_parts;
+        for (const auto& el : elements) {
+            if (el.type == TemplateLiteral::Element::Type::TEXT) {
+                cooked_parts.push_back(el.text);
+                raw_parts.push_back(el.raw_text);
+            }
+        }
+
+        auto strings_obj = ObjectFactory::create_array(static_cast<int>(cooked_parts.size()));
+        Object* strings_array = strings_obj.get();
+        for (size_t i = 0; i < cooked_parts.size(); i++) {
+            if (cooked_parts[i] == "\x01") {
+                strings_array->set_property(std::to_string(i), Value());
+            } else {
+                strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
+            }
+        }
+        strings_array->set_property("length", Value(static_cast<double>(cooked_parts.size())));
+
+        auto raw_obj = ObjectFactory::create_array(static_cast<int>(raw_parts.size()));
+        Object* raw_array = raw_obj.get();
+        for (size_t i = 0; i < raw_parts.size(); i++) {
+            raw_array->set_property(std::to_string(i), Value(raw_parts[i]));
+        }
+        raw_array->set_property("length", Value(static_cast<double>(raw_parts.size())));
+
+        // The template object and its raw array are frozen (GetTemplateObject
+        // step 11): a tag receives an object it cannot alter, which is what
+        // lets one be shared across calls at all.
+        raw_array->freeze();
+        strings_array->set_property("raw", Value(raw_obj.release()));
+        strings_array->freeze();
+
+        cached_strings = Value(strings_obj.release());
+        tmpl->cache_template_object(cached_strings);
+    }
+    return cached_strings;
+}
+
+// The argument list a tag receives: the site's frozen template object, then
+// each substitution in source order.
+bool CallExpression::build_tagged_template_arguments(Context& ctx, std::vector<Value>& out) {
+    TemplateLiteral* tmpl = static_cast<TemplateLiteral*>(arguments_[0].get());
+    out.push_back(get_template_object(tmpl));
+    for (const auto& el : tmpl->get_elements()) {
+        if (el.type != TemplateLiteral::Element::Type::EXPRESSION) continue;
+        Value expr_val = el.expression->evaluate(ctx);
+        if (ctx.has_exception()) return false;
+        out.push_back(expr_val);
+    }
+    return true;
+}
+
 Value CallExpression::evaluate(Context& ctx) {
     if (callee_->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
         OptionalChainingExpression* opt = static_cast<OptionalChainingExpression*>(callee_.get());
@@ -357,7 +419,12 @@ Value CallExpression::evaluate(Context& ctx) {
     // uses process_arguments_with_spread which doesn't know about template literals.
     if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION && is_tagged_template_ &&
         arguments_.size() == 1 && arguments_[0]->get_type() == ASTNode::Type::TEMPLATE_LITERAL) {
-        // fall through to tagged template block
+        // A tag reached through a member expression is still a method call, so
+        // the base is its `this`. Only the argument list differs, and the member
+        // path takes that ready-made rather than walking one it cannot read.
+        std::vector<Value> arg_values;
+        if (!build_tagged_template_arguments(ctx, arg_values)) return Value();
+        return handle_member_expression_call(ctx, &arg_values);
     } else if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         return handle_member_expression_call(ctx);
     }
@@ -386,61 +453,8 @@ Value CallExpression::evaluate(Context& ctx) {
         if (is_tagged_template_ && arguments_.size() == 1 &&
             arguments_[0]->get_type() == ASTNode::Type::TEMPLATE_LITERAL) {
 
-            TemplateLiteral* tmpl = static_cast<TemplateLiteral*>(arguments_[0].get());
-            const auto& elements = tmpl->get_elements();
-
-            Value cached_strings = tmpl->cached_template_object();
-            if (!cached_strings.is_object()) {
-                std::vector<std::string> cooked_parts;
-                std::vector<std::string> raw_parts;
-                for (const auto& el : elements) {
-                    if (el.type == TemplateLiteral::Element::Type::TEXT) {
-                        cooked_parts.push_back(el.text);
-                        raw_parts.push_back(el.raw_text);
-                    }
-                }
-
-                auto strings_obj = ObjectFactory::create_array(static_cast<int>(cooked_parts.size()));
-                Object* strings_array = strings_obj.get();
-                for (size_t i = 0; i < cooked_parts.size(); i++) {
-                    if (cooked_parts[i] == "\x01") {
-                        strings_array->set_property(std::to_string(i), Value());
-                    } else {
-                        strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
-                    }
-                }
-                strings_array->set_property("length", Value(static_cast<double>(cooked_parts.size())));
-
-                auto raw_obj = ObjectFactory::create_array(static_cast<int>(raw_parts.size()));
-                Object* raw_array = raw_obj.get();
-                for (size_t i = 0; i < raw_parts.size(); i++) {
-                    raw_array->set_property(std::to_string(i), Value(raw_parts[i]));
-                }
-                raw_array->set_property("length", Value(static_cast<double>(raw_parts.size())));
-
-                // The template object and its raw array are frozen (GetTemplateObject
-                // step 11): a tag receives an object it cannot alter, which is what
-                // lets one be shared across calls at all.
-                raw_array->freeze();
-                strings_array->set_property("raw", Value(raw_obj.release()));
-                strings_array->freeze();
-
-                cached_strings = Value(strings_obj.release());
-                tmpl->cache_template_object(cached_strings);
-            }
-
-            // Build argument list: [strings_array, expr1, expr2, ...]
             std::vector<Value> arg_values;
-            arg_values.push_back(cached_strings);
-
-            // Evaluate expression elements
-            for (const auto& el : elements) {
-                if (el.type == TemplateLiteral::Element::Type::EXPRESSION) {
-                    Value expr_val = el.expression->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    arg_values.push_back(expr_val);
-                }
-            }
+            if (!build_tagged_template_arguments(ctx, arg_values)) return Value();
 
             Function* function = callee_value.as_function();
             Value this_value = Value();
@@ -1735,7 +1749,11 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
     }
 }
 
-Value CallExpression::handle_member_expression_call(Context& ctx) {
+Value CallExpression::handle_member_expression_call(Context& ctx,
+                                                    const std::vector<Value>* preset_args) {
+    auto call_args = [&](Context& c) {
+        return preset_args ? *preset_args : process_arguments_with_spread(arguments_, c);
+    };
     MemberExpression* member = static_cast<MemberExpression*>(callee_.get());
 
     // ES6: super.method() - call parent prototype method with current this
@@ -1744,7 +1762,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
         if (method_value.is_function()) {
-            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            std::vector<Value> arg_values = call_args(ctx);
             if (ctx.has_exception()) return Value();
             Function* method = method_value.as_function();
             // this should be the current instance, not the parent constructor
@@ -1769,7 +1787,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             std::string method_name = prop->get_name();
             
             if (method_name == "log") {
-                std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+                std::vector<Value> arg_values = call_args(ctx);
                 if (ctx.has_exception()) return Value();
                 
                 for (size_t i = 0; i < arg_values.size(); ++i) {
@@ -1969,7 +1987,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (ctx.has_exception()) return Value();
 
         if (method_value.is_function()) {
-            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            std::vector<Value> arg_values = call_args(ctx);
             if (ctx.has_exception()) return Value();
 
             Function* method = method_value.as_function();
@@ -1981,7 +1999,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     } else if (object_value.is_bigint()) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        std::vector<Value> arg_values = call_args(ctx);
         if (ctx.has_exception()) return Value();
         if (method_value.is_function()) {
             Function* method = method_value.as_function();
@@ -1994,7 +2012,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     } else if (object_value.is_number()) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        std::vector<Value> arg_values = call_args(ctx);
         if (ctx.has_exception()) return Value();
         if (method_value.is_function()) {
             Function* method = method_value.as_function();
@@ -2007,7 +2025,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     } else if (object_value.is_boolean()) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        std::vector<Value> arg_values = call_args(ctx);
         if (ctx.has_exception()) return Value();
         if (method_value.is_function()) {
             Function* method = method_value.as_function();
@@ -2020,7 +2038,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     } else if (object_value.is_symbol()) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        std::vector<Value> arg_values = call_args(ctx);
         if (ctx.has_exception()) return Value();
         if (method_value.is_function()) {
             return method_value.as_function()->call(ctx, arg_values, object_value);
@@ -2079,7 +2097,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         }
         if (ctx.has_exception()) return Value();
 
-        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        std::vector<Value> arg_values = call_args(ctx);
         if (ctx.has_exception()) return Value();
 
         if (method_value.is_function()) {
