@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "quanta/lexer/Token.h"
 
@@ -95,6 +96,32 @@ public:
     std::unique_ptr<ASTNode> parse_body_at(uint32_t tok_first, bool strict,
                                            bool is_generator, bool is_async);
 
+    // Where a function literal's executable is remembered. It used to live on
+    // the literal's own node, which made the node's ADDRESS the key -- and a
+    // body parsed back from the tokens comes back as different nodes, so the
+    // executable was lost and a second one built for the same declaration.
+    // The token the body opens at says the same thing and survives a rebuild,
+    // so that is the key. A literal with no token range of its own (an arrow
+    // with an expression body, a synthesized constructor) keeps its node-local
+    // copy; there are a handful of those against thousands of these.
+    const ExecutableRef<FunctionExecutable>& executable_at(uint32_t body_tok) const {
+        static const ExecutableRef<FunctionExecutable> kNone;
+        auto it = executables_.find(body_tok);
+        return it == executables_.end() ? kNone : it->second;
+    }
+    void set_executable_at(uint32_t body_tok, ExecutableRef<FunctionExecutable> exe) {
+        executables_[body_tok] = std::move(exe);
+    }
+    // A class site has two: the class's own and the constructor it builds.
+    const ExecutableRef<FunctionExecutable>& ctor_executable_at(uint32_t body_tok) const {
+        static const ExecutableRef<FunctionExecutable> kNone;
+        auto it = ctor_executables_.find(body_tok);
+        return it == ctor_executables_.end() ? kNone : it->second;
+    }
+    void set_ctor_executable_at(uint32_t body_tok, ExecutableRef<FunctionExecutable> exe) {
+        ctor_executables_[body_tok] = std::move(exe);
+    }
+
 private:
     ScriptUnit() = default;
     ~ScriptUnit();
@@ -104,6 +131,9 @@ private:
     TokenSequence tokens_;
     // Built on the first deferred body this unit is asked for, then reused.
     std::unique_ptr<Parser> body_parser_;
+    // See executable_at.
+    std::unordered_map<uint32_t, ExecutableRef<FunctionExecutable>> executables_;
+    std::unordered_map<uint32_t, ExecutableRef<FunctionExecutable>> ctor_executables_;
     mutable uint32_t ref_count_ = 0;
 
     static constinit thread_local ScriptUnit* building_;

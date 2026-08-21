@@ -1152,9 +1152,24 @@ public:
     ScriptUnit* source_unit() const { return owning_unit_; }
     uint32_t source_start() const { return src_start_; }
     uint32_t source_end() const { return src_end_; }
-    const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    // Keyed on the token the body opens at, not on this node's address: a body
+    // parsed back from the tokens is a different node for the same
+    // declaration, and the executable has to be the same one either way. A
+    // literal with no token range of its own keeps the node-local copy.
+    const ExecutableRef<FunctionExecutable>& get_cached_executable() const {
+        if (owning_unit_ && has_body_token_range()) {
+            return owning_unit_->executable_at(body_tok_first_);
+        }
+        return cached_executable_;
+    }
     ScriptUnit* owning_unit() const { return owning_unit_; }
-    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
+    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
+        if (owning_unit_ && has_body_token_range()) {
+            owning_unit_->set_executable_at(body_tok_first_, std::move(exe));
+            return;
+        }
+        cached_executable_ = std::move(exe);
+    }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1218,8 +1233,20 @@ public:
     ASTNode* get_superclass() const { return superclass_.get(); }
     BlockStatement* get_body() const { return body_.get(); }
     bool has_superclass() const { return superclass_ != nullptr; }
-    const ExecutableRef<FunctionExecutable>& get_cached_ctor_exe() const { return cached_ctor_exe_; }
-    void set_cached_ctor_exe(ExecutableRef<FunctionExecutable> e) const { cached_ctor_exe_ = std::move(e); }
+    // Same key, its own table -- a class site has both.
+    const ExecutableRef<FunctionExecutable>& get_cached_ctor_exe() const {
+        if (owning_unit_ && has_body_token_range()) {
+            return owning_unit_->ctor_executable_at(body_tok_first_);
+        }
+        return cached_ctor_exe_;
+    }
+    void set_cached_ctor_exe(ExecutableRef<FunctionExecutable> e) const {
+        if (owning_unit_ && has_body_token_range()) {
+            owning_unit_->set_ctor_executable_at(body_tok_first_, std::move(e));
+            return;
+        }
+        cached_ctor_exe_ = std::move(e);
+    }
     // A range into the owning unit's source rather than a copy of it; see
     // ScriptUnit::source(). Materialized only when something actually asks,
     // which in practice is Function.prototype.toString.
@@ -1539,9 +1566,24 @@ public:
     // Built lazily by FunctionExpression::evaluate on first evaluation of
     // this node; every later evaluation reuses the same shared_ptr instead
     // of cloning body_/params_ again.
-    const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    // Keyed on the token the body opens at, not on this node's address: a body
+    // parsed back from the tokens is a different node for the same
+    // declaration, and the executable has to be the same one either way. A
+    // literal with no token range of its own keeps the node-local copy.
+    const ExecutableRef<FunctionExecutable>& get_cached_executable() const {
+        if (owning_unit_ && has_body_token_range()) {
+            return owning_unit_->executable_at(body_tok_first_);
+        }
+        return cached_executable_;
+    }
     ScriptUnit* owning_unit() const { return owning_unit_; }
-    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
+    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
+        if (owning_unit_ && has_body_token_range()) {
+            owning_unit_->set_executable_at(body_tok_first_, std::move(exe));
+            return;
+        }
+        cached_executable_ = std::move(exe);
+    }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1647,9 +1689,24 @@ public:
     ScriptUnit* source_unit() const { return owning_unit_; }
     uint32_t source_start() const { return src_start_; }
     uint32_t source_end() const { return src_end_; }
-    const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    // Keyed on the token the body opens at, not on this node's address: a body
+    // parsed back from the tokens is a different node for the same
+    // declaration, and the executable has to be the same one either way. A
+    // literal with no token range of its own keeps the node-local copy.
+    const ExecutableRef<FunctionExecutable>& get_cached_executable() const {
+        if (owning_unit_ && has_body_token_range()) {
+            return owning_unit_->executable_at(body_tok_first_);
+        }
+        return cached_executable_;
+    }
     ScriptUnit* owning_unit() const { return owning_unit_; }
-    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
+    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
+        if (owning_unit_ && has_body_token_range()) {
+            owning_unit_->set_executable_at(body_tok_first_, std::move(exe));
+            return;
+        }
+        cached_executable_ = std::move(exe);
+    }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1717,9 +1774,24 @@ private:
     ScriptUnit* owning_unit_ = ScriptUnit::building();
 
 public:
-    const ExecutableRef<FunctionExecutable>& get_cached_executable() const { return cached_executable_; }
+    // Keyed on the token the body opens at, not on this node's address: a body
+    // parsed back from the tokens is a different node for the same
+    // declaration, and the executable has to be the same one either way. A
+    // literal with no token range of its own keeps the node-local copy.
+    const ExecutableRef<FunctionExecutable>& get_cached_executable() const {
+        if (owning_unit_ && has_body_token_range()) {
+            return owning_unit_->executable_at(body_tok_first_);
+        }
+        return cached_executable_;
+    }
     ScriptUnit* owning_unit() const { return owning_unit_; }
-    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const { cached_executable_ = std::move(exe); }
+    void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
+        if (owning_unit_ && has_body_token_range()) {
+            owning_unit_->set_executable_at(body_tok_first_, std::move(exe));
+            return;
+        }
+        cached_executable_ = std::move(exe);
+    }
     AsyncFunctionExpression(std::unique_ptr<Identifier> id,
                            std::vector<std::unique_ptr<Parameter>> params,
                            std::unique_ptr<BlockStatement> body,
