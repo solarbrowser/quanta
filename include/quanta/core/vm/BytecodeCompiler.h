@@ -215,12 +215,30 @@ private:
     // catch instead of leaving.
     struct FinallyScope {
         const ASTNode* finally_node = nullptr;
+        // A block that declares `using` runs one instruction where a finally
+        // runs a statement, and needs the same pads to run it on every exit.
+        bool dispose_only = false;
         bool save_env = false;
         int value_reg = -1;
+        // loop_stack_ depth when the try was entered: a break or continue whose
+        // target sits at or above this never leaves the try, so it needs no pad.
+        size_t loop_depth = 0;
         std::vector<size_t> return_jumps;
+        // One pad per distinct target, since each performs a different jump.
+        struct Escape { bool is_continue; std::string label; std::vector<size_t> sites; };
+        std::vector<Escape> escapes;
     };
     std::vector<FinallyScope> finally_stack_;
+    // Nonzero while emitting a block that opened a dispose scope. A `using`
+    // outside one has nothing to register into, which is the function body's
+    // own top level -- that scope belongs to the call, not to a block.
+    int dispose_scope_depth_ = 0;
     bool emit_return_completion(bool has_argument, bool already_awaited);
+    bool emit_loop_escape(bool is_continue, const std::string& label);
+    void emit_iterator_closes_above(size_t from);
+    bool emit_dispose_scope_body(const class BlockStatement* block, FinallyScope& escaped);
+    bool emit_finally_body(const FinallyScope& scope);
+    bool emit_finally_pads(FinallyScope& scope);
 
     std::vector<std::string> take_pending_labels();
 

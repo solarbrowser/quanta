@@ -47,6 +47,8 @@ Value get_async_iterator(Context& ctx, const Value& iterable, Value& next_fn_out
 bool async_iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
                          bool from_sync, Value& value_out);
 void async_iterator_close(Context& ctx, const Value& iterator);
+// And backing Op::RegisterDisposable.
+bool register_disposable_resource(Context& ctx, const Value& val, bool is_await);
 // From statements.cpp, backing Op::SettleReturn.
 Value perform_return_completion(Context& ctx, Value return_value, bool has_argument, bool do_record);
 // Likewise from language.cpp, backing Op::Await.
@@ -4459,6 +4461,44 @@ Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_PushDisposeScope(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    pc += 1;
+    ctx.push_dispose_scope();
+    DISPATCH();
+}
+
+Value h_gen_RegisterDisposable(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const bool is_await = code[pc + 1] != 0;
+    pc += 2;
+    register_disposable_resource(ctx, acc, is_await);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_DisposeScope(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const uint8_t mode = code[pc + 1];
+    pc += 2;
+    // Unwinding: the exception has to be pending again before the disposals
+    // run, because that is how run_dispose_resources knows to wrap a disposal
+    // failure and the body's own error together in a SuppressedError.
+    if (mode == 1) ctx.throw_exception(acc, true);
+    ctx.run_dispose_resources();
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_DeleteLookup(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4775,6 +4815,9 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::FinalizeComputedAccessor)] = &h_gen_FinalizeComputedAccessor;
     t[static_cast<uint8_t>(Op::SetLiteralProto)] = &h_gen_SetLiteralProto;
     t[static_cast<uint8_t>(Op::DeleteLookup)] = &h_gen_DeleteLookup;
+    t[static_cast<uint8_t>(Op::PushDisposeScope)] = &h_gen_PushDisposeScope;
+    t[static_cast<uint8_t>(Op::RegisterDisposable)] = &h_gen_RegisterDisposable;
+    t[static_cast<uint8_t>(Op::DisposeScope)] = &h_gen_DisposeScope;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;

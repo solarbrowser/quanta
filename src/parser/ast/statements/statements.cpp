@@ -593,7 +593,9 @@ std::unique_ptr<ASTNode> VariableDeclaration::clone() const {
 // GetDisposeMethod + AddDisposableResource: registers `val` for disposal in the current dispose
 // scope. null/undefined is a no-op for plain `using`, but still records a no-op resource for
 // `await using`'s mandatory Await(undefined) tick.
-static bool register_disposable_resource(Context& ctx, const Value& val, bool is_await) {
+// GetMethod(@@dispose) and the scope registration a `using` performs, shared
+// with the compiled Op::RegisterDisposable.
+bool register_disposable_resource(Context& ctx, const Value& val, bool is_await) {
     if (val.is_null() || val.is_undefined()) {
         if (is_await) ctx.add_disposable_resource(Value(), Value(), true);
         return true;

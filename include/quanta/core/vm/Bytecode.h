@@ -273,6 +273,13 @@ enum class Op : uint8_t {
     // outer binding of the same name.
     DeleteLookup,              // n16, u8: 1 when the name is a frame local
 
+    // `using`/`await using`. A block that declares one opens a dispose scope on
+    // entry and runs it on every exit, which is the same shape a finally has,
+    // so the compiler drives these with the same pads.
+    PushDisposeScope,
+    RegisterDisposable,        // u8: 1 for `await using`
+    DisposeScope,              // u8 mode (0=plain, 1=acc holds a pending exception)
+
     kCount
 };
 

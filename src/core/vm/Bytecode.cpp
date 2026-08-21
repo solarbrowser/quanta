@@ -127,6 +127,7 @@ const OpInfo& op_info(Op op) {
         {"GetAsyncIterator", 2, 'r'}, {"AsyncIteratorNextOrJump", 5, 'J'},
         {"AsyncIteratorClose", 2, 'C'}, {"FinalizeComputedAccessor", 4, 'p'},
         {"SetLiteralProto", 1, 'r'}, {"DeleteLookup", 3, 'n'},
+        {"PushDisposeScope", 0, '-'}, {"RegisterDisposable", 1, 'i'}, {"DisposeScope", 1, 'i'},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");

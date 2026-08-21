@@ -84,6 +84,15 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
             }
             return true;
         }
+        case ASTNode::Type::USING_DECLARATION: {
+            // Lexically scoped and never reassignable, so it needs a declared
+            // slot exactly as a `const` does.
+            for (const auto& b : static_cast<const UsingDeclaration*>(node)->get_bindings()) {
+                if (b.name.empty()) return false;
+                out.push_back({b.name, /*is_lexical=*/true, /*is_const=*/true});
+            }
+            return true;
+        }
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* decl = static_cast<const VariableDeclaration*>(node);
             bool is_lexical = decl->get_kind() != VariableDeclarator::Kind::VAR;
@@ -2715,6 +2724,15 @@ bool collect_direct_lexical_decls(const ASTNode* node,
             needs_own_env = true;
             return true;
         }
+        if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) {
+            // `using x = r` binds like a const: the name is the block's, and
+            // nothing may reassign it.
+            for (const auto& b : static_cast<const UsingDeclaration*>(stmt)->get_bindings()) {
+                if (b.name.empty()) return false;
+                vars.push_back({b.name, true, true, false});
+            }
+            return true;
+        }
         if (stmt->get_type() != ASTNode::Type::VARIABLE_DECLARATION) return true;
         const auto* decl = static_cast<const VariableDeclaration*>(stmt);
         if (decl->get_kind() == VariableDeclarator::Kind::VAR) return true;
@@ -4617,6 +4635,196 @@ bool BytecodeCompiler::emit_tagged_template_args(const CallExpression* call,
     return !failed_;
 }
 
+// A block whose statements include `using`: the dispose scope opens on entry
+// and has to run on every way out -- falling off the end, an exception, a
+// generator return(), and each of return/break/continue.
+bool BytecodeCompiler::emit_dispose_scope_body(const BlockStatement* block,
+                                               FinallyScope& escaped) {
+    const bool save_env = env_mode_;
+    if (save_env) {
+        if (++try_env_depth_ > 64) return false;
+        emit(Op::SaveEnv);
+    }
+    emit(Op::PushDisposeScope);
+
+    FinallyScope scope;
+    scope.dispose_only = true;
+    scope.save_env = save_env;
+    scope.loop_depth = loop_stack_.size();
+    finally_stack_.push_back(std::move(scope));
+
+    size_t body_start = code_.size();
+    bool body_ok = true;
+    dispose_scope_depth_++;
+    for (const auto& st : block->get_statements()) {
+        if (!compile_statement(st.get())) { body_ok = false; break; }
+    }
+    dispose_scope_depth_--;
+    size_t body_end = code_.size();
+    escaped = std::move(finally_stack_.back());
+    finally_stack_.pop_back();
+    if (!body_ok) return false;
+
+    if (save_env) {
+        emit(Op::PopEnvSave);
+        try_env_depth_--;
+    }
+    emit(Op::DisposeScope);
+    emit_u8(0);
+    size_t jump_ok = emit_jump(Op::Jump);
+
+    // Unwinding: dispose, then let the completion travel on.
+    size_t cleanup_pc = code_.size();
+    if (save_env) emit(Op::RestoreEnv);
+    emit(Op::DisposeScope);
+    emit_u8(1);  // the pending exception is in the accumulator
+    const size_t handler_idx = chunk_->ensure_handlers().size();
+    chunk_->ensure_handlers().push_back({static_cast<uint32_t>(body_start),
+                                 static_cast<uint32_t>(body_end),
+                                 static_cast<uint32_t>(cleanup_pc)});
+
+    if (suspendable_ && contains_suspend(block)) {
+        size_t genreturn_pc = code_.size();
+        if (save_env) emit(Op::RestoreEnv);
+        int gr_temp = alloc_temp();
+        if (failed_) return false;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(gr_temp));
+        emit(Op::DisposeScope);
+        emit_u8(0);
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(gr_temp));
+        free_temp(gr_temp);
+        emit(Op::ReraiseGeneratorReturn);
+        chunk_->ensure_handlers()[handler_idx].genreturn_pc = static_cast<int32_t>(genreturn_pc);
+    }
+
+    return patch_jump(jump_ok);
+}
+
+// IteratorClose for every for-of/for-in at or above `from`, innermost first.
+// Mode 0 leaves the accumulator alone, so a value in flight survives.
+void BytecodeCompiler::emit_iterator_closes_above(size_t from) {
+    for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= static_cast<int>(from); i--) {
+        if (loop_stack_[i].iterator_reg < 0) continue;
+        emit(loop_stack_[i].iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
+        emit_u8(static_cast<uint8_t>(loop_stack_[i].iterator_reg));
+        emit_u8(0);
+    }
+}
+
+// What a finally runs: a statement for `try/finally`, one instruction for a
+// block that declared `using`.
+bool BytecodeCompiler::emit_finally_body(const FinallyScope& scope) {
+    if (scope.dispose_only) {
+        emit(Op::DisposeScope);
+        emit_u8(0);
+        return !failed_;
+    }
+    return compile_statement(scope.finally_node);
+}
+
+// The landing pads an escape out of a finally-bearing region needs. They go
+// after the region, not inside it: within its own handler range a throw from
+// this copy of the finally would reach that region's catch instead of leaving.
+bool BytecodeCompiler::emit_finally_pads(FinallyScope& scope) {
+    if (!scope.return_jumps.empty()) {
+        size_t skip_pad = emit_jump(Op::Jump);
+        for (size_t site : scope.return_jumps) {
+            if (!patch_jump(site)) return false;
+        }
+        if (scope.save_env) emit(Op::RestoreEnv);
+        if (!emit_finally_body(scope)) return false;
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(scope.value_reg));
+        // Any finally further out takes it from here in turn, and allocates its
+        // own parking register while doing so. Freeing this one now would rewind
+        // past that register -- free_temp is a LIFO watermark -- and the outer
+        // finally body would then reuse it and overwrite the value in flight.
+        if (!emit_return_completion(/*has_argument=*/false, /*already_awaited=*/true)) return false;
+        if (!patch_jump(skip_pad)) return false;
+    }
+    // One pad per break/continue target, each running the finally and then
+    // performing the jump it was standing in for.
+    for (auto& esc : scope.escapes) {
+        size_t skip_pad = emit_jump(Op::Jump);
+        for (size_t site : esc.sites) {
+            if (!patch_jump(site)) return false;
+        }
+        if (scope.save_env) emit(Op::RestoreEnv);
+        if (!emit_finally_body(scope)) return false;
+        if (!emit_loop_escape(esc.is_continue, esc.label)) return false;
+        if (!patch_jump(skip_pad)) return false;
+    }
+    return !failed_;
+}
+
+// A `break` or `continue`, with any finally between here and its target run
+// first. The target decides that: one at or above the try's own loop depth is
+// still inside the try, so nothing is being left.
+bool BytecodeCompiler::emit_loop_escape(bool is_continue, const std::string& label) {
+    if (loop_stack_.empty()) return false;
+    int target = -1;
+    if (label.empty()) {
+        if (is_continue) {
+            // A switch isn't a loop -- continue skips past it to the loop below.
+            for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= 0; i--) {
+                if (!loop_stack_[i].is_switch) { target = i; break; }
+            }
+        } else {
+            target = static_cast<int>(loop_stack_.size()) - 1;
+        }
+    } else {
+        for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= 0 && target < 0; i--) {
+            for (const auto& l : loop_stack_[i].labels) {
+                if (l == label) { target = i; break; }
+            }
+        }
+        if (is_continue && target >= 0 && loop_stack_[target].is_switch) return false;  // not a loop
+    }
+    if (target < 0) return false;
+
+    if (!finally_stack_.empty() &&
+        static_cast<size_t>(target) < finally_stack_.back().loop_depth) {
+        FinallyScope& fs = finally_stack_.back();
+        emit_iterator_closes_above(fs.loop_depth);
+        for (auto& esc : fs.escapes) {
+            if (esc.is_continue == is_continue && esc.label == label) {
+                esc.sites.push_back(emit_jump(Op::Jump));
+                return !failed_;
+            }
+        }
+        fs.escapes.push_back({is_continue, label, {emit_jump(Op::Jump)}});
+        return !failed_;
+    }
+
+    // IteratorClose every for-of/for-in strictly inside the target (the target
+    // keeps its own: a continue goes on iterating, a break has a landing pad).
+    for (int i = static_cast<int>(loop_stack_.size()) - 1; i > target; i--) {
+        if (loop_stack_[i].iterator_reg < 0) continue;
+        emit(loop_stack_[i].iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
+        emit_u8(static_cast<uint8_t>(loop_stack_[i].iterator_reg));
+        emit_u8(0);
+    }
+    // Unwind Environments/SaveEnv entries between here and the target loop.
+    LoopScope& scope = loop_stack_[target];
+    for (int i = env_depth_ - scope.base_env_depth; i > 0; i--) {
+        emit(Op::ExitLoopEnv);
+    }
+    for (int i = try_env_depth_ - scope.base_try_depth; i > 0; i--) {
+        emit(Op::PopEnvSave);
+    }
+    if (!is_continue) {
+        scope.break_patches.push_back(emit_jump(Op::Jump));
+        return !failed_;
+    }
+    if (scope.continue_is_forward) {
+        scope.continue_patches.push_back(emit_jump(Op::Jump));
+        return !failed_;
+    }
+    return emit_jump_back(Op::Jump, scope.continue_target) && !failed_;
+}
+
 // Everything a `return` does once its value is in the accumulator. A finally
 // between here and the function's edge takes the value first and runs; only
 // when none is left does the return actually happen.
@@ -4631,6 +4839,10 @@ bool BytecodeCompiler::emit_return_completion(bool has_argument, bool already_aw
             emit_u8(kAwait);
         }
         FinallyScope& fs = finally_stack_.back();
+        // The for-of loops being left right here are gone from loop_stack_ by
+        // the time the pad runs, so they are closed now; the ones outside the
+        // finally are closed when the pad performs the rest of the return.
+        emit_iterator_closes_above(fs.loop_depth);
         if (fs.value_reg < 0) {
             fs.value_reg = alloc_temp();
             if (failed_) return false;
@@ -5330,11 +5542,47 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     env_depth_++;
                 }
             }
-            for (const auto& stmt : block->get_statements()) {
-                if (!compile_statement(stmt.get())) return false;
+            bool has_using = false;
+            for (const auto& st : block->get_statements()) {
+                if (st->get_type() == ASTNode::Type::USING_DECLARATION) { has_using = true; break; }
+            }
+            FinallyScope escaped;
+            if (has_using) {
+                if (!emit_dispose_scope_body(block, escaped)) return false;
+            } else {
+                for (const auto& stmt : block->get_statements()) {
+                    if (!compile_statement(stmt.get())) return false;
+                }
             }
             if (block_env_idx >= 0) { emit(Op::ExitLoopEnv); env_depth_--; }
+            // The pads go last, where env_depth_ is back to what an escape
+            // leaving this block should unwind from.
+            if (has_using) return emit_finally_pads(escaped);
             return true;
+        }
+
+        case ASTNode::Type::USING_DECLARATION: {
+            const auto* decl = static_cast<const UsingDeclaration*>(node);
+            if (dispose_scope_depth_ == 0) return false;
+            for (const auto& b : decl->get_bindings()) {
+                if (b.name.empty()) return false;
+                if (!env_names_.count(b.name) && lookup_local(b.name) < 0) return false;
+                if (b.initializer) {
+                    if (!compile_expression(b.initializer.get())) return false;
+                    if (is_named_evaluation_rhs(b.initializer.get())) {
+                        emit(Op::SetFunctionNameIfUnnamed);
+                        emit_u16(add_name(b.name));
+                    }
+                } else {
+                    emit(Op::LdaUndefined);
+                }
+                // Registration comes before the binding: a value with no
+                // dispose method throws, and the name must not exist after it.
+                emit(Op::RegisterDisposable);
+                emit_u8(decl->is_await() ? 1 : 0);
+                emit_write_local(b.name, /*is_declaration=*/true);
+            }
+            return !failed_;
         }
 
         case ASTNode::Type::EXPRESSION_STATEMENT: {
@@ -5579,80 +5827,13 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                                           stmt->get_left_decl_kind());
         }
 
-        case ASTNode::Type::BREAK_STATEMENT: {
-            const auto* stmt = static_cast<const BreakStatement*>(node);
-            if (loop_stack_.empty()) return false;
-            int target = static_cast<int>(loop_stack_.size()) - 1;
-            if (!stmt->get_label().empty()) {
-                target = -1;
-                for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= 0; i--) {
-                    for (const auto& l : loop_stack_[i].labels) {
-                        if (l == stmt->get_label()) { target = i; break; }
-                    }
-                    if (target >= 0) break;
-                }
-                if (target < 0) return false;
-            }
-            // IteratorClose every for-of/for-in strictly inside the target
-            // (the target's own iterator is closed by its landing pad).
-            for (int i = static_cast<int>(loop_stack_.size()) - 1; i > target; i--) {
-                if (loop_stack_[i].iterator_reg < 0) continue;
-                emit(loop_stack_[i].iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
-                emit_u8(static_cast<uint8_t>(loop_stack_[i].iterator_reg));
-                emit_u8(0);
-            }
-            // Unwind Environments/SaveEnv entries between here and the target loop.
-            LoopScope& scope = loop_stack_[target];
-            for (int i = env_depth_ - scope.base_env_depth; i > 0; i--) {
-                emit(Op::ExitLoopEnv);
-            }
-            for (int i = try_env_depth_ - scope.base_try_depth; i > 0; i--) {
-                emit(Op::PopEnvSave);
-            }
-            scope.break_patches.push_back(emit_jump(Op::Jump));
-            return true;
-        }
+        case ASTNode::Type::BREAK_STATEMENT:
+            return emit_loop_escape(/*is_continue=*/false,
+                                    static_cast<const BreakStatement*>(node)->get_label());
 
-        case ASTNode::Type::CONTINUE_STATEMENT: {
-            const auto* stmt = static_cast<const ContinueStatement*>(node);
-            if (loop_stack_.empty()) return false;
-            int target = -1;
-            if (stmt->get_label().empty()) {
-                // A switch isn't a loop -- continue skips past it to the loop below.
-                for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= 0; i--) {
-                    if (!loop_stack_[i].is_switch) { target = i; break; }
-                }
-            } else {
-                for (int i = static_cast<int>(loop_stack_.size()) - 1; i >= 0 && target < 0; i--) {
-                    for (const auto& l : loop_stack_[i].labels) {
-                        if (l == stmt->get_label()) { target = i; break; }
-                    }
-                }
-                if (target >= 0 && loop_stack_[target].is_switch) return false;  // not a loop
-            }
-            if (target < 0) return false;
-            // IteratorClose every for-of/for-in strictly inside the target
-            // (the target itself keeps iterating).
-            for (int i = static_cast<int>(loop_stack_.size()) - 1; i > target; i--) {
-                if (loop_stack_[i].iterator_reg < 0) continue;
-                emit(loop_stack_[i].iterator_is_async ? Op::AsyncIteratorClose : Op::IteratorClose);
-                emit_u8(static_cast<uint8_t>(loop_stack_[i].iterator_reg));
-                emit_u8(0);
-            }
-            LoopScope& scope = loop_stack_[target];
-            for (int i = env_depth_ - scope.base_env_depth; i > 0; i--) {
-                emit(Op::ExitLoopEnv);
-            }
-            for (int i = try_env_depth_ - scope.base_try_depth; i > 0; i--) {
-                emit(Op::PopEnvSave);
-            }
-            if (scope.continue_is_forward) {
-                scope.continue_patches.push_back(emit_jump(Op::Jump));
-            } else {
-                if (!emit_jump_back(Op::Jump, scope.continue_target)) return false;
-            }
-            return true;
-        }
+        case ASTNode::Type::CONTINUE_STATEMENT:
+            return emit_loop_escape(/*is_continue=*/true,
+                                    static_cast<const ContinueStatement*>(node)->get_label());
 
         case ASTNode::Type::RETURN_STATEMENT: {
             const auto* stmt = static_cast<const ReturnStatement*>(node);
@@ -5678,15 +5859,13 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             const ASTNode* finally_node = stmt->get_finally_block();
             if (!catch_node && !finally_node) return false;
 
-            // A finally must run on every exit. `return` out of the try block
-            // has a pad below; break, continue, and any escape out of the catch
-            // body would each need their own and are still refused rather than
+            // A finally must run on every exit. The try block's return, break
+            // and continue each get a pad below; an escape out of the catch
+            // body would need pads of its own and is still refused rather than
             // silently skipped.
-            if (finally_node) {
-                bool escapes = contains_control_escape(stmt->get_try_block(), /*break+continue=*/6) ||
-                    (catch_node && contains_control_escape(
-                        static_cast<const CatchClause*>(catch_node)->get_body()));
-                if (escapes) return false;
+            if (finally_node && catch_node &&
+                contains_control_escape(static_cast<const CatchClause*>(catch_node)->get_body())) {
+                return false;
             }
 
             // A throw skips straight to the handler, bypassing any loop
@@ -5698,7 +5877,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             }
 
             if (finally_node) {
-                finally_stack_.push_back({finally_node, save_env, -1, {}});
+                FinallyScope fs;
+                fs.finally_node = finally_node;
+                fs.save_env = save_env;
+                fs.loop_depth = loop_stack_.size();
+                finally_stack_.push_back(std::move(fs));
             }
             size_t try_start = code_.size();
             if (!compile_statement(stmt->get_try_block())) return false;
@@ -5831,28 +6014,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 if (!compile_statement(finally_node)) return false;
             }
 
-            // The return pad: outside the handler range, so a throw from this
-            // copy of the finally leaves the statement instead of reaching its
-            // own catch.
-            if (!escaped_scope.return_jumps.empty()) {
-                size_t skip_pad = emit_jump(Op::Jump);
-                for (size_t site : escaped_scope.return_jumps) {
-                    if (!patch_jump(site)) return false;
-                }
-                if (escaped_scope.save_env) emit(Op::RestoreEnv);
-                if (!compile_statement(finally_node)) return false;
-                emit(Op::Ldar);
-                emit_u8(static_cast<uint8_t>(escaped_scope.value_reg));
-                // Any finally further out takes it from here in turn, and
-                // allocates its own parking register while doing so. Freeing
-                // this one now would rewind past that register -- free_temp is
-                // a LIFO watermark -- and the outer finally body would then
-                // reuse it and overwrite the value in flight. It stays held for
-                // the rest of the function instead.
-                if (!emit_return_completion(/*has_argument=*/false,
-                                            /*already_awaited=*/true)) return false;
-                if (!patch_jump(skip_pad)) return false;
-            }
+            if (!emit_finally_pads(escaped_scope)) return false;
             return true;
         }
 
