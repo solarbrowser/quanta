@@ -226,6 +226,18 @@ enum class Op : uint8_t {
     LdaEnvSlotStar,// slot, n16, dst
     GetNamedStar,  // recv, n16, fb16, dst
 
+    // Suspends the generator or async generator this body is running in, with
+    // the value in the accumulator, and resumes with what next() sent -- the
+    // fiber switch a plain `yield` is, and nothing else. `yield*` still goes to
+    // the tree-walker: the delegation protocol is a loop over another iterator,
+    // not one suspension.
+    Yield,
+    // The same for `await`: suspend on the operand in the accumulator and
+    // resume with what it settled to. The operand byte says whether there was
+    // one at all -- a bare `await` suspends once and answers undefined rather
+    // than awaiting undefined.
+    Await,   // u8: 1 when the expression had an operand
+
     kCount
 };
 

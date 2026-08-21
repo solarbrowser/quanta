@@ -6942,9 +6942,35 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         // yield/await delegate to the tree-walker, which suspends the current
         // FIBER (stackful coroutine) -- the VM's own C++ frame sleeps through
         // the suspension and the sent/resolved value lands in the accumulator.
-        case ASTNode::Type::YIELD_EXPRESSION:
-        case ASTNode::Type::AWAIT_EXPRESSION:
-            return emit_treewalker_delegate(node);
+        case ASTNode::Type::YIELD_EXPRESSION: {
+            const auto* n = static_cast<const YieldExpression*>(node);
+            // A plain yield is one fiber switch and Op::Yield is exactly that.
+            // `yield*` is a protocol loop over another iterator, a different
+            // thing entirely, and still goes to the tree-walker -- as does a
+            // yield outside a suspendable body, which valid code cannot
+            // produce but which must not be compiled to a suspend if it does.
+            if (!suspendable_ || n->is_delegate()) return emit_treewalker_delegate(node);
+            if (n->get_argument()) {
+                if (!compile_expression(n->get_argument())) return false;
+            } else {
+                emit(Op::LdaUndefined);
+            }
+            emit(Op::Yield);
+            return !failed_;
+        }
+
+        case ASTNode::Type::AWAIT_EXPRESSION: {
+            const auto* n = static_cast<const AwaitExpression*>(node);
+            if (!suspendable_) return emit_treewalker_delegate(node);
+            if (n->get_argument()) {
+                if (!compile_expression(n->get_argument())) return false;
+            } else {
+                emit(Op::LdaUndefined);
+            }
+            emit(Op::Await);
+            emit_u8(n->get_argument() ? 1 : 0);
+            return !failed_;
+        }
 
         // Delegates to the tree-walker's own evaluate() (Op::CreateClosure) --
         // correct since env_mode guarantees every local this closure could

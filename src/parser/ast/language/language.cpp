@@ -1956,12 +1956,16 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
 }
 
 
-Value AwaitExpression::evaluate(Context& ctx) {
+// The suspend half of `await`, shared by the tree-walker's
+// AwaitExpression::evaluate and the compiled Op::Await so the two cannot
+// drift. The operand is already evaluated; `has_argument` carries the one
+// thing the value alone cannot say, since a bare `await` suspends once and
+// answers undefined rather than awaiting undefined.
+Value perform_await(Context& ctx, Value awaited, bool has_argument) {
     // Async generator fiber path
     AsyncGenerator* async_gen = AsyncGenerator::get_current();
     if (async_gen && async_gen->fiber_->co != nullptr) {
-        Value expr_val = argument_ ? argument_->evaluate(ctx) : Value();
-        if (ctx.has_exception()) return Value();
+        Value expr_val = awaited;
 
         Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
                                                        : async_gen->get_generator_context();
@@ -2058,7 +2062,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
 
     if (exec && exec->fiber_->co != nullptr) {
         // Fiber-based await: evaluate, suspend, resume with result
-        if (!argument_) {
+        if (!has_argument) {
             // `await` with no argument -- suspend once then return undefined
             auto self = exec->shared_from_this();
             Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
@@ -2069,8 +2073,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
             return Value();
         }
 
-        Value expr_val = argument_->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
+        Value expr_val = awaited;
 
         Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
 
@@ -2175,9 +2178,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
         return result;
     }
 
-    if (!argument_) return Value();
-    Value arg_value = argument_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
+    if (!has_argument) return Value();
+    Value arg_value = awaited;
 
     if (!arg_value.is_object()) return arg_value;
     Object* obj = arg_value.as_object();
@@ -2207,6 +2209,15 @@ Value AwaitExpression::evaluate(Context& ctx) {
     return arg_value;
 }
 
+Value AwaitExpression::evaluate(Context& ctx) {
+    Value awaited;
+    if (argument_) {
+        awaited = argument_->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+    }
+    return perform_await(ctx, awaited, argument_ != nullptr);
+}
+
 std::string AwaitExpression::to_string() const {
     return "await " + argument_->to_string();
 }
@@ -2218,6 +2229,152 @@ std::unique_ptr<ASTNode> AwaitExpression::clone() const {
     );
 }
 
+
+// The suspend half of a plain `yield`, shared by the tree-walker's
+// YieldExpression::evaluate and the compiled Op::Yield so the two cannot
+// drift -- the same reason object_spread_into and append_spread_values are
+// each one function. The value is already evaluated; what is left is the
+// fiber switch and what the resumption asks for.
+Value perform_yield(Context& ctx, Value yield_value) {
+    Generator* current_gen = Generator::get_current_generator();
+    if (!current_gen) {
+        if (AsyncGenerator::get_current()) {
+            AsyncGenerator* async_gen = AsyncGenerator::get_current();
+
+            // AsyncGeneratorYield step 5: Await(value) unconditionally, even a plain value (1 tick).
+            {
+                Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
+                                                               : async_gen->get_generator_context();
+                Promise* p;
+                Value wrapped_keepalive; // pins a freshly created wrapper promise as a GC root, if one was needed
+                if (AsyncUtils::is_promise(yield_value)) {
+                    p = static_cast<Promise*>(yield_value.as_object());
+                } else {
+                    // Get(yield_value, "then") must be read exactly once -- a side-effecting
+                    // getter must not be observed firing twice.
+                    Value then_val;
+                    if (yield_value.is_object()) then_val = yield_value.as_object()->get_property("then");
+                    if (then_val.is_function()) {
+                        auto wrapped_obj = ObjectFactory::create_promise(gctx);
+                        Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+                        auto res_fn = ObjectFactory::create_native_function("",
+                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
+                                wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
+                            }, 1);
+                        auto rej_fn = ObjectFactory::create_native_function("",
+                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
+                                wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
+                            }, 1);
+                        wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
+                        wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
+                        Value r = wrapped_raw->get_internal_slot("__tr_");
+                        Value j = wrapped_raw->get_internal_slot("__tj_");
+                        AsyncUtils::call_thenable_job(gctx, then_val.as_function(), yield_value, r, j, wrapped_raw);
+                        p = wrapped_raw;
+                        wrapped_keepalive = Value(wrapped_obj.release());
+                    } else {
+                        auto wrapped_obj = ObjectFactory::create_promise(gctx);
+                        Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+                        wrapped_raw->fulfill(yield_value);
+                        p = wrapped_raw;
+                        wrapped_keepalive = Value(wrapped_obj.release());
+                    }
+                }
+                if (p->get_state() == PromiseState::FULFILLED || p->get_state() == PromiseState::REJECTED) {
+                    // Await always costs a tick, even for an already-settled promise --
+                    // PerformPromiseThen never resolves its reaction synchronously, so a
+                    // shortcut straight through here would skip the mandatory suspension.
+                    bool was_rejected = (p->get_state() == PromiseState::REJECTED);
+                    Value settled = p->take_settled_value();
+                    if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
+                        async_gen->resume_from_await(settled, was_rejected);
+                    }, {Value(async_gen), settled});
+                    async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
+                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                    Collector::write_barrier(async_gen);
+                    quanta_fiber_yield(async_gen->fiber_.get());
+                    if (async_gen->await_is_throw_) {
+                        ctx.throw_exception(async_gen->await_result_, true);
+                        async_gen->await_is_throw_ = false;
+                        async_gen->await_result_ = Value();
+                        return Value();
+                    }
+                    yield_value = async_gen->await_result_;
+                    async_gen->await_result_ = Value();
+                } else {
+                    auto on_f = ObjectFactory::create_native_function("",
+                        [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                            Value val = args.empty() ? Value() : args[0];
+                            async_gen->resume_from_await(val, false);
+                            return Value();
+                        });
+                    auto on_r = ObjectFactory::create_native_function("",
+                        [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
+                            Value reason = args.empty() ? Value() : args[0];
+                            async_gen->resume_from_await(reason, true);
+                            return Value();
+                        });
+                    std::string aw_key = "yw_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+                    Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
+                    p->set_internal_slot("__af_" + aw_key, Value(on_f.release()));
+                    p->set_internal_slot("__ar_" + aw_key, Value(on_r.release()));
+                    p->then(ff_tmp, fr_tmp);
+                    async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
+                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                    Collector::write_barrier(async_gen);
+                    quanta_fiber_yield(async_gen->fiber_.get());
+                    if (async_gen->await_is_throw_) {
+                        ctx.throw_exception(async_gen->await_result_, true);
+                        async_gen->await_is_throw_ = false;
+                        async_gen->await_result_ = Value();
+                        return Value();
+                    }
+                    yield_value = async_gen->await_result_;
+                    async_gen->await_result_ = Value();
+                }
+            }
+
+            async_gen->yield_value_     = yield_value;
+            async_gen->suspend_reason_  = AsyncGenerator::SuspendReason::Yield;
+            Collector::write_barrier(async_gen);
+            quanta_fiber_yield(async_gen->fiber_.get());
+            // Resumed by next()/return()/throw()
+            if (async_gen->returning_) {
+                async_gen->returning_ = false;
+                // 25.5.3.7 step 8.b: the resumption value is itself Awaited before completing.
+                Value awaited_ret;
+                bool ret_threw = await_value(ctx, async_gen->return_arg_, awaited_ret);
+                if (ret_threw) { ctx.throw_exception(awaited_ret, true); return Value(); }
+                throw GeneratorReturnException(awaited_ret);
+            }
+            if (async_gen->throwing_) {
+                async_gen->throwing_ = false;
+                ctx.throw_exception(async_gen->sent_value_, true);
+                return Value();
+            }
+            return async_gen->sent_value_;
+        }
+        return yield_value;
+    }
+
+    // Fiber-based yield: actually suspend and switch back to caller
+    current_gen->yielded_value_ = yield_value;
+    current_gen->set_state(Generator::State::SuspendedYield);
+    Collector::write_barrier(current_gen);
+    quanta_fiber_yield(&current_gen->fiber_);
+
+    // Resumed by next()/throw()/return()
+    if (current_gen->returning_) {
+        current_gen->returning_ = false;
+        throw GeneratorReturnException(current_gen->return_argument_);
+    }
+    if (current_gen->throwing_) {
+        current_gen->throwing_ = false;
+        ctx.throw_exception(current_gen->throw_value_, true);
+        return Value();
+    }
+    return current_gen->sent_value_;
+}
 
 Value YieldExpression::evaluate(Context& ctx) {
     Generator* current_gen = Generator::get_current_generator();
@@ -3047,143 +3204,7 @@ Value YieldExpression::evaluate(Context& ctx) {
         if (ctx.has_exception()) return Value();
     }
 
-    if (!current_gen) {
-        if (AsyncGenerator::get_current()) {
-            AsyncGenerator* async_gen = AsyncGenerator::get_current();
-
-            // AsyncGeneratorYield step 5: Await(value) unconditionally, even a plain value (1 tick).
-            {
-                Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
-                                                               : async_gen->get_generator_context();
-                Promise* p;
-                Value wrapped_keepalive; // pins a freshly created wrapper promise as a GC root, if one was needed
-                if (AsyncUtils::is_promise(yield_value)) {
-                    p = static_cast<Promise*>(yield_value.as_object());
-                } else {
-                    // Get(yield_value, "then") must be read exactly once -- a side-effecting
-                    // getter must not be observed firing twice.
-                    Value then_val;
-                    if (yield_value.is_object()) then_val = yield_value.as_object()->get_property("then");
-                    if (then_val.is_function()) {
-                        auto wrapped_obj = ObjectFactory::create_promise(gctx);
-                        Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
-                        auto res_fn = ObjectFactory::create_native_function("",
-                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
-                            }, 1);
-                        auto rej_fn = ObjectFactory::create_native_function("",
-                            [wrapped_raw](Context&, std::span<const Value> args, Value receiver) -> Value {
-                                wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
-                            }, 1);
-                        wrapped_raw->set_internal_slot("__tr_", Value(res_fn.release()));
-                        wrapped_raw->set_internal_slot("__tj_", Value(rej_fn.release()));
-                        Value r = wrapped_raw->get_internal_slot("__tr_");
-                        Value j = wrapped_raw->get_internal_slot("__tj_");
-                        AsyncUtils::call_thenable_job(gctx, then_val.as_function(), yield_value, r, j, wrapped_raw);
-                        p = wrapped_raw;
-                        wrapped_keepalive = Value(wrapped_obj.release());
-                    } else {
-                        auto wrapped_obj = ObjectFactory::create_promise(gctx);
-                        Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
-                        wrapped_raw->fulfill(yield_value);
-                        p = wrapped_raw;
-                        wrapped_keepalive = Value(wrapped_obj.release());
-                    }
-                }
-                if (p->get_state() == PromiseState::FULFILLED || p->get_state() == PromiseState::REJECTED) {
-                    // Await always costs a tick, even for an already-settled promise --
-                    // PerformPromiseThen never resolves its reaction synchronously, so a
-                    // shortcut straight through here would skip the mandatory suspension.
-                    bool was_rejected = (p->get_state() == PromiseState::REJECTED);
-                    Value settled = p->take_settled_value();
-                    if (gctx) gctx->queue_microtask([async_gen, settled, was_rejected]() mutable {
-                        async_gen->resume_from_await(settled, was_rejected);
-                    }, {Value(async_gen), settled});
-                    async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
-                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                    Collector::write_barrier(async_gen);
-                    quanta_fiber_yield(async_gen->fiber_.get());
-                    if (async_gen->await_is_throw_) {
-                        ctx.throw_exception(async_gen->await_result_, true);
-                        async_gen->await_is_throw_ = false;
-                        async_gen->await_result_ = Value();
-                        return Value();
-                    }
-                    yield_value = async_gen->await_result_;
-                    async_gen->await_result_ = Value();
-                } else {
-                    auto on_f = ObjectFactory::create_native_function("",
-                        [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                            Value val = args.empty() ? Value() : args[0];
-                            async_gen->resume_from_await(val, false);
-                            return Value();
-                        });
-                    auto on_r = ObjectFactory::create_native_function("",
-                        [async_gen, gctx](Context&, std::span<const Value> args, Value receiver) -> Value {
-                            Value reason = args.empty() ? Value() : args[0];
-                            async_gen->resume_from_await(reason, true);
-                            return Value();
-                        });
-                    std::string aw_key = "yw_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
-                    Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
-                    p->set_internal_slot("__af_" + aw_key, Value(on_f.release()));
-                    p->set_internal_slot("__ar_" + aw_key, Value(on_r.release()));
-                    p->then(ff_tmp, fr_tmp);
-                    async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
-                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
-                    Collector::write_barrier(async_gen);
-                    quanta_fiber_yield(async_gen->fiber_.get());
-                    if (async_gen->await_is_throw_) {
-                        ctx.throw_exception(async_gen->await_result_, true);
-                        async_gen->await_is_throw_ = false;
-                        async_gen->await_result_ = Value();
-                        return Value();
-                    }
-                    yield_value = async_gen->await_result_;
-                    async_gen->await_result_ = Value();
-                }
-            }
-
-            async_gen->yield_value_     = yield_value;
-            async_gen->suspend_reason_  = AsyncGenerator::SuspendReason::Yield;
-            Collector::write_barrier(async_gen);
-            quanta_fiber_yield(async_gen->fiber_.get());
-            // Resumed by next()/return()/throw()
-            if (async_gen->returning_) {
-                async_gen->returning_ = false;
-                // 25.5.3.7 step 8.b: the resumption value is itself Awaited before completing.
-                Value awaited_ret;
-                bool ret_threw = await_value(ctx, async_gen->return_arg_, awaited_ret);
-                if (ret_threw) { ctx.throw_exception(awaited_ret, true); return Value(); }
-                throw GeneratorReturnException(awaited_ret);
-            }
-            if (async_gen->throwing_) {
-                async_gen->throwing_ = false;
-                ctx.throw_exception(async_gen->sent_value_, true);
-                return Value();
-            }
-            return async_gen->sent_value_;
-        }
-        return yield_value;
-    }
-
-    // Fiber-based yield: actually suspend and switch back to caller
-    current_gen->yielded_value_ = yield_value;
-    current_gen->set_state(Generator::State::SuspendedYield);
-    Collector::write_barrier(current_gen);
-    quanta_fiber_yield(&current_gen->fiber_);
-
-    // Resumed by next()/throw()/return()
-    if (current_gen->returning_) {
-        current_gen->returning_ = false;
-        throw GeneratorReturnException(current_gen->return_argument_);
-    }
-    if (current_gen->throwing_) {
-        current_gen->throwing_ = false;
-        ctx.throw_exception(current_gen->throw_value_, true);
-        return Value();
-    }
-    return current_gen->sent_value_;
+    return perform_yield(ctx, yield_value);
 }
 
 std::string YieldExpression::to_string() const {

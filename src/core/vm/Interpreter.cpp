@@ -37,6 +37,11 @@ void append_spread_values(Context& ctx, const Value& spread_value, std::vector<V
 // Defined in literals.cpp: the single definition of what an object spread
 // copies, shared with the tree-walker (see Op::ObjectSpreadInto).
 bool object_spread_into(Context&, Object*, const Value&);
+// From language.cpp, backing Op::Yield: the fiber switch a plain `yield` is,
+// shared with YieldExpression::evaluate so the two cannot drift.
+Value perform_yield(Context& ctx, Value yield_value);
+// Likewise from language.cpp, backing Op::Await.
+Value perform_await(Context& ctx, Value awaited, bool has_argument);
 // From the tree-walker's misc.cpp, backing Op::CreateRegExp.
 Value create_regexp_literal(Context& ctx, const std::string& pattern, const std::string& flags);
 // Likewise from binary.cpp, backing Op::HasPrivate.
@@ -1858,6 +1863,33 @@ Value h_gen_BitNot(Frame& f, uint32_t pc, Value acc) {
                 acc = acc.bitwise_not();
                 break;
     } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_Await(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const bool has_argument = f.code[pc + 1] != 0;
+    pc += 2;
+    acc = perform_await(ctx, acc, has_argument);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_Yield(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    // Everything a yield does happens in here: the value goes out, the fiber
+    // switches, and whatever next() sent comes back in the accumulator. A
+    // return() resumption leaves as a C++ GeneratorReturnException, which run()
+    // is already the landing pad for.
+    acc = perform_yield(ctx, acc);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -4487,6 +4519,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LogicalNot)] = &h_gen_LogicalNot;
     t[static_cast<uint8_t>(Op::BitNot)] = &h_gen_BitNot;
     t[static_cast<uint8_t>(Op::TypeOf)] = &h_gen_TypeOf;
+    t[static_cast<uint8_t>(Op::Yield)] = &h_gen_Yield;
+    t[static_cast<uint8_t>(Op::Await)] = &h_gen_Await;
     t[static_cast<uint8_t>(Op::ToNumber)] = &h_gen_ToNumber;
     t[static_cast<uint8_t>(Op::ToNumeric)] = &h_gen_ToNumeric;
     t[static_cast<uint8_t>(Op::ToTemplateString)] = &h_gen_ToTemplateString;

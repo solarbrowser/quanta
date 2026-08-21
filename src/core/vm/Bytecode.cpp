@@ -121,6 +121,7 @@ const OpInfo& op_info(Op op) {
         {"LdaConstStar", 3, 'K'}, {"LdaZeroStar", 1, 'r'},
         {"LdaThisStar", 1, 'r'}, {"LdaEnvStar", 3, 'N'}, {"LdaLookupStar", 3, 'N'},
         {"LdaEnvSlotStar", 4, 'F'}, {"GetNamedStar", 6, 'G'},
+        {"Yield", 0, '-'}, {"Await", 1, 'i'},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");
