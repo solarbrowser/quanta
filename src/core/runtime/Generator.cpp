@@ -275,6 +275,12 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
         generator_context_->clear_exception();
         return GeneratorResult::make_exception(exc);
     }
+    // An inner iterator that caught a forwarded throw and yielded again
+    // answers with a result object, which travels out untouched.
+    if (yield_raw_result_) {
+        yield_raw_result_ = false;
+        return GeneratorResult::make_raw(yielded_result_);
+    }
     return GeneratorResult(yielded_value_, false);
 }
 
@@ -343,6 +349,10 @@ Value Generator::generator_return(Context& ctx, std::span<const Value> args, Val
         return Value();
     }
 
+    // A yield* that forwarded this return answers with the inner iterator's
+    // own result object, not one rebuilt from value/done.
+    if (result.raw_result) return result.value;
+
     return Iterator::create_iterator_result(result.value, result.done);
 }
 
@@ -380,6 +390,10 @@ Value Generator::generator_throw(Context& ctx, std::span<const Value> args, Valu
         ctx.throw_exception(ex);
         return Value();
     }
+
+    // A yield* that forwarded this throw answers with the inner iterator's
+    // own result object, not one rebuilt from value/done.
+    if (result.raw_result) return result.value;
 
     return Iterator::create_iterator_result(result.value, result.done);
 }
