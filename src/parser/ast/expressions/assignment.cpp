@@ -1159,6 +1159,37 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             }
             assigned_keys.push_back(prop_name);
 
+            // Determine assignment target. Resolved before the property is read:
+            // KeyedDestructuringAssignmentEvaluation evaluates the target's
+            // reference (step 1) ahead of GetV (step 2), so a member target's
+            // object and computed key run before the source's getter does. The
+            // array path already works this way.
+            ASTNode* target = prop->shorthand ? prop->key.get() : prop->value.get();
+            AssignmentExpression* default_assign = nullptr;
+            if (prop->shorthand && prop->value &&
+                prop->value->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                default_assign = static_cast<AssignmentExpression*>(prop->value.get());
+                target = default_assign->left_.get();
+            } else if (!prop->shorthand && target &&
+                       target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                default_assign = static_cast<AssignmentExpression*>(target);
+                target = default_assign->left_.get();
+            }
+
+            Value member_obj, member_key;
+            bool has_member_ref = false;
+            if (mode == DestructureMode::Assign && target &&
+                target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                auto* mem = static_cast<MemberExpression*>(target);
+                member_obj = mem->get_object()->evaluate(ctx);
+                if (ctx.has_exception()) return;
+                if (mem->is_computed()) {
+                    member_key = mem->get_property()->evaluate(ctx);
+                    if (ctx.has_exception()) return;
+                }
+                has_member_ref = true;
+            }
+
             Value prop_value = source_obj->get_property(prop_name);
             // Getter may throw into Object::current_context_ rather than ctx
             if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
@@ -1168,50 +1199,25 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             }
             if (ctx.has_exception()) return;
 
-            // Determine assignment target
-            ASTNode* target = prop->shorthand ? prop->key.get() : prop->value.get();
-
-            // Check for defaults: shorthand with AssignmentExpression value means {a = default}
-            if (prop->shorthand && prop->value &&
-                prop->value->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-                auto* assign = static_cast<AssignmentExpression*>(prop->value.get());
-                ASTNode* lhs = assign->left_.get();
-                if (prop_value.is_undefined()) {
-                    stamp_pattern_default_class(assign->right_.get(), lhs);
-                    prop_value = assign->right_->evaluate(ctx);
-                    if (ctx.has_exception()) return;
-                    if (prop_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
-                            lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Function* fn = prop_value.as_function();
-                        if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                            fn->set_name(static_cast<Identifier*>(lhs)->get_name());
-                        }
+            // `{a = d}` and `{key: target = d}` both reach here with the
+            // default's node kept from the unwrapping above.
+            if (default_assign && prop_value.is_undefined()) {
+                stamp_pattern_default_class(default_assign->right_.get(), target);
+                prop_value = default_assign->right_->evaluate(ctx);
+                if (ctx.has_exception()) return;
+                if (prop_value.is_function() &&
+                        is_anonymous_function_def(default_assign->right_.get()) &&
+                        target && target->get_type() == ASTNode::Type::IDENTIFIER) {
+                    Function* fn = prop_value.as_function();
+                    if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                        fn->set_name(static_cast<Identifier*>(target)->get_name());
                     }
                 }
-                target = lhs;
             }
 
-            // Non-shorthand with AssignmentExpression value: {key: target = default}
-            if (!prop->shorthand && target &&
-                target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-                auto* assign = static_cast<AssignmentExpression*>(target);
-                ASTNode* lhs = assign->left_.get();
-                if (prop_value.is_undefined()) {
-                    stamp_pattern_default_class(assign->right_.get(), lhs);
-                    prop_value = assign->right_->evaluate(ctx);
-                    if (ctx.has_exception()) return;
-                    if (prop_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
-                            lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Function* fn = prop_value.as_function();
-                        if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                            fn->set_name(static_cast<Identifier*>(lhs)->get_name());
-                        }
-                    }
-                }
-                target = lhs;
-            }
-
-            assign_to_target(ctx, target, prop_value, nullptr, nullptr, mode);
+            assign_to_target(ctx, target, prop_value,
+                             has_member_ref ? &member_obj : nullptr,
+                             has_member_ref ? &member_key : nullptr, mode);
             if (ctx.has_exception()) return;
         }
     } else if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {

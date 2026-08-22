@@ -164,9 +164,15 @@ private:
     bool emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const,
                                  bool is_assignment = false);
     int emit_with_target_resolve(const ASTNode* target, bool is_lexical);
+    // A member target's reference is evaluated before the source is read
+    // (spec: lRef ahead of GetV / of the iterator step), so its object and
+    // computed key are parked in registers at that point and the store below
+    // reuses them. Returns the object register, or -1 when the target is not
+    // a member this path writes through.
+    int emit_member_target_resolve(const ASTNode* target, bool is_assignment, int& key_reg);
     bool emit_pattern_target_store(const ASTNode* target, bool is_lexical, bool is_const,
                                    bool is_assignment,
-                                   int with_target_reg = -1);
+                                   int with_target_reg = -1, int member_obj_reg = -1, int member_key_reg = -1);
     bool emit_pattern_assign(const ASTNode* pattern, const ASTNode* source);
     bool pattern_target_is_writable(const std::string& name) const;
     bool emit_tagged_template_args(const class CallExpression* call, int& args_start, uint8_t& argc);

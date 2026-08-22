@@ -5143,6 +5143,16 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
             if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
                 target = static_cast<const AssignmentExpression*>(target)->get_left();
             }
+            if (is_assignment && target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                const auto* m = static_cast<const MemberExpression*>(target);
+                if (member_is_super(m) || member_is_private(m) || !member_is_supported(m)) return false;
+                // A yield/await inside the target's own expression suspends in
+                // the middle of the pattern, between the reference being
+                // resolved and the element being read. The tree-walker keeps
+                // that shape.
+                if (suspendable_ && contains_suspend(m)) return false;
+                continue;
+            }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
                 // A declaration writes a name this chunk owns; an assignment can
                 // also name something further out, which a chain write reaches.
@@ -5167,6 +5177,16 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
             }
             if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
                 target = static_cast<const AssignmentExpression*>(target)->get_left();
+            }
+            if (is_assignment && target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                const auto* m = static_cast<const MemberExpression*>(target);
+                if (member_is_super(m) || member_is_private(m) || !member_is_supported(m)) return false;
+                // A yield/await inside the target's own expression suspends in
+                // the middle of the pattern, between the reference being
+                // resolved and the element being read. The tree-walker keeps
+                // that shape.
+                if (suspendable_ && contains_suspend(m)) return false;
+                continue;
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
                 const std::string& n = static_cast<const Identifier*>(target)->get_name();
@@ -5491,9 +5511,48 @@ int BytecodeCompiler::emit_with_target_resolve(const ASTNode* target, bool is_le
     return reg;
 }
 
+int BytecodeCompiler::emit_member_target_resolve(const ASTNode* target, bool is_assignment,
+                                                 int& key_reg) {
+    key_reg = -1;
+    if (!is_assignment || !target || target->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return -1;
+    const auto* mem = static_cast<const MemberExpression*>(target);
+    if (member_is_super(mem) || member_is_private(mem) || !member_is_supported(mem)) return -1;
+    if (!compile_expression(mem->get_object())) { failed_ = true; return -1; }
+    int obj_reg = alloc_temp();
+    if (failed_) return -1;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(obj_reg));
+    if (mem->is_computed()) {
+        if (!compile_expression(mem->get_property())) { failed_ = true; return -1; }
+        key_reg = alloc_temp();
+        if (failed_) return -1;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(key_reg));
+    }
+    return obj_reg;
+}
+
 bool BytecodeCompiler::emit_pattern_target_store(const ASTNode* target, bool is_lexical,
                                                  bool is_const, bool is_assignment,
-                                                 int with_target_reg) {
+                                                 int with_target_reg, int member_obj_reg,
+                                                 int member_key_reg) {
+    // The value is in the accumulator, which is where SetNamed/SetKeyed want
+    // it; the reference was resolved before the source was read.
+    if (member_obj_reg >= 0) {
+        const auto* mem = static_cast<const MemberExpression*>(target);
+        if (member_key_reg >= 0) {
+            emit(Op::SetKeyed);
+            emit_u8(static_cast<uint8_t>(member_obj_reg));
+            emit_u8(static_cast<uint8_t>(member_key_reg));
+            emit_u16(alloc_keyed_feedback());
+        } else {
+            emit(Op::SetNamed);
+            emit_u8(static_cast<uint8_t>(member_obj_reg));
+            emit_u16(add_name(static_cast<const Identifier*>(mem->get_property())->get_name()));
+            emit_u16(alloc_feedback_slot());
+        }
+        return !failed_;
+    }
     if (target->get_type() == ASTNode::Type::IDENTIFIER) {
         const std::string& name = static_cast<const Identifier*>(target)->get_name();
         if (with_target_reg >= 0) {
@@ -5580,12 +5639,18 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
         if (!prop->key) {  // `...rest`
             const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
             const int rest_with = emit_with_target_resolve(rt, is_lexical);
+            int rest_key = -1;
+            const int rest_obj = emit_member_target_resolve(rt, is_assignment, rest_key);
+            if (failed_) return false;
             emit(Op::CopyRestProperties);
             emit_u8(static_cast<uint8_t>(src_reg));
             emit_u8(static_cast<uint8_t>(keys_reg));
-            if (!emit_pattern_target_store(rt, is_lexical, is_const, is_assignment, rest_with)) {
+            if (!emit_pattern_target_store(rt, is_lexical, is_const, is_assignment, rest_with,
+                                           rest_obj, rest_key)) {
                 return false;
             }
+            if (rest_key >= 0) free_temp(rest_key);
+            if (rest_obj >= 0) free_temp(rest_obj);
             if (rest_with >= 0) free_temp(rest_with);
             continue;
         }
@@ -5598,20 +5663,31 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
         }
 
         int with_reg = -1;
+        int member_obj = -1;
+        int member_key = -1;
+        int key_hold = -1;
         if (prop->computed) {
             if (!compile_expression(prop->key.get())) return false;
             emit(Op::ToPropertyKey);
             record_key();
-            if (with_depth_ > 0 && !is_lexical &&
-                target->get_type() == ASTNode::Type::IDENTIFIER) {
-                int key_hold = alloc_temp();
+            const bool resolve_target_first =
+                (with_depth_ > 0 && !is_lexical && target->get_type() == ASTNode::Type::IDENTIFIER) ||
+                (is_assignment && target->get_type() == ASTNode::Type::MEMBER_EXPRESSION);
+            if (resolve_target_first) {
+                // The key is computed and has to survive the target's own
+                // evaluation, so it waits in a register. It is released with
+                // the target's registers at the end of the element rather than
+                // here: freeing it first would hand its number back while the
+                // registers allocated after it are still live.
+                key_hold = alloc_temp();
                 if (failed_) return false;
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(key_hold));
                 with_reg = emit_with_target_resolve(target, is_lexical);
+                member_obj = emit_member_target_resolve(target, is_assignment, member_key);
+                if (failed_) return false;
                 emit(Op::Ldar);
                 emit_u8(static_cast<uint8_t>(key_hold));
-                free_temp(key_hold);
             }
             emit(Op::GetKeyed);
             emit_u8(static_cast<uint8_t>(src_reg));
@@ -5632,6 +5708,8 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
                 record_key();
             }
             with_reg = emit_with_target_resolve(target, is_lexical);
+            member_obj = emit_member_target_resolve(target, is_assignment, member_key);
+            if (failed_) return false;
             emit(Op::GetNamed);
             emit_u8(static_cast<uint8_t>(src_reg));
             emit_u16(add_name(key));
@@ -5655,10 +5733,14 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
             if (!patch_jump(skip)) return false;
         }
 
-        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment, with_reg)) {
+        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment, with_reg,
+                                       member_obj, member_key)) {
             return false;
         }
+        if (member_key >= 0) free_temp(member_key);
+        if (member_obj >= 0) free_temp(member_obj);
         if (with_reg >= 0) free_temp(with_reg);
+        if (key_hold >= 0) free_temp(key_hold);
     }
     if (has_rest) { free_temp(keys_idx_reg); free_temp(keys_reg); }
     free_temp(src_reg);
@@ -5692,6 +5774,9 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
     // [[Done]] true per spec, and must NOT close -- so the step sequences stay
     // outside every guarded range.
     std::vector<std::pair<size_t, size_t>> guarded;
+    // Spans that run after the iterator has been drained: the spec closes it
+    // only while it is not done, so a throw out of these just propagates.
+    std::vector<std::pair<size_t, size_t>> drained;
 
     // Leaves the next value in the accumulator, or undefined once exhausted.
     auto step = [&]() -> bool {
@@ -5724,7 +5809,15 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
 
         if (el->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
             const ASTNode* rest_target = static_cast<const SpreadElement*>(el)->get_argument();
+            const size_t rest_ref_span = code_.size();
             const int rest_with = emit_with_target_resolve(rest_target, is_lexical);
+            int rest_key = -1;
+            const int rest_obj = emit_member_target_resolve(rest_target, is_assignment, rest_key);
+            if (failed_) return false;
+            // The target's own reference throwing closes the iterator too, so
+            // it is guarded like the store is -- separately, because what runs
+            // between them (the iterator being drained) must not be.
+            if (code_.size() > rest_ref_span) guarded.emplace_back(rest_ref_span, code_.size());
             emit(Op::CreateArray);
             emit_u16(0);
             int arr_reg = alloc_temp();
@@ -5765,16 +5858,18 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             emit(Op::Ldar);
             emit_u8(static_cast<uint8_t>(arr_reg));
             size_t rest_span = code_.size();
-            if (rest_target->get_type() == ASTNode::Type::IDENTIFIER) {
+            if (rest_target->get_type() == ASTNode::Type::IDENTIFIER || rest_obj >= 0) {
                 if (!emit_pattern_target_store(rest_target, is_lexical, is_const, is_assignment,
-                                               rest_with)) {
+                                               rest_with, rest_obj, rest_key)) {
                     return false;
                 }
-            } else if (!emit_pattern_bind(rest_target, is_lexical, is_const)) {
+            } else if (!emit_pattern_bind(rest_target, is_lexical, is_const, is_assignment)) {
                 return false;
             }
+            if (rest_key >= 0) free_temp(rest_key);
+            if (rest_obj >= 0) free_temp(rest_obj);
             if (rest_with >= 0) free_temp(rest_with);
-            if (code_.size() > rest_span) guarded.emplace_back(rest_span, code_.size());
+            if (code_.size() > rest_span) drained.emplace_back(rest_span, code_.size());
             free_temp(idx_reg);
             free_temp(arr_reg);
             break;  // a rest element is always last
@@ -5788,7 +5883,12 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             target = ae->get_left();
         }
 
+        const size_t ref_span = code_.size();
         const int with_reg = emit_with_target_resolve(target, is_lexical);
+        int member_key = -1;
+        const int member_obj = emit_member_target_resolve(target, is_assignment, member_key);
+        if (failed_) return false;
+        if (code_.size() > ref_span) guarded.emplace_back(ref_span, code_.size());
         if (!step()) return false;
         size_t span_start = code_.size();
         if (default_expr) {
@@ -5807,9 +5907,12 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             }
             if (!patch_jump(skip)) return false;
         }
-        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment, with_reg)) {
+        if (!emit_pattern_target_store(target, is_lexical, is_const, is_assignment, with_reg,
+                                       member_obj, member_key)) {
             return false;
         }
+        if (member_key >= 0) free_temp(member_key);
+        if (member_obj >= 0) free_temp(member_obj);
         if (with_reg >= 0) free_temp(with_reg);
         if (code_.size() > span_start) guarded.emplace_back(span_start, code_.size());
     }
@@ -5832,6 +5935,15 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
         chunk_->ensure_handlers().push_back({static_cast<uint32_t>(span.first),
                                              static_cast<uint32_t>(span.second),
                                              static_cast<uint32_t>(cleanup_pc)});
+    }
+    if (!drained.empty()) {
+        size_t rethrow_pc = code_.size();
+        emit(Op::Throw);  // acc holds the pending exception
+        for (const auto& span : drained) {
+            chunk_->ensure_handlers().push_back({static_cast<uint32_t>(span.first),
+                                                 static_cast<uint32_t>(span.second),
+                                                 static_cast<uint32_t>(rethrow_pc)});
+        }
     }
     if (!patch_jump(skip_cleanup)) return false;
 
