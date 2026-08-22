@@ -3670,6 +3670,15 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // Suspendable bodies, delegated expressions and nested closures all keep
     // env_mode on: emit_treewalker_delegate, Op::CreateClosure and
     // Op::DeclareFunction each refuse to emit without it.
+    // An assigned const cannot live in a register: the refusal the assignment
+    // owes is carried by the environment binding's mutable flag, and a register
+    // has nowhere to put it. Wanting one is itself a reason to have an
+    // environment, so this is settled before env_mode is.
+    for (const auto& info : declared) {
+        if (info.is_const && assigns_to_identifier(body, info.name)) {
+            env_resident.insert(info.name);
+        }
+    }
     const bool env_mode = full_env || has_closures || !env_resident.empty() ||
                           suspendable || has_delegated_expr;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
@@ -3709,14 +3718,19 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // opens a child scope for the body then, so the closure never sees a name
     // the body declares. Only this shape pays for it.
     bool split_param_scope = false;
+    bool param_expressions = false;
     for (const auto& p : params) {
         if (p->is_rest()) continue;
+        if (p->has_default() || p->has_destructuring()) param_expressions = true;
         if ((p->has_default() && contains_closure(p->get_default_value())) ||
             (p->has_destructuring() && contains_closure(p->get_destructuring_pattern()))) {
             split_param_scope = true;
-            break;
         }
     }
+    // A lexical `arguments` over a parameter list with expressions does not
+    // replace the implicit object -- both exist, one per scope -- so it needs
+    // the split for the same reason.
+    if (arguments_is_lexical && param_expressions) split_param_scope = true;
 
     constexpr size_t kEnvSlotPredictMax = 32;
     size_t flat_slot_counter = 0;
@@ -3751,9 +3765,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             // of its own, seeded from the parameter scope's.
             if (!info.is_lexical && !split_param_scope) continue;
             // A lexical one only replaces the object when the parameter list is
-            // simple; otherwise both exist, in the two scopes a parameter list
-            // with expressions creates, which one flat environment cannot hold.
-            if (needs_arguments) return nullptr;
+            // simple; otherwise both exist, one per scope, which needs the two
+            // Op::BindEnvLocals opens.
+            if (needs_arguments && !split_param_scope) return nullptr;
         }
         bool aliases_param = false;
         bool nested_lexical_shadows_param = false;
@@ -4283,17 +4297,17 @@ BytecodeCompiler::BytecodeCompiler(const std::vector<std::string>& param_names, 
         full_env_ = false;
         env_resident_ = *env_resident;
     }
+    // A repeated simple parameter name is legal in sloppy code and refers to
+    // the last one. Whichever storage it gets, the later occurrence takes the
+    // name over; the earlier register still holds its argument, unread.
     if (env_mode_ && full_env_) {
-        for (const auto& p : param_names) {
-            if (!env_names_.insert(p).second) { failed_ = true; return; }
-        }
+        for (const auto& p : param_names) env_names_.insert(p);
         return;
     }
     // Register (or selective) mode: every param owns register i. A selective
     // env-resident param keeps its register as the entry seed source; all
     // reads/writes go through the env binding (see emit_read_local).
     for (const auto& p : param_names) {
-        if (locals_.count(p)) { failed_ = true; return; }
         locals_[p] = next_register_++;
         if (env_mode_ && env_resident_.count(p)) env_names_.insert(p);
     }
