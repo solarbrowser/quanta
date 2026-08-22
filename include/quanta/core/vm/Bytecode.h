@@ -306,6 +306,17 @@ enum class Op : uint8_t {
     // form's operand. Only a literal large enough to fill the pool reaches it.
     LdaConstWide,              // k32
 
+    // Same operands as Call. A direct eval runs in the caller's scope, and the
+    // eval builtin learns that from a flag on the calling context.
+    CallDirectEval,            // r_callee r_args_start argc n
+
+    // An assignment's reference is made before its right side runs. Nothing can
+    // move it in between except a direct eval, which can declare a nearer
+    // binding, so only a body containing one resolves ahead and parks it.
+    ResolveBindingEnv,         // n16 u8slot
+    LdaResolvedEnv,            // u8slot n16
+    StaResolvedEnv,            // u8slot n16
+
     kCount
 };
 

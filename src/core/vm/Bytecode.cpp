@@ -130,7 +130,10 @@ const OpInfo& op_info(Op op) {
         {"PushDisposeScope", 0, '-'}, {"RegisterDisposable", 1, 'i'}, {"DisposeScope", 1, 'i'}, {"PushWithEnv", 0, '-'},
         {"LdaWith", 3, 'n'}, {"ResolveWithTarget", 2, 'n'}, {"LdaWithResolved", 3, 'l'},
         {"StaWithResolved", 3, 'l'},
-        {"LdaConstWide", 4, 'q'}
+        {"LdaConstWide", 4, 'q'},
+        {"CallDirectEval", 5, 'c'},
+        {"ResolveBindingEnv", 3, 'n'},
+        {"LdaResolvedEnv", 3, 'i'}, {"StaResolvedEnv", 3, 'i'}
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");

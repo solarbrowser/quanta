@@ -3483,26 +3483,6 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (p->has_default() && uses_arguments(p->get_default_value())) needs_arguments = true;
         if (p->has_destructuring() && uses_arguments(p->get_destructuring_pattern())) needs_arguments = true;
     }
-    // FunctionDeclarationInstantiation decides whether the implicit object
-    // exists at all: a parameter named `arguments`, or a lexical one over a
-    // simple parameter list, takes its place. A `var arguments` does not --
-    // the object is still created and the var names it rather than declaring a
-    // second binding, so it has to exist even where nothing reads it.
-    bool arguments_is_var = false;
-    for (const auto& info : declared) {
-        if (info.name != "arguments" || info.is_lexical) continue;
-        arguments_is_var = true;
-    }
-    bool arguments_is_lexical = false;
-    for (const auto& info : declared) {
-        if (info.name == "arguments" && info.is_lexical) arguments_is_lexical = true;
-    }
-    if (arguments_is_param || (arguments_is_lexical && !has_complex_params)) {
-        needs_arguments = false;
-    } else if (arguments_is_var) {
-        needs_arguments = true;
-    }
-
     // Shadowing is covered too: a true duplicate name always has a nested
     // occurrence (a top-level dup is already a parser SyntaxError).
     // super/private-name access also forces env_mode: those forms delegate
@@ -3526,6 +3506,53 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     bool an_eval = false, an_class = false, an_unknown = false, an_super = false;
     collect_closure_names(body, /*inside_closure=*/true, all_names, an_eval, an_class, an_unknown,
                           suspendable, &an_super);
+    // A direct eval can name `arguments` from inside its own source, which no
+    // scan of this body can read, so mentioning eval is reason enough.
+    if (an_eval) needs_arguments = true;
+    // A sloppy function keeps its top-level lexical declarations in an
+    // environment of their own, distinct from the variable environment, purely
+    // so a direct eval can tell that a `var` it wants to introduce collides
+    // with one (spec FDI step 29). One environment holds both here, so a body
+    // with both an eval and a top-level lexical stays on the tree-walker.
+    if (an_eval) {
+        for (const auto& info : declared) {
+            if (info.is_lexical) return nullptr;
+        }
+    }
+
+    // Eval inside a parameter initializer answers to EvalDeclarationInstantiation
+    // rules the entry sequence does not set up: it reads the parameter names and
+    // the arguments conflict off the calling context.
+    for (const auto& p : params) {
+        const ASTNode* pe = p->has_default() ? p->get_default_value()
+                          : p->has_destructuring() ? p->get_destructuring_pattern() : nullptr;
+        if (!pe) continue;
+        std::unordered_set<std::string> pn;
+        bool pe_eval = false, pe_class = false, pe_unknown = false;
+        collect_closure_names(pe, /*inside_closure=*/true, pn, pe_eval, pe_class, pe_unknown);
+        if (pe_eval) return nullptr;
+    }
+
+    // FunctionDeclarationInstantiation decides whether the implicit object
+    // exists at all: a parameter named `arguments`, or a lexical one over a
+    // simple parameter list, takes its place. A `var arguments` does not --
+    // the object is still created and the var names it rather than declaring a
+    // second binding, so it has to exist even where nothing reads it.
+    bool arguments_is_var = false;
+    for (const auto& info : declared) {
+        if (info.name != "arguments" || info.is_lexical) continue;
+        arguments_is_var = true;
+    }
+    bool arguments_is_lexical = false;
+    for (const auto& info : declared) {
+        if (info.name == "arguments" && info.is_lexical) arguments_is_lexical = true;
+    }
+    if (arguments_is_param || (arguments_is_lexical && !has_complex_params)) {
+        needs_arguments = false;
+    } else if (arguments_is_var) {
+        needs_arguments = true;
+    }
+
     // Destructuring does not go here. It delegates to the tree-walker, so the
     // names it binds have to be Environment-resident -- but only those names.
     // Demanding a full environment for the whole function meant one pattern
@@ -3537,8 +3564,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const bool has_destructuring = contains_destructuring(body);
     // A `with` puts an object on the scope chain, so every name inside it has
     // to resolve by walking that chain -- no register, no slot index.
+    // A direct eval reads and writes the caller's scope by name, so nothing
+    // this function owns may sit in a register.
     bool full_env = has_complex_params || needs_arguments ||
-                    an_class || an_unknown ||
+                    an_class || an_unknown || an_eval ||
                     an_super || contains_with(body);
 
     // Selective env_mode: only names a closure (or a suspendable body's own
@@ -3684,6 +3713,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
     if (compiler.failed_) return nullptr;
     compiler.allow_arguments_ = needs_arguments;
+    compiler.eval_in_body_ = an_eval;
     compiler.suspendable_ = suspendable;
     if (has_rest) {
         if (!env_mode || !compiler.env_names_.insert(rest_name).second) return nullptr;
@@ -7528,6 +7558,27 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         free_temp(target);
                         return !failed_;
                     }
+                    if (!compound && eval_in_body_) {
+                        // A direct eval in the right side can declare a nearer
+                        // binding, so the resolved one is kept rather than the
+                        // verdict alone (spec 13.15.2: the reference is made
+                        // before the right side runs, and the store is to it).
+                        if (resolved_env_slots_ >= 8) return false;
+                        const uint8_t slot = resolved_env_slots_++;
+                        emit(Op::ResolveBindingEnv);
+                        emit_u16(add_name(name));
+                        emit_u8(slot);
+                        if (!compile_expression(expr->get_right())) return false;
+                        if (!expr->is_lhs_paren() && is_named_evaluation_rhs(expr->get_right())) {
+                            emit(Op::SetFunctionNameIfUnnamed);
+                            emit_u16(add_name(name));
+                        }
+                        emit(Op::StaResolvedEnv);
+                        emit_u8(slot);
+                        emit_u16(add_name(name));
+                        resolved_env_slots_--;
+                        return !failed_;
+                    }
                     if (!compound) {
                         // Spec 13.15.2: ResolveBinding happens before the RHS
                         // evaluates, so an unresolvable reference throws (in
@@ -7581,8 +7632,24 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     }
                     // Spec order: the old value is read (and an unresolvable
                     // reference throws) BEFORE the rhs runs.
-                    emit(Op::LdaLookup);
-                    emit_u16(add_name(name));
+                    uint8_t eval_slot = 0;
+                    const bool park = eval_in_body_;
+                    if (park) {
+                        // One resolution serves the read and the write, so a
+                        // direct eval in the rhs cannot move the target between
+                        // them.
+                        if (resolved_env_slots_ >= 8) return false;
+                        eval_slot = resolved_env_slots_++;
+                        emit(Op::ResolveBindingEnv);
+                        emit_u16(add_name(name));
+                        emit_u8(eval_slot);
+                        emit(Op::LdaResolvedEnv);
+                        emit_u8(eval_slot);
+                        emit_u16(add_name(name));
+                    } else {
+                        emit(Op::LdaLookup);
+                        emit_u16(add_name(name));
+                    }
                     int temp = alloc_temp();
                     if (failed_) return false;
                     emit(Op::Star);
@@ -7591,8 +7658,15 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     emit(vm_op);
                     emit_u8(static_cast<uint8_t>(temp));
                     free_temp(temp);
-                    emit(Op::StaLookup);
-                    emit_u16(add_name(name));
+                    if (park) {
+                        emit(Op::StaResolvedEnv);
+                        emit_u8(eval_slot);
+                        emit_u16(add_name(name));
+                        resolved_env_slots_--;
+                    } else {
+                        emit(Op::StaLookup);
+                        emit_u16(add_name(name));
+                    }
                     return !failed_;
                 }
 
@@ -8092,13 +8166,15 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u8(static_cast<uint8_t>(call_args.size()));
                 return !failed_;
             }
-            // Direct eval needs the caller's scope, which a compiled frame
-            // does not hand over. `import(...)` used to sit here with it, but
-            // the callee is an ordinary global function and a reserved word no
-            // one can shadow, so the plain call form below is already right.
-            if (named_callee && callee_name == "eval") {
-                return false;
-            }
+            // A direct eval reads and writes the caller's scope by name, which
+            // only a real Environment holds. (`import(...)` used to sit here
+            // with it, but its callee is an ordinary global function and a
+            // reserved word no one can shadow, so the plain call form fits.)
+            // `eval?.(x)` is an optional call, and an optional call is never a
+            // direct eval -- the chain evaluates the callee as a value first.
+            const bool direct_eval =
+                named_callee && callee_name == "eval" && !call->is_optional();
+            if (direct_eval && !full_env_) return false;
 
             // Class field initialisers are synthesised as a DefineField helper
             // call -- a slot read and a native call per field, on every
@@ -8157,7 +8233,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 }
             }
 
-            emit(Op::Call);
+            emit(direct_eval ? Op::CallDirectEval : Op::Call);
             emit_u8(static_cast<uint8_t>(callee_reg));
             emit_u8(static_cast<uint8_t>(args_start));
             emit_u8(argc);

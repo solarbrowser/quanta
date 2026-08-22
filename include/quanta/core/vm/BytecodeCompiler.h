@@ -291,7 +291,11 @@ private:
     std::vector<LoopScope> loop_stack_;
     std::vector<std::string> pending_labels_;  // set by LABELED_STATEMENT, taken by the next loop/switch
     std::unordered_set<const ASTNode*> hoisted_fn_decls_;  // top-level fn decls bound by compile()'s prologue
-    bool allow_arguments_ = false;  // `arguments` reads compile to LdaLookup (chunk needs_arguments set)
+    bool allow_arguments_ = false;
+    // A direct eval here can add a binding between an assignment's reference
+    // and its store, so those resolve ahead into a parked environment.
+    bool eval_in_body_ = false;
+    uint8_t resolved_env_slots_ = 0;  // `arguments` reads compile to LdaLookup (chunk needs_arguments set)
     bool suspendable_ = false;  // generator/async body, see compile()'s parameter
     bool script_mode_ = false;  // top-level Program chunk, see compile_script()
     int try_env_depth_ = 0;

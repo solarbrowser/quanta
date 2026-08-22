@@ -1264,6 +1264,10 @@ struct Frame {
     bool feedback_rooted;
     Value* regs;
     Environment** env_saves;
+    // A reference resolved before the right side of an assignment runs, parked
+    // until the store. Only a body with a direct eval needs it: eval is the one
+    // thing that can add a nearer binding between the two.
+    Environment** resolved_envs;
     BytecodeChunk::LookupCacheEntry* lookup_cache_data;
     PrivateFeedback* private_feedback_data;
     const uint8_t* code;
@@ -2274,6 +2278,94 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// GetIdentifierReference, kept. The write below belongs to the binding that
+// answered here, not to whatever the right side may have introduced since --
+// a direct eval in there can declare a nearer one.
+Value h_gen_ResolveBindingEnv(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const std::string* key = chunk.names[read_u16(code, pc + 1)];
+    uint8_t slot = code[pc + 3];
+    pc += 4;
+    f.resolved_envs[slot] = ctx.find_binding_env_interned(key);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_LdaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t slot = code[pc + 1];
+    const std::string& name = chunk.name_at(read_u16(code, pc + 2));
+    pc += 4;
+    do {
+        Environment* env = f.resolved_envs[slot];
+        if (!env) {
+            ctx.throw_reference_error("'" + name + "' is not defined");
+            break;
+        }
+        if (env->binding_in_tdz(name)) {
+            ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+            break;
+        }
+        acc = env->get_binding(name);
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_StaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t slot = code[pc + 1];
+    const std::string& name = chunk.name_at(read_u16(code, pc + 2));
+    pc += 4;
+    do {
+        Environment* env = f.resolved_envs[slot];
+        if (!env) {
+            // Unresolvable when the reference was made, and that verdict stands
+            // even if the right side has since created the binding.
+            if (ctx.is_strict_mode()) {
+                ctx.throw_reference_error("'" + name + "' is not defined");
+                break;
+            }
+            if (Object* global = ctx.get_global_object()) global->set_property(name, acc);
+            break;
+        }
+        if (env->binding_in_tdz(name)) {
+            ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+            break;
+        }
+        if (env->get_type() == Environment::Type::Object && env->get_binding_object()) {
+            Object* bobj = env->get_binding_object();
+            if (!bobj->has_own_property(name) && ctx.is_strict_mode()) {
+                ctx.throw_reference_error("'" + name + "' is not defined");
+                break;
+            }
+            if (!bobj->set_property(name, acc) &&
+                (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+            }
+            break;
+        }
+        if (!env->set_binding(name, acc) &&
+            (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+            ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -3262,6 +3354,43 @@ Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());
                     acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, Value());
+                } else {
+                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
+                }
+                CHECK_EXC();
+                Collector::safepoint();
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_CallDirectEval(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t callee_reg = code[pc];
+                uint8_t args_start = code[pc + 1];
+                uint8_t argc = code[pc + 2];
+                uint16_t name_idx = read_u16(code, pc + 3);
+                pc += 5;
+                const Value& callee = regs[callee_reg];
+                std::span<const Value> call_args(regs + args_start, argc);
+                if (callee.is_function()) {
+                    // The flag belongs to the caller, and what it restores is
+                    // whatever was true before this call -- a nested direct eval
+                    // inside an argument has come and gone by now.
+                    const bool saved = ctx.is_direct_eval_call();
+                    ctx.set_direct_eval_call(true);
+                    acc = callee.as_function()->call_register_args(ctx, call_args, Value());
+                    ctx.set_direct_eval_call(saved);
                 } else {
                     ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
                 }
@@ -5053,6 +5182,10 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaWithResolved)] = &h_gen_LdaWithResolved;
     t[static_cast<uint8_t>(Op::StaWithResolved)] = &h_gen_StaWithResolved;
     t[static_cast<uint8_t>(Op::LdaConstWide)] = &h_LdaConstWide;
+    t[static_cast<uint8_t>(Op::CallDirectEval)] = &h_gen_CallDirectEval;
+    t[static_cast<uint8_t>(Op::ResolveBindingEnv)] = &h_gen_ResolveBindingEnv;
+    t[static_cast<uint8_t>(Op::LdaResolvedEnv)] = &h_gen_LdaResolvedEnv;
+    t[static_cast<uint8_t>(Op::StaResolvedEnv)] = &h_gen_StaResolvedEnv;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;
@@ -5140,6 +5273,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     // Environment objects are already un-GC-managed, leaked with the Context.
     Environment* env_saves[64];
     uint8_t env_save_top = 0;
+    Environment* resolved_envs[8] = {};
 
     if (chunk.env_mode && chunk.env) {
         Environment* env = ctx.get_lexical_environment();
@@ -5249,7 +5383,8 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     // chunk gets its root -- so script_mode is exactly "this chunk's caches
     // are traced".
     const bool feedback_rooted = owner != nullptr || chunk.script_mode;
-    Frame frame{chunk, ctx, args, owner, feedback_rooted, regs, env_saves, lookup_cache_data,
+    Frame frame{chunk, ctx, args, owner, feedback_rooted, regs, env_saves, resolved_envs,
+                lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
                 this_value, Value(), 0, 0, 0, this_resolved};
 
