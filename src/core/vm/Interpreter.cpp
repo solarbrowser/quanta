@@ -2366,6 +2366,17 @@ Value h_gen_StaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_SetDirectEval(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    ctx.set_direct_eval_call(f.code[pc + 1] != 0);
+    pc += 2;
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_EnterParamEval(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5208,6 +5219,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaResolvedEnv)] = &h_gen_LdaResolvedEnv;
     t[static_cast<uint8_t>(Op::StaResolvedEnv)] = &h_gen_StaResolvedEnv;
     t[static_cast<uint8_t>(Op::EnterParamEval)] = &h_gen_EnterParamEval;
+    t[static_cast<uint8_t>(Op::SetDirectEval)] = &h_gen_SetDirectEval;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;

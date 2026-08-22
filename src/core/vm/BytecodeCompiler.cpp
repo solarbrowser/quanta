@@ -3535,10 +3535,6 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (pe_eval) param_eval = true;
     }
     if (param_eval) needs_arguments = true;
-    // A rest parameter is bound after Op::BindEnvLocals, which is already the
-    // body's scope -- so a `var` an eval in its initializer declares would land
-    // there instead of among the parameters, where the list's own closures look.
-    if (param_eval && has_rest) return nullptr;
     // Whether a `var arguments` inside such an eval collides. A non-arrow always
     // has the implicit binding; an arrow only when a parameter carries the name.
     bool param_args_conflict = !is_arrow;
@@ -4027,14 +4023,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             param_index++;
         }
     }
-    if (params_tdz) {
-        compiler.emit(Op::BindEnvLocals);
-        compiler.emit_u8(split_param_scope ? 1 : 0);
-        if (split_param_scope) compiler.env_depth_++;
-    }
-    // Every raw argument has been read by now, so those registers are free
-    // again for the body's temps.
-    compiler.next_register_ = saved_next_register;
+    // The rest parameter is bound with the rest of the list, before the body's
+    // bindings exist: a `var` a direct eval in its initializer declares belongs
+    // among the parameters, which is where the list's own closures look.
     if (has_rest) {
         const auto& p = params.back();
         compiler.emit(Op::CreateRestArray);
@@ -4048,6 +4039,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             compiler.emit_write_local(rest_name, false);
         }
     }
+    if (params_tdz) {
+        compiler.emit(Op::BindEnvLocals);
+        compiler.emit_u8(split_param_scope ? 1 : 0);
+        if (split_param_scope) compiler.env_depth_++;
+    }
+    // Every raw argument has been read by now, so those registers are free
+    // again for the body's temps.
+    compiler.next_register_ = saved_next_register;
     if (param_eval) {
         compiler.emit(Op::EnterParamEval);
         compiler.emit_u8(0);
@@ -5852,7 +5851,6 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
 
     if (expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER) {
         const std::string& name = static_cast<const Identifier*>(expr->get_left())->get_name();
-        if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
         stamp_inferred_class_name(expr->get_right(), name);
         // NamedEvaluation applies to the RHS of a logical assignment too
         // (spec 13.15.2 step 1.e.i): `f ??= function(){}` names it "f". The
@@ -6193,7 +6191,6 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
                 if (name.empty() && d->get_init() &&
                     d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-                    if (!env_mode_) return false;
                     const auto* da = static_cast<const DestructuringAssignment*>(d->get_init());
                     if (!compile_expression(da->get_source())) return false;
                     const ASTNode* lit = da->get_pattern_literal();
@@ -7425,7 +7422,6 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
                     if (operand->get_type() != ASTNode::Type::IDENTIFIER) return false;
                     const std::string& name = static_cast<const Identifier*>(operand)->get_name();
-                    if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
                     if (with_depth_ > 0) {
                         // One resolution serves both the read and the write,
                         // which is what the spec's single Reference means.
@@ -7586,7 +7582,6 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 const std::string& name = static_cast<const Identifier*>(expr->get_left())->get_name();
                 if (!is_local(name)) {
                     // Outer/global write via chain lookup.
-                    if (name == "eval" || name == "arguments") return false;  // strict SyntaxError forms
                     if (!compound) stamp_inferred_class_name(expr->get_right(), name);
                     if (!compound && with_depth_ > 0) {
                         emit(Op::ResolveWithTarget);
@@ -7985,13 +7980,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     static_cast<const Identifier*>(callee)->get_name() == "super") {
                     return emit_treewalker_delegate(node);
                 }
-                // A spread does not stop `eval(...)` being a direct eval, and
-                // this branch resolves the callee as an ordinary expression,
-                // which would quietly make it an indirect one in global scope.
-                if (callee->get_type() == ASTNode::Type::IDENTIFIER &&
-                    static_cast<const Identifier*>(callee)->get_name() == "eval") {
-                    return false;
-                }
+
             }
             if (spread_args &&
                 callee->get_type() != ASTNode::Type::MEMBER_EXPRESSION &&
@@ -8021,6 +8010,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit(Op::LdaUndefined);
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(this_reg));
+                // A spread does not stop `eval(...)` being a direct eval; the
+                // flag has to be up for the call and down again after.
+                const bool spread_eval = callee->get_type() == ASTNode::Type::IDENTIFIER &&
+                                         static_cast<const Identifier*>(callee)->get_name() == "eval" &&
+                                         !call->is_optional();
+                if (spread_eval) { emit(Op::SetDirectEval); emit_u8(1); }
                 emit(Op::CallSpread);
                 emit_u8(static_cast<uint8_t>(func_reg));
                 emit_u8(static_cast<uint8_t>(this_reg));
@@ -8028,6 +8023,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u16(add_name(callee->get_type() == ASTNode::Type::IDENTIFIER
                                       ? static_cast<const Identifier*>(callee)->get_name()
                                       : std::string("expression")));
+                if (spread_eval) { emit(Op::SetDirectEval); emit_u8(0); }
                 free_temp(this_reg);
                 free_temp(args_reg);
                 free_temp(func_reg);

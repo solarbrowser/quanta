@@ -321,6 +321,9 @@ enum class Op : uint8_t {
     // EvalDeclarationInstantiation reads the parameter names and whether
     // `arguments` collides off the calling context, not off its own arguments.
     EnterParamEval,            // u8: bit0 enter/leave, bit1 arguments conflict
+    // Arms the next call as a direct eval. CallDirectEval carries its own flag;
+    // a spread call takes it this way because its opcode has no room left.
+    SetDirectEval,             // u8
 
     kCount
 };
