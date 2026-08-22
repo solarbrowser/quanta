@@ -1327,7 +1327,10 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                     prop_start = current_token().get_start();
                     advance();
 
-                    if (!match(TokenType::IDENTIFIER)) {
+                    // A private name is an IdentifierName, so a keyword spells
+                    // one too -- the declaration side already accepts them.
+                    if (!match(TokenType::IDENTIFIER) &&
+                        !is_keyword_token(current_token().get_type())) {
                         add_error("Expected identifier after '#' in member access");
                         return nullptr;
                     }
@@ -1452,7 +1455,8 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 size_t hash_offset = current_token().get_start().offset;
                 advance();
 
-                if (!match(TokenType::IDENTIFIER)) {
+                if (!match(TokenType::IDENTIFIER) &&
+                    !is_keyword_token(current_token().get_type())) {
                     add_error("Expected identifier after '#' in member access");
                     return expr;
                 }
@@ -2959,7 +2963,17 @@ bool Parser::is_reserved_word_as_property_name() {
            type == TokenType::AWAIT ||
            type == TokenType::YIELD ||
            type == TokenType::ENUM  ||
-           type == TokenType::STATIC;
+           type == TokenType::STATIC ||
+           // Contextual keywords and literal-valued words are property names
+           // like any other: only the Reserved Words are barred, and being
+           // barred as an identifier is not the same thing.
+           type == TokenType::OF ||
+           type == TokenType::NULL_LITERAL ||
+           type == TokenType::BOOLEAN ||
+           type == TokenType::UNDEFINED ||
+           type == TokenType::VOID ||
+           type == TokenType::WITH ||
+           type == TokenType::DEBUGGER;
 }
 
 bool Parser::at_end() const {
@@ -6204,16 +6218,23 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         advance();
         src_start = get_current_position();
     } else if (current_token().get_type() == TokenType::STATIC) {
-        // Peek: if followed by =, ;, }, or newline, this is a FIELD named 'static', not the modifier
-        TokenType nxt = peek_token().get_type();
+        // Peek: if followed by =, ;, } or (, this is a member NAMED 'static',
+        // not the modifier. A line terminator does not end it -- `static` has
+        // no [no LineTerminator here] restriction, so the newlines are
+        // stepped over before the decision (`async` below does carry that
+        // restriction and deliberately does not step over them).
+        size_t nxt_off = 1;
+        while (peek_token(nxt_off).get_type() == TokenType::NEWLINE) nxt_off++;
+        TokenType nxt = peek_token(nxt_off).get_type();
+        // `static(` is a method whose NAME is static, the same way `static =`
+        // is a field called static -- the modifier is only a modifier when
+        // something that can be a member name follows it.
         bool static_is_field = (nxt == TokenType::ASSIGN || nxt == TokenType::SEMICOLON ||
                                 nxt == TokenType::RIGHT_BRACE || nxt == TokenType::EOF_TOKEN ||
-                                nxt == TokenType::NEWLINE);
-        if (!static_is_field) {
-            // Also check if next token is on a different line (ASI)
-            size_t static_line = current_token().get_end().line;
-            if (peek_token().get_start().line > static_line) static_is_field = true;
-        }
+                                nxt == TokenType::LEFT_PAREN);
+        // No line-terminator restriction applies to `static`: `static\nm(){}`
+        // is a static method. Only `async` carries that restriction, and it
+        // checks for it itself below.
         if (static_is_field) {
             // 'static' is the field name, not the modifier — fall through with is_static=false
         } else {
@@ -6225,8 +6246,22 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
     bool is_async = false;
     if (current_token().get_type() == TokenType::ASYNC) {
-        is_async = true;
-        advance();
+        // Same rule as `static` above: `async(` is a method named async and
+        // `async =` a field named async. A LineTerminator after it also ends
+        // the modifier reading (spec: no LineTerminator between `async` and
+        // the method name).
+        TokenType after_async = peek_token().get_type();
+        bool async_is_name = (after_async == TokenType::LEFT_PAREN ||
+                              after_async == TokenType::ASSIGN ||
+                              after_async == TokenType::SEMICOLON ||
+                              after_async == TokenType::RIGHT_BRACE ||
+                              after_async == TokenType::EOF_TOKEN ||
+                              after_async == TokenType::NEWLINE ||
+                              peek_token().get_start().line > current_token().get_end().line);
+        if (!async_is_name) {
+            is_async = true;
+            advance();
+        }
     } else if (current_token().get_type() == TokenType::IDENTIFIER &&
                token_text(current_token()) == "async" &&
                current_token().has_escaped_keyword()) {
