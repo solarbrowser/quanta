@@ -405,7 +405,10 @@ void Context::create_binding_force(const std::string& name, const Value& value) 
     }
 }
 
+uint32_t Environment::s_binding_shadow_epoch = 1;
+
 void Context::create_lexical_binding_force(const std::string& name, const Value& value) {
+    Environment::bump_binding_shadow_epoch();
     if (lexical_environment_) {
         lexical_environment_->force_set_binding(name, value);
     }

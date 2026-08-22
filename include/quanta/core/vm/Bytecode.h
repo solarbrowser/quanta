@@ -573,6 +573,12 @@ struct BytecodeChunk {
         // where "Assignment to constant variable" is raised. Sits in the
         // padding after obj_slot_index.
         bool writable = false;
+        // A resolved name can be shadowed later by a binding created in a
+        // scope closer than this one -- Annex B's block function is the way
+        // that happens after code has already run. No shape or descriptor
+        // epoch shows it, so the entry carries the binding-shadow epoch and
+        // is refused once it moves. Sits in the padding after `writable`.
+        uint32_t shadow_epoch = 0;
     };
     // Same frozen-length/mutable-contents profile as feedback above -- only
     // ever `= FixedArray<...>::filled(names.size(), ...)` once at compile

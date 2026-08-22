@@ -932,7 +932,14 @@ public:
     // Address-stable slot for the lookup cache. Immutable bindings qualify --
     // their address is as stable as any other and their value never moves --
     // so `writable` reports back whether a store may go through the pointer.
+    // Bumped when a binding is force-created in a scope that running code may
+    // already have resolved past. Only the lookup caches read it; see
+    // BytecodeChunk::LookupCacheEntry::shadow_epoch.
+    static uint32_t binding_shadow_epoch() { return s_binding_shadow_epoch; }
+    static void bump_binding_shadow_epoch() { ++s_binding_shadow_epoch; }
+
     Value* stable_binding_slot(const std::string& name, bool* writable = nullptr);
+    static uint32_t s_binding_shadow_epoch;
     // The object-environment counterpart: the shape slot index a plain own data
     // property of this environment's binding object lives at, for LdaLookup's
     // cache. False for anything the general path has to serve.

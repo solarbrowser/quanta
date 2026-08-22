@@ -2092,7 +2092,9 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                     // Captured-chain fast path: the resolved binding address is
                     // stable for this chunk's lifetime (see lookup_cache).
                     const auto& entry = lookup_cache_data[name_idx];
-                    if (entry.obj_shape) {
+                    if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
+                        // a closer binding may have appeared since
+                    } else if (entry.obj_shape) {
                         Object* bo = entry.env->get_binding_object();
                         if (bo && bo->get_shape() == entry.obj_shape &&
                             entry.descriptor_epoch == Object::descriptor_epoch()) {
@@ -2113,6 +2115,12 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 }
                 Environment* env = ctx.get_lexical_environment();
                 bool found = false;
+                // Only a binding at or beyond the frame's entry environment
+                // outlives this frame. One found closer -- a block or a loop
+                // body's own scope -- is gone (or replaced by a fresh one)
+                // the next time this instruction runs, so its address is not
+                // something to remember.
+                bool beyond_frame = false;
                 {
                     // A `with` asks HasProperty on its object, which a Proxy
                     // traps: the trap reports through whichever context is
@@ -2122,6 +2130,7 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                     Context* prev_cc = Object::current_context_;
                     Object::current_context_ = &ctx;
                     for (; env; env = env->get_outer()) {
+                        if (env == entry_env) beyond_frame = true;
                         if (env->try_get_binding_interned(key, acc, &ctx)) { found = true; break; }
                         if (ctx.has_exception()) break;
                     }
@@ -2129,18 +2138,20 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 }
                 CHECK_EXC();
                 if (found) {
-                    if (env != entry_env) {
+                    if (beyond_frame && env != entry_env) {
                         uint32_t obj_slot = 0;
                         bool slot_writable = false;
                         // See the identical block in the main dispatch loop.
                         if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
                             env->mark_referenced();
-                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable};
+                            lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable,
+                                                          Environment::binding_shadow_epoch()};
                         } else if (env->cacheable_object_binding(name, obj_slot)) {
                             env->mark_referenced();
                             lookup_cache_data[name_idx] = {env, nullptr,
                                 env->get_binding_object()->get_shape(),
-                                Object::descriptor_epoch(), obj_slot};
+                                Object::descriptor_epoch(), obj_slot, false,
+                                Environment::binding_shadow_epoch()};
                         }
                     }
                 } else if (ctx.has_binding(name)) {
@@ -2212,7 +2223,8 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                     // global needs [[Set]]'s readonly/setter handling. And a
                     // const binding is cached for reading only: storing here
                     // would skip the TypeError the slow path raises.
-                    if (entry.slot && !entry.obj_shape && entry.writable) {
+                    if (entry.slot && !entry.obj_shape && entry.writable &&
+                        entry.shadow_epoch == Environment::binding_shadow_epoch()) {
                         // The barrier records "env gained a reference" for the
                         // remembered set -- storing a non-heap value can't.
                         if (acc.is_object() || acc.is_function() || acc.is_string() ||
@@ -2262,11 +2274,22 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                     } else if (ok && env != entry_env) {
+                        // Same rule as Op::LdaLookup: only a binding beyond the
+                        // frame's entry environment keeps its address. This
+                        // path resolved without walking, so the reach is
+                        // checked here -- on the cache-miss path only.
+                        bool beyond_frame = false;
+                        for (Environment* e = entry_env ? entry_env->get_outer() : nullptr; e;
+                             e = e->get_outer()) {
+                            if (e == env) { beyond_frame = true; break; }
+                        }
                         bool slot_writable = false;
-                        Value* slot = env->stable_binding_slot(name, &slot_writable);
+                        Value* slot = beyond_frame ? env->stable_binding_slot(name, &slot_writable)
+                                                   : nullptr;
                         if (slot && slot_writable) {
                             env->mark_referenced();  // see Op::LdaLookup's note
-                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true};
+                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true,
+                                                              Environment::binding_shadow_epoch()};
                         }
                     }
                 }
@@ -2427,7 +2450,9 @@ Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
 template <bool Fused>
 Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
     const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
-    if (LIKELY(entry.obj_shape)) {
+    if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
+        // fall through to the general path, which re-resolves and re-caches
+    } else if (LIKELY(entry.obj_shape)) {
         // A name bound on the global object, which is where a script's `var`
         // and its function declarations live -- so calling a top-level
         // function reaches its callee through here on every call.
@@ -2448,7 +2473,8 @@ Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
 
 Value h_StaLookupFast(Frame& f, uint32_t pc, Value acc) {
     const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
-    if (LIKELY(entry.slot && !entry.obj_shape && entry.writable)) {
+    if (LIKELY(entry.slot && !entry.obj_shape && entry.writable &&
+               entry.shadow_epoch == Environment::binding_shadow_epoch())) {
         if (acc.is_object() || acc.is_function() || acc.is_string() ||
             acc.is_symbol() || acc.is_bigint()) {
             Collector::write_barrier_env(entry.env);
@@ -5333,7 +5359,14 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
         } else {
             for (size_t i = 0; i < chunk.env->env_param_keys.size(); i++) {
                 Value v = i < args.size() ? args[i] : Value();
-                env->create_binding_interned(chunk.env->env_param_keys[i], v, true);
+                // A repeated simple parameter name is one binding holding the
+                // LAST argument of that name, and create refuses to redefine
+                // what is already there -- so the repeat writes over it. The
+                // arguments object still maps only the last occurrence, which
+                // is what makes the two agree.
+                if (!env->create_binding_interned(chunk.env->env_param_keys[i], v, true)) {
+                    env->initialize_binding_interned(chunk.env->env_param_keys[i], v);
+                }
             }
             Environment* lex_env = env;
             if (chunk.lex_scope_split) {
