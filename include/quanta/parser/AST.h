@@ -318,7 +318,11 @@ class EngineHelper : public ASTNode {
 public:
     enum class Kind : uint8_t {
         DefineField, PrivateFieldAdd, SetFunctionName,
-        ClassFieldInitEnter, ClassFieldInitExit, ImportSource
+        ClassFieldInitEnter, ClassFieldInitExit, ImportSource,
+        // A computed instance-field key, resolved once when the class is built
+        // and read back by index at construction time -- baking the resolved
+        // string into the constructor would make its body differ per evaluation.
+        ClassFieldKey
     };
 
     EngineHelper(Kind kind, const Position& start, const Position& end)

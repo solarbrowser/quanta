@@ -383,6 +383,7 @@ const char* EngineHelper::slot_name(Kind kind) {
         case Kind::ClassFieldInitEnter: return "__cfi_enter__";
         case Kind::ClassFieldInitExit:  return "__cfi_exit__";
         case Kind::ImportSource:        return "__import_source__";
+        case Kind::ClassFieldKey:       return "__classkey__";
     }
     return "";
 }

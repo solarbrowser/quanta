@@ -719,15 +719,24 @@ static bool is_anonymous_function_like(const ASTNode* node) {
 // when the ORIGINAL (unresolved) value node is anonymous-function-shaped. Field
 // values are deferred to construction time (unlike static fields, evaluated once
 // here in ClassDeclaration::evaluate), so the naming has to happen at runtime too.
+// The name is an expression rather than a string so a computed key -- known
+// only once the class is built -- can name the field's function the same way.
 static std::unique_ptr<ASTNode> wrap_field_value_with_name(
-    std::unique_ptr<ASTNode> value_clone, const ASTNode* original_value, const std::string& name,
-    const Position& pos) {
+    std::unique_ptr<ASTNode> value_clone, const ASTNode* original_value,
+    std::unique_ptr<ASTNode> name_expr, const Position& pos) {
     if (!is_anonymous_function_like(original_value)) return value_clone;
     auto setfnname_id = std::make_unique<EngineHelper>(EngineHelper::Kind::SetFunctionName, pos, pos);
     std::vector<std::unique_ptr<ASTNode>> args;
     args.push_back(std::move(value_clone));
-    args.push_back(std::make_unique<StringLiteral>(name, pos, pos));
+    args.push_back(std::move(name_expr));
     return std::make_unique<CallExpression>(std::move(setfnname_id), std::move(args), pos, pos, false);
+}
+
+static std::unique_ptr<ASTNode> wrap_field_value_with_name(
+    std::unique_ptr<ASTNode> value_clone, const ASTNode* original_value, const std::string& name,
+    const Position& pos) {
+    return wrap_field_value_with_name(std::move(value_clone), original_value,
+                                      std::make_unique<StringLiteral>(name, pos, pos), pos);
 }
 
 static bool is_direct_super_call_statement(const ASTNode* stmt) {
@@ -812,9 +821,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     FunctionExpression* ctor_func_expr = nullptr;
     // A computed field key is resolved on each evaluation and baked into the
     // synthesised constructor, so that body cannot be shared.
-    // Only an INSTANCE field's resolved key is baked into the constructor body;
-    // a static one is applied where the class is built and never reaches it.
-    bool has_computed_instance_field_key = false;
+    // Resolved computed keys of INSTANCE fields, in declaration order. The
+    // constructor reads them back by index (EngineHelper::ClassFieldKey).
+    std::vector<std::string> computed_instance_keys;
     std::vector<std::unique_ptr<ASTNode>> field_initializers;
     std::vector<std::unique_ptr<ASTNode>> static_field_initializers;
     bool has_explicit_constructor = false;
@@ -833,7 +842,6 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 ClassField* cf = static_cast<ClassField*>(stmt.get());
                 std::unique_ptr<ASTNode> resolved_stmt = stmt->clone();
                 if (cf->is_computed()) {
-                    if (!cf->is_static()) has_computed_instance_field_key = true;
                     // Computed field keys are evaluated exactly once, right here, in strict
                     // declaration order (interleaved with methods and static/instance fields
                     // alike) -- per spec, only the field's VALUE is deferred (instance: to
@@ -844,11 +852,26 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     std::string resolved_key = computed_key_to_property_key(ctx, key_val);
                     if (ctx.has_exception()) return Value();
                     const Position& kpos = cf->get_key()->get_start();
-                    auto literal_key = std::make_unique<StringLiteral>(resolved_key, kpos, kpos);
                     auto value_clone = cf->get_value() ? cf->get_value()->clone() : nullptr;
-                    resolved_stmt = std::make_unique<ClassField>(
-                        std::move(literal_key), std::move(value_clone), cf->is_static(),
-                        /*computed=*/false, cf->get_start(), cf->get_end());
+                    if (cf->is_static()) {
+                        // Applied where the class is built, so the resolved key can
+                        // simply stand in the statement.
+                        auto literal_key = std::make_unique<StringLiteral>(resolved_key, kpos, kpos);
+                        resolved_stmt = std::make_unique<ClassField>(
+                            std::move(literal_key), std::move(value_clone), /*is_static=*/true,
+                            /*computed=*/false, cf->get_start(), cf->get_end());
+                    } else {
+                        // Goes into the constructor, where a baked string would make
+                        // the body differ per evaluation. The key is parked on the
+                        // class and the body reads it back by index; `computed` stays
+                        // set to mark the number below as that index.
+                        auto index_key = std::make_unique<NumberLiteral>(
+                            static_cast<double>(computed_instance_keys.size()), kpos, kpos);
+                        computed_instance_keys.push_back(resolved_key);
+                        resolved_stmt = std::make_unique<ClassField>(
+                            std::move(index_key), std::move(value_clone), /*is_static=*/false,
+                            /*computed=*/true, cf->get_start(), cf->get_end());
+                    }
                 }
                 if (cf->is_static()) {
                     static_field_initializers.push_back(std::move(resolved_stmt));
@@ -1023,7 +1046,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     // instance field's computed key was resolved into it, which is what decides
     // whether one executable can serve every evaluation of this class site.
     const bool ctor_body_rewritten = !field_initializers.empty();
-    const bool ctor_exe_cacheable = !has_computed_instance_field_key;
+    const bool ctor_exe_cacheable = true;
     ExecutableRef<FunctionExecutable> cached_ctor =
         ctor_exe_cacheable ? get_cached_ctor_exe() : ExecutableRef<FunctionExecutable>();
     const bool build_ctor_body = !cached_ctor && (ctor_body_rewritten || !ctor_func_expr);
@@ -1101,17 +1124,34 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         std::move(pfadd_id), std::move(pfadd_args), fstart, fstart, false);
                     new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(pfadd_call), fstart, fstart));
                 } else {
+                    // `computed` marks the key node as the index of a key the class
+                    // resolved once; every other form spells the key outright.
+                    const bool key_from_class = cf->is_computed();
+                    const double key_index = key_from_class
+                        ? static_cast<NumberLiteral*>(cf->get_key())->get_value() : 0.0;
+                    auto make_key_expr = [&]() -> std::unique_ptr<ASTNode> {
+                        auto helper = std::make_unique<EngineHelper>(EngineHelper::Kind::ClassFieldKey, fstart, fstart);
+                        std::vector<std::unique_ptr<ASTNode>> key_args;
+                        key_args.push_back(std::make_unique<NumberLiteral>(key_index, fstart, fstart));
+                        return std::make_unique<CallExpression>(std::move(helper), std::move(key_args), fstart, fstart, false);
+                    };
                     std::string field_name;
-                    if (cf->get_key()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        field_name = static_cast<Identifier*>(cf->get_key())->get_name();
-                    } else if (cf->get_key()->get_type() == ASTNode::Type::STRING_LITERAL) {
-                        field_name = static_cast<StringLiteral*>(cf->get_key())->get_value();
-                    } else if (cf->get_key()->get_type() == ASTNode::Type::NUMBER_LITERAL) {
-                        field_name = static_cast<NumberLiteral*>(cf->get_key())->evaluate(ctx).to_property_key();
+                    if (!key_from_class) {
+                        if (cf->get_key()->get_type() == ASTNode::Type::IDENTIFIER) {
+                            field_name = static_cast<Identifier*>(cf->get_key())->get_name();
+                        } else if (cf->get_key()->get_type() == ASTNode::Type::STRING_LITERAL) {
+                            field_name = static_cast<StringLiteral*>(cf->get_key())->get_value();
+                        } else if (cf->get_key()->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                            field_name = static_cast<NumberLiteral*>(cf->get_key())->evaluate(ctx).to_property_key();
+                        }
                     }
                     std::unique_ptr<ASTNode> init_val;
                     if (cf->get_value()) {
-                        init_val = wrap_field_value_with_name(cf->get_value()->clone(), cf->get_value(), field_name, fstart);
+                        init_val = key_from_class
+                            ? wrap_field_value_with_name(cf->get_value()->clone(), cf->get_value(),
+                                                         make_key_expr(), fstart)
+                            : wrap_field_value_with_name(cf->get_value()->clone(), cf->get_value(),
+                                                         field_name, fstart);
                     } else {
                         init_val = std::make_unique<Identifier>("undefined", fstart, fstart);
                     }
@@ -1120,10 +1160,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     // inherited setter the way a normal `this.x = value` assignment would.
                     auto deffield_id = std::make_unique<EngineHelper>(EngineHelper::Kind::DefineField, fstart, fstart);
                     auto this_id = std::make_unique<Identifier>("this", fstart, fstart);
-                    auto key_lit = std::make_unique<StringLiteral>(field_name, fstart, fstart);
+                    std::unique_ptr<ASTNode> key_node = key_from_class
+                        ? make_key_expr()
+                        : std::unique_ptr<ASTNode>(std::make_unique<StringLiteral>(field_name, fstart, fstart));
                     std::vector<std::unique_ptr<ASTNode>> deffield_args;
                     deffield_args.push_back(std::move(this_id));
-                    deffield_args.push_back(std::move(key_lit));
+                    deffield_args.push_back(std::move(key_node));
                     deffield_args.push_back(std::move(init_val));
                     auto deffield_call = std::make_unique<CallExpression>(
                         std::move(deffield_id), std::move(deffield_args), fstart, fstart, false);
@@ -1285,6 +1327,16 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     method_names_obj->set_property(mn, Value(true));
                 constructor_fn->set_internal_slot("__private_method_names__", Value(method_names_obj.release()));
             }
+        }
+
+        // The constructor body asks for these by index (EngineHelper::ClassFieldKey),
+        // which is what keeps one body good for every evaluation of the class.
+        if (!computed_instance_keys.empty()) {
+            auto keys_arr = ObjectFactory::create_array(computed_instance_keys.size());
+            for (size_t ki = 0; ki < computed_instance_keys.size(); ki++) {
+                keys_arr->set_element(static_cast<uint32_t>(ki), Value(computed_instance_keys[ki]));
+            }
+            constructor_fn->set_internal_slot("__computed_field_keys__", Value(keys_arr.release()));
         }
 
         if (!has_explicit_constructor) {

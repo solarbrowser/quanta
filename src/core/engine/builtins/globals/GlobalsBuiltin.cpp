@@ -1442,6 +1442,28 @@ void register_global_builtins(Context& ctx) {
         }, 2);
     ctx.get_global_object()->set_internal_slot("__pfadd__", Value(pfadd_fn.release()));
 
+    // __classkey__(i): the i-th computed instance-field key of the class whose
+    // constructor is running. The keys are resolved once, where the class is
+    // built; the constructor only looks them up, which is what lets one
+    // constructor body serve every evaluation of the class.
+    auto classkey_fn = ObjectFactory::create_native_function("__classkey__",
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            (void)receiver;
+            if (args.empty()) return Value();
+            uint32_t idx = static_cast<uint32_t>(args[0].to_number());
+            CallStack& cs = CallStack::instance();
+            for (size_t i = cs.depth(); i > 0; --i) {
+                Function* fn = cs.at(i - 1).function_ptr;
+                if (!fn) continue;
+                Value keys = fn->get_internal_slot("__computed_field_keys__");
+                if (!keys.is_object()) continue;
+                return keys.as_object()->get_element(idx);
+            }
+            (void)ctx;
+            return Value();
+        }, 1);
+    ctx.get_global_object()->set_internal_slot("__classkey__", Value(classkey_fn.release()));
+
     // __setfnname__(value, name): SetFunctionName -- used by class field initializers
     // (DefineField step 7) to name an otherwise-anonymous function/class expression
     // after the field it initializes. Only static/instance field values get this
