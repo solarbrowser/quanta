@@ -199,10 +199,20 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
             if (!prescan_declarations(n->get_try_block(), out)) return false;
             if (const ASTNode* cc = n->get_catch_clause()) {
                 const auto* clause = static_cast<const CatchClause*>(cc);
-                if (clause->get_destructuring_pattern()) return false;
-                const std::string& pname = clause->get_parameter_name();
-                if (!pname.empty()) {
-                    out.push_back({pname, false, false, true});  // its own per-catch env
+                if (const ASTNode* pat = clause->get_destructuring_pattern()) {
+                    // A pattern parameter binds the names the pattern names,
+                    // in the same per-catch environment a plain one gets.
+                    std::vector<std::string> bound;
+                    static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+                    for (const auto& bn : bound) {
+                        if (bn.empty()) return false;
+                        out.push_back({bn, false, false, true});
+                    }
+                } else {
+                    const std::string& pname = clause->get_parameter_name();
+                    if (!pname.empty()) {
+                        out.push_back({pname, false, false, true});  // its own per-catch env
+                    }
                 }
                 if (!prescan_declarations(clause->get_body(), out)) return false;
             }
@@ -1586,6 +1596,48 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
                 collect_closure_names(n->get_argument(), true, out, saw_eval, saw_class, unknown, suspendable, super_only);
             return;
         }
+        case ASTNode::Type::PARAMETER: {
+            const auto* n = static_cast<const Parameter*>(node);
+            collect_closure_names(n->get_default_value(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            collect_closure_names(n->get_destructuring_pattern(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            return;
+        }
+        case ASTNode::Type::VARIABLE_DECLARATOR:
+            collect_closure_names(static_cast<const VariableDeclarator*>(node)->get_init(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            return;
+        case ASTNode::Type::WITH_STATEMENT: {
+            const auto* n = static_cast<const WithStatement*>(node);
+            collect_closure_names(n->get_object(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            return;
+        }
+        case ASTNode::Type::CATCH_CLAUSE: {
+            const auto* n = static_cast<const CatchClause*>(node);
+            collect_closure_names(n->get_destructuring_pattern(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            collect_closure_names(n->get_body(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            return;
+        }
+        case ASTNode::Type::CASE_CLAUSE: {
+            const auto* n = static_cast<const CaseClause*>(node);
+            collect_closure_names(n->get_test(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            for (const auto& st : n->get_consequent()) {
+                collect_closure_names(st.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            }
+            return;
+        }
+        case ASTNode::Type::USING_DECLARATION: {
+            const auto* n = static_cast<const UsingDeclaration*>(node);
+            for (const auto& b : n->get_bindings()) {
+                collect_closure_names(b.initializer.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            }
+            return;
+        }
+        case ASTNode::Type::PROGRAM:
+            for (const auto& st : static_cast<const Program*>(node)->get_statements()) {
+                collect_closure_names(st.get(), inside_closure, out, saw_eval, saw_class, unknown, suspendable, super_only);
+            }
+            return;
+
         default:
             unknown = true;
             return;
@@ -3397,9 +3449,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 
     std::vector<std::string> param_names;  // excludes rest -- see CreateRestArray below
     std::string rest_name;
+    bool arguments_is_param = false;
     for (const auto& p : params) {
         const std::string& pname = p->get_name()->get_name();
-        if (pname == "arguments") return nullptr;
+        if (pname == "arguments") arguments_is_param = true;
         if (p->is_rest()) {
             rest_name = pname;
         } else {
@@ -3429,6 +3482,25 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     for (const auto& p : params) {
         if (p->has_default() && uses_arguments(p->get_default_value())) needs_arguments = true;
         if (p->has_destructuring() && uses_arguments(p->get_destructuring_pattern())) needs_arguments = true;
+    }
+    // FunctionDeclarationInstantiation decides whether the implicit object
+    // exists at all: a parameter named `arguments`, or a lexical one over a
+    // simple parameter list, takes its place. A `var arguments` does not --
+    // the object is still created and the var names it rather than declaring a
+    // second binding, so it has to exist even where nothing reads it.
+    bool arguments_is_var = false;
+    for (const auto& info : declared) {
+        if (info.name != "arguments" || info.is_lexical) continue;
+        arguments_is_var = true;
+    }
+    bool arguments_is_lexical = false;
+    for (const auto& info : declared) {
+        if (info.name == "arguments" && info.is_lexical) arguments_is_lexical = true;
+    }
+    if (arguments_is_param || (arguments_is_lexical && !has_complex_params)) {
+        needs_arguments = false;
+    } else if (arguments_is_var) {
+        needs_arguments = true;
     }
 
     // Shadowing is covered too: a true duplicate name always has a nested
@@ -3659,9 +3731,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
 
     for (const auto& info : declared) {
-        // A local named "arguments" needs the implicit arguments-object
-        // hoisting semantics neither storage mode replicates.
-        if (info.name == "arguments") return nullptr;
+        if (info.name == "arguments") {
+            // The var form names the object rather than introducing a binding.
+            if (!info.is_lexical) continue;
+            // A lexical one only replaces the object when the parameter list is
+            // simple; otherwise both exist, in the two scopes a parameter list
+            // with expressions creates, which one flat environment cannot hold.
+            if (needs_arguments) return nullptr;
+        }
         bool aliases_param = false;
         bool nested_lexical_shadows_param = false;
         for (const auto& p : param_names) {
@@ -3805,10 +3882,38 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (p->has_default() || p->has_destructuring()) params_tdz = true;
     }
     if (params_tdz) {
+        // The environment a parameter expression's closure captures is the
+        // parameters', which the spec keeps separate from the body's. One flat
+        // environment holds both, so it only answers the same way when the
+        // closure cannot name anything the body declares -- then either scope
+        // resolves the name identically, further out.
+        std::unordered_set<std::string> body_names;
+        for (const auto& info : declared) body_names.insert(info.name);
+        if (!concise) {
+            for (const auto& stmt : static_cast<const BlockStatement*>(body)->get_statements()) {
+                if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+                const auto* fd = static_cast<const FunctionDeclaration*>(stmt.get());
+                if (fd->get_id()) body_names.insert(fd->get_id()->get_name());
+            }
+        }
         for (const auto& p : params) {
-            if ((p->has_default() && contains_closure(p->get_default_value())) ||
-                (p->has_destructuring() && contains_closure(p->get_destructuring_pattern()))) {
-                return nullptr;
+            const ASTNode* expr = nullptr;
+            if (p->has_default() && contains_closure(p->get_default_value())) {
+                expr = p->get_default_value();
+            } else if (p->has_destructuring() &&
+                       contains_closure(p->get_destructuring_pattern())) {
+                expr = p->get_destructuring_pattern();
+            }
+            if (!expr) continue;
+            std::unordered_set<std::string> named;
+            bool p_eval = false, p_class = false, p_unknown = false;
+            collect_closure_names(expr, /*inside_closure=*/true, named,
+                                  p_eval, p_class, p_unknown);
+            // An eval, a class body or a shape the scan cannot read could name
+            // anything, including what the body declares.
+            if (p_eval || p_class || p_unknown) return nullptr;
+            for (const auto& n : named) {
+                if (body_names.count(n)) return nullptr;
             }
         }
     }
@@ -6022,7 +6127,12 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 }
 
                 if (!is_local(name)) {
-                    if (!script_mode_) return false;  // prescan declared everything
+                    // `var arguments` names the implicit object instead of
+                    // declaring a binding of its own, so its write goes through
+                    // the chain to the one Function::call already made.
+                    const bool implicit_arguments =
+                        name == "arguments" && allow_arguments_ && is_var;
+                    if (!script_mode_ && !implicit_arguments) return false;  // prescan declared everything
                     // Top-level script declaration: the binding pre-exists
                     // (vars on the global object, let/const uninitialized in
                     // the script env).
@@ -6359,13 +6469,26 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     emit(Op::SaveEnv);
                 }
                 int catch_env_idx = -1;
-                if (!clause->get_parameter_name().empty()) {
-                    if (!is_local(clause->get_parameter_name())) return false;
+                const ASTNode* catch_pattern = clause->get_destructuring_pattern();
+                std::vector<std::string> catch_names;
+                if (catch_pattern) {
+                    static_cast<const DestructuringAssignment*>(catch_pattern)
+                        ->collect_bound_names(catch_names);
+                } else if (!clause->get_parameter_name().empty()) {
+                    catch_names.push_back(clause->get_parameter_name());
+                }
+                // A pattern that binds nothing (`catch ([,])`, `catch ({})`) is
+                // still evaluated: it steps the iterator and rejects a null
+                // value. Only `catch {}` skips the parameter entirely.
+                if (catch_pattern || !catch_names.empty()) {
+                    for (const auto& cn : catch_names) {
+                        if (!is_local(cn)) return false;
+                    }
                     // Spec: a fresh Environment per catch, else it would
                     // overwrite an outer same-named binding instead of shadowing it.
-                    if (env_mode_) {
+                    if (env_mode_ && !catch_names.empty()) {
                         std::vector<BytecodeChunk::LoopEnvVar> vars;
-                        vars.push_back({clause->get_parameter_name(), false, false, false});
+                        for (const auto& cn : catch_names) vars.push_back({cn, false, false, false});
                         record_env_slot_info(vars, env_depth_ + 1);
                         chunk_->ensure_env().loop_envs.push_back(std::move(vars));
                         // A catch clause never emits AdvanceLoopEnv either
@@ -6377,7 +6500,14 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                         emit_u16(static_cast<uint16_t>(catch_env_idx));
                         env_depth_++;
                     }
-                    emit_write_local(clause->get_parameter_name(), /*is_declaration=*/true);
+                    if (catch_pattern) {
+                        const ASTNode* lit = static_cast<const DestructuringAssignment*>(catch_pattern)
+                                                 ->get_pattern_literal();
+                        if (!pattern_is_emittable(lit, /*is_lexical=*/true)) return false;
+                        if (!emit_pattern_bind(lit, /*is_lexical=*/true, /*is_const=*/false)) return false;
+                    } else {
+                        emit_write_local(catch_names[0], /*is_declaration=*/true);
+                    }
                 }
                 // else: optional catch binding (`catch {}`) -- exception in
                 // acc is simply discarded, nothing to store.
