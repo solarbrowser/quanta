@@ -81,7 +81,9 @@ enum class Op : uint8_t {
     StaEnvSlot,     // s n
     StaEnvSlotInit, // s n
 
-    BindEnvLocals,  // create env_locals bindings (deferred past parameter
+    BindEnvLocals,  // u8: 1 opens a child scope for them (parameter
+                    //     expressions have their own). Creates env_locals bindings
+                    //     (deferred past parameter
                     // resolution when env_params_tdz -- see BytecodeChunk)
 
     EnterLoopEnv,   // k -- push a per-iteration Environment

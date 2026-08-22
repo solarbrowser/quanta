@@ -3704,6 +3704,20 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // two are checked independently at runtime -- an index the environment did
     // not reserve simply fails its guard and falls back to the name path -- so
     // they bound each other rather than having to agree.
+    // A closure made while the parameters run captures the environment they
+    // bind in, and the spec keeps that one apart from the body's. Op::BindEnvLocals
+    // opens a child scope for the body then, so the closure never sees a name
+    // the body declares. Only this shape pays for it.
+    bool split_param_scope = false;
+    for (const auto& p : params) {
+        if (p->is_rest()) continue;
+        if ((p->has_default() && contains_closure(p->get_default_value())) ||
+            (p->has_destructuring() && contains_closure(p->get_destructuring_pattern()))) {
+            split_param_scope = true;
+            break;
+        }
+    }
+
     constexpr size_t kEnvSlotPredictMax = 32;
     size_t flat_slot_counter = 0;
     if (env_mode) {
@@ -3732,8 +3746,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 
     for (const auto& info : declared) {
         if (info.name == "arguments") {
-            // The var form names the object rather than introducing a binding.
-            if (!info.is_lexical) continue;
+            // The var form names the object rather than introducing a binding
+            // -- except where the scopes are split, since then the body has one
+            // of its own, seeded from the parameter scope's.
+            if (!info.is_lexical && !split_param_scope) continue;
             // A lexical one only replaces the object when the parameter list is
             // simple; otherwise both exist, in the two scopes a parameter list
             // with expressions creates, which one flat environment cannot hold.
@@ -3761,7 +3777,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 nested_lexical_shadows_param = true;
                 break;
             }
-            aliases_param = true;
+            // With the scopes split the body's is a second binding, seeded
+            // from the parameter's value (spec FDI) -- not the same one.
+            aliases_param = !split_param_scope;
             break;
         }
         if (nested_lexical_shadows_param || aliases_param) continue;
@@ -3780,7 +3798,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             if (!info.is_catch_param &&
                 (!info.is_lexical || direct_lexical_names.count(info.name))) {
                 compiler.chunk_->ensure_env().env_locals.push_back({info.name, info.is_lexical, info.is_const});
-                if (flat_slot_counter < kEnvSlotPredictMax) {
+                // A predicted slot names a position in the environment the code
+                // runs in; with the scopes split the body's is a different one.
+                if (!split_param_scope && flat_slot_counter < kEnvSlotPredictMax) {
                     auto cit = compiler.global_decl_count_.find(info.name);
                     if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
                         compiler.env_slot_info_[info.name] = {static_cast<uint8_t>(flat_slot_counter), 0};
@@ -3872,50 +3892,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // Parameter lists with initializers follow spec FDI ordering (see
     // BytecodeChunk::env_params_tdz): params seed uninitialized, and each
     // one initializes left to right from its register-held raw argument.
-    // A default whose value closes over the environment would capture the
-    // body's (deferred) bindings through the flat function env -- the spec
-    // gives parameter expressions their own scope, so those stay on the
-    // tree-walker.
     bool params_tdz = false;
     for (const auto& p : params) {
         if (p->is_rest()) continue;
         if (p->has_default() || p->has_destructuring()) params_tdz = true;
-    }
-    if (params_tdz) {
-        // The environment a parameter expression's closure captures is the
-        // parameters', which the spec keeps separate from the body's. One flat
-        // environment holds both, so it only answers the same way when the
-        // closure cannot name anything the body declares -- then either scope
-        // resolves the name identically, further out.
-        std::unordered_set<std::string> body_names;
-        for (const auto& info : declared) body_names.insert(info.name);
-        if (!concise) {
-            for (const auto& stmt : static_cast<const BlockStatement*>(body)->get_statements()) {
-                if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
-                const auto* fd = static_cast<const FunctionDeclaration*>(stmt.get());
-                if (fd->get_id()) body_names.insert(fd->get_id()->get_name());
-            }
-        }
-        for (const auto& p : params) {
-            const ASTNode* expr = nullptr;
-            if (p->has_default() && contains_closure(p->get_default_value())) {
-                expr = p->get_default_value();
-            } else if (p->has_destructuring() &&
-                       contains_closure(p->get_destructuring_pattern())) {
-                expr = p->get_destructuring_pattern();
-            }
-            if (!expr) continue;
-            std::unordered_set<std::string> named;
-            bool p_eval = false, p_class = false, p_unknown = false;
-            collect_closure_names(expr, /*inside_closure=*/true, named,
-                                  p_eval, p_class, p_unknown);
-            // An eval, a class body or a shape the scan cannot read could name
-            // anything, including what the body declares.
-            if (p_eval || p_class || p_unknown) return nullptr;
-            for (const auto& n : named) {
-                if (body_names.count(n)) return nullptr;
-            }
-        }
     }
 
     // Defaults and destructuring resolve once at entry, before the body --
@@ -3975,7 +3955,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             param_index++;
         }
     }
-    if (params_tdz) compiler.emit(Op::BindEnvLocals);
+    if (params_tdz) {
+        compiler.emit(Op::BindEnvLocals);
+        compiler.emit_u8(split_param_scope ? 1 : 0);
+        if (split_param_scope) compiler.env_depth_++;
+    }
     // Every raw argument has been read by now, so those registers are free
     // again for the body's temps.
     compiler.next_register_ = saved_next_register;

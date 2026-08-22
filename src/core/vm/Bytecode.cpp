@@ -89,7 +89,7 @@ const OpInfo& op_info(Op op) {
         {"CheckLookupResolvable", 2, 'n'}, {"StaLookupChecked", 3, 'l'},
         {"LdaEnv", 2, 'n'}, {"StaEnv", 2, 'n'}, {"StaEnvInit", 2, 'n'},
         {"LdaEnvSlot", 3, 'e'}, {"StaEnvSlot", 3, 'e'}, {"StaEnvSlotInit", 3, 'e'},
-        {"BindEnvLocals", 0, '-'},
+        {"BindEnvLocals", 1, 'i'},
         {"EnterLoopEnv", 2, 'z'}, {"AdvanceLoopEnv", 2, 'z'}, {"ExitLoopEnv", 0, '-'},
         {"SaveEnv", 0, '-'}, {"RestoreEnv", 0, '-'}, {"PopEnvSave", 0, '-'},
         {"GetIterator", 1, 'r'}, {"IteratorNextOrJump", 4, 'j'}, {"IteratorClose", 2, 'C'},

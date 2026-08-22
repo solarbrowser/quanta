@@ -2707,9 +2707,18 @@ Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
     Context& ctx = f.ctx;
     uint32_t& instr_pc = f.instr_pc;
     instr_pc = pc;
-    pc += 1;
+    const uint8_t split_scope = f.code[pc + 1];
+    pc += 2;
     do {
                 {
+                Environment* params_env = ctx.get_lexical_environment();
+                if (split_scope) {
+                    ctx.push_block_scope();
+                    // The body's scope is its variable environment too, so a
+                    // `var` or a hoisted function declaration lands there
+                    // rather than beside the parameters.
+                    ctx.set_variable_environment(ctx.get_lexical_environment());
+                }
                 Environment* env = ctx.get_lexical_environment();
                 if (chunk.env) for (const auto& loc : chunk.env->env_locals) {
                     if (loc.is_lexical) {
@@ -2719,6 +2728,12 @@ Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
                         // it -- without this they are all inert in sloppy mode for a binding
                         // the VM created.
                         if (loc.is_const) env->mark_const_binding(loc.name);
+                    }
+                    // Spec FDI: in the split scope a var that repeats a
+                    // parameter's name starts from that parameter's value, not
+                    // undefined -- the two are separate bindings from here on.
+                    else if (split_scope && params_env->has_own_binding(loc.name)) {
+                        env->create_binding(loc.name, params_env->get_binding(loc.name), true);
                     }
                     else env->create_binding(loc.name, Value(), true);
                 }
