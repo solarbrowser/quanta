@@ -812,7 +812,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     FunctionExpression* ctor_func_expr = nullptr;
     // A computed field key is resolved on each evaluation and baked into the
     // synthesised constructor, so that body cannot be shared.
-    bool has_computed_field_key = false;
+    // Only an INSTANCE field's resolved key is baked into the constructor body;
+    // a static one is applied where the class is built and never reaches it.
+    bool has_computed_instance_field_key = false;
     std::vector<std::unique_ptr<ASTNode>> field_initializers;
     std::vector<std::unique_ptr<ASTNode>> static_field_initializers;
     bool has_explicit_constructor = false;
@@ -831,7 +833,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 ClassField* cf = static_cast<ClassField*>(stmt.get());
                 std::unique_ptr<ASTNode> resolved_stmt = stmt->clone();
                 if (cf->is_computed()) {
-                    has_computed_field_key = true;
+                    if (!cf->is_static()) has_computed_instance_field_key = true;
                     // Computed field keys are evaluated exactly once, right here, in strict
                     // declaration order (interleaved with methods and static/instance fields
                     // alike) -- per spec, only the field's VALUE is deferred (instance: to
@@ -1015,15 +1017,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
     // Base classes with private methods need the brand slot added in the constructor.
     // Derived classes get it after super() returns (handled in call.cpp / Function.cpp).
-    bool needs_pm_brand_in_ctor = !private_instance_method_names.empty() && !has_superclass();
-    // The rewritten body embeds a per-evaluation brand slot name, so only the
-    // untouched body can be shared across evaluations.
-    const bool ctor_body_rewritten = !field_initializers.empty() || needs_pm_brand_in_ctor;
-
-    // A synthesised body is deterministic unless it carries a per-evaluation
-    // brand slot or a resolved computed key, so the usual case is shareable
-    // across every evaluation of this class site.
-    const bool ctor_exe_cacheable = !needs_pm_brand_in_ctor && !has_computed_field_key;
+    // A base class's private-method brand is installed by Function::construct
+    // before the body runs (spec 10.2.2 step 8), so nothing about it reaches the
+    // synthesised body any more. What is left of it is deterministic unless an
+    // instance field's computed key was resolved into it, which is what decides
+    // whether one executable can serve every evaluation of this class site.
+    const bool ctor_body_rewritten = !field_initializers.empty();
+    const bool ctor_exe_cacheable = !has_computed_instance_field_key;
     ExecutableRef<FunctionExecutable> cached_ctor =
         ctor_exe_cacheable ? get_cached_ctor_exe() : ExecutableRef<FunctionExecutable>();
     const bool build_ctor_body = !cached_ctor && (ctor_body_rewritten || !ctor_func_expr);
@@ -1047,22 +1047,6 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     if (ctor_body_rewritten && build_ctor_body) {
         BlockStatement* body_block = static_cast<BlockStatement*>(constructor_body.get());
         std::vector<std::unique_ptr<ASTNode>> new_statements;
-
-        // For base classes with private methods, add the per-class brand slot in the constructor.
-        // The slot name encodes the prototype address so each class evaluation gets a unique slot.
-        if (needs_pm_brand_in_ctor) {
-            std::string pm_slot = "#[[pm:" + std::to_string(reinterpret_cast<uintptr_t>(prototype.get())) + "]]";
-            Position z{0,0};
-            auto pfadd_id = std::make_unique<EngineHelper>(EngineHelper::Kind::PrivateFieldAdd, z, z);
-            auto this_id  = std::make_unique<Identifier>("this", z, z);
-            auto slot_lit = std::make_unique<StringLiteral>(pm_slot, z, z);
-            std::vector<std::unique_ptr<ASTNode>> pfadd_args;
-            pfadd_args.push_back(std::move(this_id));
-            pfadd_args.push_back(std::move(slot_lit));
-            auto pfadd_call = std::make_unique<CallExpression>(
-                std::move(pfadd_id), std::move(pfadd_args), z, z, false);
-            new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(pfadd_call), z, z));
-        }
 
         // Otherwise the enter/exit pair costs a global lookup and a native call
         // per construction for a flag nothing will read.

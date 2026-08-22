@@ -1734,6 +1734,18 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     Function* super_constructor_fn = super_constructor();
     bool default_ctor = is_default_ctor();
 
+    // InitializeInstanceElements runs before the body (spec 10.2.2 step 8), so a
+    // base class's private-method brand is on `this` before a parameter default
+    // can call one. A derived class gets it where its `this` first exists --
+    // after super() returns -- which is the auto-super path below and
+    // perform_super_call's own copy of this. Installing it here also keeps the
+    // brand out of the constructor's body, which is what forced that body to be
+    // rebuilt on every evaluation of the class.
+    if (!is_derived_ctor()) {
+        const std::string& base_pm_slot = pm_brand_slot();
+        if (!base_pm_slot.empty()) new_object->add_private_field(base_pm_slot);
+    }
+
     ctx.set_in_constructor_call(true);
     ctx.set_super_called(false);
     // Preserve new.target across the whole super-chain instead of stomping it with `this`.
