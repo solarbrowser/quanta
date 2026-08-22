@@ -32,7 +32,9 @@ public:
     // finally instead of skipping it.
     static std::unique_ptr<BytecodeChunk> compile(
         const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
-        bool suspendable = false);
+        bool suspendable = false,
+                                                 bool is_arrow = false,
+                                                 bool is_strict = false);
 
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,

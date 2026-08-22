@@ -133,7 +133,8 @@ const OpInfo& op_info(Op op) {
         {"LdaConstWide", 4, 'q'},
         {"CallDirectEval", 5, 'c'},
         {"ResolveBindingEnv", 3, 'n'},
-        {"LdaResolvedEnv", 3, 'i'}, {"StaResolvedEnv", 3, 'i'}
+        {"LdaResolvedEnv", 3, 'i'}, {"StaResolvedEnv", 3, 'i'},
+        {"EnterParamEval", 1, 'i'}
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");

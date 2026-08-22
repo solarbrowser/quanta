@@ -3423,7 +3423,7 @@ bool chain_contains_optional(const ASTNode* node) {
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
-    bool suspendable) {
+    bool suspendable, bool is_arrow, bool is_strict) {
     if (!body) return nullptr;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
@@ -3509,20 +3509,22 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // A direct eval can name `arguments` from inside its own source, which no
     // scan of this body can read, so mentioning eval is reason enough.
     if (an_eval) needs_arguments = true;
-    // A sloppy function keeps its top-level lexical declarations in an
-    // environment of their own, distinct from the variable environment, purely
-    // so a direct eval can tell that a `var` it wants to introduce collides
-    // with one (spec FDI step 29). One environment holds both here, so a body
-    // with both an eval and a top-level lexical stays on the tree-walker.
-    if (an_eval) {
+    // A sloppy function keeps its top-level lexical declarations one scope in
+    // from the variable environment, purely so a direct eval can tell that a
+    // `var` it wants to introduce collides with one (spec FDI step 29). Only a
+    // body with an eval needs the extra scope, and only where the entry
+    // sequence is not already building one for the parameters.
+    bool lex_scope_split = false;
+    if (an_eval && !is_strict) {
         for (const auto& info : declared) {
-            if (info.is_lexical) return nullptr;
+            if (info.is_lexical) { lex_scope_split = true; break; }
         }
     }
 
     // Eval inside a parameter initializer answers to EvalDeclarationInstantiation
     // rules the entry sequence does not set up: it reads the parameter names and
     // the arguments conflict off the calling context.
+    bool param_eval = false;
     for (const auto& p : params) {
         const ASTNode* pe = p->has_default() ? p->get_default_value()
                           : p->has_destructuring() ? p->get_destructuring_pattern() : nullptr;
@@ -3530,7 +3532,24 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         std::unordered_set<std::string> pn;
         bool pe_eval = false, pe_class = false, pe_unknown = false;
         collect_closure_names(pe, /*inside_closure=*/true, pn, pe_eval, pe_class, pe_unknown);
-        if (pe_eval) return nullptr;
+        if (pe_eval) param_eval = true;
+    }
+    if (param_eval) needs_arguments = true;
+    // A rest parameter is bound after Op::BindEnvLocals, which is already the
+    // body's scope -- so a `var` an eval in its initializer declares would land
+    // there instead of among the parameters, where the list's own closures look.
+    if (param_eval && has_rest) return nullptr;
+    // Whether a `var arguments` inside such an eval collides. A non-arrow always
+    // has the implicit binding; an arrow only when a parameter carries the name.
+    bool param_args_conflict = !is_arrow;
+    if (!param_args_conflict) {
+        for (const auto& p : params) {
+            if (p->is_rest() || p->has_destructuring()) continue;
+            if (p->get_name() && p->get_name()->get_name() == "arguments") {
+                param_args_conflict = true;
+                break;
+            }
+        }
     }
 
     // FunctionDeclarationInstantiation decides whether the implicit object
@@ -3844,7 +3863,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 compiler.chunk_->ensure_env().env_locals.push_back({info.name, info.is_lexical, info.is_const});
                 // A predicted slot names a position in the environment the code
                 // runs in; with the scopes split the body's is a different one.
-                if (!split_param_scope && flat_slot_counter < kEnvSlotPredictMax) {
+                if (!split_param_scope && !(lex_scope_split && info.is_lexical) &&
+                    flat_slot_counter < kEnvSlotPredictMax) {
                     auto cit = compiler.global_decl_count_.find(info.name);
                     if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
                         compiler.env_slot_info_[info.name] = {static_cast<uint8_t>(flat_slot_counter), 0};
@@ -3941,6 +3961,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (p->is_rest()) continue;
         if (p->has_default() || p->has_destructuring()) params_tdz = true;
     }
+    // Op::BindEnvLocals already decides where the body's bindings go, and it
+    // makes one scope for all of them; the lexicals-only split is the entry
+    // path's, so the two do not combine.
+    if (lex_scope_split && params_tdz) return nullptr;
 
     // Defaults and destructuring resolve once at entry, before the body --
     // in TDZ mode the raw values come from registers (the env binding is
@@ -3957,6 +3981,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (compiler.next_register_ > compiler.temp_watermark_) {
             compiler.temp_watermark_ = compiler.next_register_;
         }
+    }
+    if (param_eval) {
+        compiler.emit(Op::EnterParamEval);
+        compiler.emit_u8(static_cast<uint8_t>(1 | (param_args_conflict ? 2 : 0)));
     }
     {
         uint8_t param_index = 0;
@@ -4020,6 +4048,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             compiler.emit_write_local(rest_name, false);
         }
     }
+    if (param_eval) {
+        compiler.emit(Op::EnterParamEval);
+        compiler.emit_u8(0);
+    }
 
     if (concise) {
         if (!compiler.compile_expression(body)) return nullptr;
@@ -4028,6 +4060,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         compiler.chunk_->parameter_count = static_cast<uint8_t>(param_names.size());
         compiler.chunk_->env_mode = env_mode;
         compiler.chunk_->env_params_tdz = params_tdz;
+        compiler.chunk_->lex_scope_split = lex_scope_split;
         compiler.chunk_->needs_arguments = needs_arguments;
         if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
         if (env_mode) compiler.chunk_->ensure_env().env_slot_total = static_cast<uint16_t>(flat_slot_counter);
@@ -4093,6 +4126,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->parameter_count = static_cast<uint8_t>(param_names.size());
     compiler.chunk_->env_mode = env_mode;
     compiler.chunk_->env_params_tdz = params_tdz;
+    compiler.chunk_->lex_scope_split = lex_scope_split;
     compiler.chunk_->needs_arguments = needs_arguments;
     if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
     if (env_mode) compiler.chunk_->ensure_env().env_slot_total = static_cast<uint16_t>(flat_slot_counter);
@@ -4234,6 +4268,20 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
                               script_has_with ? nullptr : &env_resident);
     if (compiler.failed_) return nullptr;
     compiler.script_mode_ = true;
+    // The sweep above walks with inside_closure off, so a direct eval written
+    // at the top level never reaches its flag. Ask again for that one: every
+    // name up here is already an outer binding, which is exactly what a direct
+    // eval needs, but its assignments still have to resolve ahead of the right
+    // side (see Op::ResolveBindingEnv).
+    {
+        std::unordered_set<std::string> names;
+        bool top_eval = false, top_class = false, top_unknown = false;
+        for (const auto& st : statements) {
+            collect_closure_names(st.get(), /*inside_closure=*/true, names,
+                                  top_eval, top_class, top_unknown);
+        }
+        compiler.eval_in_body_ = top_eval;
+    }
     // Same global_decl_count_ bookkeeping as compile()'s param/declared/rest
     // loop above -- without it, script-level nested lexicals never qualify
     // for LdaEnvSlot/StaEnvSlot (the uniqueness check always misses).
@@ -8174,7 +8222,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // direct eval -- the chain evaluates the callee as a value first.
             const bool direct_eval =
                 named_callee && callee_name == "eval" && !call->is_optional();
-            if (direct_eval && !full_env_) return false;
+            // At the top level there are no frame locals to hide: every name is
+            // already an outer binding, so no full environment is needed.
+            if (direct_eval && !full_env_ && !script_mode_) return false;
 
             // Class field initialisers are synthesised as a DefineField helper
             // call -- a slot read and a native call per field, on every

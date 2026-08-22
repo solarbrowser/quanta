@@ -317,6 +317,11 @@ enum class Op : uint8_t {
     LdaResolvedEnv,            // u8slot n16
     StaResolvedEnv,            // u8slot n16
 
+    // Around the parameter section when an initializer holds a direct eval:
+    // EvalDeclarationInstantiation reads the parameter names and whether
+    // `arguments` collides off the calling context, not off its own arguments.
+    EnterParamEval,            // u8: bit0 enter/leave, bit1 arguments conflict
+
     kCount
 };
 
@@ -583,6 +588,11 @@ struct BytecodeChunk {
     // bytecode, and env_locals bound only afterwards (Op::BindEnvLocals), so a
     // default expression can't see a later parameter or a body-level binding.
     bool env_params_tdz : 1 = false;
+    // Sloppy FDI step 29: the body's top-level lexical declarations live one
+    // scope in from the variable environment, so a direct eval can tell that a
+    // `var` it wants to add collides with one. Only a body with an eval in it
+    // pays for the extra scope.
+    bool lex_scope_split = false;
     // Top-level script chunk: the frame's lexical env is the PERSISTENT
     // script env (not per-call), so the lookup cache may point into it.
     bool script_mode : 1 = false;

@@ -2366,6 +2366,27 @@ Value h_gen_StaResolvedEnv(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_EnterParamEval(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    const uint8_t flags = code[pc + 1];
+    pc += 2;
+    if (flags & 1) {
+        std::unordered_set<std::string> pn;
+        if (chunk.env) for (const auto& p : chunk.env->env_params) pn.insert(p);
+        ctx.set_eval_param_names(std::move(pn));
+        ctx.set_eval_arguments_conflict((flags & 2) != 0);
+        ctx.set_in_param_eval(true);
+    } else {
+        ctx.set_in_param_eval(false);
+    }
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5186,6 +5207,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::ResolveBindingEnv)] = &h_gen_ResolveBindingEnv;
     t[static_cast<uint8_t>(Op::LdaResolvedEnv)] = &h_gen_LdaResolvedEnv;
     t[static_cast<uint8_t>(Op::StaResolvedEnv)] = &h_gen_StaResolvedEnv;
+    t[static_cast<uint8_t>(Op::EnterParamEval)] = &h_gen_EnterParamEval;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;
@@ -5301,16 +5323,27 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
                 Value v = i < args.size() ? args[i] : Value();
                 env->create_binding_interned(chunk.env->env_param_keys[i], v, true);
             }
+            Environment* lex_env = env;
+            if (chunk.lex_scope_split) {
+                for (size_t li = 0; li < chunk.env->env_locals.size(); li++) {
+                    const auto& loc = chunk.env->env_locals[li];
+                    if (loc.is_lexical) continue;
+                    env->create_binding_interned(chunk.env->env_local_keys[li], Value(), true);
+                }
+                ctx.push_block_scope();
+                lex_env = ctx.get_lexical_environment();
+            }
             for (size_t li = 0; li < chunk.env->env_locals.size(); li++) {
                 const auto& loc = chunk.env->env_locals[li];
                 const std::string* lk = chunk.env->env_local_keys[li];
+                if (chunk.lex_scope_split && !loc.is_lexical) continue;
                 if (loc.is_lexical) {
-                        env->create_uninitialized_binding_interned(lk, !loc.is_const);
+                        lex_env->create_uninitialized_binding_interned(lk, !loc.is_const);
                         // is_strict_const() wants the const SET, not just the cleared mutable
                         // flag, and every "Assignment to constant variable" check gates on
                         // it -- without this they are all inert in sloppy mode for a binding
                         // the VM created.
-                        if (loc.is_const) env->mark_const_binding(loc.name);
+                        if (loc.is_const) lex_env->mark_const_binding(loc.name);
                     }
                 else env->create_binding_interned(lk, Value(), true);
             }

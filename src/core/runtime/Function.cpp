@@ -979,7 +979,9 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
             }
         }
         if (!executable_->bytecode_chunk && !executable_->vm_incompatible) {
-            executable_->bytecode_chunk = BytecodeCompiler::compile(ast, parameter_objects_);
+            executable_->bytecode_chunk =
+                BytecodeCompiler::compile(ast, parameter_objects_, /*suspendable=*/false, is_arrow_,
+                                          is_strict_ || executable_->fast_strict);
             executable_->recompute_fast_gate();
             if (executable_->bytecode_chunk) {
                 // The chunk's constants (new, unmarked cells) are only reachable
