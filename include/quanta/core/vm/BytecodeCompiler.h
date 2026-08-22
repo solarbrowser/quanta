@@ -293,6 +293,11 @@ private:
     std::vector<LoopScope> loop_stack_;
     std::vector<std::string> pending_labels_;  // set by LABELED_STATEMENT, taken by the next loop/switch
     std::unordered_set<const ASTNode*> hoisted_fn_decls_;  // top-level fn decls bound by compile()'s prologue
+    // A block's generator/async declarations: not hoisted with the block's
+    // plain ones (BlockStatement's first pass skips them too), so they are
+    // emitted where they stand. Only a scope whose entry this compiler wrote
+    // is listed -- a switch has its own scoping rules and stays out.
+    std::unordered_set<const ASTNode*> in_place_fn_decls_;
     bool allow_arguments_ = false;
     // A direct eval here can add a binding between an assignment's reference
     // and its store, so those resolve ahead into a parked environment.

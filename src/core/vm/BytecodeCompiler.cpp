@@ -310,6 +310,47 @@ void collect_pattern_target_names(const ASTNode* pattern, std::vector<std::strin
 }
 
 // Runtime const-immutability isn't implemented, so this is the compile-time check.
+// The identifier targets a pattern writes to. Only the shapes
+// pattern_is_emittable accepts need walking: any other leaf refuses to compile
+// before residency can matter.
+bool pattern_writes_identifier(const ASTNode* pattern, const std::string& name) {
+    if (!pattern) return false;
+    switch (pattern->get_type()) {
+        case ASTNode::Type::IDENTIFIER:
+            return static_cast<const Identifier*>(pattern)->get_name() == name;
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return pattern_writes_identifier(
+                static_cast<const SpreadElement*>(pattern)->get_argument(), name);
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION:
+            return pattern_writes_identifier(
+                static_cast<const AssignmentExpression*>(pattern)->get_left(), name);
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT:
+            return pattern_writes_identifier(
+                static_cast<const DestructuringAssignment*>(pattern)->get_pattern_literal(), name);
+        case ASTNode::Type::ARRAY_LITERAL:
+            for (const auto& el : static_cast<const ArrayLiteral*>(pattern)->get_elements()) {
+                if (pattern_writes_identifier(el.get(), name)) return true;
+            }
+            return false;
+        case ASTNode::Type::OBJECT_LITERAL:
+            for (const auto& prop : static_cast<const ObjectLiteral*>(pattern)->get_properties()) {
+                if (prop->value && pattern_writes_identifier(prop->value.get(), name)) return true;
+            }
+            return false;
+        default:
+            return false;
+    }
+}
+
+// A for-in/of head without a declaration keyword assigns to its target once
+// per iteration rather than binding it, which is what makes a const there a
+// TypeError. Without this the compiled loop wrote the const's register and
+// the refusal never happened.
+bool head_target_assigns(const ASTNode* left, int decl_kind, const std::string& name) {
+    if (decl_kind >= 0) return false;  // a declaration binds, it does not assign
+    return pattern_writes_identifier(left, name);
+}
+
 bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
     if (!node) return false;
     switch (node->get_type()) {
@@ -345,12 +386,14 @@ bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
         }
         case ASTNode::Type::FOR_OF_STATEMENT: {
             const auto* n = static_cast<const ForOfStatement*>(node);
-            return assigns_to_identifier(n->get_right(), name) ||
+            return head_target_assigns(n->get_left(), n->get_left_decl_kind(), name) ||
+                   assigns_to_identifier(n->get_right(), name) ||
                    assigns_to_identifier(n->get_body(), name);
         }
         case ASTNode::Type::FOR_IN_STATEMENT: {
             const auto* n = static_cast<const ForInStatement*>(node);
-            return assigns_to_identifier(n->get_right(), name) ||
+            return head_target_assigns(n->get_left(), n->get_left_decl_kind(), name) ||
+                   assigns_to_identifier(n->get_right(), name) ||
                    assigns_to_identifier(n->get_body(), name);
         }
         case ASTNode::Type::TRY_STATEMENT: {
@@ -3723,6 +3766,28 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             env_resident.insert(info.name);
         }
     }
+    // The register file is kMaxRegisters wide and every parameter and top-level
+    // declaration wants one of them. A bundled script's outer wrapper declares
+    // more names than that, and declare_local's refusal then handed the whole
+    // function -- along with everything nested inside it -- to the tree-walker.
+    // The environment has no such ceiling, so the names past the budget go
+    // there instead: slower per access than a register, but the alternative is
+    // not compiling at all. The reserve leaves room for the temporaries
+    // expression evaluation allocates on top of the named locals.
+    if (!full_env) {
+        constexpr size_t kTempReserve = 48;
+        std::unordered_set<std::string> counted;
+        size_t used = param_names.size() + kTempReserve;
+        for (const auto& info : declared) {
+            if (env_resident.count(info.name) || !counted.insert(info.name).second) continue;
+            if (used < static_cast<size_t>(kMaxRegisters)) {
+                used++;
+                continue;
+            }
+            env_resident.insert(info.name);
+            selective = true;
+        }
+    }
     const bool env_mode = full_env || has_closures || !env_resident.empty() ||
                           suspendable || has_delegated_expr;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
@@ -4466,7 +4531,8 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     bool declare_fresh = false;
     bool is_const = false;
     bool is_lexical = false;
-    const DestructuringAssignment* destr = nullptr;
+    const ASTNode* pattern_lit = nullptr;
+    const MemberExpression* mem_target = nullptr;
     if (left->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
         const auto* vd = static_cast<const VariableDeclaration*>(left);
         if (vd->declaration_count() != 1) return false;
@@ -4477,22 +4543,42 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         is_const = vd->get_kind() == VariableDeclarator::Kind::CONST;
     } else if (left->get_type() == ASTNode::Type::IDENTIFIER) {
         var_name = static_cast<const Identifier*>(left)->get_name();
-    } else if (left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT && left_decl_kind >= 0) {
-        destr = static_cast<const DestructuringAssignment*>(left);
-        declare_fresh = true;
+    } else if (left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT ||
+               left->get_type() == ASTNode::Type::ARRAY_LITERAL ||
+               left->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+        // A pattern with a declaration keyword arrives wrapped; without one
+        // the head holds the bare literal. The keywordless form assigns to
+        // targets that already exist rather than binding new ones, which is
+        // the distinction emit_pattern_bind's is_assignment draws.
+        pattern_lit = left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT
+                          ? static_cast<const DestructuringAssignment*>(left)->get_pattern_literal()
+                          : left;
+        declare_fresh = left_decl_kind >= 0;
         is_const = left_decl_kind == 2;
-        is_lexical = left_decl_kind != 0;  // 0 = var
+        is_lexical = left_decl_kind > 0;  // 0 = var, -1 = no keyword
+    } else if (left->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+        mem_target = static_cast<const MemberExpression*>(left);
+        if (member_is_super(mem_target) || member_is_private(mem_target) ||
+            !member_is_supported(mem_target)) {
+            return false;
+        }
     } else {
         return false;  // bare destructuring (no declaration keyword) / member-expression LHS
     }
-    if (!destr && !is_local(var_name)) return false;
+    // A target that is not a compiler local resolves by name at write time
+    // (Op::StaLookup), which is where an outer const's TypeError comes from
+    // too. Requiring a local here handed whole functions to the tree-walker
+    // over a loop head that writes a global or an outer binding.
     // A keywordless target is an assignment, and assigning to a const has to
     // throw. emit_write_local would emit a plain Star and silently overwrite
     // it, so hand the whole loop to the tree-walker, which raises. A declared
     // target is not that case: `for (const k of ...)` binds k afresh each
     // iteration rather than assigning to an existing const, and refusing it
     // here kept whole functions out of the compiler over their loop heads.
-    if (!destr && !declare_fresh && const_locals_.count(var_name)) return false;
+    if (!pattern_lit && !mem_target && !declare_fresh && const_locals_.count(var_name) &&
+        !env_names_.count(var_name) && lookup_local(var_name) >= 0) {
+        return false;
+    }
 
     // Entered before compiling `right`: a lexical ForDeclaration's bound name
     // is in TDZ even during the head's own iterable/object expression (spec).
@@ -4502,12 +4588,14 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     // a pre-declared name would silently no-op after iteration 1.
     // force_own_env still gives lexicals a fresh per-iteration env.
     std::vector<BytecodeChunk::LoopEnvVar> extra_vars;
-    if (destr) {
+    if (pattern_lit) {
         // Nothing to push -- see the comment above.
+    } else if (mem_target) {
+        // Nothing is bound: the target is a property of an existing object.
     } else if (declare_fresh && env_mode_ && env_names_.count(var_name)) {
         extra_vars.push_back({var_name, true, is_const, false});
     }
-    int loop_env_idx = setup_loop_env(std::move(extra_vars), body, /*force_own_env=*/destr && is_lexical,
+    int loop_env_idx = setup_loop_env(std::move(extra_vars), body, /*force_own_env=*/pattern_lit && is_lexical,
                                        {left, right});
     if (loop_env_idx >= 0) {
         emit(Op::EnterLoopEnv);
@@ -4581,15 +4669,65 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         emit_u8(static_cast<uint8_t>(forin_key_reg));
     }
 
-    if (destr) {
-        const ASTNode* lit = destr->get_pattern_literal();
-        if (!pattern_is_emittable(lit, is_lexical)) return false;
-        if (!emit_pattern_bind(lit, is_lexical, is_const)) return false;
+    // The per-iteration write is inside the protected region, not just the
+    // body: spec 14.7.5.6 closes the iterator when binding the value throws
+    // (an assignment to a const, a destructuring pattern's getter). The
+    // iterator's own next() is deliberately left outside -- a throw from
+    // there is not followed by IteratorClose.
+    size_t body_start = code_.size();
+    if (pattern_lit) {
+        if (!pattern_is_emittable(pattern_lit, is_lexical, /*is_assignment=*/!declare_fresh)) {
+            return false;
+        }
+        if (!emit_pattern_bind(pattern_lit, is_lexical, is_const,
+                               /*is_assignment=*/!declare_fresh)) {
+            return false;
+        }
+    } else if (mem_target) {
+        // The reference is evaluated per iteration, after the value is in
+        // hand (spec 14.7.5.6 step 6.f), so the object and key expressions
+        // run here rather than once before the loop.
+        int val_reg = alloc_temp();
+        if (failed_) return false;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(val_reg));
+        if (!compile_expression(mem_target->get_object())) return false;
+        int obj_reg = alloc_temp();
+        if (failed_) return false;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(obj_reg));
+        uint16_t name_idx = 0;
+        int key_reg = -1;
+        if (mem_target->is_computed()) {
+            if (!compile_expression(mem_target->get_property())) return false;
+            key_reg = alloc_temp();
+            if (failed_) return false;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(key_reg));
+        } else {
+            name_idx = add_name(static_cast<const Identifier*>(mem_target->get_property())->get_name());
+        }
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(val_reg));
+        if (key_reg >= 0) {
+            emit(Op::SetKeyed);
+            emit_u8(static_cast<uint8_t>(obj_reg));
+            emit_u8(static_cast<uint8_t>(key_reg));
+            emit_u16(alloc_keyed_feedback());
+            free_temp(key_reg);
+        } else {
+            emit(Op::SetNamed);
+            emit_u8(static_cast<uint8_t>(obj_reg));
+            emit_u16(name_idx);
+            emit_u16(alloc_feedback_slot());
+        }
+        free_temp(obj_reg);
+        free_temp(val_reg);
+        if (failed_) return false;
     } else {
         emit_write_local(var_name, /*is_declaration=*/declare_fresh);
     }
 
-    size_t body_start = code_.size();
     loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels(), iterator_reg, is_await});
     if (!compile_statement(body)) return false;
     LoopScope scope = std::move(loop_stack_.back());
@@ -5840,10 +5978,6 @@ int BytecodeCompiler::emit_spread_array(const std::vector<std::unique_ptr<ASTNod
 // fails the operator's test; the skip jump leaves the old value in the
 // accumulator as the expression result, matching the tree-walker.
 bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* expr) {
-    // A logical assignment reads and writes one reference, and inside a `with`
-    // that reference has to be bound once against the object first. Rare enough
-    // there to leave to the tree-walker rather than build a third path for.
-    if (with_depth_ > 0) return false;
     using AsOp = AssignmentExpression::Operator;
     Op skip_op = expr->get_operator() == AsOp::LOGICAL_AND_ASSIGN ? Op::JumpIfFalse
                : expr->get_operator() == AsOp::LOGICAL_OR_ASSIGN  ? Op::JumpIfTrue
@@ -5856,6 +5990,28 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
         // (spec 13.15.2 step 1.e.i): `f ??= function(){}` names it "f". The
         // opcode no-ops when the value already has a name.
         const bool name_rhs = is_named_evaluation_rhs(expr->get_right());
+        // Inside a `with`, the reference is bound against the object once and
+        // both the read and the write go through that binding -- the object
+        // may shadow a name this chunk would otherwise own, and asking twice
+        // would run the Proxy traps twice.
+        if (int with_reg = emit_with_target_resolve(expr->get_left(), /*is_lexical=*/false);
+            with_reg >= 0) {
+            emit(Op::LdaWithResolved);
+            emit_u8(static_cast<uint8_t>(with_reg));
+            emit_u16(add_name(name));
+            size_t skip = emit_jump(skip_op);
+            if (!compile_expression(expr->get_right())) return false;
+            if (name_rhs) {
+                emit(Op::SetFunctionNameIfUnnamed);
+                emit_u16(add_name(name));
+            }
+            emit(Op::StaWithResolved);
+            emit_u8(static_cast<uint8_t>(with_reg));
+            emit_u16(add_name(name));
+            free_temp(with_reg);
+            return patch_jump(skip) && !failed_;
+        }
+        if (failed_) return false;
         if (is_local(name)) {
             emit_read_local(name);
             size_t skip = emit_jump(skip_op);
@@ -5881,6 +6037,9 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     }
 
     if (expr->get_left()->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return false;
+    // A member target inside a `with` still resolves its object through the
+    // chain, which this path does not bind once the way an identifier needs.
+    if (with_depth_ > 0) return false;
     const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
     const bool priv = member_is_private(mem);
     if (member_is_super(mem)) {
@@ -6017,8 +6176,20 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         // Already created and bound by the hoisting pass in compile();
         // block-nested declarations (Annex B) keep bailing to the tree-walker.
-        case ASTNode::Type::FUNCTION_DECLARATION:
-            return hoisted_fn_decls_.count(node) > 0;
+        case ASTNode::Type::FUNCTION_DECLARATION: {
+            if (hoisted_fn_decls_.count(node)) return true;  // bound at scope entry
+            // A block's generator/async declaration is bound where it stands,
+            // which is what BlockStatement's second pass does with the forms
+            // its first pass skipped. Anything else -- a switch case's, whose
+            // scope this compiler does not open -- still refuses.
+            if (!in_place_fn_decls_.count(node)) return false;
+            if (!env_mode_) return false;
+            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+            chunk_->ensure_closures().push_back(closure_template_for(node));
+            emit(Op::DeclareFunction);
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+            return !failed_;
+        }
 
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* block = static_cast<const BlockStatement*>(node);
@@ -6029,6 +6200,15 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 std::vector<BytecodeChunk::LoopEnvVar> vars;
                 bool needs_own_env = false;
                 if (!collect_direct_lexical_decls(block, vars, needs_own_env)) return false;
+                // A function declaration binds in the block -- BlockStatement's
+                // own scope rule counts one -- so the compiled block needs the
+                // same environment for Op::DeclareFunction to land in.
+                for (const auto& st : block->get_statements()) {
+                    if (st->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                        needs_own_env = true;
+                        break;
+                    }
+                }
                 std::vector<BytecodeChunk::LoopEnvVar> env_vars;
                 for (const auto& v : vars) {
                     int reg = env_names_.count(v.name) ? -1 : lookup_local(v.name);
@@ -6055,6 +6235,25 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     emit_u16(static_cast<uint16_t>(block_env_idx));
                     env_depth_++;
                 }
+            }
+            // Mirrors BlockStatement::evaluate's first pass: plain function
+            // declarations are bound before any statement runs, so a call
+            // ahead of the declaration finds them. Generator and async forms
+            // are deliberately left out -- that pass skips them too, and they
+            // still refuse below rather than being bound early.
+            for (const auto& st : block->get_statements()) {
+                if (st->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+                const auto* fd = static_cast<const FunctionDeclaration*>(st.get());
+                if (fd->is_generator() || fd->is_async()) {
+                    in_place_fn_decls_.insert(st.get());
+                    continue;
+                }
+                if (!env_mode_) return false;
+                if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+                hoisted_fn_decls_.insert(st.get());
+                chunk_->ensure_closures().push_back(closure_template_for(st.get()));
+                emit(Op::DeclareFunction);
+                emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             }
             bool has_using = false;
             for (const auto& st : block->get_statements()) {
