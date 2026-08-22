@@ -706,6 +706,55 @@ bool contains_closure(const ASTNode* node) {
         case ASTNode::Type::CONTINUE_STATEMENT:
             return false;
 
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            // The pattern literal is the whole pattern: every default and every
+            // computed key sits in it, at any depth, as an ordinary expression.
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            return contains_closure(n->get_source()) ||
+                   contains_closure(n->get_pattern_literal());
+        }
+        case ASTNode::Type::PARAMETER: {
+            const auto* n = static_cast<const Parameter*>(node);
+            return contains_closure(n->get_default_value()) ||
+                   contains_closure(n->get_destructuring_pattern());
+        }
+        case ASTNode::Type::VARIABLE_DECLARATOR:
+            return contains_closure(static_cast<const VariableDeclarator*>(node)->get_init());
+        case ASTNode::Type::AWAIT_EXPRESSION:
+            return contains_closure(static_cast<const AwaitExpression*>(node)->get_argument());
+        case ASTNode::Type::YIELD_EXPRESSION:
+            return contains_closure(static_cast<const YieldExpression*>(node)->get_argument());
+        case ASTNode::Type::WITH_STATEMENT: {
+            const auto* n = static_cast<const WithStatement*>(node);
+            return contains_closure(n->get_object()) || contains_closure(n->get_body());
+        }
+        case ASTNode::Type::CATCH_CLAUSE: {
+            const auto* n = static_cast<const CatchClause*>(node);
+            return contains_closure(n->get_destructuring_pattern()) ||
+                   contains_closure(n->get_body());
+        }
+        case ASTNode::Type::CASE_CLAUSE: {
+            const auto* n = static_cast<const CaseClause*>(node);
+            if (contains_closure(n->get_test())) return true;
+            for (const auto& st : n->get_consequent()) {
+                if (contains_closure(st.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::USING_DECLARATION: {
+            const auto* n = static_cast<const UsingDeclaration*>(node);
+            for (const auto& b : n->get_bindings()) {
+                if (contains_closure(b.initializer.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::PROGRAM: {
+            for (const auto& st : static_cast<const Program*>(node)->get_statements()) {
+                if (contains_closure(st.get())) return true;
+            }
+            return false;
+        }
+
         default:
             // An unknown shape could hold a closure, and answering "no" leaves
             // env_mode off, which is what every closure-emitting instruction
