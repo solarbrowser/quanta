@@ -324,6 +324,11 @@ enum class Op : uint8_t {
     // Arms the next call as a direct eval. CallDirectEval carries its own flag;
     // a spread call takes it this way because its opcode has no room left.
     SetDirectEval,             // u8
+    // k -- builds the class at BytecodeChunk::treewalk_nodes[k]. The node is
+    // read as the class's description, not walked as a tree: this is the one
+    // construct the compiler hands back whole, and giving it its own opcode
+    // keeps EvalAst meaning "a gap the compiler could not emit".
+    DefineClass,               // k
 
     kCount
 };

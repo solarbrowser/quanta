@@ -3362,6 +3362,27 @@ Value h_gen_EvalAst(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint16_t idx = read_u16(code, pc);
+                pc += 2;
+                ASTNode* node = const_cast<ASTNode*>((*chunk.treewalk_nodes)[idx]);
+                acc = static_cast<ClassDeclaration*>(node)->define_class(ctx);
+                CHECK_EXC();
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_CopyRestProperties(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5253,6 +5274,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CreateClosure)] = &h_gen_CreateClosure;
     t[static_cast<uint8_t>(Op::DeclareFunction)] = &h_gen_DeclareFunction;
     t[static_cast<uint8_t>(Op::EvalAst)] = &h_gen_EvalAst;
+    t[static_cast<uint8_t>(Op::DefineClass)] = &h_gen_DefineClass;
     t[static_cast<uint8_t>(Op::CopyRestProperties)] = &h_gen_CopyRestProperties;
     t[static_cast<uint8_t>(Op::Call)] = &h_gen_Call;
     t[static_cast<uint8_t>(Op::CallResolved)] = &h_gen_CallResolved;

@@ -789,9 +789,10 @@ Value BlockStatement::evaluate(Context& ctx) {
     try {
         for (const auto& statement : statements_) {
             if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
-                // Generator/async function declarations are block-scoped per spec, not hoisted.
-                auto* fd = static_cast<FunctionDeclaration*>(statement.get());
-                if (fd->is_generator() || fd->is_async()) continue;
+                // BlockDeclarationInstantiation instantiates every function
+                // declaration in the block before any statement runs, the
+                // generator and async forms included -- they are block-scoped,
+                // which is a different thing from being declared in place.
                 g_empty_completion = false;
                 last_value = statement->evaluate(ctx);
                 if (ctx.has_exception()) { exiting = true; break; }
@@ -801,10 +802,7 @@ Value BlockStatement::evaluate(Context& ctx) {
         if (!exiting) {
             for (const auto& statement : statements_) {
                 ASTNode::Type stype = statement->get_type();
-                if (stype == ASTNode::Type::FUNCTION_DECLARATION) {
-                    auto* fd = static_cast<FunctionDeclaration*>(statement.get());
-                    if (!fd->is_generator() && !fd->is_async()) continue;
-                }
+                if (stype == ASTNode::Type::FUNCTION_DECLARATION) continue;  // bound above
                 g_empty_completion = false;
                 Value result = statement->evaluate(ctx);
                 bool stmt_empty = g_empty_completion;
@@ -2939,6 +2937,17 @@ Value SwitchStatement::evaluate(Context& ctx) {
         hoist_lexical_declarations(block_env_ptr,
                                     static_cast<CaseClause*>(c.get())->get_consequent());
     }
+    // BlockDeclarationInstantiation over the whole CaseBlock, which the spec
+    // runs before the case selectors are evaluated: every function declared in
+    // any clause is bound now, not where it stands. Their completion is empty,
+    // so none of this reaches the switch's own completion value.
+    for (const auto& c : cases_) {
+        for (const auto& stmt : static_cast<CaseClause*>(c.get())->get_consequent()) {
+            if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+            stmt->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+        }
+    }
 
     int matching_case_index = -1;
     int default_case_index = -1;
@@ -2974,6 +2983,7 @@ Value SwitchStatement::evaluate(Context& ctx) {
         CaseClause* case_clause = static_cast<CaseClause*>(cases_[i].get());
 
         for (const auto& stmt : case_clause->get_consequent()) {
+            if (stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) continue;  // bound above
             Value result = stmt->evaluate(ctx);
             if (!g_empty_completion) V = result;
             if (ctx.has_exception()) return Value();

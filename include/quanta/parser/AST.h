@@ -1303,6 +1303,10 @@ public:
     uint32_t source_end() const { return src_end_; }
 
     Value evaluate(Context& ctx) override;
+    // Builds the class. evaluate() is the tree-walker's way in; Op::DefineClass
+    // calls this directly, so the node is read as a description rather than
+    // walked.
+    Value define_class(Context& ctx);
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };

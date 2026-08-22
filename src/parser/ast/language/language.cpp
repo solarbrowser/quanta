@@ -778,7 +778,9 @@ static bool field_init_cannot_observe_cfi(const ASTNode* n) {
     }
 }
 
-Value ClassDeclaration::evaluate(Context& ctx) {
+Value ClassDeclaration::evaluate(Context& ctx) { return define_class(ctx); }
+
+Value ClassDeclaration::define_class(Context& ctx) {
     std::string class_name = id_->get_name();
 
     // classScope (spec step 2-4): the class name is an inner IMMUTABLE binding,

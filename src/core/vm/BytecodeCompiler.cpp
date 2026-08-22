@@ -6177,18 +6177,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         // Already created and bound by the hoisting pass in compile();
         // block-nested declarations (Annex B) keep bailing to the tree-walker.
         case ASTNode::Type::FUNCTION_DECLARATION: {
-            if (hoisted_fn_decls_.count(node)) return true;  // bound at scope entry
-            // A block's generator/async declaration is bound where it stands,
-            // which is what BlockStatement's second pass does with the forms
-            // its first pass skipped. Anything else -- a switch case's, whose
-            // scope this compiler does not open -- still refuses.
-            if (!in_place_fn_decls_.count(node)) return false;
-            if (!env_mode_) return false;
-            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
-            chunk_->ensure_closures().push_back(closure_template_for(node));
-            emit(Op::DeclareFunction);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
-            return !failed_;
+            // Bound at the entry of a scope this compiler opened. Anything
+            // else -- a switch case's, whose scope it does not open -- refuses.
+            return hoisted_fn_decls_.count(node) > 0;
         }
 
         case ASTNode::Type::BLOCK_STATEMENT: {
@@ -6236,18 +6227,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     env_depth_++;
                 }
             }
-            // Mirrors BlockStatement::evaluate's first pass: plain function
-            // declarations are bound before any statement runs, so a call
-            // ahead of the declaration finds them. Generator and async forms
-            // are deliberately left out -- that pass skips them too, and they
-            // still refuse below rather than being bound early.
+            // Mirrors BlockStatement::evaluate's first pass: every function
+            // declaration in the block is bound before any statement runs, so
+            // a call ahead of the declaration finds it.
             for (const auto& st : block->get_statements()) {
                 if (st->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
-                const auto* fd = static_cast<const FunctionDeclaration*>(st.get());
-                if (fd->is_generator() || fd->is_async()) {
-                    in_place_fn_decls_.insert(st.get());
-                    continue;
-                }
                 if (!env_mode_) return false;
                 if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
                 hoisted_fn_decls_.insert(st.get());
@@ -7025,9 +7009,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             if (!env_mode_) return false;
             if (chunk_->ensure_treewalk_nodes().size() >= 0xFFFF) return false;
             chunk_->ensure_treewalk_nodes().push_back(node);
-            emit(Op::EvalAst);
+            emit(Op::DefineClass);
             emit_u16(static_cast<uint16_t>(chunk_->ensure_treewalk_nodes().size() - 1));
-            // ClassDeclaration::evaluate binds the name itself, so this only
+            // define_class binds the name itself, so this only
             // has to mirror it into a register when the name has one. A module
             // or script top level has neither a register nor an env slot for
             // it, and asking for one there used to yield register -1.
@@ -8610,7 +8594,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             if (!env_mode_) return false;
             if (chunk_->ensure_treewalk_nodes().size() >= 0xFFFF) return false;
             chunk_->ensure_treewalk_nodes().push_back(node);
-            emit(Op::EvalAst);
+            emit(Op::DefineClass);
             emit_u16(static_cast<uint16_t>(chunk_->ensure_treewalk_nodes().size() - 1));
             return true;
         }
