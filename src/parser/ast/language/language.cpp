@@ -607,8 +607,15 @@ Value declare_function(Context& ctx, const ClosureTemplate& tpl) {
         // In strict mode inside a block/function where lex != var env, use lexical binding
         // so block-scoped function declarations don't bleed into the outer function scope.
         // Annex B.3.3's sloppy-mode var-scope leak applies only to plain FunctionDeclarations.
-        bool use_lexical = (ctx.is_strict_mode() || tpl.is_generator || tpl.is_async) &&
-            ctx.get_lexical_environment() != ctx.get_variable_environment();
+        // FunctionDeclarationInstantiation appends "arguments" to
+        // parameterNames whenever the function needs an arguments object, and
+        // Annex B skips the extension for a name that is a parameter. Without
+        // this the block's `function arguments() {}` took the object's place
+        // for the rest of the call.
+        bool shadows_arguments = function_name == "arguments" && ctx.has_binding(function_name);
+        bool use_lexical = shadows_arguments ||
+            ((ctx.is_strict_mode() || tpl.is_generator || tpl.is_async) &&
+             ctx.get_lexical_environment() != ctx.get_variable_environment());
         if (use_lexical) {
             if (!ctx.create_lexical_binding(function_name, function_value, true)) {
                 ctx.create_lexical_binding_force(function_name, function_value);
@@ -617,10 +624,29 @@ Value declare_function(Context& ctx, const ClosureTemplate& tpl) {
             // Same rule as a `var`: the binding is not deletable outside eval
             // code (spec 10.2.11 step 36, CreateMutableBinding(fn, false)).
             if (!ctx.create_var_binding(function_name, function_value, true)) {
-                if (ctx.get_type() == Context::Type::Eval && !ctx.is_strict_mode()) {
-                    ctx.create_global_function_binding(function_name, function_value, true);
-                } else {
-                    ctx.create_lexical_binding_force(function_name, function_value);
+                // Entering the block a second time re-declares the same
+                // function, and the binding this site already made is the one
+                // to update (Annex B.3.3's copy out to the variable
+                // environment). Binding a fresh name in the block instead left
+                // every reference that had already resolved -- including a
+                // cached one -- pointing at the first entry's closure. Only
+                // this site's own binding is overwritten: a parameter, or a
+                // name the program bound, is left alone.
+                Environment* var_env_now = ctx.get_variable_environment();
+                bool same_site = false;
+                if (var_env_now && function_value.is_function()) {
+                    Value existing = var_env_now->get_binding(function_name);
+                    if (existing.is_function()) {
+                        same_site = existing.as_function()->get_executable().get() ==
+                                    function_value.as_function()->get_executable().get();
+                    }
+                }
+                if (!same_site || !var_env_now->set_binding(function_name, function_value)) {
+                    if (ctx.get_type() == Context::Type::Eval && !ctx.is_strict_mode()) {
+                        ctx.create_global_function_binding(function_name, function_value, true);
+                    } else {
+                        ctx.create_lexical_binding_force(function_name, function_value);
+                    }
                 }
             }
         }
