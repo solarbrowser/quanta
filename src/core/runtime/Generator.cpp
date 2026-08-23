@@ -813,8 +813,12 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
 
     // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
     // the function body before it executes (see AsyncFunction::call for rationale).
-    if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body, gen_context);
+    // Only the tree-walked path needs this: a compiled body creates its own
+    // var bindings from the chunk's environment when VM::run enters it.
+    if (!susp_chunk) {
+        if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            scan_for_var_declarations(body, gen_context);
+        }
     }
 
     // &ctx (the caller's own context, not a fresh one) is captured into the

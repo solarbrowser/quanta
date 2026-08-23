@@ -408,10 +408,12 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // the function body, creating bindings initialized to `undefined` before
     // the body executes (so e.g. `with` blocks resolve the local shadowing
     // binding rather than falling through to an outer scope).
-    // Wanted only here, for this call: asked for and let go of again, rather
-    // than kept on the executor for the whole suspension.
-    if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body, *exec_ctx);
+    // Only the tree-walked path needs this: a compiled body creates its own
+    // var bindings from the chunk's environment when VM::run enters it.
+    if (!susp_chunk) {
+        if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            scan_for_var_declarations(body, *exec_ctx);
+        }
     }
 
     // Shared with every call, like an ordinary function's body -- no clone.
@@ -1712,8 +1714,12 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
 
     // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
     // the function body before it executes (see AsyncFunction::call for rationale).
-    if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        scan_for_var_declarations(body, *gen_ctx);
+    // Only the tree-walked path needs this: a compiled body creates its own
+    // var bindings from the chunk's environment when VM::run enters it.
+    if (!susp_chunk) {
+        if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            scan_for_var_declarations(body, *gen_ctx);
+        }
     }
 
     Context* outer_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
