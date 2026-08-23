@@ -14,10 +14,10 @@
 
 namespace Quanta {
 
-// closures and treewalk_nodes are deliberately two vectors, not one: closures
-// carries prebuilt ClosureTemplates, while treewalk_nodes goes away entirely
-// once the compiler can emit every construct that currently escapes
-// (Op::EvalAst).
+// closures and class_nodes are deliberately two vectors, not one: closures
+// carries prebuilt ClosureTemplates, while class_nodes holds the class
+// definitions Op::DefineClass reads, and goes away once a class is described
+// by something built at compile time rather than by its own node.
 #if defined(__GLIBCXX__)
 static_assert(sizeof(BytecodeChunk) == 128);
 #else
@@ -97,7 +97,6 @@ const OpInfo& op_info(Op op) {
         {"JumpIfNotNullish", 2, 'o'}, {"JumpIfNullish", 2, 'o'}, {"JumpIfNotUndefined", 2, 'o'},
         {"CreateClosure", 2, 'z'},
         {"DeclareFunction", 2, 'z'},
-        {"EvalAst", 2, 'z'},
         {"CopyRestProperties", 2, 'r'},
         {"CreateRestArray", 1, 'A'},
         {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"Construct", 5, 'c'},

@@ -187,7 +187,6 @@ private:
     static bool member_is_super(const class MemberExpression* mem);
     bool super_member_emittable(const class MemberExpression* mem) const;
     bool emit_super_load(const class MemberExpression* mem);
-    bool emit_treewalker_delegate(const ASTNode* node);
     bool deleg_at(int line, const ASTNode* node);
 
     // Builds a fresh Array from `elements`, expanding any SpreadElement

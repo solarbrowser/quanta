@@ -381,7 +381,7 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
     // Only the instantiation that built the executable may do this. A later one
     // would reach an executable that has since materialized its body and
     // compiled from it, and dropping that tree leaves the chunk's own AST
-    // references (treewalk_nodes) pointing at freed nodes.
+    // references (class_nodes) pointing at freed nodes.
     if (!fresh) return;
     if (!exe || !lit->body_is_leaf() || !lit->has_body_token_range()) return;
     ScriptUnit* unit = lit->owning_unit();

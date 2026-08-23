@@ -937,10 +937,9 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
         }
     }
 
-    // Super/private-brand bindings must exist before the VM branch too --
-    // super.x and #private access delegate to the tree-walker's own evaluate()
-    // (BytecodeCompiler::emit_treewalker_delegate) and resolve these via
-    // normal environment lookup, same as the tree-walker path below.
+    // Super/private-brand bindings must exist before the VM branch too: the
+    // opcodes for super.x and #private access resolve them by ordinary
+    // environment lookup, same as the tree-walker path below.
     const ClassSlots& slots = class_slots();
     if (slots.home_object) {
         function_context.create_binding("__home_object__", Value(slots.home_object), false);

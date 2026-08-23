@@ -109,11 +109,6 @@ enum class Op : uint8_t {
     DeclareFunction, // k -- instantiates a hoisted function declaration from
                      // closures[k] AND binds its name (the binding target
                      // depends on the environment shape, not on the literal)
-    EvalAst,         // k -- escape hatch: evaluates an arbitrary AST subtree
-                     // (index into BytecodeChunk::treewalk_nodes) in the
-                     // tree-walker. Every use is a construct the compiler
-                     // cannot emit yet, so the remaining uses measure how far
-                     // the VM still depends on the enclosing function's AST.
     // r_src r_keys -- acc = a fresh object with every own enumerable property
     // of r_src whose key is not in the r_keys array (an object pattern's
     // `...rest`).
@@ -324,10 +319,10 @@ enum class Op : uint8_t {
     // Arms the next call as a direct eval. CallDirectEval carries its own flag;
     // a spread call takes it this way because its opcode has no room left.
     SetDirectEval,             // u8
-    // k -- builds the class at BytecodeChunk::treewalk_nodes[k]. The node is
-    // read as the class's description, not walked as a tree: this is the one
-    // construct the compiler hands back whole, and giving it its own opcode
-    // keeps EvalAst meaning "a gap the compiler could not emit".
+    // k -- builds the class at BytecodeChunk::class_nodes[k]. The node is
+    // read as the class's description, not walked as a tree: it is the one
+    // construct still described by its own node rather than by something
+    // built at compile time.
     DefineClass,               // k
     // r -- super(...spread): the arguments are already gathered into the array
     // in that register, so the ceremony reads them from there rather than from
@@ -636,7 +631,7 @@ struct BytecodeChunk {
     // unlike IcFeedback these stay separate lazy pointers rather than one
     // bundle.
 
-    // Function literals only (Op::CreateClosure). Separate from treewalk_nodes
+    // Function literals only (Op::CreateClosure). Separate from class_nodes
     // because this is the permanent case: a literal always needs some
     // per-decl-site description to instantiate from. Holds prebuilt
     // ClosureTemplates rather than AST pointers, so creating a closure no
@@ -647,20 +642,18 @@ struct BytecodeChunk {
     std::unique_ptr<std::vector<ClosureTemplate>> closures;
     std::vector<ClosureTemplate>& ensure_closures();
 
-    // Everything the compiler cannot emit and hands back to the tree-walker
-    // (Op::EvalAst): class declarations, regex literals, and subtrees from
-    // emit_treewalker_delegate. Unlike closures above every entry is a gap,
-    // and only once this is always empty can a
-    // VM-compatible function stop keeping its AST alive.
-    std::unique_ptr<std::vector<const ASTNode*>> treewalk_nodes;
-    std::vector<const ASTNode*>& ensure_treewalk_nodes() { if (!treewalk_nodes) treewalk_nodes = std::make_unique<std::vector<const ASTNode*>>(); return *treewalk_nodes; }
+    // Class definitions (Op::DefineClass). The node is read as the class's
+    // description -- its members, their keys and flags -- not walked: every
+    // expression a class definition owns is compiled and run.
+    std::unique_ptr<std::vector<const ASTNode*>> class_nodes;
+    std::vector<const ASTNode*>& ensure_class_nodes() { if (!class_nodes) class_nodes = std::make_unique<std::vector<const ASTNode*>>(); return *class_nodes; }
 
     std::unique_ptr<std::vector<HandlerEntry>> handlers;
     std::vector<HandlerEntry>& ensure_handlers() { if (!handlers) handlers = std::make_unique<std::vector<HandlerEntry>>(); return *handlers; }
 
     // env_params/env_locals/loop_envs are only ever populated when env_mode
     // is true (see BytecodeCompiler), so they're bundled behind one lazy
-    // pointer -- unlike closures/treewalk_nodes/handlers above,
+    // pointer -- unlike closures/class_nodes/handlers above,
     // these three share a single real trigger condition.
     struct EnvBundle {
         std::vector<std::string> env_params;

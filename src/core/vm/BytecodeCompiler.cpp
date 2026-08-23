@@ -1633,7 +1633,7 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
                 collect_closure_names(el.get(), forced, out, saw_eval, saw_class, unknown, suspendable, super_only);
             return;
         }
-        // Delegated to the tree-walker, like a closure (see emit_treewalker_delegate).
+        // Compiled as a closure of its own, not inline here.
         case ASTNode::Type::YIELD_EXPRESSION: {
             const auto* n = static_cast<const YieldExpression*>(node);
             if (n->get_argument())
@@ -3551,7 +3551,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // env (__super__/__home_object__ bindings); detect it from a whole-body
     // name sweep, whose opacity flags force full env_mode just like the
     // selective scan below. Delegated private forms that do need an env
-    // (#x in obj, delete this.#x) hit emit_treewalker_delegate's guards and
+    // (#x in obj, delete this.#x) were refused by the member guards and
     // fall back to the tree-walker.
     std::unordered_set<std::string> all_names;
     bool an_eval = false, an_class = false, an_unknown = false, an_super = false;
@@ -3763,7 +3763,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         }
     }
     // Suspendable bodies, delegated expressions and nested closures all keep
-    // env_mode on: emit_treewalker_delegate, Op::CreateClosure and
+    // env_mode on: Op::CreateClosure and
     // Op::DeclareFunction each refuse to emit without it.
     // An assigned const cannot live in a register: the refusal the assignment
     // owes is carried by the environment binding's mutable flag, and a register
@@ -6030,7 +6030,7 @@ bool BytecodeCompiler::member_is_super(const MemberExpression* mem) {
 // Whether the super opcodes can express this member at all. Checked before any
 // emission so a refusal can still fall back to the tree-walker cleanly. The
 // super bindings live on the context chain, so this needs a real Environment
-// for the same reason emit_treewalker_delegate does.
+// for the same reason the member guards refuse there.
 bool BytecodeCompiler::super_member_emittable(const MemberExpression* mem) const {
     if (!env_mode_) return false;
     if (mem->is_computed()) return true;
@@ -6074,28 +6074,6 @@ bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
 // env_mode, which guarantees `this`/`__super__`/`__eval_private_names__`
 // and any locals the delegated subtree captures resolve through a real
 // Environment (env_mode is forced whenever uses_super_or_private matches).
-bool BytecodeCompiler::emit_treewalker_delegate(const ASTNode* node) {
-
-    if (!env_mode_) return false;
-    if (!full_env_) {
-        // Selective storage: the delegated subtree resolves names through the
-        // ctx chain, so a reference to a register-resident local would miss.
-        // Refuse (whole function falls back to the tree-walker) rather than
-        // compile wrong code.
-        std::unordered_set<std::string> names;
-        bool saw_eval = false, saw_class = false, unknown = false;
-        collect_closure_names(node, /*inside_closure=*/true, names, saw_eval, saw_class, unknown);
-        if (unknown || saw_class || saw_eval) return false;
-        for (const auto& n : names) {
-            if (locals_.count(n) && !env_names_.count(n)) return false;
-        }
-    }
-    if (chunk_->ensure_treewalk_nodes().size() >= 0xFFFF) return false;
-    chunk_->ensure_treewalk_nodes().push_back(node);
-    emit(Op::EvalAst);
-    emit_u16(static_cast<uint16_t>(chunk_->ensure_treewalk_nodes().size() - 1));
-    return !failed_;
-}
 
 int BytecodeCompiler::emit_spread_array(const std::vector<std::unique_ptr<ASTNode>>& elements) {
     // A hole contributes to `length` without creating an own element, which
@@ -6225,7 +6203,7 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
     const bool priv = member_is_private(mem);
     if (member_is_super(mem)) {
-        if (!super_member_emittable(mem)) return emit_treewalker_delegate(expr);
+        if (!super_member_emittable(mem)) return false;
         int base_reg = alloc_temp();
         if (failed_) return false;
         emit(Op::ResolveSuperBase);
@@ -6264,7 +6242,7 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
         free_temp(base_reg);
         return patch_jump(skip) && !failed_;
     }
-    if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(expr);
+    if (!priv && !member_is_supported(mem)) return false;
     if (chain_contains_optional(mem)) return false;
 
     if (!compile_expression(mem->get_object())) return false;
@@ -7212,10 +7190,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // ctx.create_lexical_binding() on the environment directly, so a
             // register-resident name is never written -- force it here.
             if (!env_mode_) return false;
-            if (chunk_->ensure_treewalk_nodes().size() >= 0xFFFF) return false;
-            chunk_->ensure_treewalk_nodes().push_back(node);
+            if (chunk_->ensure_class_nodes().size() >= 0xFFFF) return false;
+            chunk_->ensure_class_nodes().push_back(node);
             emit(Op::DefineClass);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_treewalk_nodes().size() - 1));
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_class_nodes().size() - 1));
             // define_class binds the name itself, so this only
             // has to mirror it into a register when the name has one. A module
             // or script top level has neither a register nor an env slot for
@@ -7433,10 +7411,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             const auto* mem = static_cast<const MemberExpression*>(node);
             const bool priv = member_is_private(mem);
             if (member_is_super(mem)) {
-                if (!super_member_emittable(mem)) return emit_treewalker_delegate(node);
+                if (!super_member_emittable(mem)) return false;
                 return emit_super_load(mem);
             }
-            if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
+            if (!priv && !member_is_supported(mem)) return false;
             // A receiver that already sits in a register is its own operand.
             // Loading it into the accumulator only to copy it back out into a
             // temporary was two opcodes per property read, and a chain like
@@ -7686,7 +7664,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         const auto* mem = static_cast<const MemberExpression*>(operand);
                         const bool priv = member_is_private(mem);
                         if (member_is_super(mem)) {
-                            if (!super_member_emittable(mem)) return emit_treewalker_delegate(node);
+                            if (!super_member_emittable(mem)) return false;
                             int base_reg = alloc_temp();
                             if (failed_) return false;
                             emit(Op::ResolveSuperBase);
@@ -7737,7 +7715,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             free_temp(base_reg);
                             return !failed_;
                         }
-                        if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
+                        if (!priv && !member_is_supported(mem)) return false;
                         if (chain_contains_optional(mem)) return false;
 
                         if (!compile_expression(mem->get_object())) return false;
@@ -7890,7 +7868,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         const auto* mem = static_cast<const MemberExpression*>(operand);
                         // super/private forms (ReferenceError / brand ceremony)
                         // stay on the tree-walker.
-                        if (!member_is_supported(mem)) return emit_treewalker_delegate(node);
+                        if (!member_is_supported(mem)) return false;
                         if (chain_contains_optional(mem)) return false;
                         if (!compile_expression(mem->get_object())) return false;
                         int obj_reg = alloc_temp();
@@ -8202,7 +8180,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 if (false ||
                     !pattern_is_emittable(expr->get_left(), /*is_lexical=*/false,
                                           /*is_assignment=*/true)) {
-                    return emit_treewalker_delegate(node);
+                    return false;
                 }
                 return emit_pattern_assign(expr->get_left(), expr->get_right());
             }
@@ -8211,7 +8189,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             const auto* mem = static_cast<const MemberExpression*>(expr->get_left());
             const bool priv = member_is_private(mem);
             if (member_is_super(mem)) {
-                if (!super_member_emittable(mem)) return emit_treewalker_delegate(node);
+                if (!super_member_emittable(mem)) return false;
                 // PutValue resolves the base before the RHS runs, so it is parked
                 // in a register rather than resolved by the store opcode.
                 int base_reg = alloc_temp();
@@ -8271,7 +8249,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 free_temp(base_reg);
                 return !failed_;
             }
-            if (!priv && !member_is_supported(mem)) return emit_treewalker_delegate(node);
+            if (!priv && !member_is_supported(mem)) return false;
 
             if (!compile_expression(mem->get_object())) return false;
             int obj_reg = alloc_temp();
@@ -8366,9 +8344,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 // over. The super bindings it reads live on the context chain.
                 if (callee->get_type() == ASTNode::Type::IDENTIFIER &&
                     static_cast<const Identifier*>(callee)->get_name() == "super") {
-                    if (!env_mode_) return emit_treewalker_delegate(node);
+                    if (!env_mode_) return false;
                     int super_arr = emit_spread_array(call_args);
-                    if (super_arr < 0) return emit_treewalker_delegate(node);
+                    if (super_arr < 0) return false;
                     emit(Op::SuperCallSpread);
                     emit_u8(static_cast<uint8_t>(super_arr));
                     free_temp(super_arr);
@@ -8398,7 +8376,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 } else {
                     args_reg = emit_spread_array(call_args);
                 }
-                if (args_reg < 0) { free_temp(func_reg); return emit_treewalker_delegate(node); }
+                if (args_reg < 0) { free_temp(func_reg); return false; }
                 int this_reg = alloc_temp();
                 if (failed_) return false;
                 emit(Op::LdaUndefined);
@@ -8438,12 +8416,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     const auto* mem = static_cast<const MemberExpression*>(callee);
                     mem_private = member_is_private(mem);
                     if (member_is_super(mem)) {
-                        if (!super_member_emittable(mem)) return emit_treewalker_delegate(node);
+                        if (!super_member_emittable(mem)) return false;
                         super_mem = mem;
                     } else if (!mem_private && !member_is_supported(mem)) {
                         // Forms the register compiler doesn't implement: delegate the
                         // whole call to the tree-walker instead of bailing the function.
-                        return emit_treewalker_delegate(node);
+                        return false;
                     }
                     mem_obj = mem->get_object();
                     mem_prop = mem->get_property();
@@ -8458,7 +8436,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         if (opt->get_property()->get_type() != ASTNode::Type::IDENTIFIER) return false;
                         const std::string& pname =
                             static_cast<const Identifier*>(opt->get_property())->get_name();
-                        if (!pname.empty() && pname[0] == '#') return emit_treewalker_delegate(node);
+                        if (!pname.empty() && pname[0] == '#') return false;
                     }
                     mem_obj = opt->get_object();
                     mem_prop = opt->get_property();
@@ -8587,7 +8565,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 // The whole derived-constructor ceremony lives in
                 // perform_super_call; this only marshals the arguments. It needs
                 // the super bindings on the context chain, like the property forms.
-                if (!env_mode_) return emit_treewalker_delegate(node);
+                if (!env_mode_) return false;
                 int super_args_start = next_register_;
                 {
                     ChainMaskScope mask(chain_shortcircuit_jumps_);
@@ -8703,7 +8681,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 } else {
                     args_reg = emit_spread_array(new_args);
                 }
-                if (args_reg < 0) { free_temp(ctor_reg); return emit_treewalker_delegate(node); }
+                if (args_reg < 0) { free_temp(ctor_reg); return false; }
                 emit(Op::ConstructSpread);
                 emit_u8(static_cast<uint8_t>(ctor_reg));
                 emit_u8(static_cast<uint8_t>(args_reg));
@@ -8755,7 +8733,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             const auto* n = static_cast<const YieldExpression*>(node);
             // Valid code cannot yield outside a suspendable body, but such a
             // node must still not compile to a suspend.
-            if (!suspendable_) return emit_treewalker_delegate(node);
+            if (!suspendable_) return false;
             if (n->get_argument()) {
                 if (!compile_expression(n->get_argument())) return false;
             } else {
@@ -8803,10 +8781,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         // tree-walk escape, not CreateClosure.
         case ASTNode::Type::CLASS_DECLARATION: {
             if (!env_mode_) return false;
-            if (chunk_->ensure_treewalk_nodes().size() >= 0xFFFF) return false;
-            chunk_->ensure_treewalk_nodes().push_back(node);
+            if (chunk_->ensure_class_nodes().size() >= 0xFFFF) return false;
+            chunk_->ensure_class_nodes().push_back(node);
             emit(Op::DefineClass);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_treewalk_nodes().size() - 1));
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_class_nodes().size() - 1));
             return true;
         }
 
@@ -8817,7 +8795,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // closures capture through the ctx chain delegation provides.
             // Everything else (static/computed Value and Method, static-key
             // Getter/Setter) has native codegen below.
-            if (object_literal_is_complex(lit)) return emit_treewalker_delegate(node);
+            if (object_literal_is_complex(lit)) return false;
 
             emit(Op::CreateObject);
             emit_u16(static_cast<uint16_t>(lit->get_properties().size()));
@@ -9014,7 +8992,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             }
             if (has_spread(lit->get_elements())) {
                 int arr_reg = emit_spread_array(lit->get_elements());
-                if (arr_reg < 0) return emit_treewalker_delegate(node);
+                if (arr_reg < 0) return false;
                 emit(Op::Ldar);
                 emit_u8(static_cast<uint8_t>(arr_reg));
                 free_temp(arr_reg);
@@ -9078,7 +9056,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // the tree-walker whole; plain names the pattern emitter can write.
             if (!lit || !n->get_source() ||
                 !pattern_is_emittable(lit, /*is_lexical=*/false, /*is_assignment=*/true)) {
-                return emit_treewalker_delegate(node);
+                return false;
             }
             return emit_pattern_assign(lit, n->get_source());
         }
