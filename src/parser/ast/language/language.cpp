@@ -778,6 +778,17 @@ static bool field_init_cannot_observe_cfi(const ASTNode* n) {
     }
 }
 
+// A class definition's own expressions -- computed keys, the heritage, a
+// static field's value -- are compiled and run rather than walked. The
+// fallback stays while the compiler still turns some shapes away; every use
+// of it is a shape that keeps ASTNode::evaluate alive.
+static Value eval_class_expr(const ASTNode* expr, Context& ctx) {
+    bool compiled = false;
+    Value v = VM::run_expression(expr, ctx, compiled);
+    if (compiled) return v;
+    return const_cast<ASTNode*>(expr)->evaluate(ctx);
+}
+
 Value ClassDeclaration::evaluate(Context& ctx) { return define_class(ctx); }
 
 Value ClassDeclaration::define_class(Context& ctx) {
@@ -835,6 +846,9 @@ Value ClassDeclaration::define_class(Context& ctx) {
     // Mirror every such Value into this flat, rooted vector too -- computed
     // method keys can run arbitrary side-effecting code (toString()) between
     // when one method is deferred here and the next is processed.
+    // Every computed key is evaluated once, where it stands, and the second
+    // pass reads the answer back instead of running the expression again.
+    std::unordered_map<const ASTNode*, std::string> resolved_static_method_keys;
     std::vector<Value> deferred_methods_values_root_vec;
     ValueVectorRoot deferred_methods_values_root(&deferred_methods_values_root_vec);
 
@@ -849,7 +863,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                     // alike) -- per spec, only the field's VALUE is deferred (instance: to
                     // each construction; static: to right after the class object is built).
                     // Bake the resolved key into a literal so it's never re-evaluated later.
-                    Value key_val = cf->get_key()->evaluate(ctx);
+                    Value key_val = eval_class_expr(cf->get_key(), ctx);
                     if (ctx.has_exception()) return Value();
                     std::string resolved_key = computed_key_to_property_key(ctx, key_val);
                     if (ctx.has_exception()) return Value();
@@ -907,11 +921,19 @@ Value ClassDeclaration::define_class(Context& ctx) {
             if (stmt->get_type() == Type::METHOD_DEFINITION) {
                 MethodDefinition* method = static_cast<MethodDefinition*>(stmt.get());
                 std::string method_name;
-                // Static methods get rebuilt (and their computed key re-evaluated) in the pass below --
-                // skip here so a `yield`/`await` key expression doesn't run twice.
+                // A computed key belongs to the class's declaration order, which
+                // interleaves methods and fields, static and not. The static
+                // method itself is built in the pass below; only its key is
+                // settled here, and that pass reads it back rather than running
+                // the expression a second time.
                 if (method->is_computed() && method->is_static()) {
+                    Value skey = eval_class_expr(method->get_key(), ctx);
+                    if (ctx.has_exception()) return Value();
+                    std::string resolved = computed_key_to_property_key(ctx, skey);
+                    if (ctx.has_exception()) return Value();
+                    resolved_static_method_keys.emplace(stmt.get(), std::move(resolved));
                 } else if (method->is_computed()) {
-                    Value key_val = method->get_key()->evaluate(ctx);
+                    Value key_val = eval_class_expr(method->get_key(), ctx);
                     if (ctx.has_exception()) return Value();
                     method_name = computed_key_to_property_key(ctx, key_val);
                     if (ctx.has_exception()) return Value();
@@ -920,7 +942,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                 } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
                     method_name = str->get_value();
                 } else if (NumberLiteral* num = dynamic_cast<NumberLiteral*>(method->get_key())) {
-                    method_name = num->evaluate(ctx).to_property_key();
+                    method_name = Value(num->get_value()).to_property_key();
                 } else {
                     method_name = "[unknown]";
                 }
@@ -1144,7 +1166,8 @@ Value ClassDeclaration::define_class(Context& ctx) {
                         } else if (cf->get_key()->get_type() == ASTNode::Type::STRING_LITERAL) {
                             field_name = static_cast<StringLiteral*>(cf->get_key())->get_value();
                         } else if (cf->get_key()->get_type() == ASTNode::Type::NUMBER_LITERAL) {
-                            field_name = static_cast<NumberLiteral*>(cf->get_key())->evaluate(ctx).to_property_key();
+                            field_name = Value(static_cast<NumberLiteral*>(cf->get_key())->get_value())
+                                             .to_property_key();
                         }
                     }
                     std::unique_ptr<ASTNode> init_val;
@@ -1361,10 +1384,9 @@ Value ClassDeclaration::define_class(Context& ctx) {
                 if (method->is_static()) {
                     std::string method_name;
                     if (method->is_computed()) {
-                        Value key_val = method->get_key()->evaluate(ctx);
-                        if (ctx.has_exception()) return Value();
-                        method_name = computed_key_to_property_key(ctx, key_val);
-                        if (ctx.has_exception()) return Value();
+                        auto rk = resolved_static_method_keys.find(stmt.get());
+                        if (rk == resolved_static_method_keys.end()) continue;
+                        method_name = rk->second;
                         // Computed static method named 'prototype' is a runtime TypeError
                         if (method_name == "prototype") {
                             ctx.throw_type_error("Class may not have a static property named 'prototype'");
@@ -1375,9 +1397,9 @@ Value ClassDeclaration::define_class(Context& ctx) {
                     } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
                         method_name = str->get_value();
                     } else if (NumberLiteral* num = dynamic_cast<NumberLiteral*>(method->get_key())) {
-                        // Evaluate to get numeric value -> canonical property key (e.g. 0b10 -> "2")
-                        Value num_val = num->evaluate(ctx);
-                        method_name = num_val.to_property_key();
+                        // The literal's own value spells the canonical property key
+                        // (0b10 becomes "2"); nothing here needs evaluating.
+                        method_name = Value(num->get_value()).to_property_key();
                     } else {
                         method_name = "[unknown]";
                     }
@@ -1479,7 +1501,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
         // must come out strict even when the class appears in sloppy code).
         bool saved_strict = ctx.is_strict_mode();
         ctx.set_strict_mode(true);
-        Value super_constructor = superclass_->evaluate(ctx);
+        Value super_constructor = eval_class_expr(superclass_.get(), ctx);
         ctx.set_strict_mode(saved_strict);
         if (ctx.has_exception()) return Value();
 
@@ -1713,7 +1735,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                 // static_ctx as its closure_context_ and can outlive this scope.
                 ContextSurvivorGuard survivor_guard(static_ctx, ctx.get_engine());
                 static_ctx->create_binding("this", Value(constructor_fn.get()), true);
-                if (blk->get_body()) blk->get_body()->evaluate(*static_ctx);
+                if (blk->get_body()) eval_class_expr(blk->get_body(), *static_ctx);
                 // An abrupt completion inside a static block halts all further static
                 // element evaluation (spec step 34d) -- propagate it to the outer ctx
                 // instead of silently discarding it with static_ctx.
@@ -1725,7 +1747,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                 ClassField* cf = static_cast<ClassField*>(sfi.get());
                 std::string key_name;
                 if (cf->is_computed()) {
-                    Value kv = cf->get_key()->evaluate(ctx);
+                    Value kv = eval_class_expr(cf->get_key(), ctx);
                     if (ctx.has_exception()) break;
                     key_name = computed_key_to_property_key(ctx, kv);
                     if (ctx.has_exception()) break;
@@ -1740,7 +1762,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                 } else if (StringLiteral* ks = dynamic_cast<StringLiteral*>(cf->get_key())) {
                     key_name = ks->get_value();
                 } else if (NumberLiteral* kn = dynamic_cast<NumberLiteral*>(cf->get_key())) {
-                    key_name = kn->evaluate(ctx).to_property_key();
+                    key_name = Value(kn->get_value()).to_property_key();
                 }
                 Value val;
                 if (cf->get_value()) {
@@ -1753,7 +1775,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                     // Push constructor onto call stack so inner class declarations inherit outer brands.
                     {
                         CallStackFrameGuard frame_guard(CallStack::instance(), nullptr, constructor_fn.get());
-                        val = cf->get_value()->evaluate(ctx);
+                        val = eval_class_expr(cf->get_value(), ctx);
                     }
                     ctx.set_this_binding(saved_this_binding);
                     ctx.create_binding_force("this", saved_this_val);

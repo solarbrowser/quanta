@@ -5571,6 +5571,27 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     return run(*chunk, ctx, {}, &global_this);
 }
 
+Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {
+    ok = false;
+    if (!enabled() || !expr) return Value();
+    // A `with` on the chain makes write-reference ordering observable, the same
+    // reason Function::call refuses there.
+    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        if (e->is_with_environment()) return Value();
+    }
+    static const std::vector<std::unique_ptr<Parameter>> no_params;
+    // A non-block body compiles as an implicit return, which is exactly an
+    // expression's chunk.
+    auto chunk = BytecodeCompiler::compile(expr, no_params);
+    if (!chunk) return Value();
+    // Nothing owns this chunk, so its constants and the caches it learns are
+    // rooted for the run the way run_script's are.
+    ValueArrayRoot const_root(&chunk->constants);
+    ChunkFeedbackRoot feedback_root(chunk.get());
+    ok = true;
+    return run(*chunk, ctx, {}, nullptr);
+}
+
 std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
                                                    const std::vector<std::string>& env_bound) {
     if (!enabled() || !body) return nullptr;

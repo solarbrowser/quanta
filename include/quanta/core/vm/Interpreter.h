@@ -39,6 +39,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
                                                    const std::vector<std::string>& env_bound);
 
+// One expression belonging to a class definition -- a computed key, the
+// heritage, a static field's value, a static block -- evaluated by the
+// compiler instead of the tree-walker. `ok` reports whether it compiled; a
+// false leaves the result untouched so the caller can fall back.
+Value run_expression(const ASTNode* expr, Context& ctx, bool& ok);
+
 // Runs a chunk from compile_suspendable. Traced through its owning Function.
 Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx, Function* owner);
 
