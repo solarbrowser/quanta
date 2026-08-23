@@ -800,12 +800,16 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     }
 
     // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.
+    Environment* param_env = nullptr;
     {
         bool has_complex_params = false;
         for (const auto& p : param_objs) {
             if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
         }
         if (has_complex_params) {
+            // Captured before the push: the parameters stay in this scope, and
+            // a body var of the same name is seeded from one (spec FDI step 28).
+            param_env = gen_context.get_lexical_environment();
             gen_context.push_block_scope();
             gen_context.set_variable_environment(gen_context.get_lexical_environment());
         }
@@ -817,7 +821,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     // var bindings from the chunk's environment when VM::run enters it.
     if (!susp_chunk) {
         if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            scan_for_var_declarations(body, gen_context);
+            scan_for_var_declarations(body, gen_context, param_env);
         }
     }
 

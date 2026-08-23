@@ -393,12 +393,16 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     }
 
     // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.
+    Environment* param_env = nullptr;
     {
         bool has_complex_params = false;
         for (const auto& p : param_objs) {
             if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
         }
         if (has_complex_params) {
+            // Captured before the push: the parameters stay in this scope, and
+            // a body var of the same name is seeded from one (spec FDI step 28).
+            param_env = exec_ctx->get_lexical_environment();
             exec_ctx->push_block_scope();
             exec_ctx->set_variable_environment(exec_ctx->get_lexical_environment());
         }
@@ -412,7 +416,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // var bindings from the chunk's environment when VM::run enters it.
     if (!susp_chunk) {
         if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            scan_for_var_declarations(body, *exec_ctx);
+            scan_for_var_declarations(body, *exec_ctx, param_env);
         }
     }
 
@@ -1701,12 +1705,16 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
     }
 
     // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.
+    Environment* param_env = nullptr;
     {
         bool has_complex_params = false;
         for (const auto& p : param_objs) {
             if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
         }
         if (has_complex_params) {
+            // Captured before the push: the parameters stay in this scope, and
+            // a body var of the same name is seeded from one (spec FDI step 28).
+            param_env = gen_ctx->get_lexical_environment();
             gen_ctx->push_block_scope();
             gen_ctx->set_variable_environment(gen_ctx->get_lexical_environment());
         }
@@ -1718,7 +1726,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
     // var bindings from the chunk's environment when VM::run enters it.
     if (!susp_chunk) {
         if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            scan_for_var_declarations(body, *gen_ctx);
+            scan_for_var_declarations(body, *gen_ctx, param_env);
         }
     }
 
