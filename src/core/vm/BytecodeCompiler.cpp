@@ -7032,6 +7032,14 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                         // body -- with a TDZ, so reading an outer binding of
                         // the same name threw. The block declares its own.
                         if (s->get_type() == ASTNode::Type::BLOCK_STATEMENT) continue;
+                        // A function declared in any clause binds in the
+                        // switch's own scope, so its presence alone calls for
+                        // one (BlockDeclarationInstantiation over the whole
+                        // case block).
+                        if (s->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                            needs_own_env = true;
+                            continue;
+                        }
                         if (!collect_direct_lexical_decls(s.get(), vars, needs_own_env)) return false;
                     }
                 }
@@ -7063,6 +7071,21 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     emit(Op::EnterLoopEnv);
                     emit_u16(static_cast<uint16_t>(switch_env_idx));
                     env_depth_++;
+                }
+            }
+
+            // Spec sec-switch-statement step 5: the whole case block is
+            // instantiated before the first selector is evaluated, so a call
+            // in one clause finds a function declared in another.
+            for (const auto& c : cases) {
+                for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
+                    if (s->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+                    if (!env_mode_) return false;
+                    if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+                    hoisted_fn_decls_.insert(s.get());
+                    chunk_->ensure_closures().push_back(closure_template_for(s.get()));
+                    emit(Op::DeclareFunction);
+                    emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
                 }
             }
 
