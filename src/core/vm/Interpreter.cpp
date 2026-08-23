@@ -3805,6 +3805,20 @@ Value h_gen_SetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_ThrowSuperDelete(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    (void)chunk;
+    (void)code;
+    ctx.throw_reference_error("Unsupported reference to 'super'");
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_SuperCallSpread(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5284,6 +5298,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::DeclareFunction)] = &h_gen_DeclareFunction;
     t[static_cast<uint8_t>(Op::DefineClass)] = &h_gen_DefineClass;
     t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
+    t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
     t[static_cast<uint8_t>(Op::CopyRestProperties)] = &h_gen_CopyRestProperties;
     t[static_cast<uint8_t>(Op::Call)] = &h_gen_Call;
     t[static_cast<uint8_t>(Op::CallResolved)] = &h_gen_CallResolved;
@@ -5557,10 +5572,11 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
                  Context& ctx, bool& used_vm) {
     used_vm = false;
     if (!enabled()) return Value();
+    bool outer_with = false;
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-        if (e->is_with_environment()) return Value();
+        if (e->is_with_environment()) { outer_with = true; break; }
     }
-    auto chunk = BytecodeCompiler::compile_script(statements);
+    auto chunk = BytecodeCompiler::compile_script(statements, outer_with);
     if (!chunk) return Value();
     used_vm = true;
     static const bool disasm = [] {
@@ -5583,15 +5599,18 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
 Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {
     ok = false;
     if (!enabled() || !expr) return Value();
-    // A `with` on the chain makes write-reference ordering observable, the same
-    // reason Function::call refuses there.
+    // A `with` on the chain makes write-reference ordering observable, which
+    // the chunk has to be told about -- see Function::call.
+    bool outer_with = false;
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-        if (e->is_with_environment()) return Value();
+        if (e->is_with_environment()) { outer_with = true; break; }
     }
     static const std::vector<std::unique_ptr<Parameter>> no_params;
     // A non-block body compiles as an implicit return, which is exactly an
     // expression's chunk.
-    auto chunk = BytecodeCompiler::compile(expr, no_params);
+    auto chunk = BytecodeCompiler::compile(expr, no_params, /*suspendable=*/false,
+                                           /*is_arrow=*/false, /*is_strict=*/false,
+                                           /*env_bound=*/nullptr, outer_with);
     if (!chunk) return Value();
     // Nothing owns this chunk, so its constants and the caches it learns are
     // rooted for the run the way run_script's are.
@@ -5602,11 +5621,13 @@ Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {
 }
 
 std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
-                                                   const std::vector<std::string>& env_bound) {
+                                                   const std::vector<std::string>& env_bound,
+                                                   bool outer_with) {
     if (!enabled() || !body) return nullptr;
     static const std::vector<std::unique_ptr<Parameter>> no_params;
     auto chunk = BytecodeCompiler::compile(body, no_params, /*suspendable=*/true,
-                                           /*is_arrow=*/false, /*is_strict=*/false, &env_bound);
+                                           /*is_arrow=*/false, /*is_strict=*/false, &env_bound,
+                                           outer_with);
     if (!chunk) return nullptr;
     static const bool disasm = [] {
         const char* env = std::getenv("QUANTA_VM_DISASM");

@@ -450,11 +450,14 @@ const BytecodeChunk* AsyncFunction::get_suspendable_chunk(Context& ctx) {
     if (!exe) return nullptr;
     if (exe->suspendable_incompatible) return nullptr;
     if (exe->suspendable_chunk) return exe->suspendable_chunk.get();
-    // Same `with`-chain check as Function::call; fixed at closure creation.
+    // A `with` in the captured chain holds every free name this body writes,
+    // and the reference has to be bound before the right side runs. The chain
+    // is fixed at closure creation, so one check decides for good.
+    bool outer_with = false;
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-        if (e->is_with_environment()) { exe->suspendable_incompatible = true; return nullptr; }
+        if (e->is_with_environment()) { outer_with = true; break; }
     }
-    exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names());
+    exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names(), outer_with);
     if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
     return exe->suspendable_chunk.get();
@@ -1744,11 +1747,14 @@ const BytecodeChunk* AsyncGeneratorFunction::get_suspendable_chunk(Context& ctx)
     if (!exe) return nullptr;
     if (exe->suspendable_incompatible) return nullptr;
     if (exe->suspendable_chunk) return exe->suspendable_chunk.get();
-    // Same `with`-chain check as Function::call; fixed at closure creation.
+    // A `with` in the captured chain holds every free name this body writes,
+    // and the reference has to be bound before the right side runs. The chain
+    // is fixed at closure creation, so one check decides for good.
+    bool outer_with = false;
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
-        if (e->is_with_environment()) { exe->suspendable_incompatible = true; return nullptr; }
+        if (e->is_with_environment()) { outer_with = true; break; }
     }
-    exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names());
+    exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names(), outer_with);
     if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
     return exe->suspendable_chunk.get();

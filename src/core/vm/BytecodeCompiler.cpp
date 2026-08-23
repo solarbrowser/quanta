@@ -49,6 +49,8 @@ struct DeclInfo {
     bool is_lexical;  // let/const: needs a TDZ-seeded register
     bool is_const;
     bool is_catch_param = false;  // gets its own per-catch env; never a function-level local
+    bool is_annexb_fn = false;    // Annex B B.3.4 if/label clause: dropped when a
+                                  // lexical or a parameter already owns the name
 };
 
 // Appends every leaf binding name a pattern declares. Nested patterns are no
@@ -72,6 +74,22 @@ bool collect_flat_pattern_names(const ASTNode* pattern, bool is_lexical, bool is
 
 // Collects every declared name up front (var hoisting), including repeats --
 // see contains_nested_lexical_decl for why duplicates are fine here.
+bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out);
+
+// Annex B B.3.4 positions: a function declaration standing alone as an if
+// clause or a label's body declares a var-scoped name, unlike one inside a
+// block, whose binding belongs to the block.
+bool prescan_annexb_fn_decl(const ASTNode* node, std::vector<DeclInfo>& out) {
+    if (node && node->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+        const Identifier* id = static_cast<const FunctionDeclaration*>(node)->get_id();
+        if (!id || id->get_name().empty()) return false;
+        out.push_back({id->get_name(), /*is_lexical=*/false, /*is_const=*/false,
+                       /*is_catch_param=*/false, /*is_annexb_fn=*/true});
+        return true;
+    }
+    return prescan_declarations(node, out);
+}
+
 bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
     if (!node) return true;
     switch (node->get_type()) {
@@ -131,8 +149,8 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
         }
         case ASTNode::Type::IF_STATEMENT: {
             const auto* n = static_cast<const IfStatement*>(node);
-            return prescan_declarations(n->get_consequent(), out) &&
-                   prescan_declarations(n->get_alternate(), out);
+            return prescan_annexb_fn_decl(n->get_consequent(), out) &&
+                   prescan_annexb_fn_decl(n->get_alternate(), out);
         }
         case ASTNode::Type::WHILE_STATEMENT: {
             const auto* n = static_cast<const WhileStatement*>(node);
@@ -160,6 +178,11 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
                 if (!name.empty()) {
                     out.push_back({name, vd->get_kind() != VariableDeclarator::Kind::VAR,
                                     vd->get_kind() == VariableDeclarator::Kind::CONST});
+                }
+            } else if (n->get_left()->get_type() == ASTNode::Type::USING_DECLARATION) {
+                for (const auto& b : static_cast<const UsingDeclaration*>(n->get_left())->get_bindings()) {
+                    if (b.name.empty()) return false;
+                    out.push_back({b.name, /*is_lexical=*/true, /*is_const=*/true});
                 }
             } else if (n->get_left()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT &&
                        n->get_left_decl_kind() >= 0) {
@@ -232,7 +255,7 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
             // ordinary statements -- the with only changes how names resolve.
             return prescan_declarations(static_cast<const WithStatement*>(node)->get_body(), out);
         case ASTNode::Type::LABELED_STATEMENT:
-            return prescan_declarations(static_cast<const LabeledStatement*>(node)->get_statement(), out);
+            return prescan_annexb_fn_decl(static_cast<const LabeledStatement*>(node)->get_statement(), out);
         default:
             return true;
     }
@@ -1882,6 +1905,10 @@ void collect_free_names(const ASTNode* node,
                         if (d->get_id()) frame.insert(d->get_id()->get_name());
                     }
                 }
+            } else if (left->get_type() == ASTNode::Type::USING_DECLARATION) {
+                has_frame = true;
+                for (const auto& b : static_cast<const UsingDeclaration*>(left)->get_bindings())
+                    frame.insert(b.name);
             } else if (left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                 unknown = true;
                 return;
@@ -2965,6 +2992,8 @@ bool contains_lexical_decl(const ASTNode* node) {
         case ASTNode::Type::VARIABLE_DECLARATION:
             return static_cast<const VariableDeclaration*>(node)->get_kind() !=
                    VariableDeclarator::Kind::VAR;
+        case ASTNode::Type::USING_DECLARATION:
+            return true;  // `using` binds like a const
         case ASTNode::Type::CLASS_DECLARATION:
             return true;  // the class name is a lexical binding
         case ASTNode::Type::BLOCK_STATEMENT: {
@@ -3471,10 +3500,36 @@ bool chain_contains_optional(const ASTNode* node) {
 
 }
 
+// Annex B B.3.3: the var-scoped binding an if/label function declaration would
+// create is not created at all when a lexical declaration or a parameter
+// already owns the name. Dropping the entry here is what keeps the closure out
+// of that binding's slot -- compile_if_branch reads the same answer back and
+// binds the function in a scope of its own instead.
+void drop_shadowed_annexb_fn_vars(std::vector<DeclInfo>& declared,
+                                   const std::vector<std::string>& param_names,
+                                   std::unordered_set<std::string>& kept,
+                                   const std::unordered_set<std::string>& outer_lexicals = {}) {
+    std::unordered_set<std::string> taken(param_names.begin(), param_names.end());
+    taken.insert(outer_lexicals.begin(), outer_lexicals.end());
+    for (const auto& info : declared) {
+        if (info.is_lexical && !info.is_annexb_fn) taken.insert(info.name);
+    }
+    std::vector<DeclInfo> out;
+    out.reserve(declared.size());
+    for (auto& info : declared) {
+        if (info.is_annexb_fn) {
+            if (taken.count(info.name)) continue;
+            kept.insert(info.name);
+        }
+        out.push_back(std::move(info));
+    }
+    declared = std::move(out);
+}
+
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
     bool suspendable, bool is_arrow, bool is_strict,
-    const std::vector<std::string>* env_bound) {
+    const std::vector<std::string>* env_bound, bool outer_with) {
     if (!body) return nullptr;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
@@ -3523,6 +3578,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 
     std::vector<DeclInfo> declared;
     if (!prescan_declarations(body, declared)) return nullptr;
+    std::unordered_set<std::string> annexb_fn_vars;
+    drop_shadowed_annexb_fn_vars(declared, param_names, annexb_fn_vars);
 
     // `arguments` forces env_mode too: its mapped accessors (sloppy mode,
     // simple params) read/write the parameter bindings through the context,
@@ -3818,6 +3875,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const bool env_mode = full_env || has_closures || !env_resident.empty() ||
                           suspendable || has_delegated_expr;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
+    compiler.outer_with_ = outer_with;
+    compiler.annexb_fn_vars_ = std::move(annexb_fn_vars);
     if (compiler.failed_) return nullptr;
     compiler.allow_arguments_ = needs_arguments;
     compiler.eval_in_body_ = an_eval;
@@ -4241,7 +4300,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 }
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
-    const std::vector<std::unique_ptr<ASTNode>>& statements) {
+    const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with) {
     // Scan the whole program once. Modules and anything opaque to the
     // scanners tree-walk; class definitions and closure-side eval only
     // disable the nested-register refinement (top-level names are outer
@@ -4264,16 +4323,22 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     // let/const/class in the script env, function declarations already
     // evaluated) -- the compiler must treat them as non-locals.
     std::unordered_set<std::string> top_names;
+    // The subset that is lexical: Annex B skips its var binding for those.
+    std::unordered_set<std::string> top_lexicals;
     for (const auto& st : statements) {
         const ASTNode* eff = st.get();
         if (eff->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             const auto* vd = static_cast<const VariableDeclaration*>(eff);
+            const bool lexical = vd->get_kind() != VariableDeclarator::Kind::VAR;
             for (const auto& d : vd->get_declarations()) {
-                if (d->get_id()) top_names.insert(d->get_id()->get_name());
+                if (!d->get_id()) continue;
+                top_names.insert(d->get_id()->get_name());
+                if (lexical) top_lexicals.insert(d->get_id()->get_name());
             }
         } else if (eff->get_type() == ASTNode::Type::CLASS_DECLARATION) {
             const auto* cd = static_cast<const ClassDeclaration*>(eff);
-            if (cd->get_id()) top_names.insert(cd->get_id()->get_name());
+            if (cd->get_id()) { top_names.insert(cd->get_id()->get_name());
+                                top_lexicals.insert(cd->get_id()->get_name()); }
         } else if (eff->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
             const auto* fd = static_cast<const FunctionDeclaration*>(eff);
             if (fd->get_id()) top_names.insert(fd->get_id()->get_name());
@@ -4299,6 +4364,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
         }
         if (!prescan_declarations(st.get(), declared)) return nullptr;
     }
+    std::unordered_set<std::string> annexb_fn_vars;
+    drop_shadowed_annexb_fn_vars(declared, {}, annexb_fn_vars, top_lexicals);
     std::unordered_map<std::string, int> decl_count;
     for (const auto& info : declared) decl_count[info.name]++;
     // Same region-escape analysis as compile()'s selective env_mode scan
@@ -4363,6 +4430,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
                               script_has_with ? nullptr : &env_resident);
     if (compiler.failed_) return nullptr;
     compiler.script_mode_ = true;
+    compiler.outer_with_ = outer_with;
+    compiler.annexb_fn_vars_ = std::move(annexb_fn_vars);
     // The sweep above walks with inside_closure off, so a direct eval written
     // at the top level never reaches its flag. Ask again for that one: every
     // name up here is already an outer binding, which is exactly what a direct
@@ -4564,6 +4633,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     bool is_lexical = false;
     const ASTNode* pattern_lit = nullptr;
     const MemberExpression* mem_target = nullptr;
+    const UsingDeclaration* using_decl = nullptr;
     if (left->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
         const auto* vd = static_cast<const VariableDeclaration*>(left);
         if (vd->declaration_count() != 1) return false;
@@ -4588,10 +4658,20 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         declare_fresh = left_decl_kind >= 0;
         is_const = left_decl_kind == 2;
         is_lexical = left_decl_kind > 0;  // 0 = var, -1 = no keyword
+    } else if (left->get_type() == ASTNode::Type::USING_DECLARATION) {
+        // `for (using x of it)` binds like a const, and additionally hands the
+        // value to a dispose scope that closes at the end of every iteration.
+        using_decl = static_cast<const UsingDeclaration*>(left);
+        if (using_decl->get_bindings().size() != 1) return false;
+        var_name = using_decl->get_bindings()[0].name;
+        declare_fresh = true;
+        is_const = true;
+        is_lexical = true;
     } else if (left->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         mem_target = static_cast<const MemberExpression*>(left);
-        if (member_is_super(mem_target) || member_is_private(mem_target) ||
-            !member_is_supported(mem_target)) {
+        if (member_is_super(mem_target)) {
+            if (!super_member_emittable(mem_target)) return false;
+        } else if (!member_is_private(mem_target) && !member_is_supported(mem_target)) {
             return false;
         }
     } else {
@@ -4728,45 +4808,50 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         if (failed_) return false;
         emit(Op::Star);
         emit_u8(static_cast<uint8_t>(val_reg));
-        if (!compile_expression(mem_target->get_object())) return false;
-        int obj_reg = alloc_temp();
-        if (failed_) return false;
-        emit(Op::Star);
-        emit_u8(static_cast<uint8_t>(obj_reg));
-        uint16_t name_idx = 0;
         int key_reg = -1;
-        if (mem_target->is_computed()) {
-            if (!compile_expression(mem_target->get_property())) return false;
-            key_reg = alloc_temp();
-            if (failed_) return false;
-            emit(Op::Star);
-            emit_u8(static_cast<uint8_t>(key_reg));
-        } else {
-            name_idx = add_name(static_cast<const Identifier*>(mem_target->get_property())->get_name());
-        }
+        int obj_reg = emit_member_target_resolve(mem_target, /*is_assignment=*/true, key_reg);
+        if (obj_reg < 0 || failed_) return false;
         emit(Op::Ldar);
         emit_u8(static_cast<uint8_t>(val_reg));
-        if (key_reg >= 0) {
-            emit(Op::SetKeyed);
-            emit_u8(static_cast<uint8_t>(obj_reg));
-            emit_u8(static_cast<uint8_t>(key_reg));
-            emit_u16(alloc_keyed_feedback());
-            free_temp(key_reg);
-        } else {
-            emit(Op::SetNamed);
-            emit_u8(static_cast<uint8_t>(obj_reg));
-            emit_u16(name_idx);
-            emit_u16(alloc_feedback_slot());
+        if (!emit_pattern_target_store(mem_target, /*is_lexical=*/false, /*is_const=*/false,
+                                       /*is_assignment=*/true, /*with_target_reg=*/-1,
+                                       obj_reg, key_reg)) {
+            return false;
         }
-        free_temp(obj_reg);
-        free_temp(val_reg);
-        if (failed_) return false;
-    } else {
+        free_temp(val_reg);  // releases obj_reg and key_reg with it (allocated after)
+    } else if (!using_decl) {
         emit_write_local(var_name, /*is_declaration=*/declare_fresh);
     }
 
+    // The resource is parked while the dispose scope opens, then registered
+    // from inside it: a value with no dispose method throws, and that throw
+    // has to unwind through the scope that would have disposed it.
+    int using_val_reg = -1;
+    if (using_decl) {
+        using_val_reg = alloc_temp();
+        if (failed_) return false;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(using_val_reg));
+    }
+
     loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_, false, take_pending_labels(), iterator_reg, is_await});
-    if (!compile_statement(body)) return false;
+    if (using_decl) {
+        FinallyScope using_escaped;
+        auto emit_using_body = [&]() {
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(using_val_reg));
+            emit(Op::RegisterDisposable);
+            emit_u8(using_decl->is_await() ? 1 : 0);
+            emit_write_local(var_name, /*is_declaration=*/true);
+            return compile_statement(body);
+        };
+        if (!emit_dispose_scope_body(body, emit_using_body, using_escaped)) return false;
+        // Emitted while the loop is still on the stack: a pad stands in for a
+        // break or continue and has to re-issue it against that loop.
+        if (!emit_finally_pads(using_escaped)) return false;
+    } else if (!compile_statement(body)) {
+        return false;
+    }
     LoopScope scope = std::move(loop_stack_.back());
     loop_stack_.pop_back();
     size_t body_end = code_.size();
@@ -5162,11 +5247,22 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
             if (!prop->value) return false;
             if (prop->type != ObjectLiteral::PropertyType::Value) return false;
             if (!prop->key) {
-                // `{...rest}`: the target must be a plain name, and the rest
-                // element is always last.
+                // `{...rest}`: a name this chunk can write, or -- in an
+                // assignment -- any member reference the store path resolves.
+                // The rest element is always last.
                 if (prop->value->get_type() != ASTNode::Type::SPREAD_ELEMENT) return false;
                 const ASTNode* rt = static_cast<const SpreadElement*>(prop->value.get())->get_argument();
-                if (!rt || rt->get_type() != ASTNode::Type::IDENTIFIER) return false;
+                if (!rt) return false;
+                if (is_assignment && rt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                    const auto* m = static_cast<const MemberExpression*>(rt);
+                    if (member_is_super(m)) {
+                        if (!super_member_emittable(m)) return false;
+                    } else if (!member_is_private(m) && !member_is_supported(m)) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (rt->get_type() != ASTNode::Type::IDENTIFIER) return false;
                 const std::string& rn = static_cast<const Identifier*>(rt)->get_name();
                 if (!is_assignment && !script_mode_ && !env_names_.count(rn) &&
                     lookup_local(rn) < 0) return false;
@@ -5182,7 +5278,11 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
             }
             if (is_assignment && target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 const auto* m = static_cast<const MemberExpression*>(target);
-                if (member_is_super(m) || member_is_private(m) || !member_is_supported(m)) return false;
+                if (member_is_super(m)) {
+                    if (!super_member_emittable(m)) return false;
+                } else if (!member_is_private(m) && !member_is_supported(m)) {
+                    return false;
+                }
                 // A yield/await inside the target's own expression suspends in
                 // the middle of the pattern, between the reference being
                 // resolved and the element being read. The tree-walker keeps
@@ -5221,7 +5321,11 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
             }
             if (is_assignment && target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 const auto* m = static_cast<const MemberExpression*>(target);
-                if (member_is_super(m) || member_is_private(m) || !member_is_supported(m)) return false;
+                if (member_is_super(m)) {
+                    if (!super_member_emittable(m)) return false;
+                } else if (!member_is_private(m) && !member_is_supported(m)) {
+                    return false;
+                }
                 // A yield/await inside the target's own expression suspends in
                 // the middle of the pattern, between the reference being
                 // resolved and the element being read. The tree-walker keeps
@@ -5276,6 +5380,44 @@ bool BytecodeCompiler::emit_tagged_template_args(const CallExpression* call,
     }
     if (count > 255) return false;
     argc = static_cast<uint8_t>(count);
+    return !failed_;
+}
+
+// Annex B B.3.4: a bare function declaration as an if clause or a label's
+// body. The name is var-scoped -- declared with the enclosing function's vars
+// and initialized to undefined, then given the function object when the
+// declaration is reached. Refusing it handed whole functions to the
+// tree-walker, which binds the name only where the declaration runs.
+bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
+    if (!branch || branch->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
+        return compile_statement(branch);
+    }
+    if (!env_mode_) return false;
+    if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+    const Identifier* id = static_cast<const FunctionDeclaration*>(branch)->get_id();
+    if (!id || id->get_name().empty()) return false;
+    const std::string& name = id->get_name();
+    if (annexb_fn_vars_.count(name)) {
+        chunk_->ensure_closures().push_back(closure_template_for(branch));
+        emit(Op::CreateClosure);
+        emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+        emit_write_local(name, /*is_declaration=*/false);
+        return !failed_;
+    }
+    // No var binding to write: a lexical or a parameter holds the name out
+    // here, so the function is confined to the clause's own scope.
+    record_env_slot_info({}, env_depth_ + 1);
+    chunk_->ensure_env().loop_envs.push_back({});
+    loop_env_needs_fresh_.push_back(true);
+    emit(Op::EnterLoopEnv);
+    emit_u16(static_cast<uint16_t>(chunk_->ensure_env().loop_envs.size() - 1));
+    env_depth_++;
+    hoisted_fn_decls_.insert(branch);
+    chunk_->ensure_closures().push_back(closure_template_for(branch));
+    emit(Op::DeclareFunction);
+    emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+    emit(Op::ExitLoopEnv);
+    env_depth_--;
     return !failed_;
 }
 
@@ -5537,16 +5679,22 @@ bool BytecodeCompiler::emit_pattern_assign(const ASTNode* pattern, const ASTNode
     return !failed_;
 }
 
-// Where a pattern element's value lands. A declaration always writes a name
-// this chunk owns; an assignment can also name something further out, and only
-// a chain write reaches that.
+// Whether an assignment target has to be bound to its reference before the
+// right side runs. Inside a `with` that applies to every free name; for a
+// `with` merely captured in the chain it applies to the names this chunk does
+// not own, since the object sits outside the body's own scope.
+bool BytecodeCompiler::needs_with_target_resolve(const ASTNode* target, bool is_lexical) const {
+    if (is_lexical || !target || target->get_type() != ASTNode::Type::IDENTIFIER) return false;
+    if (with_depth_ > 0) return true;
+    return outer_with_ && !is_local(static_cast<const Identifier*>(target)->get_name());
+}
+
 // A pattern target under a `with` is a reference the object has to be asked
 // about before the element is read, and the answer decides where the store
 // lands (spec ResolveBinding runs ahead of GetV). A lexical target is declared
 // inside the with, where no object stands in front of it.
 int BytecodeCompiler::emit_with_target_resolve(const ASTNode* target, bool is_lexical) {
-    if (with_depth_ == 0 || is_lexical) return -1;
-    if (!target || target->get_type() != ASTNode::Type::IDENTIFIER) return -1;
+    if (!needs_with_target_resolve(target, is_lexical)) return -1;
     emit(Op::ResolveWithTarget);
     emit_u16(add_name(static_cast<const Identifier*>(target)->get_name()));
     int reg = alloc_temp();
@@ -5556,17 +5704,34 @@ int BytecodeCompiler::emit_with_target_resolve(const ASTNode* target, bool is_le
     return reg;
 }
 
+// The object and key of a member target, evaluated before the source is read
+// so the store that follows has nothing left to compute (spec PutValue takes
+// the reference first). A super target resolves its base from [[HomeObject]]
+// instead, which is the same reference in a different shape.
 int BytecodeCompiler::emit_member_target_resolve(const ASTNode* target, bool is_assignment,
                                                  int& key_reg) {
     key_reg = -1;
     if (!is_assignment || !target || target->get_type() != ASTNode::Type::MEMBER_EXPRESSION) return -1;
     const auto* mem = static_cast<const MemberExpression*>(target);
-    if (member_is_super(mem) || member_is_private(mem) || !member_is_supported(mem)) return -1;
-    if (!compile_expression(mem->get_object())) { failed_ = true; return -1; }
-    int obj_reg = alloc_temp();
-    if (failed_) return -1;
-    emit(Op::Star);
-    emit_u8(static_cast<uint8_t>(obj_reg));
+    const bool super = member_is_super(mem);
+    if (super) {
+        if (!super_member_emittable(mem)) return -1;
+    } else if (!member_is_private(mem) && !member_is_supported(mem)) {
+        return -1;
+    }
+    int obj_reg = -1;
+    if (super) {
+        obj_reg = alloc_temp();
+        if (failed_) return -1;
+        emit(Op::ResolveSuperBase);
+        emit_u8(static_cast<uint8_t>(obj_reg));
+    } else {
+        if (!compile_expression(mem->get_object())) { failed_ = true; return -1; }
+        obj_reg = alloc_temp();
+        if (failed_) return -1;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(obj_reg));
+    }
     if (mem->is_computed()) {
         if (!compile_expression(mem->get_property())) { failed_ = true; return -1; }
         key_reg = alloc_temp();
@@ -5577,6 +5742,9 @@ int BytecodeCompiler::emit_member_target_resolve(const ASTNode* target, bool is_
     return obj_reg;
 }
 
+// Where a pattern element's value lands. A declaration always writes a name
+// this chunk owns; an assignment can also name something further out, and only
+// a chain write reaches that.
 bool BytecodeCompiler::emit_pattern_target_store(const ASTNode* target, bool is_lexical,
                                                  bool is_const, bool is_assignment,
                                                  int with_target_reg, int member_obj_reg,
@@ -5585,16 +5753,27 @@ bool BytecodeCompiler::emit_pattern_target_store(const ASTNode* target, bool is_
     // it; the reference was resolved before the source was read.
     if (member_obj_reg >= 0) {
         const auto* mem = static_cast<const MemberExpression*>(target);
-        if (member_key_reg >= 0) {
+        if (member_is_super(mem)) {
+            if (member_key_reg >= 0) {
+                emit(Op::SetSuperKeyed);
+                emit_u8(static_cast<uint8_t>(member_obj_reg));
+                emit_u8(static_cast<uint8_t>(member_key_reg));
+            } else {
+                emit(Op::SetSuper);
+                emit_u8(static_cast<uint8_t>(member_obj_reg));
+                emit_u16(add_name(static_cast<const Identifier*>(mem->get_property())->get_name()));
+            }
+        } else if (member_key_reg >= 0) {
             emit(Op::SetKeyed);
             emit_u8(static_cast<uint8_t>(member_obj_reg));
             emit_u8(static_cast<uint8_t>(member_key_reg));
             emit_u16(alloc_keyed_feedback());
         } else {
-            emit(Op::SetNamed);
+            const bool priv = member_is_private(mem);
+            emit(priv ? Op::SetPrivate : Op::SetNamed);
             emit_u8(static_cast<uint8_t>(member_obj_reg));
             emit_u16(add_name(static_cast<const Identifier*>(mem->get_property())->get_name()));
-            emit_u16(alloc_feedback_slot());
+            emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
         }
         return !failed_;
     }
@@ -5716,7 +5895,7 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
             emit(Op::ToPropertyKey);
             record_key();
             const bool resolve_target_first =
-                (with_depth_ > 0 && !is_lexical && target->get_type() == ASTNode::Type::IDENTIFIER) ||
+                needs_with_target_resolve(target, is_lexical) ||
                 (is_assignment && target->get_type() == ASTNode::Type::MEMBER_EXPRESSION);
             if (resolve_target_first) {
                 // The key is computed and has to survive the target's own
@@ -6602,11 +6781,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             const auto* stmt = static_cast<const IfStatement*>(node);
             if (!compile_expression(stmt->get_test())) return false;
             size_t else_jump = emit_jump(Op::JumpIfFalse);
-            if (!compile_statement(stmt->get_consequent())) return false;
+            if (!compile_if_branch(stmt->get_consequent())) return false;
             if (stmt->has_alternate()) {
                 size_t end_jump = emit_jump(Op::Jump);
                 if (!patch_jump(else_jump)) return false;
-                if (!compile_statement(stmt->get_alternate())) return false;
+                if (!compile_if_branch(stmt->get_alternate())) return false;
                 if (!patch_jump(end_jump)) return false;
             } else {
                 if (!patch_jump(else_jump)) return false;
@@ -7174,7 +7353,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     // Not a loop: break-only wrapper, no continue target.
                     loop_stack_.push_back({0, {}, {}, true, env_depth_, try_env_depth_,
                                             /*is_switch=*/true, {label}});
-                    if (!compile_statement(stmt->get_statement())) return false;
+                    if (!compile_if_branch(stmt->get_statement())) return false;
                     LoopScope scope = std::move(loop_stack_.back());
                     loop_stack_.pop_back();
                     for (size_t pos : scope.break_patches) {
@@ -7788,7 +7967,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
                     if (operand->get_type() != ASTNode::Type::IDENTIFIER) return false;
                     const std::string& name = static_cast<const Identifier*>(operand)->get_name();
-                    if (with_depth_ > 0) {
+                    if (with_depth_ > 0 || (outer_with_ && !is_local(name))) {
                         // One resolution serves both the read and the write,
                         // which is what the spec's single Reference means.
                         emit(Op::ResolveWithTarget);
@@ -7866,8 +8045,29 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     const ASTNode* operand = expr->get_operand();
                     if (operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                         const auto* mem = static_cast<const MemberExpression*>(operand);
-                        // super/private forms (ReferenceError / brand ceremony)
-                        // stay on the tree-walker.
+                        if (member_is_super(mem)) {
+                            // The reference is still evaluated -- the this
+                            // binding, the super base and the key's own
+                            // ToPropertyKey all run -- and only then does
+                            // delete on a super reference throw.
+                            if (!super_member_emittable(mem)) return false;
+                            if (chain_contains_optional(mem)) return false;
+                            int base_reg = alloc_temp();
+                            if (failed_) return false;
+                            emit(Op::ResolveSuperBase);
+                            emit_u8(static_cast<uint8_t>(base_reg));
+                            // The key expression runs, but MakeSuperPropertyReference
+                            // keeps it unconverted -- ToPropertyKey belongs to the
+                            // GetValue/PutValue that never happens here.
+                            if (mem->is_computed() &&
+                                !compile_expression(mem->get_property(), /*discard=*/true)) {
+                                return false;
+                            }
+                            free_temp(base_reg);
+                            emit(Op::ThrowSuperDelete);
+                            return !failed_;
+                        }
+                        // The private form still needs the brand ceremony.
                         if (!member_is_supported(mem)) return false;
                         if (chain_contains_optional(mem)) return false;
                         if (!compile_expression(mem->get_object())) return false;
@@ -7949,7 +8149,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 if (!is_local(name)) {
                     // Outer/global write via chain lookup.
                     if (!compound) stamp_inferred_class_name(expr->get_right(), name);
-                    if (!compound && with_depth_ > 0) {
+                    if (!compound && (with_depth_ > 0 || outer_with_)) {
                         emit(Op::ResolveWithTarget);
                         emit_u16(add_name(name));
                         int target = alloc_temp();
@@ -8015,7 +8215,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         free_temp(resolved);
                         return !failed_;
                     }
-                    if (with_depth_ > 0) {
+                    if (with_depth_ > 0 || outer_with_) {
                         emit(Op::ResolveWithTarget);
                         emit_u16(add_name(name));
                         int target = alloc_temp();

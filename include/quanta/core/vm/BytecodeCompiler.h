@@ -40,7 +40,8 @@ public:
         bool suspendable = false,
                                                  bool is_arrow = false,
                                                  bool is_strict = false,
-                                                 const std::vector<std::string>* env_bound = nullptr);
+                                                 const std::vector<std::string>* env_bound = nullptr,
+                                                 bool outer_with = false);
 
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,
@@ -50,7 +51,7 @@ public:
     // persistent. Nested lexicals get the same register treatment as in
     // function bodies. Null = tree-walk the statements instead.
     static std::unique_ptr<BytecodeChunk> compile_script(
-        const std::vector<std::unique_ptr<ASTNode>>& statements);
+        const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with = false);
 
     // The same `arguments` scan compile() runs over a body, exposed for
     // callers checking a parameter default/destructuring pattern directly
@@ -87,6 +88,8 @@ private:
     bool compile_logical_assignment(const class AssignmentExpression* expr);
 
     bool is_local(const std::string& name) const;
+    bool needs_with_target_resolve(const ASTNode* target, bool is_lexical) const;
+    bool compile_if_branch(const ASTNode* branch);
     int lookup_local(const std::string& name) const;
     // The register a name lives in when reading it is a bare Ldar: not
     // env-resident, actually register-allocated here, and past its TDZ. -1
@@ -259,6 +262,11 @@ private:
     // before the right side runs, which the ordinary write-time resolution
     // cannot express.
     int with_depth_ = 0;
+    // A `with` sits in the chain this closure captured, outside the body being
+    // compiled. It cannot shadow a local, but it can hold any free name.
+    bool outer_with_ = false;
+    // Annex B if/label function declarations that did get a var binding.
+    std::unordered_set<std::string> annexb_fn_vars_;
     bool emit_return_completion(bool has_argument, bool already_awaited);
     bool emit_loop_escape(bool is_continue, const std::string& label);
     void emit_iterator_closes_above(size_t from);

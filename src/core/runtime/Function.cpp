@@ -969,18 +969,18 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     if (g_vm_enabled && !executable_->vm_incompatible && ast) {
         if (!executable_->bytecode_chunk) {
             // A `with` environment in the captured scope chain makes write-
-            // reference resolution order observable: the tree-walker resolves
-            // (and SetMutableBinding HasProperty-checks) the target BEFORE the
-            // RHS runs, while Op::StaLookup resolves at write time. The chain
-            // is fixed at closure creation, so one check decides for good.
+            // reference resolution order observable: the target is bound (and
+            // SetMutableBinding HasProperty-checked) BEFORE the RHS runs,
+            // which a plain Op::StaLookup does not do. The chain is fixed at
+            // closure creation, so one check decides for good.
+            bool outer_with = false;
             for (Environment* e = function_context.get_lexical_environment(); e; e = e->get_outer()) {
-                if (e->is_with_environment()) { executable_->vm_incompatible = true; executable_->recompute_fast_gate(); break; }
+                if (e->is_with_environment()) { outer_with = true; break; }
             }
-        }
-        if (!executable_->bytecode_chunk && !executable_->vm_incompatible) {
             executable_->bytecode_chunk =
                 BytecodeCompiler::compile(ast, parameter_objects_, /*suspendable=*/false, is_arrow_,
-                                          is_strict_ || executable_->fast_strict);
+                                          is_strict_ || executable_->fast_strict,
+                                          /*env_bound=*/nullptr, outer_with);
             executable_->recompute_fast_gate();
             if (executable_->bytecode_chunk) {
                 // The chunk's constants (new, unmarked cells) are only reachable

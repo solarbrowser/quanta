@@ -37,7 +37,8 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 // (see GeneratorFunction::get_suspendable_chunk) instead of recompiling
 // per call/fiber.
 std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
-                                                   const std::vector<std::string>& env_bound);
+                                                   const std::vector<std::string>& env_bound,
+                                                   bool outer_with = false);
 
 // One expression belonging to a class definition -- a computed key, the
 // heritage, a static field's value, a static block -- evaluated by the

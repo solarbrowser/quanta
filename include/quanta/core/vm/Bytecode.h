@@ -328,6 +328,9 @@ enum class Op : uint8_t {
     // in that register, so the ceremony reads them from there rather than from
     // a run of registers the way SuperCall does.
     SuperCallSpread,           // r
+    // `delete super.x` always throws (13.5.1.2 step 4.b), but only after the
+    // reference is evaluated -- which the opcodes before this one did.
+    ThrowSuperDelete,
 
     kCount
 };
