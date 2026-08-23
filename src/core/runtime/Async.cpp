@@ -450,7 +450,7 @@ const BytecodeChunk* AsyncFunction::get_suspendable_chunk(Context& ctx) {
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
         if (e->is_with_environment()) { exe->suspendable_incompatible = true; return nullptr; }
     }
-    exe->suspendable_chunk = VM::compile_suspendable(ast_body());
+    exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names());
     if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
     return exe->suspendable_chunk.get();
@@ -1740,7 +1740,7 @@ const BytecodeChunk* AsyncGeneratorFunction::get_suspendable_chunk(Context& ctx)
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
         if (e->is_with_environment()) { exe->suspendable_incompatible = true; return nullptr; }
     }
-    exe->suspendable_chunk = VM::compile_suspendable(ast_body());
+    exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names());
     if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
     return exe->suspendable_chunk.get();

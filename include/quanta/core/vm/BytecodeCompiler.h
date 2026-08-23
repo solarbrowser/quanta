@@ -30,11 +30,17 @@ public:
     // try/finally wrapping one gets its own generator-return landing pad
     // (Op::ReraiseGeneratorReturn) so a mid-suspend .return() still runs
     // finally instead of skipping it.
+    // env_bound: names the caller has already bound in the environment this
+    // chunk will run in. A suspendable body is compiled with no parameter list
+    // (its parameters live in the Context, not in registers), so a `var` that
+    // repeats a parameter's name would otherwise be given a register nothing
+    // ever fills.
     static std::unique_ptr<BytecodeChunk> compile(
         const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
         bool suspendable = false,
                                                  bool is_arrow = false,
-                                                 bool is_strict = false);
+                                                 bool is_strict = false,
+                                                 const std::vector<std::string>* env_bound = nullptr);
 
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,

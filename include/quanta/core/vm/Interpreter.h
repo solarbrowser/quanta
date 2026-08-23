@@ -36,7 +36,8 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 // tree-walks instead. Callers cache the result on the owning Function
 // (see GeneratorFunction::get_suspendable_chunk) instead of recompiling
 // per call/fiber.
-std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body);
+std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
+                                                   const std::vector<std::string>& env_bound);
 
 // Runs a chunk from compile_suspendable. Traced through its owning Function.
 Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx, Function* owner);

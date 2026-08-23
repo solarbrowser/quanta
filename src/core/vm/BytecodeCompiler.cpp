@@ -3466,7 +3466,8 @@ bool chain_contains_optional(const ASTNode* node) {
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
-    bool suspendable, bool is_arrow, bool is_strict) {
+    bool suspendable, bool is_arrow, bool is_strict,
+    const std::vector<std::string>* env_bound) {
     if (!body) return nullptr;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
@@ -3766,6 +3767,25 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             env_resident.insert(info.name);
         }
     }
+    // Names the caller already bound in the environment (a suspendable body's
+    // parameters) must resolve there: a register standing for one would be a
+    // second, empty storage, since this chunk declares no parameters of its own.
+    std::unordered_set<std::string> env_bound_set;
+    if (env_bound) {
+        for (const auto& n : *env_bound) {
+            if (n.empty()) continue;
+            env_bound_set.insert(n);
+            // Under full_env every name already resolves through the
+            // environment; forcing the selective set here would turn that off
+            // and leave everything NOT in this list holding a register, where
+            // a closure over it can no longer find it.
+            if (!full_env) {
+                env_resident.insert(n);
+                selective = true;
+            }
+        }
+    }
+
     // The register file is kMaxRegisters wide and every parameter and top-level
     // declaration wants one of them. A bundled script's outer wrapper declares
     // more names than that, and declare_local's refusal then handed the whole
@@ -3919,7 +3939,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             // chain resolves each occurrence to its own scope at runtime.
             compiler.declare_local(info.name);
             if (info.is_const) compiler.const_locals_.insert(info.name);
-            if (!info.is_catch_param &&
+            // A name the caller already bound is not declared again here: the
+            // entry sequence would create a second binding, holding undefined,
+            // in front of the one that carries the argument.
+            const bool caller_bound = !info.is_lexical && env_bound_set.count(info.name) > 0;
+            if (!caller_bound && !info.is_catch_param &&
                 (!info.is_lexical || direct_lexical_names.count(info.name))) {
                 compiler.chunk_->ensure_env().env_locals.push_back({info.name, info.is_lexical, info.is_const});
                 // A predicted slot names a position in the environment the code
@@ -4541,6 +4565,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         var_name = d->get_id()->get_name();
         declare_fresh = true;
         is_const = vd->get_kind() == VariableDeclarator::Kind::CONST;
+        is_lexical = vd->get_kind() != VariableDeclarator::Kind::VAR;
     } else if (left->get_type() == ASTNode::Type::IDENTIFIER) {
         var_name = static_cast<const Identifier*>(left)->get_name();
     } else if (left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT ||
@@ -4592,7 +4617,12 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         // Nothing to push -- see the comment above.
     } else if (mem_target) {
         // Nothing is bound: the target is a property of an existing object.
-    } else if (declare_fresh && env_mode_ && env_names_.count(var_name)) {
+    } else if (declare_fresh && is_lexical && env_mode_ && env_names_.count(var_name)) {
+        // Only a let/const head gets a binding of its own here. A `var` names
+        // the one function-scoped binding on every iteration, so listing it
+        // would hand each iteration a separate copy -- a closure made in the
+        // body would then report the value that iteration saw instead of the
+        // last one.
         extra_vars.push_back({var_name, true, is_const, false});
     }
     int loop_env_idx = setup_loop_env(std::move(extra_vars), body, /*force_own_env=*/pattern_lit && is_lexical,

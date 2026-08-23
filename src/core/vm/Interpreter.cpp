@@ -5571,10 +5571,12 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     return run(*chunk, ctx, {}, &global_this);
 }
 
-std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body) {
+std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
+                                                   const std::vector<std::string>& env_bound) {
     if (!enabled() || !body) return nullptr;
     static const std::vector<std::unique_ptr<Parameter>> no_params;
-    auto chunk = BytecodeCompiler::compile(body, no_params, /*suspendable=*/true);
+    auto chunk = BytecodeCompiler::compile(body, no_params, /*suspendable=*/true,
+                                           /*is_arrow=*/false, /*is_strict=*/false, &env_bound);
     if (!chunk) return nullptr;
     static const bool disasm = [] {
         const char* env = std::getenv("QUANTA_VM_DISASM");

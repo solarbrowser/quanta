@@ -1669,6 +1669,10 @@ public:
 
 protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx, class Environment* param_env = nullptr);
+    // Every name this function's parameter list binds, destructuring patterns
+    // expanded. A suspendable body is compiled without a parameter list, so
+    // this is how it learns which names are already bound in the environment.
+    std::vector<std::string> parameter_bound_names() const;
     // ES2015 9.4.4.7: wires live getter/setter accessors so arguments[i] aliases parameter i.
     void setup_mapped_arguments(Context& fn_ctx, std::span<const Value> args, class Object* arguments_obj);
     // Builds the full arguments object (mapped/unmapped, callee, iterator)

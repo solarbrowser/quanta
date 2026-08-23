@@ -1964,6 +1964,22 @@ std::unique_ptr<Function> create_native_constructor(const std::string& name,
 
 }
 
+std::vector<std::string> Function::parameter_bound_names() const {
+    std::vector<std::string> names;
+    for (const auto& p : get_parameter_objects()) {
+        if (p->get_name() && !p->get_name()->get_name().empty()) {
+            names.push_back(p->get_name()->get_name());
+        }
+        if (p->has_destructuring()) {
+            const ASTNode* pat = p->get_destructuring_pattern();
+            if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(names);
+            }
+        }
+    }
+    return names;
+}
+
 void Function::scan_for_var_declarations(ASTNode* node, Context& ctx, Environment* param_env) {
     if (!node) return;
 
