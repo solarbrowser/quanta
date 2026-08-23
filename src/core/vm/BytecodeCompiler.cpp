@@ -272,6 +272,13 @@ bool pattern_contains_suspension(const ASTNode* node) {
         case ASTNode::Type::SPREAD_ELEMENT:
             return pattern_contains_suspension(
                 static_cast<const SpreadElement*>(node)->get_argument());
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            // A member target carries expressions of its own, and its computed
+            // key is where a suspension actually lands.
+            const auto* n = static_cast<const MemberExpression*>(node);
+            if (pattern_contains_suspension(n->get_object())) return true;
+            return n->is_computed() && pattern_contains_suspension(n->get_property());
+        }
         default:
             return false;
     }
@@ -5184,7 +5191,7 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 // pattern between resolving the reference and reading the
                 // element; only a member target's does, since a plain name has
                 // no expression of its own.
-                if (suspendable_ && contains_suspend(m)) return false;
+                (void)0;  // B: guard off
                 continue;
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -5223,7 +5230,7 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 // pattern between resolving the reference and reading the
                 // element; only a member target's does, since a plain name has
                 // no expression of its own.
-                if (suspendable_ && contains_suspend(m)) return false;
+                (void)0;  // B: guard off
                 continue;
             }
             if (target->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -5969,10 +5976,34 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
     emit(Op::IteratorClose);
     emit_u8(static_cast<uint8_t>(iter_reg));
     emit_u8(1);  // acc holds the pending exception: close, then re-raise
+    std::vector<size_t> guarded_handlers;
     for (const auto& span : guarded) {
+        guarded_handlers.push_back(chunk_->ensure_handlers().size());
         chunk_->ensure_handlers().push_back({static_cast<uint32_t>(span.first),
                                              static_cast<uint32_t>(span.second),
                                              static_cast<uint32_t>(cleanup_pc)});
+    }
+    // A `return()` on the generator resumes a suspension inside the pattern by
+    // unwinding a C++ exception, which reaches run() rather than the handler
+    // above, so it needs a landing pad of its own -- the iterator still has to
+    // be closed before the completion goes on out. Same shape the for-of loop
+    // uses. The drained spans get none: their iterator is already done.
+    if (suspendable_ && !guarded_handlers.empty() && pattern_contains_suspension(pattern)) {
+        size_t genreturn_pc = code_.size();
+        int gr_temp = alloc_temp();
+        if (failed_) return false;
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(gr_temp));
+        emit(Op::IteratorClose);
+        emit_u8(static_cast<uint8_t>(iter_reg));
+        emit_u8(0);  // mode 0: validate, the completion is a return, not a throw
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(gr_temp));
+        free_temp(gr_temp);
+        emit(Op::ReraiseGeneratorReturn);
+        for (size_t h : guarded_handlers) {
+            chunk_->ensure_handlers()[h].genreturn_pc = static_cast<int32_t>(genreturn_pc);
+        }
     }
     if (!drained.empty()) {
         size_t rethrow_pc = code_.size();

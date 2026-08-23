@@ -1474,12 +1474,15 @@ bool ForOfStatement::get_iterator(Context& ctx, const Value& iterable, Value& ou
         ctx.throw_type_error("Result of the Symbol.iterator method is not an object");
         return false;
     }
+    // GetIterator only READS `next` (spec 7.4.2 step 4); whether it can be
+    // called is discovered when it is called, which is what lets everything
+    // between the two -- a suspension, an IteratorClose -- happen first.
     Value next_method = iterator_val.as_object()->get_property("next");
     if (ctx.has_exception()) return false;
-    if (!next_method.is_function()) {
-        ctx.throw_type_error("next method is not a function");
-        return false;
-    }
+    // The index form above marks itself by handing back a number, so one the
+    // iterator itself supplied has to be flattened first: the step only needs
+    // to know it cannot be called, not what it was.
+    if (!next_method.is_function()) next_method = Value();
     out_iterator = iterator_val;
     out_next_fn = next_method;
     return true;
@@ -1516,6 +1519,10 @@ bool ForOfStatement::iterator_step(Context& ctx, const Value& iterator, Value& n
         out_done = false;
         next_fn = Value(di + 1.0);
         return true;
+    }
+    if (!next_fn.is_function()) {
+        ctx.throw_type_error("next method is not a function");
+        return false;
     }
     Value result = next_fn.as_function()->call(ctx, {}, iterator);
     // Per spec: if next() throws abruptly, do NOT close the iterator.
@@ -1705,6 +1712,10 @@ void async_iterator_close(Context& ctx, const Value& iterator) {
 bool async_iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
                          bool from_sync, Value& value_out) {
     if (!from_sync) {
+        if (!next_fn.is_function()) {
+            ctx.throw_type_error("next method is not a function");
+            return false;
+        }
         Value result = next_fn.as_function()->call(ctx, {}, iterator);
         rescue_getter_exception(ctx);
         if (ctx.has_exception()) return true;
