@@ -134,7 +134,17 @@ public:
     const Position& get_start() const { return start_; }
     const Position& get_end() const { return end_; }
     
-    virtual Value evaluate(Context& ctx) = 0;
+    // A Program runs its statements, and the two module declarations keep the
+    // records their linking needs. Everything else is compiled: the bytecode
+    // is the only thing that executes a node, so reaching this is a gap in the
+    // compiler and says so rather than quietly walking a tree.
+    virtual Value evaluate(Context& ctx);
+
+    // This node as an expression, compiled. A destructuring pattern's own
+    // sub-expressions -- a computed key, a default, a member target's object --
+    // reach the engine one at a time, because a suspendable function binds its
+    // parameters outside the chunk that owns its body.
+    Value evaluate_compiled(Context& ctx);
     virtual std::string to_string() const = 0;
     virtual std::unique_ptr<ASTNode> clone() const = 0;
 };
@@ -149,7 +159,6 @@ public:
     
     double get_value() const { return value_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -167,7 +176,6 @@ public:
     const std::string& get_value() const { return value_; }
     bool has_escapes() const { return has_escapes_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -182,7 +190,6 @@ public:
     
     bool get_value() const { return value_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -192,7 +199,6 @@ public:
     NullLiteral(const Position& start, const Position& end)
         : ASTNode(Type::NULL_LITERAL, start, end) {}
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -207,7 +213,6 @@ public:
     
     const std::string& get_value() const { return value_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -217,7 +222,6 @@ public:
     UndefinedLiteral(const Position& start, const Position& end)
         : ASTNode(Type::UNDEFINED_LITERAL, start, end) {}
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -263,7 +267,6 @@ public:
     // (non-ToPrimitive) conversion rather than the general `+` coercion.
     static std::string stringify_element(Context& ctx, const Value& v);
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -281,7 +284,6 @@ public:
     const std::string& get_pattern() const { return pattern_; }
     const std::string& get_flags() const { return flags_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -299,7 +301,6 @@ public:
     bool has_escaped_keyword() const { return has_escaped_keyword_; }
     void set_escaped_keyword(bool v) { has_escaped_keyword_ = v; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -333,7 +334,6 @@ public:
     // trace. Defined in AST.cpp next to the resolution itself.
     static const char* slot_name(Kind kind);
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 
@@ -403,7 +403,6 @@ public:
     ASTNode* get_right() const { return right_.get(); }
     Operator get_operator() const { return operator_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
     
@@ -453,7 +452,6 @@ public:
     // bytecode VM's Inc/Dec/ToNumber so ++/-- semantics never drift.
     static Value to_numeric(Context& ctx, const Value& v);
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
     
@@ -476,7 +474,6 @@ public:
     ASTNode* get_consequent() const { return consequent_.get(); }
     ASTNode* get_alternate() const { return alternate_.get(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -519,7 +516,6 @@ public:
     ASTNode* get_right() const { return right_.get(); }
     Operator get_operator() const { return operator_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 
@@ -595,7 +591,6 @@ public:
     void set_source(std::unique_ptr<ASTNode> source) { source_ = std::move(source); }
 
     
-    Value evaluate(Context& ctx) override;
     // as_lexical: bind each target as a fresh `let`/`const` in the current
     // scope instead of the default has_binding()-then-create-or-set walk
     // (correct for `var`/plain assignment, but would leak `let`/`const`
@@ -627,17 +622,8 @@ public:
     bool is_tagged_template() const { return is_tagged_template_; }
     bool is_optional() const { return is_optional_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
-    
-private:
-    Value handle_array_method_call(Object* array, const std::string& method_name, Context& ctx);
-    // `preset_args` is for a tagged template, whose arguments are the template
-    // object plus its substitutions rather than an argument list this can walk.
-    Value handle_member_expression_call(Context& ctx,
-                                        const std::vector<Value>* preset_args = nullptr);
-    bool build_tagged_template_arguments(Context& ctx, std::vector<Value>& out);
 };
 
 
@@ -658,7 +644,6 @@ public:
     ASTNode* get_property() const { return property_.get(); }
     bool is_computed() const { return computed_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -679,7 +664,6 @@ public:
     ASTNode* get_property() const { return property_.get(); }
     bool is_computed() const { return computed_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -698,7 +682,6 @@ public:
     ASTNode* get_left() const { return left_.get(); }
     ASTNode* get_right() const { return right_.get(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -718,7 +701,6 @@ public:
     ASTNode* get_constructor() const { return constructor_.get(); }
     const std::vector<std::unique_ptr<ASTNode>>& get_arguments() const { return arguments_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -737,7 +719,6 @@ public:
     const std::string& get_meta() const { return meta_; }
     const std::string& get_property() const { return property_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -766,7 +747,6 @@ public:
     ASTNode* get_init() const { return init_.get(); }
     Kind get_kind() const { return kind_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
     
@@ -791,7 +771,6 @@ public:
     VariableDeclarator::Kind get_kind() const { return kind_; }
     size_t declaration_count() const { return declarations_.size(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -816,7 +795,6 @@ public:
     const std::vector<UsingBinding>& get_bindings() const { return bindings_; }
     bool is_await() const { return is_await_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -853,7 +831,6 @@ public:
     // avoids re-walking the whole body on every closure instantiation.
     bool has_direct_eval_cached() const;
     bool needs_own_scope() const;
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -878,7 +855,6 @@ public:
     ASTNode* get_alternate() const { return alternate_.get(); }
     bool has_alternate() const { return alternate_ != nullptr; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -910,7 +886,6 @@ public:
     ASTNode* get_body() const { return body_.get(); }
     int get_init_decl_kind() const { return init_decl_kind_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -942,7 +917,6 @@ public:
     // level. False only for a Proxy ownKeys trap violation.
     static bool collect_keys(Context& ctx, Object* obj, std::vector<std::string>& out_keys);
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -981,7 +955,6 @@ public:
     static void iterator_close(Context& ctx, const Value& iterator, bool validate_result,
                                 bool is_pending, const Value& pending_exception);
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1000,7 +973,6 @@ public:
     ASTNode* get_test() const { return test_.get(); }
     ASTNode* get_body() const { return body_.get(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1019,7 +991,6 @@ public:
     ASTNode* get_body() const { return body_.get(); }
     ASTNode* get_test() const { return test_.get(); }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1038,7 +1009,6 @@ public:
     ASTNode* get_object() const { return object_.get(); }
     ASTNode* get_body() const { return body_.get(); }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1064,7 +1034,6 @@ public:
     bool has_destructuring() const { return destructuring_pattern_ != nullptr; }
     void set_destructuring_pattern(std::unique_ptr<ASTNode> pattern) { destructuring_pattern_ = std::move(pattern); }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1178,7 +1147,6 @@ public:
         cached_executable_ = std::move(exe);
     }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1302,7 +1270,6 @@ public:
     uint32_t source_start() const { return src_start_; }
     uint32_t source_end() const { return src_end_; }
 
-    Value evaluate(Context& ctx) override;
     // Builds the class. evaluate() is the tree-walker's way in; Op::DefineClass
     // calls this directly, so the node is read as a description rather than
     // walked.
@@ -1402,7 +1369,6 @@ public:
     uint32_t source_start() const { return src_start_; }
     uint32_t source_end() const { return src_end_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1424,7 +1390,6 @@ public:
     ASTNode* get_value() const { return value_.get(); }
     bool is_static() const { return is_static_; }
     bool is_computed() const { return computed_; }
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override { return "[ClassField]"; }
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1437,7 +1402,6 @@ public:
                      const Position& start, const Position& end)
         : ASTNode(Type::CLASS_STATIC_BLOCK, start, end), body_(std::move(body)) {}
     BlockStatement* get_body() const { return body_.get(); }
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override { return "[ClassStaticBlock]"; }
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1596,7 +1560,6 @@ public:
         cached_executable_ = std::move(exe);
     }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 
@@ -1719,7 +1682,6 @@ public:
         cached_executable_ = std::move(exe);
     }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1735,7 +1697,6 @@ public:
     
     ASTNode* get_argument() const { return argument_.get(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1752,7 +1713,6 @@ public:
     ASTNode* get_argument() const { return argument_.get(); }
     bool is_delegate() const { return is_delegate_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1867,7 +1827,6 @@ public:
     void set_decl_form(bool v) { is_decl_form_ = v; }
     bool is_decl_form() const { return is_decl_form_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1906,7 +1865,6 @@ public:
     const std::vector<std::unique_ptr<Property>>& get_properties() const { return properties_; }
     size_t property_count() const { return properties_.size(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1923,7 +1881,6 @@ public:
     const std::vector<std::unique_ptr<ASTNode>>& get_elements() const { return elements_; }
     size_t element_count() const { return elements_.size(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1939,7 +1896,6 @@ public:
     
     ASTNode* get_argument() const { return argument_.get(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1955,7 +1911,6 @@ public:
     ASTNode* get_argument() const { return argument_.get(); }
     bool has_argument() const { return argument_ != nullptr; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1970,7 +1925,6 @@ public:
 
     const std::string& get_label() const { return label_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1985,7 +1939,6 @@ public:
 
     const std::string& get_label() const { return label_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2000,7 +1953,6 @@ public:
     
     ASTNode* get_expression() const { return expression_.get(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2010,7 +1962,6 @@ public:
     EmptyStatement(const Position& start, const Position& end)
         : ASTNode(Type::EMPTY_STATEMENT, start, end) {}
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2029,7 +1980,6 @@ public:
     const std::string& get_label() const { return label_; }
     ASTNode* get_statement() const { return statement_.get(); }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2054,7 +2004,6 @@ public:
     ASTNode* get_catch_clause() const { return catch_clause_.get(); }
     ASTNode* get_finally_block() const { return finally_block_.get(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2078,7 +2027,6 @@ public:
     void set_destructuring_pattern(std::unique_ptr<ASTNode> p) { destructuring_pattern_ = std::move(p); }
     ASTNode* get_destructuring_pattern() const { return destructuring_pattern_.get(); }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2095,7 +2043,6 @@ public:
     
     ASTNode* get_expression() const { return expression_.get(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2116,7 +2063,6 @@ public:
     ASTNode* get_discriminant() const { return discriminant_.get(); }
     const std::vector<std::unique_ptr<ASTNode>>& get_cases() const { return cases_; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2138,7 +2084,6 @@ public:
     const std::vector<std::unique_ptr<ASTNode>>& get_consequent() const { return consequent_; }
     bool is_default() const { return test_ == nullptr; }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2154,6 +2099,7 @@ private:
     void hoist_lexical_declarations(Context& ctx);
 
 public:
+    Value evaluate(Context& ctx) override;
     Program(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)
         : ASTNode(Type::PROGRAM, start, end), statements_(std::move(statements)) {}
 
@@ -2163,7 +2109,6 @@ public:
     const std::vector<std::unique_ptr<ASTNode>>& get_statements() const { return statements_; }
     size_t statement_count() const { return statements_.size(); }
     
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2182,7 +2127,6 @@ public:
     const std::string& get_imported_name() const { return imported_name_; }
     const std::string& get_local_name() const { return local_name_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2198,6 +2142,7 @@ private:
     bool is_deferred_;
 
 public:
+    Value evaluate(Context& ctx) override;
     ImportStatement(std::vector<std::unique_ptr<ImportSpecifier>> specifiers,
                    const std::string& module_source,
                    const Position& start, const Position& end)
@@ -2245,7 +2190,6 @@ public:
     bool is_mixed_import() const { return is_default_import_ && !specifiers_.empty(); }
     bool is_deferred() const { return is_deferred_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2264,7 +2208,6 @@ public:
     const std::string& get_local_name() const { return local_name_; }
     const std::string& get_exported_name() const { return exported_name_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2280,6 +2223,7 @@ private:
     bool is_re_export_;
 
 public:
+    Value evaluate(Context& ctx) override;
     ExportStatement(std::vector<std::unique_ptr<ExportSpecifier>> specifiers,
                    const Position& start, const Position& end)
         : ASTNode(Type::EXPORT_STATEMENT, start, end),
@@ -2313,7 +2257,11 @@ public:
     bool is_declaration_export() const { return is_declaration_export_; }
     bool is_re_export() const { return is_re_export_; }
 
-    Value evaluate(Context& ctx) override;
+    // The export bookkeeping on its own. The compiler emits the wrapped
+    // declaration itself and then asks for this, so the declaration is not
+    // run a second time.
+    Value link(Context& ctx, bool declaration_already_run);
+    
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2340,7 +2288,6 @@ public:
     const std::vector<std::unique_ptr<ASTNode>>& get_children() const { return children_; }
     bool is_self_closing() const { return self_closing_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2355,7 +2302,6 @@ public:
 
     const std::string& get_text() const { return text_; }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2370,7 +2316,6 @@ public:
 
     ASTNode* get_expression() const { return expression_.get(); }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -2388,7 +2333,6 @@ public:
     const std::string& get_name() const { return name_; }
     ASTNode* get_value() const { return value_.get(); }
 
-    Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };

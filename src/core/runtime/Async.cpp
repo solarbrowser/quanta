@@ -105,7 +105,7 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
                     ctx->set_return_value(vm_result);
                 }
             } else {
-                if (ASTNode* body = self->owner_fn_->ast_body()) body->evaluate(*ctx);
+                ctx->throw_type_error("Internal: function body could not be compiled");
             }
         }
     } catch (const std::exception& e) {
@@ -357,7 +357,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
                 } else if (param->has_default()) {
-                    arg_val = param->get_default_value()->evaluate(*exec_ctx);
+                    arg_val = VM::run_default_value(param->get_default_value(), *exec_ctx);
                     if (exec_ctx->has_exception()) {
                         exec_ctx->set_in_param_eval(false);
                         promise_raw->reject(exec_ctx->get_exception());
@@ -521,7 +521,7 @@ void AsyncGenerator::fiber_entry(mco_coro* co) {
                     ctx->set_return_value(vm_result);
                 }
             } else {
-                if (ASTNode* body = self->owner_fn_->ast_body()) body->evaluate(*ctx);
+                ctx->throw_type_error("Internal: function body could not be compiled");
             }
         }
     } catch (const GeneratorReturnException& ret_ex) {
@@ -1317,7 +1317,12 @@ void setup_async_functions(Context& ctx) {
                     }
                     return Value(async_fn.release());
                 }
-                Value result = expr->evaluate(ctx);
+                bool compiled = false;
+                Value result = VM::run_expression(expr.get(), ctx, compiled);
+                if (!compiled) {
+                    ctx.throw_type_error("Internal: expression could not be compiled");
+                    return Value();
+                }
                 if (result.is_function()) result.as_function()->set_source_text(toString_src);
                 return result;
             } catch (...) {
@@ -1640,7 +1645,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
                 } else if (param->has_default()) {
-                    arg_val = param->get_default_value()->evaluate(*gen_ctx);
+                    arg_val = VM::run_default_value(param->get_default_value(), *gen_ctx);
                     if (gen_ctx->has_exception()) {
                         gen_ctx->set_in_param_eval(false);
                         ctx.throw_exception(gen_ctx->get_exception(), true);

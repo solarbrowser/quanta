@@ -76,15 +76,6 @@ void super_set_on(Context& ctx, Object* base, const std::string& prop_name, cons
 
 namespace VM {
 
-bool enabled() {
-    static const bool on = [] {
-        const char* env = std::getenv("QUANTA_VM");
-        if (!env) return true;
-        return env[0] != '0';
-    }();
-    return on;
-}
-
 namespace {
 
 using BinOp = BinaryExpression::Operator;
@@ -3354,7 +3345,7 @@ Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
-                ASTNode* node = const_cast<ASTNode*>((*chunk.class_nodes)[idx]);
+                ASTNode* node = const_cast<ASTNode*>((*chunk.ast_nodes)[idx]);
                 acc = static_cast<ClassDeclaration*>(node)->define_class(ctx);
                 CHECK_EXC();
                 break;
@@ -3797,6 +3788,32 @@ Value h_gen_SetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();
                 super_set_on(ctx, as_object_like(regs[base_reg]), key, acc);
+                CHECK_EXC();
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_LinkModule(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint16_t idx = read_u16(code, pc);
+                const bool decl_done = code[pc + 2] != 0;
+                pc += 3;
+                ASTNode* node = const_cast<ASTNode*>((*chunk.ast_nodes)[idx]);
+                if (node->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+                    static_cast<ExportStatement*>(node)->link(ctx, decl_done);
+                } else {
+                    node->evaluate(ctx);
+                }
                 CHECK_EXC();
                 break;
             }
@@ -5299,6 +5316,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::DefineClass)] = &h_gen_DefineClass;
     t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
     t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
+    t[static_cast<uint8_t>(Op::LinkModule)] = &h_gen_LinkModule;
     t[static_cast<uint8_t>(Op::CopyRestProperties)] = &h_gen_CopyRestProperties;
     t[static_cast<uint8_t>(Op::Call)] = &h_gen_Call;
     t[static_cast<uint8_t>(Op::CallResolved)] = &h_gen_CallResolved;
@@ -5569,14 +5587,13 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 }
 
 Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
-                 Context& ctx, bool& used_vm) {
+                 Context& ctx, bool& used_vm, bool track_completion) {
     used_vm = false;
-    if (!enabled()) return Value();
     bool outer_with = false;
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
         if (e->is_with_environment()) { outer_with = true; break; }
     }
-    auto chunk = BytecodeCompiler::compile_script(statements, outer_with);
+    auto chunk = BytecodeCompiler::compile_script(statements, outer_with, track_completion);
     if (!chunk) return Value();
     used_vm = true;
     static const bool disasm = [] {
@@ -5591,14 +5608,24 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     // alive: no function owns this chunk. Rooted for the run, they work here
     // the same as they do inside a function.
     ChunkFeedbackRoot feedback_root(chunk.get());
-    Value global_this = ctx.get_global_object()
-        ? Value(ctx.get_global_object()) : Value();
-    return run(*chunk, ctx, {}, &global_this);
+    // An eval runs with the this value its caller had; a script's own is the
+    // global object.
+    Value script_this = track_completion
+        ? ctx.get_this_value()
+        : (ctx.get_global_object() ? Value(ctx.get_global_object()) : Value());
+    return run(*chunk, ctx, {}, &script_this);
+}
+
+Value run_default_value(const ASTNode* expr, Context& ctx) {
+    bool ok = false;
+    Value v = run_expression(expr, ctx, ok);
+    if (!ok) ctx.throw_type_error("Internal: parameter default could not be compiled");
+    return v;
 }
 
 Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {
     ok = false;
-    if (!enabled() || !expr) return Value();
+    if (!expr) return Value();
     // A `with` on the chain makes write-reference ordering observable, which
     // the chunk has to be told about -- see Function::call.
     bool outer_with = false;
@@ -5607,8 +5634,12 @@ Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {
     }
     static const std::vector<std::unique_ptr<Parameter>> no_params;
     // A non-block body compiles as an implicit return, which is exactly an
-    // expression's chunk.
-    auto chunk = BytecodeCompiler::compile(expr, no_params, /*suspendable=*/false,
+    // expression's chunk. A computed class key written inside a generator can
+    // hold a `yield`, and that has to suspend the fiber the class definition
+    // is already running on -- so the chunk is built suspendable and the
+    // opcode does the suspending, exactly as it would in the body itself.
+    const bool suspends = BytecodeCompiler::expression_suspends(expr);
+    auto chunk = BytecodeCompiler::compile(expr, no_params, suspends,
                                            /*is_arrow=*/false, /*is_strict=*/false,
                                            /*env_bound=*/nullptr, outer_with);
     if (!chunk) return Value();
@@ -5623,7 +5654,7 @@ Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {
 std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
                                                    const std::vector<std::string>& env_bound,
                                                    bool outer_with) {
-    if (!enabled() || !body) return nullptr;
+    if (!body) return nullptr;
     static const std::vector<std::unique_ptr<Parameter>> no_params;
     auto chunk = BytecodeCompiler::compile(body, no_params, /*suspendable=*/true,
                                            /*is_arrow=*/false, /*is_strict=*/false, &env_bound,

@@ -439,8 +439,24 @@ void register_global_builtins(Context& ctx) {
                                                    !ctx.is_arrow_function_context();
                 // super in eval is valid inside method code -- a method frame binds
                 // its [[HomeObject]], a derived constructor its parent constructor.
-                parse_opts.eval_in_method_code =
-                    ctx.has_binding("__super__") || ctx.has_binding("__home_object__");
+                // The binding has to belong to the function the eval is written
+                // in, not to anything up the chain: `super` inside a plain
+                // function nested in a method is still a SyntaxError, and a
+                // chain walk would find the method's and allow it.
+                {
+                    Environment* fn_env = ctx.get_variable_environment();
+                    parse_opts.eval_in_method_code =
+                        fn_env && (fn_env->has_own_binding("__super__") ||
+                                   fn_env->has_own_binding("__home_object__"));
+                    // An arrow has no super of its own -- it uses the one from
+                    // the function it was written in, so the search continues
+                    // outward. A plain function does have its own (absent)
+                    // super, which is why it stops at the check above.
+                    if (!parse_opts.eval_in_method_code && ctx.is_arrow_function_context()) {
+                        parse_opts.eval_in_method_code =
+                            ctx.has_binding("__super__") || ctx.has_binding("__home_object__");
+                    }
+                }
                 // Propagate class field initializer context so eval enforces ContainsArguments early error.
                 // Only direct eval inherits this flag -- indirect eval is a fresh context per spec.
                 parse_opts.in_class_field_init = ctx.is_direct_eval_call() && ctx.is_in_class_field_init();

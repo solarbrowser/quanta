@@ -3500,6 +3500,10 @@ bool chain_contains_optional(const ASTNode* node) {
 
 }
 
+bool BytecodeCompiler::expression_suspends(const ASTNode* node) {
+    return contains_suspend(node);
+}
+
 // Annex B B.3.3: the var-scoped binding an if/label function declaration would
 // create is not created at all when a lexical declaration or a parameter
 // already owns the name. Dropping the entry here is what keeps the closure out
@@ -3535,7 +3539,6 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // `() => { return e; }` with the statement left implicit. Without this it
     // never compiled at all, so every call to one ran in the tree-walker.
     const bool concise = body->get_type() != ASTNode::Type::BLOCK_STATEMENT;
-    if (concise && suspendable) return nullptr;
     if (params.size() > 64) return nullptr;
 
     // Default/destructured/rest parameters force env_mode: rest needs a
@@ -3872,11 +3875,27 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             selective = true;
         }
     }
+    // A register carries no mutability, so a const that is ever assigned has to
+    // live in the Environment, where the binding's own flag makes the store
+    // throw. Refusing instead handed the whole body to the tree-walker.
+    for (const auto& info : declared) {
+        if (!info.is_const || env_resident.count(info.name)) continue;
+        if (!assigns_to_identifier(body, info.name)) continue;
+        env_resident.insert(info.name);
+        selective = true;
+    }
     const bool env_mode = full_env || has_closures || !env_resident.empty() ||
                           suspendable || has_delegated_expr;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
     compiler.outer_with_ = outer_with;
     compiler.annexb_fn_vars_ = std::move(annexb_fn_vars);
+    // A catch parameter's name is block-scoped to its clause. Seeding it here
+    // rather than when the clause is compiled is what lets a reference emitted
+    // EARLIER in the chunk -- a keywordless for-of head, say -- know that the
+    // register belongs to a scope it is not inside.
+    for (const auto& info : declared) {
+        if (info.is_catch_param) compiler.block_scoped_names_.insert(info.name);
+    }
     if (compiler.failed_) return nullptr;
     compiler.allow_arguments_ = needs_arguments;
     compiler.eval_in_body_ = an_eval;
@@ -3999,6 +4018,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // binding's mutable flag, which the store opcode checks); a register
         // cannot, so an assigned const that did not become resident still
         // refuses rather than compile as mutable.
+        // Made resident above precisely so this cannot happen.
         if (info.is_const && !resident && assigns_to_identifier(body, info.name)) return nullptr;
         if (resident) {
             // A repeat declare_local (shadowed name) is fine -- the Environment
@@ -4300,7 +4320,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 }
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
-    const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with) {
+    const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with,
+    bool track_completion) {
     // Scan the whole program once. Modules and anything opaque to the
     // scanners tree-walk; class definitions and closure-side eval only
     // disable the nested-register refinement (top-level names are outer
@@ -4308,16 +4329,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     std::unordered_set<std::string> closure_names;
     bool saw_eval = false, saw_class = false, unknown = false;
     for (const auto& st : statements) {
-        auto t = st->get_type();
-        if (t == ASTNode::Type::EXPORT_STATEMENT || t == ASTNode::Type::IMPORT_STATEMENT) {
-            return nullptr;
-        }
-        if (contains_destructuring(st.get())) return nullptr;
+
         collect_closure_names(st.get(), /*inside_closure=*/false, closure_names,
                               saw_eval, saw_class, unknown);
     }
-    if (saw_eval) return nullptr;  // a closure's eval text can name anything
-    bool refine = !saw_class && !unknown;
+    // A closure's eval text can name anything, which is why it only turns the
+    // nested-register refinement off: every top-level name is an outer binding
+    // reached by name either way, so what eval can reach does not change.
+    bool refine = !saw_class && !unknown && !saw_eval;
 
     // Top-level names are pre-hoisted outer bindings (vars on the global,
     // let/const/class in the script env, function declarations already
@@ -4327,6 +4346,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     std::unordered_set<std::string> top_lexicals;
     for (const auto& st : statements) {
         const ASTNode* eff = st.get();
+        // `export let x = 1` declares x at this level; the export wrapper is
+        // only the record kept about it (same unwrapping the lexical hoist
+        // does before this chunk runs).
+        if (eff->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+            const auto* ex = static_cast<const ExportStatement*>(eff);
+            eff = ex->is_declaration_export() ? ex->get_declaration() : nullptr;
+            if (!eff) continue;
+        }
         if (eff->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             const auto* vd = static_cast<const VariableDeclaration*>(eff);
             const bool lexical = vd->get_kind() != VariableDeclarator::Kind::VAR;
@@ -4426,12 +4453,49 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     for (const auto& st : statements) {
         if (contains_with(st.get())) { script_has_with = true; break; }
     }
+    // Same register budget compile() keeps: past it a name lives in the
+    // Environment instead, which is slower per access but is the difference
+    // between compiling the script and not compiling it at all.
+    {
+        constexpr size_t kTempReserve = 48;
+        std::unordered_set<std::string> counted;
+        size_t used = kTempReserve;
+        for (const auto& info : declared) {
+            if (env_resident.count(info.name) || !counted.insert(info.name).second) continue;
+            if (used < static_cast<size_t>(kMaxRegisters)) { used++; continue; }
+            env_resident.insert(info.name);
+        }
+    }
+    // Same reason as compile(): an assigned const needs the Environment's
+    // mutability flag, so it becomes resident rather than refusing the chunk.
+    for (const auto& info : declared) {
+        if (!info.is_const || env_resident.count(info.name)) continue;
+        for (const auto& st : statements) {
+            if (assigns_to_identifier(st.get(), info.name)) { env_resident.insert(info.name); break; }
+        }
+    }
     BytecodeCompiler compiler({}, /*env_mode=*/true,
                               script_has_with ? nullptr : &env_resident);
     if (compiler.failed_) return nullptr;
+    // A catch parameter's name is block-scoped to its clause. Seeding it here
+    // rather than when the clause is compiled is what lets a reference emitted
+    // EARLIER in the chunk -- a keywordless for-of head, say -- know that the
+    // register belongs to a scope it is not inside.
+    for (const auto& info : declared) {
+        if (info.is_catch_param) compiler.block_scoped_names_.insert(info.name);
+    }
     compiler.script_mode_ = true;
+    // No implicit `arguments` object exists up here, so the name is an
+    // ordinary chain lookup -- which is exactly what an eval inside a function
+    // needs to reach its caller's.
+    compiler.allow_arguments_ = true;
     compiler.outer_with_ = outer_with;
     compiler.annexb_fn_vars_ = std::move(annexb_fn_vars);
+    if (track_completion) {
+        compiler.completion_reg_ = compiler.alloc_temp();
+        if (compiler.failed_) return nullptr;
+        compiler.emit_completion_reset();
+    }
     // The sweep above walks with inside_closure off, so a direct eval written
     // at the top level never reaches its flag. Ask again for that one: every
     // name up here is already an outer binding, which is exactly what a direct
@@ -4462,7 +4526,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
         // so a const that is ever assigned would compile to a plain Star and
         // be overwritten in silence. compile_script was missing this, which
         // left `{ const c = 1; c = 2; }` at script level writing through.
-        if (info.is_const) {
+        if (info.is_const && !env_resident.count(info.name)) {
             for (const auto& st : statements) {
                 if (assigns_to_identifier(st.get(), info.name)) return nullptr;
             }
@@ -4506,11 +4570,30 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
         compiler.emit_u8(static_cast<uint8_t>(reg));
     }
 
+    bool script_has_using = false;
     for (const auto& st : statements) {
-        if (st->get_type() == ASTNode::Type::FUNCTION_DECLARATION) continue;  // pre-evaluated
-        if (!compiler.compile_statement(st.get())) return nullptr;
+        if (st->get_type() == ASTNode::Type::USING_DECLARATION) { script_has_using = true; break; }
     }
-    compiler.emit(Op::LdaUndefined);
+    FinallyScope script_escaped;
+    auto emit_statements = [&]() -> bool {
+        for (const auto& st : statements) {
+            if (st->get_type() == ASTNode::Type::FUNCTION_DECLARATION) continue;  // pre-evaluated
+            if (!compiler.compile_statement(st.get())) return false;
+        }
+        return true;
+    };
+    if (script_has_using) {
+        if (!compiler.emit_dispose_scope_body(nullptr, emit_statements, script_escaped)) return nullptr;
+        if (!compiler.emit_finally_pads(script_escaped)) return nullptr;
+    } else if (!emit_statements()) {
+        return nullptr;
+    }
+    if (compiler.completion_reg_ >= 0) {
+        compiler.emit(Op::Ldar);
+        compiler.emit_u8(static_cast<uint8_t>(compiler.completion_reg_));
+    } else {
+        compiler.emit(Op::LdaUndefined);
+    }
     compiler.emit(Op::Return);
 
     compiler.chunk_->register_count = static_cast<uint16_t>(compiler.temp_watermark_);
@@ -4627,6 +4710,7 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     // Supported targets: a simple identifier, or a destructuring pattern WITH
     // a declaration keyword (keywordless `for ({a} of arr)` reports kind -1
     // and needs arbitrary-AssignmentTarget writeback this path doesn't have).
+    emit_completion_reset();
     std::string var_name;
     bool declare_fresh = false;
     bool is_const = false;
@@ -4701,7 +4785,21 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     // force_own_env still gives lexicals a fresh per-iteration env.
     std::vector<BytecodeChunk::LoopEnvVar> extra_vars;
     if (pattern_lit) {
-        // Nothing to push -- see the comment above.
+        // The leaf names still need TDZ bindings before the head's own
+        // iterable expression runs (spec 14.7.5.7): a closure made there and
+        // called later must see them uninitialized rather than resolve past
+        // the loop to whatever the enclosing scope binds. Only the names this
+        // chunk does not already own as locals go here -- for the others the
+        // binder writes the local it was given.
+        if (is_lexical) {
+            std::vector<DeclInfo> leaves;
+            if (collect_flat_pattern_names(left, true, is_const, leaves)) {
+                for (const auto& d : leaves) {
+                    if (!d.name.empty() && !env_names_.count(d.name)) continue;
+                    if (!d.name.empty()) extra_vars.push_back({d.name, true, is_const, false});
+                }
+            }
+        }
     } else if (mem_target) {
         // Nothing is bound: the target is a property of an existing object.
     } else if (declare_fresh && is_lexical && env_mode_ && env_names_.count(var_name)) {
@@ -4712,6 +4810,25 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         // last one.
         extra_vars.push_back({var_name, true, is_const, false});
     }
+    lexical_scopes_.emplace_back();
+    if (is_lexical) {
+        if (pattern_lit) {
+            std::vector<DeclInfo> leaves;
+            if (collect_flat_pattern_names(left, true, is_const, leaves)) {
+                for (const auto& d : leaves) {
+                    lexical_scopes_.back().push_back(d.name);
+                    block_scoped_names_.insert(d.name);
+                }
+            }
+        } else if (!var_name.empty()) {
+            lexical_scopes_.back().push_back(var_name);
+            block_scoped_names_.insert(var_name);
+        }
+    }
+    struct LexicalScopePop {
+        BytecodeCompiler* c;
+        ~LexicalScopePop() { c->lexical_scopes_.pop_back(); }
+    } lexical_pop{this};
     int loop_env_idx = setup_loop_env(std::move(extra_vars), body, /*force_own_env=*/pattern_lit && is_lexical,
                                        {left, right});
     if (loop_env_idx >= 0) {
@@ -4820,7 +4937,14 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
         }
         free_temp(val_reg);  // releases obj_reg and key_reg with it (allocated after)
     } else if (!using_decl) {
-        emit_write_local(var_name, /*is_declaration=*/declare_fresh);
+        if (!declare_fresh && lexical_out_of_scope(var_name)) {
+            // The register this name owns belongs to a scope this head is not
+            // inside, so the assignment resolves by name instead.
+            emit(Op::StaLookup);
+            emit_u16(add_name(var_name));
+        } else {
+            emit_write_local(var_name, /*is_declaration=*/declare_fresh);
+        }
     }
 
     // The resource is parked while the dispose scope opens, then registered
@@ -5388,6 +5512,35 @@ bool BytecodeCompiler::emit_tagged_template_args(const CallExpression* call,
 // and initialized to undefined, then given the function object when the
 // declaration is reached. Refusing it handed whole functions to the
 // tree-walker, which binds the name only where the declaration runs.
+// The spec wraps a few statements in UpdateEmpty(_, undefined), so they answer
+// undefined rather than letting whatever ran before them stand: an if with an
+// untaken branch, a loop that never runs its body, a switch that matches no
+// clause, a try whose block completes empty.
+// Whether `name` is a block-scoped local whose scope is not open here. Only
+// asked where being out of scope is not an error -- `typeof` -- so a name this
+// cannot decide about is treated as in scope.
+bool BytecodeCompiler::lexical_out_of_scope(const std::string& name) const {
+    if (!block_scoped_names_.count(name)) return false;
+    for (const auto& scope : lexical_scopes_) {
+        for (const auto& n : scope) if (n == name) return false;
+    }
+    return true;
+}
+
+void BytecodeCompiler::emit_completion_reset() {
+    if (completion_reg_ < 0) return;
+    emit(Op::LdaUndefined);
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(completion_reg_));
+}
+
+// A statement that completed with a value in the accumulator.
+void BytecodeCompiler::emit_completion_store() {
+    if (completion_reg_ < 0) return;
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(completion_reg_));
+}
+
 bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
     if (!branch || branch->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
         return compile_statement(branch);
@@ -5511,7 +5664,13 @@ bool BytecodeCompiler::emit_finally_body(const FinallyScope& scope) {
         case FinallyScope::Cleanup::Finally:
             break;
     }
-    return compile_statement(scope.finally_node);
+    // 14.15.3 step 3: a finally that completes normally hands the result back
+    // to the block's own completion, so nothing it evaluates may be recorded.
+    const int saved_completion = completion_reg_;
+    completion_reg_ = -1;
+    const bool ok = compile_statement(scope.finally_node);
+    completion_reg_ = saved_completion;
+    return ok;
 }
 
 // The landing pads an escape out of a finally-bearing region needs. They go
@@ -6324,7 +6483,7 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
 
     if (expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER) {
         const std::string& name = static_cast<const Identifier*>(expr->get_left())->get_name();
-        stamp_inferred_class_name(expr->get_right(), name);
+        if (!expr->is_lhs_paren()) stamp_inferred_class_name(expr->get_right(), name);
         // NamedEvaluation applies to the RHS of a logical assignment too
         // (spec 13.15.2 step 1.e.i): `f ??= function(){}` names it "f". The
         // opcode no-ops when the value already has a name.
@@ -6526,10 +6685,15 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // A block with its own direct let/const gets its own Environment
             // -- a nested block's own names are its own scope's concern.
             int block_env_idx = -1;
+            lexical_scopes_.emplace_back();
             {
                 std::vector<BytecodeChunk::LoopEnvVar> vars;
                 bool needs_own_env = false;
                 if (!collect_direct_lexical_decls(block, vars, needs_own_env)) return false;
+                for (const auto& v : vars) {
+                    lexical_scopes_.back().push_back(v.name);
+                    block_scoped_names_.insert(v.name);
+                }
                 // A function declaration binds in the block -- BlockStatement's
                 // own scope rule counts one -- so the compiled block needs the
                 // same environment for Op::DeclareFunction to land in.
@@ -6595,6 +6759,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (!compile_statement(stmt.get())) return false;
                 }
             }
+            lexical_scopes_.pop_back();
             if (block_env_idx >= 0) { emit(Op::ExitLoopEnv); env_depth_--; }
             // The pads go last, where env_depth_ is back to what an escape
             // leaving this block should unwind from.
@@ -6627,6 +6792,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::WITH_STATEMENT: {
+            emit_completion_reset();
             const auto* stmt = static_cast<const WithStatement*>(node);
             // Every name inside resolves by walking the chain, which is what
             // full env_mode gives; without it a local would sit in a register
@@ -6676,8 +6842,43 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             return emit_finally_pads(escaped);
         }
 
+        case ASTNode::Type::IMPORT_STATEMENT:
+        case ASTNode::Type::EXPORT_STATEMENT: {
+            if (!script_mode_) return false;  // only a Program has module declarations
+            if (chunk_->ensure_ast_nodes().size() >= 0xFFFF) return false;
+            // `export let x = 1` is a declaration with a record kept about it.
+            // The declaration is compiled here like any other, so the opcode is
+            // left with the record alone.
+            bool declaration_compiled = false;
+            if (node->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+                const auto* ex = static_cast<const ExportStatement*>(node);
+                if (ex->is_declaration_export() && ex->get_declaration()) {
+                    const ASTNode* decl = ex->get_declaration();
+                    // A function declaration was already instantiated during
+                    // hoisting, same as a bare one at this level.
+                    if (decl->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                        declaration_compiled = true;
+                    } else if (compile_statement(decl)) {
+                        declaration_compiled = true;
+                    } else {
+                        return false;
+                    }
+                }
+            }
+            chunk_->ensure_ast_nodes().push_back(node);
+            emit(Op::LinkModule);
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_ast_nodes().size() - 1));
+            emit_u8(declaration_compiled ? 1 : 0);
+            return !failed_;
+        }
+
         case ASTNode::Type::EXPRESSION_STATEMENT: {
             const auto* stmt = static_cast<const ExpressionStatement*>(node);
+            if (completion_reg_ >= 0) {
+                if (!compile_expression(stmt->get_expression())) return false;
+                emit_completion_store();
+                return !failed_;
+            }
             return compile_expression(stmt->get_expression(), /*discard=*/true);
         }
 
@@ -6778,6 +6979,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::IF_STATEMENT: {
+            emit_completion_reset();
             const auto* stmt = static_cast<const IfStatement*>(node);
             if (!compile_expression(stmt->get_test())) return false;
             size_t else_jump = emit_jump(Op::JumpIfFalse);
@@ -6794,6 +6996,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::WHILE_STATEMENT: {
+            emit_completion_reset();
             const auto* stmt = static_cast<const WhileStatement*>(node);
             int loop_env_idx = setup_loop_env({}, stmt->get_body(), false, {stmt->get_test()});
             if (loop_env_idx >= 0) {
@@ -6834,6 +7037,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::DO_WHILE_STATEMENT: {
+            emit_completion_reset();
             const auto* stmt = static_cast<const DoWhileStatement*>(node);
             int loop_env_idx = setup_loop_env({}, stmt->get_body(), false, {stmt->get_test()});
             if (loop_env_idx >= 0) {
@@ -6865,6 +7069,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::FOR_STATEMENT: {
+            emit_completion_reset();
             const auto* stmt = static_cast<const ForStatement*>(node);
             // `for (using x = r; ;)` holds the resource for the whole
             // statement, so the scope wraps the loop rather than sitting
@@ -6908,6 +7113,15 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                         if (!b.name.empty()) header_vars.push_back({b.name, true, true, true});
                     }
                 }
+                lexical_scopes_.emplace_back();
+                for (const auto& v : header_vars) {
+                    lexical_scopes_.back().push_back(v.name);
+                    block_scoped_names_.insert(v.name);
+                }
+                struct LexicalScopePop {
+                    BytecodeCompiler* c;
+                    ~LexicalScopePop() { c->lexical_scopes_.pop_back(); }
+                } lexical_pop{this};
                 int loop_env_idx = setup_loop_env(std::move(header_vars), stmt->get_body(), false,
                                                    {stmt->get_init(), stmt->get_test(), stmt->get_update()});
                 if (loop_env_idx >= 0) {
@@ -7010,10 +7224,15 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::TRY_STATEMENT: {
+            emit_completion_reset();
             const auto* stmt = static_cast<const TryStatement*>(node);
             const ASTNode* catch_node = stmt->get_catch_clause();
             const ASTNode* finally_node = stmt->get_finally_block();
             if (!catch_node && !finally_node) return false;
+            // 14.15.3 step 3: a finally that completes normally hands the
+            // result back to the block's own completion, so nothing it
+            // evaluates may be recorded as the script's value.
+            const int saved_completion_reg = completion_reg_;
 
             // A throw skips straight to the handler, bypassing any loop
             // Environment pop inside the try -- see VM::run's env_saves side-stack.
@@ -7114,7 +7333,13 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     cfs.loop_depth = loop_stack_.size();
                     finally_stack_.push_back(std::move(cfs));
                 }
+                lexical_scopes_.emplace_back();
+                for (const auto& cn : catch_names) {
+                    lexical_scopes_.back().push_back(cn);
+                    block_scoped_names_.insert(cn);
+                }
                 bool catch_body_ok = compile_statement(clause->get_body());
+                lexical_scopes_.pop_back();
                 if (finally_node) {
                     catch_escaped_scope = std::move(finally_stack_.back());
                     finally_stack_.pop_back();
@@ -7143,7 +7368,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 if (failed_) return false;
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(temp));
+                completion_reg_ = -1;
                 if (!compile_statement(finally_node)) return false;
+                completion_reg_ = saved_completion_reg;
                 emit(Op::Ldar);
                 emit_u8(static_cast<uint8_t>(temp));
                 free_temp(temp);
@@ -7174,7 +7401,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (failed_) return false;
                     emit(Op::Star);
                     emit_u8(static_cast<uint8_t>(gr_temp));
+                    completion_reg_ = -1;
                     if (!compile_statement(finally_node)) return false;
+                    completion_reg_ = saved_completion_reg;
                     emit(Op::Ldar);
                     emit_u8(static_cast<uint8_t>(gr_temp));
                     free_temp(gr_temp);
@@ -7194,7 +7423,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             if (!patch_jump(jump_try_ok)) return false;
             if (catch_node && !patch_jump(jump_catch_ok)) return false;
             if (finally_node) {
+                completion_reg_ = -1;
                 if (!compile_statement(finally_node)) return false;
+                completion_reg_ = saved_completion_reg;
             }
 
             if (!emit_finally_pads(escaped_scope)) return false;
@@ -7203,6 +7434,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::SWITCH_STATEMENT: {
+            emit_completion_reset();
             const auto* stmt = static_cast<const SwitchStatement*>(node);
             const auto& cases = stmt->get_cases();
 
@@ -7369,10 +7601,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // ctx.create_lexical_binding() on the environment directly, so a
             // register-resident name is never written -- force it here.
             if (!env_mode_) return false;
-            if (chunk_->ensure_class_nodes().size() >= 0xFFFF) return false;
-            chunk_->ensure_class_nodes().push_back(node);
+            if (chunk_->ensure_ast_nodes().size() >= 0xFFFF) return false;
+            chunk_->ensure_ast_nodes().push_back(node);
             emit(Op::DefineClass);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_class_nodes().size() - 1));
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_ast_nodes().size() - 1));
             // define_class binds the name itself, so this only
             // has to mirror it into a register when the name has one. A module
             // or script top level has neither a register nor an env slot for
@@ -7567,7 +7799,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit_u8(0);
                 return !failed_;
             }
-            if (is_local(name)) {
+            if (is_local(name) && !lexical_out_of_scope(name)) {
                 emit_read_local(name);
                 return !failed_;
             }
@@ -7806,7 +8038,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             emit(Op::LdaWith);
                             emit_u16(add_name(name));
                             emit_u8(1);  // a miss is undefined, not a throw
-                        } else if (is_local(name)) {
+                        } else if (is_local(name) && !lexical_out_of_scope(name)) {
                             emit_read_local(name);
                         } else if ((name == "arguments" && !allow_arguments_) ||
                                    name == "super" || name == "new") {
@@ -8146,9 +8378,13 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
             if (expr->get_left()->get_type() == ASTNode::Type::IDENTIFIER) {
                 const std::string& name = static_cast<const Identifier*>(expr->get_left())->get_name();
-                if (!is_local(name)) {
+                if (!is_local(name) || lexical_out_of_scope(name)) {
                     // Outer/global write via chain lookup.
-                    if (!compound) stamp_inferred_class_name(expr->get_right(), name);
+                    // A parenthesised target is not an IdentifierRef, so no
+                    // NamedEvaluation happens (spec 13.15.2 step 1.d).
+                    if (!compound && !expr->is_lhs_paren()) {
+                        stamp_inferred_class_name(expr->get_right(), name);
+                    }
                     if (!compound && (with_depth_ > 0 || outer_with_)) {
                         emit(Op::ResolveWithTarget);
                         emit_u16(add_name(name));
@@ -8282,7 +8518,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 if (!compound && with_depth_ > 0) {
                     // A with object can hold this name too, and the reference
                     // is bound before the right side runs.
-                    stamp_inferred_class_name(expr->get_right(), name);
+                    if (!expr->is_lhs_paren()) stamp_inferred_class_name(expr->get_right(), name);
                     emit(Op::ResolveWithTarget);
                     emit_u16(add_name(name));
                     int target = alloc_temp();
@@ -8305,7 +8541,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     // Same NamedEvaluation the outer/global branch above does:
                     // a local target names its anonymous RHS too, and a class
                     // has to be named before its static initializers run.
-                    stamp_inferred_class_name(expr->get_right(), name);
+                    if (!expr->is_lhs_paren()) stamp_inferred_class_name(expr->get_right(), name);
                     if (!compile_expression(expr->get_right())) return false;
                     if (!expr->is_lhs_paren() && is_named_evaluation_rhs(expr->get_right())) {
                         emit(Op::SetFunctionNameIfUnnamed);
@@ -8981,10 +9217,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         // tree-walk escape, not CreateClosure.
         case ASTNode::Type::CLASS_DECLARATION: {
             if (!env_mode_) return false;
-            if (chunk_->ensure_class_nodes().size() >= 0xFFFF) return false;
-            chunk_->ensure_class_nodes().push_back(node);
+            if (chunk_->ensure_ast_nodes().size() >= 0xFFFF) return false;
+            chunk_->ensure_ast_nodes().push_back(node);
             emit(Op::DefineClass);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_class_nodes().size() - 1));
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_ast_nodes().size() - 1));
             return true;
         }
 
@@ -9044,7 +9280,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 bool saw_eval = false, saw_class = false, unknown = false;
                 collect_closure_names(fe->get_body(), /*inside_closure=*/true, names,
                                       saw_eval, saw_class, unknown, /*suspendable=*/false);
-                return names.count("super") > 0;
+                // A direct eval's text can name `super`, and a shape the scan
+                // could not read may too. Only a body proved to mention it
+                // nowhere may skip the [[HomeObject]] write.
+                return saw_eval || unknown || names.count("super") > 0;
             };
             // kind's low 2 bits are the existing 0/1/2 (Method/Getter/Setter);
             // bit 0x4 is new: "method body proved super-free, the

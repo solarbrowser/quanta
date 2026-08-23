@@ -90,14 +90,7 @@ static bool is_anon_func_def(const ASTNode* node) {
            t == ASTNode::Type::CLASS_DECLARATION;
 }
 
-Value ExpressionStatement::evaluate(Context& ctx) {
-    Value result = expression_->evaluate(ctx);
-    g_empty_completion = false;
-    if (ctx.has_exception()) {
-        return Value();
-    }
-    return result;
-}
+
 
 std::string ExpressionStatement::to_string() const {
     return expression_->to_string() + ";";
@@ -108,9 +101,7 @@ std::unique_ptr<ASTNode> ExpressionStatement::clone() const {
 }
 
 
-Value EmptyStatement::evaluate(Context& ctx) {
-    return Value();
-}
+
 
 std::string EmptyStatement::to_string() const {
     return ";";
@@ -121,20 +112,7 @@ std::unique_ptr<ASTNode> EmptyStatement::clone() const {
 }
 
 
-Value LabeledStatement::evaluate(Context& ctx) {
-    ctx.set_next_statement_label(label_);
-    Value result = statement_->evaluate(ctx);
-    ctx.set_next_statement_label("");
 
-    if (ctx.has_break() && ctx.get_break_label() == label_) {
-        ctx.clear_break_continue();
-    }
-    if (ctx.has_continue() && ctx.get_continue_label() == label_) {
-        ctx.clear_break_continue();
-    }
-
-    return result;
-}
 
 std::string LabeledStatement::to_string() const {
     return label_ + ": " + statement_->to_string();
@@ -150,6 +128,11 @@ std::unique_ptr<ASTNode> LabeledStatement::clone() const {
 }
 
 
+void hoist_lexical_declarations(Environment* env,
+                                const std::vector<std::unique_ptr<ASTNode>>& statements);
+ClosureTemplate closure_template_for(const ASTNode* literal);
+Value declare_function(Context& ctx, const ClosureTemplate& tpl);
+
 Value Program::evaluate(Context& ctx) {
     Object::current_context_ = &ctx;
 
@@ -161,48 +144,52 @@ Value Program::evaluate(Context& ctx) {
     check_use_strict_directive(ctx);
 
     hoist_var_declarations(ctx);
-    // Eval contexts have their lexical env set up by the caller (GlobalsBuiltin);
-    // only hoist for top-level scripts and module code.
+    // A script gets a lexical environment of its own for let/const; an eval
+    // already runs in one the caller made, so its bindings are created there
+    // rather than behind a second scope. Either way they exist before the
+    // first statement runs, which is what makes their TDZ observable and
+    // their const-ness enforceable.
     if (ctx.get_type() != Context::Type::Eval) {
         hoist_lexical_declarations(ctx);
+    } else if (Environment* eval_env = ctx.get_lexical_environment()) {
+        Quanta::hoist_lexical_declarations(eval_env, statements_);
     }
 
     // Hoist function declarations AFTER pushing the script-level lexical env so
     // that function closures can access let/const bindings from the same script.
     for (const auto& statement : statements_) {
-        if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
-            last_value = statement->evaluate(ctx);
+        // `export function f(){}` hoists exactly as a bare one does; the
+        // export record itself is kept later, where the statement runs.
+        const ASTNode* fn = statement.get();
+        if (fn->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+            const auto* ex = static_cast<const ExportStatement*>(fn);
+            fn = ex->is_declaration_export() ? ex->get_declaration() : nullptr;
+        }
+        if (fn && fn->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+            declare_function(ctx, closure_template_for(fn));
             if (ctx.has_exception()) {
                 return Value();
             }
         }
     }
 
-    // Script tier: with hoisting done, the statement loop itself can run as
-    // bytecode (completion value not tracked -- callers that need it, e.g.
-    // eval, don't take this path).
-    if (ctx.get_type() != Context::Type::Eval) {
+    // Script tier: with hoisting done, the statement loop itself runs as
+    // bytecode. An eval asks for the completion value the spec makes it
+    // answer with; a script's own result is not observable.
+    {
+        const bool is_eval = ctx.get_type() == Context::Type::Eval;
         bool used_vm = false;
-        Value vm_result = VM::run_script(statements_, ctx, used_vm);
+        Value vm_result = VM::run_script(statements_, ctx, used_vm, is_eval);
         if (used_vm) {
             if (ctx.has_exception()) return Value();
-            return vm_result;
+            return is_eval ? vm_result : last_value;
         }
     }
 
-    for (const auto& statement : statements_) {
-        if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
-            Collector::safepoint();
-            g_empty_completion = false;
-            Value result = statement->evaluate(ctx);
-            if (!g_empty_completion) last_value = result;
-            if (ctx.has_exception()) {
-                return Value();
-            }
-        }
-    }
-
-    return last_value;
+    // The statements are compiled or they do not run: there is no second
+    // engine to hand them to.
+    ctx.throw_type_error("Internal: script could not be compiled");
+    return Value();
 }
 
 void Program::hoist_var_declarations(Context& ctx) {
@@ -263,14 +250,52 @@ void Program::hoist_lexical_declarations(Context& ctx) {
 void Program::scan_for_var_declarations(ASTNode* node, Context& ctx) {
     if (!node) return;
 
+    // `export var x = 1` declares x here; the export wrapper is only the
+    // record kept about it, exactly as the lexical hoist above treats it.
+    if (node->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+        auto* ex = static_cast<ExportStatement*>(node);
+        if (ex->is_declaration_export() && ex->get_declaration()) {
+            scan_for_var_declarations(const_cast<ASTNode*>(ex->get_declaration()), ctx);
+        }
+        return;
+    }
+
     if (node->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
         VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(node);
 
         for (const auto& declarator : var_decl->get_declarations()) {
             if (declarator->get_kind() == VariableDeclarator::Kind::VAR) {
+                // `var {a, b} = o` has no name of its own on the declarator:
+                // the names are the pattern's leaves, and each needs the same
+                // hoisted binding a plain `var` gets.
+                if (declarator->get_init() &&
+                    declarator->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    std::vector<std::string> bound;
+                    static_cast<const DestructuringAssignment*>(declarator->get_init())
+                        ->collect_bound_names(bound);
+                    Environment* pattern_env = ctx.get_variable_environment();
+                    for (const auto& bn : bound) {
+                        if (bn.empty()) continue;
+                        const bool have = ctx.get_type() == Context::Type::Eval && pattern_env
+                                              ? pattern_env->has_own_binding(bn)
+                                              : ctx.has_binding(bn);
+                        if (!have) ctx.create_var_binding(bn, Value(), true);
+                    }
+                    continue;
+                }
                 const std::string& name = declarator->get_id()->get_name();
 
-                if (!ctx.has_binding(name)) {
+                // EvalDeclarationInstantiation asks whether varEnv itself
+                // has the name, not whether anything up the chain does: a
+                // direct eval's `var` belongs to the calling function even
+                // when an outer scope already binds the same name. A chain
+                // walk skipped the creation and the write then travelled out
+                // to that outer binding.
+                Environment* var_env = ctx.get_variable_environment();
+                const bool exists = ctx.get_type() == Context::Type::Eval && var_env
+                                        ? var_env->has_own_binding(name)
+                                        : ctx.has_binding(name);
+                if (!exists) {
                     ctx.create_var_binding(name, Value(), true);
                 }
             }
@@ -374,10 +399,7 @@ void Program::check_use_strict_directive(Context& ctx) {
 }
 
 
-Value VariableDeclarator::evaluate(Context& ctx) {
-    (void)ctx;
-    return Value();
-}
+
 
 std::string VariableDeclarator::to_string() const {
     std::string result = id_->get_name();
@@ -405,169 +427,7 @@ std::string VariableDeclarator::kind_to_string(Kind kind) {
 }
 
 
-Value VariableDeclaration::evaluate(Context& ctx) {
-    for (const auto& declarator : declarations_) {
-        const std::string& name = declarator->get_id()->get_name();
 
-        // A destructuring declarator has no name of its own -- its names come
-        // from the pattern. Without an initializer there is nothing to bind
-        // either (a for-of head binds per iteration instead), so skip it rather
-        // than declaring the empty placeholder name, which two such
-        // declarations in one scope would then collide on.
-        if (name.empty() && !declarator->get_init()) continue;
-
-        if (name.empty() && declarator->get_init()) {
-            ASTNode* init_node = declarator->get_init();
-            VariableDeclarator::Kind destr_kind = declarator->get_kind();
-            bool is_lex_decl = (destr_kind == VariableDeclarator::Kind::LET ||
-                                destr_kind == VariableDeclarator::Kind::CONST);
-            bool is_const_decl = destr_kind == VariableDeclarator::Kind::CONST;
-
-            // Evaluate the source and call evaluate_with_value directly
-            // (instead of init_node->evaluate(), which always takes the
-            // var-like default path) so let/const destructuring gets a
-            // fresh block-scoped binding instead of leaking to the function.
-            if (init_node->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-                auto* da = static_cast<DestructuringAssignment*>(init_node);
-                Value src = da->get_source()->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                da->evaluate_with_value(ctx, src, is_lex_decl, is_const_decl);
-                if (ctx.has_exception()) return Value();
-                continue;
-            }
-
-            Value result = init_node->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            ASTNode* id_node = declarator->get_id();
-            ASTNode::Type id_type = id_node ? id_node->get_type() : ASTNode::Type::IDENTIFIER;
-
-            // Pre-create lexical bindings so let/const destructuring lands in this block scope instead of leaking via set_binding's outer-scope walk.
-            if (is_lex_decl) {
-                std::function<void(ASTNode*)> collect_and_bind = [&](ASTNode* node) {
-                    if (!node) return;
-                    auto t = node->get_type();
-                    if (t == ASTNode::Type::IDENTIFIER) {
-                        auto* id = static_cast<Identifier*>(node);
-                        if (!id->get_name().empty())
-                            ctx.create_lexical_binding(id->get_name(), Value(),
-                                destr_kind == VariableDeclarator::Kind::LET);
-                    } else if (t == ASTNode::Type::ARRAY_LITERAL) {
-                        for (auto& elem : static_cast<ArrayLiteral*>(node)->get_elements())
-                            if (elem) collect_and_bind(elem.get());
-                    } else if (t == ASTNode::Type::OBJECT_LITERAL) {
-                        for (auto& prop : static_cast<ObjectLiteral*>(node)->get_properties())
-                            if (prop && prop->value) collect_and_bind(prop->value.get());
-                    } else if (t == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-                        collect_and_bind(static_cast<AssignmentExpression*>(node)->get_left());
-                    } else if (t == ASTNode::Type::SPREAD_ELEMENT) {
-                        collect_and_bind(static_cast<SpreadElement*>(node)->get_argument());
-                    }
-                };
-                collect_and_bind(id_node);
-                if (ctx.has_exception()) return Value();
-            }
-
-            if (id_type == ASTNode::Type::OBJECT_LITERAL || id_type == ASTNode::Type::ARRAY_LITERAL) {
-                AssignmentExpression::destructuring_assign(ctx, id_node, result);
-                if (ctx.has_exception()) return Value();
-            } else if (id_type == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-                DestructuringAssignment* da = static_cast<DestructuringAssignment*>(id_node);
-                da->evaluate_with_value(ctx, result, is_lex_decl, is_const_decl);
-                if (ctx.has_exception()) return Value();
-            }
-            continue;
-        }
-
-        bool mutable_binding = (declarator->get_kind() != VariableDeclarator::Kind::CONST);
-        VariableDeclarator::Kind kind = declarator->get_kind();
-
-        // ResolveBinding(name) may pass through a shadowing `with` object on the way to this VariableEnvironment, but must stop there -- walking past it into an ancestor scope's own same-named var would wrongly treat an un-hoisted var (e.g. one a direct eval introduces on the fly) as already declared there instead of creating a local one here.
-        Environment* var_env_here = ctx.get_variable_environment();
-        auto find_bounded_binding_env = [&]() -> Environment* {
-            Environment* env = ctx.get_lexical_environment();
-            while (env) {
-                if (env->has_own_binding(name)) return env;
-                if (env == var_env_here) return nullptr;
-                env = env->get_outer();
-            }
-            return nullptr;
-        };
-
-        // Spec: ResolveBinding(name) before evaluating initializer (binding-resolution rule).
-        // Capture the environment containing this binding so that initializers that
-        // modify the scope (eval, delete in with-scope) don't change the write target.
-        Environment* ref_env = nullptr;
-        if (kind == VariableDeclarator::Kind::VAR && declarator->get_init()) {
-            ref_env = find_bounded_binding_env();
-        }
-
-        Value init_value;
-        if (declarator->get_init()) {
-            // NamedEvaluation: static initializers observe the class name via
-            // this.name during evaluation, so it must be inferred beforehand.
-            if (declarator->get_init()->get_type() == ASTNode::Type::CLASS_DECLARATION) {
-                auto* cd = static_cast<ClassDeclaration*>(declarator->get_init());
-                if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
-                    cd->set_inferred_name(name);
-                }
-            }
-            init_value = declarator->get_init()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            if (init_value.is_function() && is_anon_func_def(declarator->get_init())) {
-                Function* fn = init_value.as_function();
-                if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                    fn->set_name(name);
-                }
-            }
-        } else {
-            init_value = Value();
-        }
-
-        // Re-checked after the initializer ran, since its side effects (e.g. a nested eval) may have just created the binding.
-        bool has_local = kind == VariableDeclarator::Kind::VAR && find_bounded_binding_env() != nullptr;
-
-        if (has_local) {
-            if (kind == VariableDeclarator::Kind::VAR) {
-                if (declarator->get_init()) {
-                    if (ref_env && ref_env->get_type() == Environment::Type::Object &&
-                        ref_env->get_binding_object()) {
-                        // PutValue to original object env binding object (even if property was deleted)
-                        ref_env->get_binding_object()->set_property(name, init_value);
-                    } else {
-                        ctx.set_binding(name, init_value);
-                    }
-                }
-            } else {
-                ctx.throw_exception(Value("SyntaxError: Identifier '" + name + "' has already been declared"));
-                return Value();
-            }
-        } else {
-            bool success = false;
-
-            if (kind == VariableDeclarator::Kind::VAR) {
-                success = ctx.create_var_binding(name, init_value, mutable_binding);
-            } else {
-                // If a pre-instantiated TDZ binding exists, initialize it instead of failing
-                Environment* lex_env = ctx.get_lexical_environment();
-                if (lex_env && lex_env->has_own_binding(name) && !lex_env->is_initialized_binding(name)) {
-                    lex_env->initialize_binding(name, init_value);
-                    lex_env->mark_lexical_declaration(name);
-                    success = true;
-                } else {
-                    success = ctx.create_lexical_binding(name, init_value, mutable_binding);
-                }
-            }
-
-            if (!success) {
-                ctx.throw_exception(Value("Variable '" + name + "' already declared"));
-                return Value();
-            }
-        }
-    }
-
-    g_empty_completion = true;
-    return Value();
-}
 
 std::string VariableDeclaration::to_string() const {
     std::ostringstream oss;
@@ -630,35 +490,7 @@ bool register_disposable_resource(Context& ctx, const Value& val, bool is_await)
     return true;
 }
 
-Value UsingDeclaration::evaluate(Context& ctx) {
-    for (const auto& binding : bindings_) {
-        if (!binding.initializer) {
-            ctx.throw_syntax_error("'using' declaration must have an initializer");
-            return Value();
-        }
 
-        Value val = binding.initializer->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-
-        // NamedEvaluation: only for IsAnonymousFunctionDefinition nodes
-        if (val.is_function() && is_anon_func_def(binding.initializer.get())) {
-            Function* fn = val.as_function();
-            if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
-                fn->set_name(binding.name);
-            }
-        }
-
-        if (!register_disposable_resource(ctx, val, is_await_)) return Value();
-
-        bool success = ctx.create_lexical_binding(binding.name, val, false);
-        if (!success) {
-            ctx.throw_exception(Value(std::string("Variable '") + binding.name + "' already declared"));
-            return Value();
-        }
-    }
-    g_empty_completion = true;
-    return Value();
-}
 
 std::string UsingDeclaration::to_string() const {
     std::ostringstream oss;
@@ -759,92 +591,7 @@ void hoist_lexical_declarations(Environment* env,
     }
 }
 
-Value BlockStatement::evaluate(Context& ctx) {
-    Value last_value;
 
-    // Check if this block has any 'using' declarations
-    bool has_using = false;
-    for (const auto& stmt : statements_) {
-        if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) { has_using = true; break; }
-    }
-
-    const bool own_scope = needs_own_scope();
-    Environment* old_lexical_env = ctx.get_lexical_environment();
-    Environment* block_env_ptr = old_lexical_env;
-    if (own_scope) {
-        auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lexical_env);
-        block_env_ptr = block_env.release();
-        ctx.set_lexical_environment(block_env_ptr);
-    }
-
-    // Pre-create TDZ bindings for let/const at the top level of this block (spec 14.2.2).
-    // Without this, closures defined before a let/const declaration would bypass TDZ
-    // because the binding wouldn't exist yet when they run.
-    if (own_scope) hoist_lexical_declarations(block_env_ptr, statements_);
-
-    if (has_using) ctx.push_dispose_scope();
-
-    bool exiting = false;
-    bool block_had_non_empty = false;
-    try {
-        for (const auto& statement : statements_) {
-            if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
-                // BlockDeclarationInstantiation instantiates every function
-                // declaration in the block before any statement runs, the
-                // generator and async forms included -- they are block-scoped,
-                // which is a different thing from being declared in place.
-                g_empty_completion = false;
-                last_value = statement->evaluate(ctx);
-                if (ctx.has_exception()) { exiting = true; break; }
-            }
-        }
-
-        if (!exiting) {
-            for (const auto& statement : statements_) {
-                ASTNode::Type stype = statement->get_type();
-                if (stype == ASTNode::Type::FUNCTION_DECLARATION) continue;  // bound above
-                g_empty_completion = false;
-                Value result = statement->evaluate(ctx);
-                bool stmt_empty = g_empty_completion;
-                if (!stmt_empty) {
-                    last_value = result;
-                    block_had_non_empty = true;
-                }
-                if (ctx.has_exception() || ctx.has_return_value() ||
-                    ctx.has_break() || ctx.has_continue()) {
-                    exiting = true;
-                    break;
-                }
-            }
-        }
-    } catch (...) {
-        if (has_using) ctx.run_dispose_resources();
-        if (own_scope) {
-            ctx.set_lexical_environment(old_lexical_env);
-            if (!block_env_ptr->is_escaped()) Collector::release_env(block_env_ptr);
-            else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(block_env_ptr);
-        }
-        throw;
-    }
-
-    if (has_using) ctx.run_dispose_resources();
-    if (own_scope) {
-        ctx.set_lexical_environment(old_lexical_env);
-        if (!block_env_ptr->is_escaped()) Collector::release_env(block_env_ptr);
-        else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(block_env_ptr);
-    }
-
-    if (exiting) {
-        g_empty_completion = false;
-        if (ctx.has_return_value()) return ctx.get_return_value();
-        // break/continue: propagate last non-empty value (spec UpdateEmpty semantics)
-        if (ctx.has_break() || ctx.has_continue()) return last_value;
-        return Value();
-    }
-    // Signal empty completion if block had statements but none produced a real value
-    g_empty_completion = (!statements_.empty() && !block_had_non_empty);
-    return last_value;
-}
 
 std::string BlockStatement::to_string() const {
     std::ostringstream oss;
@@ -865,33 +612,7 @@ std::unique_ptr<ASTNode> BlockStatement::clone() const {
 }
 
 
-Value IfStatement::evaluate(Context& ctx) {
-    Value test_value = test_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
 
-    bool condition_result = test_value.to_boolean();
-    if (condition_result) {
-        Value result = consequent_->evaluate(ctx);
-        if (ctx.has_return_value()) {
-            return ctx.get_return_value();
-        }
-        if (ctx.has_break() || ctx.has_continue()) {
-            return Value();
-        }
-        return result;
-    } else if (alternate_) {
-        Value result = alternate_->evaluate(ctx);
-        if (ctx.has_return_value()) {
-            return ctx.get_return_value();
-        }
-        if (ctx.has_break() || ctx.has_continue()) {
-            return Value();
-        }
-        return result;
-    }
-
-    return Value();
-}
 
 std::string IfStatement::to_string() const {
     std::ostringstream oss;
@@ -910,208 +631,7 @@ std::unique_ptr<ASTNode> IfStatement::clone() const {
 }
 
 
-Value ForStatement::evaluate(Context& ctx) {
-    LoopDepthGuard guard;
 
-    bool has_using_init = init_ && init_->get_type() == ASTNode::Type::USING_DECLARATION;
-
-    if (!has_using_init && init_ && test_ && update_ && body_ && body_->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
-        ExpressionStatement* expr_stmt = static_cast<ExpressionStatement*>(body_.get());
-        if (expr_stmt->get_expression() && expr_stmt->get_expression()->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-            AssignmentExpression* assign = static_cast<AssignmentExpression*>(expr_stmt->get_expression());
-            if (assign->get_left() && assign->get_left()->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
-                MemberExpression* member = static_cast<MemberExpression*>(assign->get_left());
-                if (member->is_computed() && member->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
-                    Identifier* arr_id = static_cast<Identifier*>(member->get_object());
-                    Value arr_val = ctx.get_binding(arr_id->get_name());
-                    if (arr_val.is_object() && arr_val.as_object()->is_array()) {
-                        ctx.push_block_scope();
-                        if (init_) init_->evaluate(ctx);
-
-                        while (true) {
-                            Collector::safepoint();
-                            Value test_val = test_->evaluate(ctx);
-                            if (!test_val.to_boolean()) break;
-
-                            Value idx_val = member->get_property()->evaluate(ctx);
-                            if (idx_val.is_number()) {
-                                uint32_t idx = static_cast<uint32_t>(idx_val.as_number());
-                                Value right_val = assign->get_right()->evaluate(ctx);
-                                arr_val.as_object()->set_element(idx, right_val);
-                            }
-
-                            if (update_) update_->evaluate(ctx);
-                        }
-
-                        ctx.pop_block_scope();
-                        decrement_loop_depth();
-                        return Value();
-                    }
-                }
-            }
-        }
-    }
-
-    ctx.push_block_scope();
-    if (has_using_init) ctx.push_dispose_scope();
-
-    std::string this_loop_label = ctx.get_next_statement_label();
-    ctx.set_next_statement_label("");
-
-    std::string prev_loop_label = ctx.get_current_loop_label();
-    ctx.set_current_loop_label(this_loop_label);
-
-#define FOR_CLEANUP() \
-    do { if (has_using_init) ctx.run_dispose_resources(); \
-         ctx.set_current_loop_label(prev_loop_label); \
-         ctx.pop_block_scope(); } while(0)
-
-    Value result;
-    Value V; // spec ForBodyEvaluation: V tracks last non-empty body completion
-    try {
-        bool has_per_iteration_scope = false;
-        std::vector<std::string> iter_var_names;
-
-        if (init_) {
-            init_->evaluate(ctx);
-            if (ctx.has_exception()) {
-                FOR_CLEANUP();
-                return Value();
-            }
-        }
-
-    if (init_ && init_->get_type() == Type::VARIABLE_DECLARATION) {
-        auto* var_decl = static_cast<VariableDeclaration*>(init_.get());
-        // Spec 14.7.4.2: only let (not const) gets per-iteration environments.
-        // for (const i = 0; ...) has no per-iter scope -- update hits the original const
-        // binding directly, causing TypeError as expected.
-        if (var_decl->get_kind() == VariableDeclarator::Kind::LET) {
-            has_per_iteration_scope = true;
-            for (const auto& decl : var_decl->get_declarations()) {
-                const std::string& dname = decl->get_id()->get_name();
-                if (!dname.empty()) {
-                    iter_var_names.push_back(dname);
-                    continue;
-                }
-                // A destructuring declarator has no name of its own; the names
-                // it declares are the pattern's, and each needs its own copy.
-                if (decl->get_init() &&
-                    decl->get_init()->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
-                    static_cast<DestructuringAssignment*>(decl->get_init())
-                        ->collect_bound_names(iter_var_names);
-                }
-            }
-        }
-    }
-
-    // Spec 14.7.4.4: CreatePerIterationEnvironment before the first test (initial).
-    auto create_per_iter_env = [&]() {
-        std::vector<Value> iter_values;
-        for (const auto& vname : iter_var_names) {
-            iter_values.push_back(ctx.get_binding(vname));
-        }
-        ctx.push_block_scope();
-        for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
-            ctx.create_lexical_binding(iter_var_names[vi], iter_values[vi], true);
-        }
-    };
-
-    if (has_per_iteration_scope) create_per_iter_env();
-
-    while (true) {
-        Collector::safepoint();
-
-        if (test_) {
-            Value test_value = test_->evaluate(ctx);
-            if (ctx.has_exception()) {
-                if (has_per_iteration_scope) ctx.pop_block_scope();
-                FOR_CLEANUP();
-                return Value();
-            }
-            if (!test_value.to_boolean()) {
-                break;
-            }
-        }
-
-        if (body_) {
-            Value body_result = body_->evaluate(ctx);
-            if (!g_empty_completion) V = body_result;
-
-            if (ctx.has_exception()) {
-                if (has_per_iteration_scope) ctx.pop_block_scope();
-                FOR_CLEANUP();
-                return Value();
-            }
-
-            if (ctx.has_break()) {
-                if (ctx.get_break_label().empty()) {
-                    ctx.clear_break_continue();
-                    break;
-                }
-                break;
-            }
-            if (ctx.has_return_value()) {
-                if (has_per_iteration_scope) ctx.pop_block_scope();
-                FOR_CLEANUP();
-                return ctx.get_return_value();
-            }
-
-            bool is_continue = ctx.has_continue();
-            bool continue_matches = is_continue && (ctx.get_continue_label().empty() ||
-                                    ctx.get_continue_label() == ctx.get_current_loop_label());
-            if (is_continue && !continue_matches) {
-                break;
-            }
-            if (is_continue && continue_matches) {
-                ctx.clear_break_continue();
-            }
-        }
-
-        // Spec 14.7.4.4 step e: CreatePerIterationEnvironment BEFORE the increment, so the
-        // increment mutates the *new* environment -- not the one this round's body (and any
-        // closures it created) captured by reference. Read the pre-increment values, fork.
-        if (has_per_iteration_scope) {
-            std::vector<Value> iter_values;
-            for (const auto& vname : iter_var_names) {
-                iter_values.push_back(ctx.get_binding(vname));
-            }
-            ctx.pop_block_scope();
-            ctx.push_block_scope();
-            for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
-                ctx.create_lexical_binding(iter_var_names[vi], iter_values[vi], true);
-            }
-        }
-
-        // Spec 14.7.4.4 step f: increment runs in the freshly forked per-iteration env.
-        if (update_) {
-            update_->evaluate(ctx);
-            if (ctx.has_exception()) {
-                if (has_per_iteration_scope) ctx.pop_block_scope();
-                FOR_CLEANUP();
-                return Value();
-            }
-        }
-    }
-    if (has_per_iteration_scope) ctx.pop_block_scope();
-
-        result = V;
-    } catch (...) {
-        if (has_using_init) ctx.run_dispose_resources();
-        ctx.set_current_loop_label(prev_loop_label);
-        ctx.pop_block_scope();
-        decrement_loop_depth();
-        throw;
-    }
-
-#undef FOR_CLEANUP
-
-    if (has_using_init) ctx.run_dispose_resources();
-    ctx.set_current_loop_label(prev_loop_label);
-    ctx.pop_block_scope();
-    decrement_loop_depth();
-    g_empty_completion = false;
-    return result;
-}
 
 std::string ForStatement::to_string() const {
     std::ostringstream oss;
@@ -1171,236 +691,7 @@ bool ForInStatement::collect_keys(Context& ctx, Object* obj, std::vector<std::st
     return true;
 }
 
-Value ForInStatement::evaluate(Context& ctx) {
-    std::string this_loop_label = ctx.get_next_statement_label();
-    ctx.set_next_statement_label("");
-    std::string prev_loop_label = ctx.get_current_loop_label();
-    ctx.set_current_loop_label(this_loop_label);
 
-    // ES6 13.7.5.6: TDZ bindings for let/const before evaluating the object
-    std::optional<ScopedLexicalEnv> tdz_scope;
-    if (left_->get_type() == Type::VARIABLE_DECLARATION) {
-        auto* vd = static_cast<VariableDeclaration*>(left_.get());
-        auto kind = (vd->declaration_count() > 0) ? vd->get_declarations()[0]->get_kind()
-                                                   : VariableDeclarator::Kind::VAR;
-        if (kind == VariableDeclarator::Kind::LET || kind == VariableDeclarator::Kind::CONST) {
-            tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
-                                                   ctx.get_lexical_environment()));
-            Environment* tdz_ptr = tdz_scope->get();
-            for (size_t di = 0; di < vd->declaration_count(); di++) {
-                const auto& decl = vd->get_declarations()[di];
-                if (decl->get_id()) tdz_ptr->create_uninitialized_binding(decl->get_id()->get_name());
-            }
-        } else if (kind == VariableDeclarator::Kind::VAR && vd->declaration_count() > 0) {
-            auto* decl = vd->get_declarations()[0].get();
-            std::string vname = decl->get_id()->get_name();
-            Value init_val;
-            if (decl->get_init()) {
-                init_val = decl->get_init()->evaluate(ctx);
-                if (ctx.has_exception()) {
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return Value();
-                }
-            }
-            if (!ctx.has_binding(vname)) ctx.create_binding(vname, init_val, true);
-            else if (decl->get_init()) ctx.set_binding(vname, init_val);
-        }
-    } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT &&
-               (left_decl_kind_ == 1 || left_decl_kind_ == 2)) {
-        // for (let/const [x, y] in obj) -- TDZ for bound names during object evaluation
-        auto* da = static_cast<DestructuringAssignment*>(left_.get());
-        tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
-                                               ctx.get_lexical_environment()));
-        std::vector<std::string> bound;
-        da->collect_bound_names(bound);
-        for (const auto& bname : bound) tdz_scope->get()->create_uninitialized_binding(bname);
-    }
-
-    Value object = right_->evaluate(ctx);
-    tdz_scope.reset();
-    if (ctx.has_exception()) {
-        ctx.set_current_loop_label(prev_loop_label);
-        return Value();
-    }
-
-    // Spec 13.7.5.6: null/undefined produce zero iterations (no error)
-    if (object.is_null() || object.is_undefined()) {
-        ctx.set_current_loop_label(prev_loop_label);
-        return Value();
-    }
-
-    // ForIn/OfHeadEvaluation calls ToObject on everything else, which is how a
-    // string enumerates its indices. Skipping it meant `for (k in "ab")` ran
-    // zero times; a number or a boolean boxes to an object with no enumerable
-    // own properties and so still runs zero times, now for the right reason.
-    if (!object.is_object_like()) {
-        object = ObjectFactory::box_primitive_this_sloppy(ctx, object);
-        if (ctx.has_exception()) {
-            ctx.set_current_loop_label(prev_loop_label);
-            return Value();
-        }
-    }
-
-    if (object.is_object_like()) {
-        Object* obj = object.is_object() ? object.as_object() : object.as_function();
-
-        std::string var_name;
-        bool is_destructuring = false;
-
-        bool is_member_lhs = false;
-
-        if (left_->get_type() == Type::VARIABLE_DECLARATION) {
-            VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(left_.get());
-            if (var_decl->declaration_count() > 0) {
-                VariableDeclarator* declarator = var_decl->get_declarations()[0].get();
-                var_name = declarator->get_id()->get_name();
-            }
-        } else if (left_->get_type() == Type::IDENTIFIER) {
-            Identifier* id = static_cast<Identifier*>(left_.get());
-            var_name = id->get_name();
-        } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
-            is_destructuring = true;
-        } else if (left_->get_type() == Type::MEMBER_EXPRESSION ||
-                   left_->get_type() == Type::ARRAY_LITERAL ||
-                   left_->get_type() == Type::OBJECT_LITERAL) {
-            is_member_lhs = true;
-        }
-
-        if (var_name.empty() && !is_destructuring && !is_member_lhs) {
-            ctx.set_current_loop_label(prev_loop_label);
-            ctx.throw_exception(Value(std::string("For...in: Invalid loop variable")));
-            return Value();
-        }
-
-        std::vector<std::string> keys;
-        if (!collect_keys(ctx, obj, keys)) {
-            ctx.set_current_loop_label(prev_loop_label);
-            return Value();
-        }
-
-        bool forin_per_iter = false;
-        if (left_->get_type() == Type::VARIABLE_DECLARATION) {
-            auto* vd = static_cast<VariableDeclaration*>(left_.get());
-            if (vd->get_kind() == VariableDeclarator::Kind::LET ||
-                vd->get_kind() == VariableDeclarator::Kind::CONST) {
-                forin_per_iter = true;
-            }
-        }
-        // for (let/const [x] in obj) also gets per-iteration scope
-        bool forin_destr_per_iter = (is_destructuring && (left_decl_kind_ == 1 || left_decl_kind_ == 2));
-
-        Value V; // completion value (spec ForIn/OfBodyEvaluation V)
-
-        for (const auto& key : keys) {
-            Collector::safepoint();
-
-            // Skip properties deleted during enumeration (spec allows this).
-            {
-                bool still_exists = false;
-                Object* cur_check = obj;
-                while (cur_check) {
-                    if (cur_check->has_own_property(key)) { still_exists = true; break; }
-                    cur_check = cur_check->get_prototype();
-                }
-                if (!still_exists) continue;
-            }
-
-            if (forin_destr_per_iter) {
-                auto* destr = static_cast<DestructuringAssignment*>(left_.get());
-                ctx.push_block_scope();
-                std::vector<std::string> bound;
-                destr->collect_bound_names(bound);
-                for (const auto& tname : bound) ctx.create_lexical_binding(tname, Value(), true);
-                destr->evaluate_with_value(ctx, Value(key));
-                if (!ctx.has_exception()) {
-                    Value body_result = body_->evaluate(ctx);
-                    if (!body_result.is_undefined()) V = body_result;
-                }
-                ctx.pop_block_scope();
-                if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
-                if (ctx.has_break()) {
-                    if (ctx.get_break_label().empty()) ctx.clear_break_continue();
-                    break;
-                }
-                if (ctx.has_continue()) {
-                    if (ctx.get_continue_label().empty() || ctx.get_continue_label() == this_loop_label)
-                        ctx.clear_break_continue();
-                    else break;
-                    continue;
-                }
-                if (ctx.has_return_value()) { ctx.set_current_loop_label(prev_loop_label); return ctx.get_return_value(); }
-                continue;
-            } else if (is_destructuring) {
-                auto* destr = static_cast<DestructuringAssignment*>(left_.get());
-                destr->evaluate_with_value(ctx, Value(key));
-                if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
-            } else if (is_member_lhs) {
-                AssignmentExpression::assign_to_target(ctx, left_.get(), Value(key));
-                if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
-            } else if (forin_per_iter) {
-                ctx.push_block_scope();
-                auto* vd2 = static_cast<VariableDeclaration*>(left_.get());
-                bool is_mutable_iter = (vd2->get_kind() != VariableDeclarator::Kind::CONST);
-                ctx.create_lexical_binding(var_name, Value(key), is_mutable_iter);
-            } else {
-                if (ctx.has_binding(var_name)) {
-                    bool ok = ctx.set_binding(var_name, Value(key));
-                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(var_name))) {
-                        ctx.set_current_loop_label(prev_loop_label);
-                        ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
-                        return Value();
-                    }
-                } else {
-                    ctx.create_binding(var_name, Value(key), true);
-                }
-            }
-
-            Value result = body_->evaluate(ctx);
-
-            if (forin_per_iter) {
-                ctx.pop_block_scope();
-            }
-
-            // UpdateEmpty: BlockStatement returns last_value on break/continue, so
-            // result already carries the right completion value
-            if (!result.is_undefined()) V = result;
-
-            if (ctx.has_exception()) {
-                ctx.set_current_loop_label(prev_loop_label);
-                return Value();
-            }
-
-            if (ctx.has_break()) {
-                if (ctx.get_break_label().empty()) {
-                    ctx.clear_break_continue();
-                }
-                break;
-            }
-            if (ctx.has_continue()) {
-                if (ctx.get_continue_label().empty() ||
-                        ctx.get_continue_label() == this_loop_label) {
-                    ctx.clear_break_continue();
-                    continue;
-                }
-                break;
-            }
-
-            if (ctx.has_return_value()) {
-                ctx.set_current_loop_label(prev_loop_label);
-                return ctx.get_return_value();
-            }
-        }
-
-        ctx.set_current_loop_label(prev_loop_label);
-        return V;
-    } else {
-        // Spec 13.7.5.11: primitives are ToObject'd -- number/boolean have no enumerable props.
-        // Strings should iterate character indices, but that's handled via is_object_like for boxed strings.
-        // For unboxed primitives (number, boolean, symbol), zero iterations, no error.
-        ctx.set_current_loop_label(prev_loop_label);
-        return Value();
-    }
-}
 
 std::string ForInStatement::to_string() const {
     return "for (" + left_->to_string() + " in " + right_->to_string() + ") " + body_->to_string();
@@ -1806,552 +1097,7 @@ bool async_iterator_step(Context& ctx, const Value& iterator, Value& next_fn,
     return ctx.has_exception();
 }
 
-Value ForOfStatement::evaluate(Context& ctx) {
-    // A continue targeting an outer construct must keep propagating past
-    // this loop -- only one that's unlabeled or matches this loop's own
-    // label (via a wrapping LabeledStatement) is ours to consume.
-    std::string this_loop_label = ctx.get_next_statement_label();
-    ctx.set_next_statement_label("");
 
-    // ES6 13.7.5.6: ForDeclaration bound names are in TDZ when the iterable is evaluated.
-    // Create a block scope with TDZ bindings before evaluating the iterable so that
-    // `for (const x of [x])` sees x as TDZ, not any outer x.
-    std::optional<ScopedLexicalEnv> tdz_scope;
-    if (left_->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
-        auto* vd = static_cast<VariableDeclaration*>(left_.get());
-        if (vd->declaration_count() > 0 &&
-                (vd->get_declarations()[0]->get_kind() == VariableDeclarator::Kind::LET ||
-                 vd->get_declarations()[0]->get_kind() == VariableDeclarator::Kind::CONST)) {
-            tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
-                                                   ctx.get_lexical_environment()));
-            Environment* tdz_ptr = tdz_scope->get();
-            for (size_t di = 0; di < vd->declaration_count(); di++) {
-                const auto& decl = vd->get_declarations()[di];
-                if (decl->get_id()) {
-                    std::string bname = decl->get_id()->get_name();
-                    if (!bname.empty())
-                        tdz_ptr->create_uninitialized_binding(bname);
-                }
-            }
-        }
-    } else if (left_->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT &&
-               (left_decl_kind_ == 1 || left_decl_kind_ == 2)) {
-        // for (let/const [x, y] of ...) -- TDZ for bound names during iterable evaluation
-        auto* da = static_cast<DestructuringAssignment*>(left_.get());
-        tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
-                                               ctx.get_lexical_environment()));
-        std::vector<std::string> bound;
-        da->collect_bound_names(bound);
-        for (const auto& bname : bound) tdz_scope->get()->create_uninitialized_binding(bname);
-    } else if (left_->get_type() == ASTNode::Type::USING_DECLARATION) {
-        auto* ud = static_cast<UsingDeclaration*>(left_.get());
-        tdz_scope.emplace(ctx, new Environment(Environment::Type::Declarative,
-                                               ctx.get_lexical_environment()));
-        for (const auto& b : ud->get_bindings())
-            if (!b.name.empty()) tdz_scope->get()->create_uninitialized_binding(b.name);
-    }
-
-    Value iterable = right_->evaluate(ctx);
-    // Restore outer env -- the loop body will re-create the binding per iteration
-    tdz_scope.reset();
-    if (ctx.has_exception()) return Value();
-
-    if (is_await_) {
-        Value next_fn;
-        bool from_sync = false;
-        Value iterator = get_async_iterator(ctx, iterable, next_fn, from_sync);
-        if (ctx.has_exception()) return Value();
-
-        std::string var_name;
-        VariableDeclarator::Kind var_kind = VariableDeclarator::Kind::VAR;
-        if (left_->get_type() == Type::VARIABLE_DECLARATION) {
-            VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(left_.get());
-            if (var_decl->declaration_count() > 0) {
-                VariableDeclarator* declarator = var_decl->get_declarations()[0].get();
-                var_name = declarator->get_id()->get_name();
-                var_kind = declarator->get_kind();
-            }
-        } else if (left_->get_type() == Type::IDENTIFIER) {
-            Identifier* id = static_cast<Identifier*>(left_.get());
-            var_name = id->get_name();
-        } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
-            var_name = "__destr__";
-        } else if (left_->get_type() == Type::ARRAY_LITERAL ||
-                   left_->get_type() == Type::OBJECT_LITERAL) {
-            var_name = "__destr__";
-        }
-        if (var_name.empty()) {
-            ctx.throw_exception(Value(std::string("for-await-of: invalid loop variable")));
-            return Value();
-        }
-
-        // AsyncIteratorClose (spec 27.7.4): on `break` and on a `return` that
-        // leaves the loop, the iterator is closed before control goes on.
-        auto close_it = [&ctx, &iterator]() {
-            async_iterator_close(ctx, iterator);
-        };
-        // The pending exception is what leaves, so a close failure is dropped.
-        auto close_on_throw = [&ctx, &iterator]() {
-            Value pending = ctx.get_exception();
-            ctx.clear_exception();
-            async_iterator_close(ctx, iterator);
-            if (ctx.has_exception()) ctx.clear_exception();
-            ctx.throw_exception(pending, true);
-        };
-
-        for (;;) {
-            Collector::safepoint();
-            Value value;
-            if (async_iterator_step(ctx, iterator, next_fn, from_sync, value)) {
-                if (ctx.has_exception()) return Value();
-                break;
-            }
-
-            if (var_name == "__destr__") {
-                if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
-                    auto* d = static_cast<DestructuringAssignment*>(left_.get());
-                    d->evaluate_with_value(ctx, value);
-                } else {
-                    AssignmentExpression::destructuring_assign(ctx, left_.get(), value);
-                }
-                // A setter invoked during destructuring may throw via Object::current_context_ instead of ctx -- rescue it.
-                if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-                        && Object::current_context_->has_exception()) {
-                    ctx.throw_exception(Object::current_context_->get_exception(), true);
-                    Object::current_context_->clear_exception();
-                }
-                if (ctx.has_exception()) { close_on_throw(); return Value(); }
-                body_->evaluate(ctx);
-                if (ctx.has_exception()) { close_on_throw(); return Value(); }
-                if (ctx.has_break()) {
-                    ctx.clear_break_continue();
-                    close_it();
-                    if (ctx.has_exception()) return Value();
-                    break;
-                }
-                if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
-                if (ctx.has_return_value()) { close_it(); return Value(); }
-                continue;
-            }
-
-            bool per_iter = (var_kind == VariableDeclarator::Kind::LET || var_kind == VariableDeclarator::Kind::CONST);
-            if (per_iter) {
-                ctx.push_block_scope();
-                ctx.create_lexical_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
-            } else if (ctx.has_binding(var_name)) {
-                if (!ctx.set_binding(var_name, value) &&
-                    (ctx.is_strict_mode() || ctx.is_strict_const(var_name))) {
-                    ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
-                    return Value();
-                }
-            } else {
-                ctx.create_binding(var_name, value, true);
-            }
-
-            body_->evaluate(ctx);
-            if (per_iter) ctx.pop_block_scope();
-            if (ctx.has_exception()) { close_on_throw(); return Value(); }
-            if (ctx.has_break()) {
-                ctx.clear_break_continue();
-                close_it();
-                if (ctx.has_exception()) return Value();
-                break;
-            }
-            if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
-            if (ctx.has_return_value()) { close_it(); return Value(); }
-        }
-        return Value();
-    }
-
-    if (!iterable.is_object() && !iterable.is_string() && !iterable.is_function()) {
-        ctx.throw_type_error(std::string(iterable.to_string()) + " is not iterable");
-        return Value();
-    }
-
-    if (iterable.is_object() || iterable.is_string()) {
-        Object* obj = nullptr;
-
-        std::unique_ptr<Object> boxed_string = nullptr;
-
-        if (iterable.is_string()) {
-            boxed_string = std::make_unique<Object>();
-            boxed_string->set_property("length", Value(static_cast<double>(utf16_length(iterable.to_string()))));
-
-            Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
-            if (iterator_symbol) {
-                std::string str_value = iterable.to_string();
-                auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
-                    [str_value](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                        (void)ctx; (void)args;
-                        auto iterator = std::make_unique<StringIterator>(str_value);
-                        return Value(iterator.release());
-                    });
-                boxed_string->set_property(iterator_symbol->to_property_key(), Value(string_iterator_fn.release()));
-            }
-            obj = boxed_string.get();
-        } else {
-            obj = iterable.as_object();
-        }
-
-        Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
-        if (iterator_symbol && obj && obj->has_property(iterator_symbol->to_property_key())) {
-            Value iterator_method = obj->get_property(iterator_symbol->to_property_key());
-            if (iterator_method.is_function()) {
-                Function* iter_fn = iterator_method.as_function();
-                Value iterator_obj = iter_fn->call(ctx, {}, iterable);
-
-                if (iterator_obj.is_object()) {
-                    Object* iterator = iterator_obj.as_object();
-                    Value next_method = iterator->get_property("next");
-
-                    if (next_method.is_function()) {
-                        Function* next_fn = next_method.as_function();
-
-                        std::string var_name;
-                        VariableDeclarator::Kind var_kind = VariableDeclarator::Kind::LET;
-
-                        if (left_->get_type() == Type::VARIABLE_DECLARATION) {
-                            VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(left_.get());
-                            if (var_decl->declaration_count() > 0) {
-                                VariableDeclarator* declarator = var_decl->get_declarations()[0].get();
-                                var_name = declarator->get_id()->get_name();
-                                var_kind = declarator->get_kind();
-                            }
-                        } else if (left_->get_type() == Type::USING_DECLARATION) {
-                            UsingDeclaration* using_decl = static_cast<UsingDeclaration*>(left_.get());
-                            if (!using_decl->get_bindings().empty()) {
-                                var_name = using_decl->get_bindings()[0].name;
-                            }
-                            var_kind = VariableDeclarator::Kind::CONST; // using bindings are immutable
-                        } else if (left_->get_type() == Type::IDENTIFIER) {
-                            // A bare identifier (no let/const/var) references an existing binding --
-                            // must write through to it, not shadow it with a fresh per-iteration one.
-                            Identifier* id = static_cast<Identifier*>(left_.get());
-                            var_name = id->get_name();
-                            var_kind = VariableDeclarator::Kind::VAR;
-                        } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
-                            var_name = "__destructuring__";
-                        } else if (left_->get_type() == Type::ARRAY_LITERAL ||
-                                   left_->get_type() == Type::OBJECT_LITERAL) {
-                            var_name = "__pattern__";
-                        } else if (left_->get_type() == Type::MEMBER_EXPRESSION) {
-                            var_name = "__member__";
-                        }
-
-                        if (var_name.empty()) {
-                            ctx.throw_exception(Value(std::string("For...of: Invalid loop variable")));
-                            return Value();
-                        }
-
-                        // close_iterator: calls iterator.return() per spec IteratorClose.
-                        // validate_result: when called from normal completion (break), check return() returns Object.
-                        auto close_iterator = [&iterator_obj, &ctx](bool validate_result = false) {
-                            if (!iterator_obj.is_object()) return;
-                            bool had_exception = ctx.has_exception();
-                            Value saved_exception = had_exception ? ctx.get_exception() : Value();
-                            if (had_exception) ctx.clear_exception();
-
-                            Value return_method = iterator_obj.as_object()->get_property("return");
-                            bool inner_threw = ctx.has_exception();
-                            if (!inner_threw) {
-                                if (!return_method.is_undefined() && !return_method.is_null() && !return_method.is_function()) {
-                                    // GetMethod: non-callable return throws TypeError (spec 7.3.9 step 4)
-                                    ctx.throw_type_error("Iterator return method is not callable");
-                                    inner_threw = true;
-                                } else if (return_method.is_function()) {
-                                    Value result = return_method.as_function()->call(ctx, {}, iterator_obj);
-                                    inner_threw = ctx.has_exception();
-                                    if (!inner_threw && validate_result && !result.is_object()) {
-                                        ctx.throw_type_error("Iterator return() must return an Object");
-                                        return;
-                                    }
-                                }
-                            }
-
-                            if (had_exception) {
-                                // Suppress inner error; restore original throw completion
-                                if (ctx.has_exception()) ctx.clear_exception();
-                                ctx.throw_exception(saved_exception, true);
-                            } else if (ctx.has_exception() && ctx.has_return_value()) {
-                                // Closing on a `return` completion and return() threw:
-                                // the throw replaces the return (spec IteratorClose step 5,
-                                // innerResult abrupt wins) -- otherwise Function::call would
-                                // see the pending return value first and swallow the throw.
-                                ctx.clear_return_value();
-                            }
-                        };
-
-                        // A `return()` on the generator this loop is running in
-                        // resumes a suspension in the body by unwinding a C++
-                        // exception, which none of the completion checks below
-                        // ever see. The iterator still has to be closed before
-                        // it travels on.
-                        struct CloseOnUnwind {
-                            const std::function<void(bool)>& close;
-                            int entry_uncaught;
-                            ~CloseOnUnwind() {
-                                if (std::uncaught_exceptions() > entry_uncaught) close(false);
-                            }
-                        };
-                        const std::function<void(bool)> close_fn = close_iterator;
-                        CloseOnUnwind close_on_unwind{close_fn, std::uncaught_exceptions()};
-
-                        Context* loop_ctx = &ctx;
-                        Value V_iter;
-
-                        while (true) {
-                            Collector::safepoint();
-                            Value result = next_fn->call(ctx, {}, iterator_obj);
-
-                            // Per spec: if next() throws abruptly, do NOT close the iterator.
-                            if (ctx.has_exception()) { return Value(); }
-
-                            // Per spec 7.4.2: iterator result must be an Object
-                            if (!result.is_object()) {
-                                ctx.throw_type_error("Iterator result is not an object");
-                                return Value();
-                            }
-
-                            {
-                                Object* result_obj = result.as_object();
-                                Value done = result_obj->get_property("done");
-                                // Propagate getter exception (may land in Object::current_context_)
-                                if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-                                        && Object::current_context_->has_exception()) {
-                                    ctx.throw_exception(Object::current_context_->get_exception(), true);
-                                    Object::current_context_->clear_exception();
-                                }
-                                // Per spec: done/value getter throws → do NOT close iterator
-                                if (ctx.has_exception()) return Value();
-
-                                if (done.to_boolean()) {
-                                    break;
-                                }
-
-                                Value value = result_obj->get_property("value");
-                                if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
-                                        && Object::current_context_->has_exception()) {
-                                    ctx.throw_exception(Object::current_context_->get_exception(), true);
-                                    Object::current_context_->clear_exception();
-                                }
-                                if (ctx.has_exception()) return Value();
-
-                                if (left_->get_type() == Type::MEMBER_EXPRESSION) {
-                                    MemberExpression* member = static_cast<MemberExpression*>(left_.get());
-                                    Value obj_val = member->get_object()->evaluate(*loop_ctx);
-                                    if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
-                                    std::string prop_key;
-                                    if (member->is_computed()) {
-                                        Value key_val = member->get_property()->evaluate(*loop_ctx);
-                                        if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
-                                        prop_key = key_val.to_string();
-                                    } else {
-                                        Identifier* prop_id = static_cast<Identifier*>(member->get_property());
-                                        prop_key = prop_id->get_name();
-                                    }
-                                    Object* target_obj = obj_val.is_object() ? obj_val.as_object()
-                                                        : obj_val.is_function() ? static_cast<Object*>(obj_val.as_function())
-                                                        : nullptr;
-                                    if (target_obj && !prop_key.empty() && prop_key[0] == '#') {
-                                        if (!private_brand_check(*loop_ctx, target_obj, prop_key, false)) {
-                                            loop_ctx->throw_type_error("Cannot write private member " + prop_key + " to an object whose class did not declare it");
-                                            close_iterator();
-                                            return Value();
-                                        }
-                                        std::string qualified = resolve_private_storage_key(prop_key, target_obj);
-                                        if (target_obj->has_private_slot(qualified)) prop_key = qualified;
-                                    }
-                                    if (target_obj) {
-                                        bool ok = target_obj->ordinary_set(prop_key, value);
-                                        if (!ok && loop_ctx->is_strict_mode()) {
-                                            loop_ctx->throw_type_error("Cannot assign to read only property '" + prop_key + "'");
-                                            close_iterator();
-                                            return Value();
-                                        }
-                                    }
-                                } else if (left_->get_type() == Type::ARRAY_LITERAL ||
-                                           left_->get_type() == Type::OBJECT_LITERAL) {
-                                    AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), value);
-                                    if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
-                                } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT &&
-                                           (left_decl_kind_ == 1 || left_decl_kind_ == 2)) {
-                                    // for (let/const [x, y] of ...) -- per-iteration lexical scope
-                                    auto* da = static_cast<DestructuringAssignment*>(left_.get());
-                                    loop_ctx->push_block_scope();
-                                    // Pre-declare bindings so evaluate_with_value uses the inner scope.
-                                    std::vector<std::string> bound;
-                                    da->collect_bound_names(bound);
-                                    for (const auto& tname : bound)
-                                        loop_ctx->create_lexical_binding(tname, Value(), true);
-                                    da->evaluate_with_value(*loop_ctx, value);
-                                    if (!loop_ctx->has_exception()) {
-                                        Value br = body_->evaluate(*loop_ctx);
-                                        if (!g_empty_completion) V_iter = br;
-                                    }
-                                    loop_ctx->pop_block_scope();
-                                    if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
-                                    if (loop_ctx->has_break()) {
-                                        close_iterator(true);
-                                        if (loop_ctx->has_exception()) return Value();
-                                        if (loop_ctx->get_break_label().empty()) loop_ctx->clear_break_continue();
-                                        break;
-                                    }
-                                    if (loop_ctx->has_continue()) {
-                                        if (loop_ctx->get_continue_label().empty() ||
-                                            loop_ctx->get_continue_label() == this_loop_label) {
-                                            loop_ctx->clear_break_continue();
-                                            continue;
-                                        }
-                                        close_iterator();
-                                        g_empty_completion = false;
-                                        return V_iter;
-                                    }
-                                    if (loop_ctx->has_return_value()) { close_iterator(); return Value(); }
-                                    continue;
-                                } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
-                                    DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
-                                    destructuring->evaluate_with_value(*loop_ctx, value);
-                                    if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
-                                } else {
-                                    bool forof_per_iter = (var_kind == VariableDeclarator::Kind::LET ||
-                                                          var_kind == VariableDeclarator::Kind::CONST);
-                                    bool is_using = (left_->get_type() == Type::USING_DECLARATION);
-                                    bool using_is_await = is_using &&
-                                        static_cast<UsingDeclaration*>(left_.get())->is_await();
-                                    if (forof_per_iter) {
-                                        loop_ctx->push_block_scope();
-                                        loop_ctx->create_lexical_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
-                                    } else if (loop_ctx->has_binding(var_name)) {
-                                        // A keywordless target is an ordinary assignment, so a
-                                        // refused write has to raise the way `x = v` does --
-                                        // ForInStatement already does this. Unlike for-in, the
-                                        // iterator is live here, so IteratorClose runs first.
-                                        if (!loop_ctx->set_binding(var_name, value) &&
-                                            (loop_ctx->is_strict_mode() || loop_ctx->is_strict_const(var_name))) {
-                                            loop_ctx->throw_type_error(
-                                                "Assignment to constant variable '" + var_name + "'");
-                                            close_iterator();
-                                            return Value();
-                                        }
-                                    } else {
-                                        bool is_mutable = (var_kind != VariableDeclarator::Kind::CONST);
-                                        loop_ctx->create_binding(var_name, value, is_mutable);
-                                    }
-
-                                    // ForIn/OfBodyEvaluation: a using/await using LHS opens a fresh
-                                    // DisposeCapability for this iteration's environment, disposed
-                                    // (possibly awaited) right after the body, before checking completion.
-                                    if (is_using) {
-                                        loop_ctx->push_dispose_scope();
-                                        if (!register_disposable_resource(*loop_ctx, value, using_is_await)) {
-                                            loop_ctx->run_dispose_resources();
-                                            if (forof_per_iter) loop_ctx->pop_block_scope();
-                                            close_iterator();
-                                            return Value();
-                                        }
-                                    }
-
-                                    {
-                                        Value br = body_->evaluate(*loop_ctx);
-                                        if (!g_empty_completion) V_iter = br;
-                                    }
-
-                                    if (is_using) {
-                                        loop_ctx->run_dispose_resources();
-                                    }
-
-                                    if (forof_per_iter) {
-                                        loop_ctx->pop_block_scope();
-                                    }
-
-                                    if (loop_ctx->has_exception()) {
-                                        close_iterator();
-                                        return Value();
-                                    }
-
-                                    if (loop_ctx->has_break()) {
-                                        close_iterator(true);
-                                        if (loop_ctx->has_exception()) return Value();
-                                        if (loop_ctx->get_break_label().empty()) {
-                                            loop_ctx->clear_break_continue();
-                                        }
-                                        break;
-                                    }
-                                    if (loop_ctx->has_continue()) {
-                                        if (loop_ctx->get_continue_label().empty() ||
-                                            loop_ctx->get_continue_label() == this_loop_label) {
-                                            loop_ctx->clear_break_continue();
-                                            continue;
-                                        }
-                                        close_iterator();
-                                        g_empty_completion = false;
-                                        return V_iter;
-                                    }
-                                    if (loop_ctx->has_return_value()) {
-                                        close_iterator();
-                                        return Value();
-                                    }
-                                    continue;
-                                }
-
-                                {
-                                    Value br = body_->evaluate(*loop_ctx);
-                                    if (!g_empty_completion) V_iter = br;
-                                }
-                                if (loop_ctx->has_exception()) {
-                                    close_iterator();
-                                    return Value();
-                                }
-
-                                if (loop_ctx->has_break()) {
-                                    close_iterator(true);  // normal completion: validate return() result
-                                    if (loop_ctx->has_exception()) return Value();
-                                    if (loop_ctx->get_break_label().empty()) {
-                                        loop_ctx->clear_break_continue();
-                                    }
-                                    break;
-                                }
-                                if (loop_ctx->has_continue()) {
-                                    if (loop_ctx->get_continue_label().empty() ||
-                                        loop_ctx->get_continue_label() == this_loop_label) {
-                                        loop_ctx->clear_break_continue();
-                                        continue;
-                                    }
-                                    close_iterator();
-                                    g_empty_completion = false;
-                                    return V_iter;
-                                }
-                                if (loop_ctx->has_return_value()) {
-                                    close_iterator();
-                                    return Value();
-                                }
-                            }
-                        }
-
-                        g_empty_completion = false;
-                        return V_iter;
-                    }
-                }
-            }
-        }
-
-        // Reaching here is a GetIterator failure, in one of its four shapes:
-        // the object has no @@iterator, it has one that is not callable, the
-        // call handed back something that is not an object, or that object has
-        // no callable `next`. All four raise. What stood here instead walked
-        // the array's indices, so an array whose iteration had been taken away
-        // -- `delete Array.prototype[Symbol.iterator]` -- kept iterating as if
-        // nothing had happened, and past fifty elements raised an error of its
-        // own invention rather than the one the language defines.
-        ctx.throw_type_error("object is not iterable");
-        return Value();
-    } else {
-        ctx.throw_type_error("For...of: value is not iterable");
-        return Value();
-    }
-
-    return Value();
-}
 
 std::string ForOfStatement::to_string() const {
     std::ostringstream oss;
@@ -2370,92 +1116,7 @@ std::unique_ptr<ASTNode> ForOfStatement::clone() const {
 }
 
 
-Value WhileStatement::evaluate(Context& ctx) {
-    std::string this_loop_label = ctx.get_next_statement_label();
-    ctx.set_next_statement_label("");
 
-    std::string prev_loop_label = ctx.get_current_loop_label();
-    ctx.set_current_loop_label(this_loop_label);
-
-    Value V;
-
-    try {
-        while (true) {
-            Collector::safepoint();
-
-            Value test_value;
-            try {
-                test_value = test_->evaluate(ctx);
-                if (ctx.has_exception()) {
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return Value();
-                }
-            } catch (...) {
-                ctx.set_current_loop_label(prev_loop_label);
-                ctx.throw_exception(Value(std::string("Error evaluating while-loop condition")));
-                return Value();
-            }
-
-            if (!test_value.to_boolean()) {
-                break;
-            }
-
-            try {
-                Value body_result = body_->evaluate(ctx);
-                if (!g_empty_completion) V = body_result;
-                if (ctx.has_exception()) {
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return Value();
-                }
-                if (ctx.has_return_value()) {
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return ctx.get_return_value();
-                }
-
-                if (ctx.has_break()) {
-                    if (ctx.get_break_label().empty()) {
-                        ctx.clear_break_continue();
-                        break;
-                    }
-                    break;
-                }
-                if (ctx.has_continue()) {
-                    if (ctx.get_continue_label().empty()) {
-                        ctx.clear_break_continue();
-                        continue;
-                    }
-                    if (ctx.get_continue_label() == ctx.get_current_loop_label()) {
-                        ctx.clear_break_continue();
-                        continue;
-                    }
-                    break;
-                }
-            } catch (const YieldException&) {
-                throw;
-            } catch (const GeneratorReturnException&) {
-                ctx.set_current_loop_label(prev_loop_label);
-                throw;
-            } catch (...) {
-                ctx.throw_exception(Value(std::string("Error in while-loop body execution")));
-                ctx.set_current_loop_label(prev_loop_label);
-                return Value();
-            }
-        }
-    } catch (const YieldException&) {
-        throw;
-    } catch (const GeneratorReturnException&) {
-        ctx.set_current_loop_label(prev_loop_label);
-        throw;
-    } catch (...) {
-        ctx.throw_exception(Value(std::string("Fatal error in while-loop execution")));
-        ctx.set_current_loop_label(prev_loop_label);
-        return Value();
-    }
-
-    ctx.set_current_loop_label(prev_loop_label);
-    g_empty_completion = false;
-    return V;
-}
 
 std::string WhileStatement::to_string() const {
     return "while (" + test_->to_string() + ") " + body_->to_string();
@@ -2468,92 +1129,7 @@ std::unique_ptr<ASTNode> WhileStatement::clone() const {
 }
 
 
-Value DoWhileStatement::evaluate(Context& ctx) {
-    std::string this_loop_label = ctx.get_next_statement_label();
-    ctx.set_next_statement_label("");
-    std::string prev_loop_label = ctx.get_current_loop_label();
-    ctx.set_current_loop_label(this_loop_label);
 
-    Value V;
-
-    try {
-        do {
-            Collector::safepoint();
-
-            try {
-                Value body_result = body_->evaluate(ctx);
-                if (!g_empty_completion) V = body_result;
-                if (ctx.has_exception()) {
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return Value();
-                }
-                if (ctx.has_return_value()) {
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return ctx.get_return_value();
-                }
-
-                if (ctx.has_break()) {
-                    if (ctx.get_break_label().empty()) {
-                        ctx.clear_break_continue();
-                    }
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return V;
-                }
-                if (ctx.has_continue()) {
-                    if (ctx.get_continue_label().empty() ||
-                            ctx.get_continue_label() == this_loop_label) {
-                        ctx.clear_break_continue();
-                    } else {
-                        ctx.set_current_loop_label(prev_loop_label);
-                        return V;
-                    }
-                }
-
-            } catch (const YieldException&) {
-                throw;
-            } catch (const GeneratorReturnException&) {
-                ctx.set_current_loop_label(prev_loop_label);
-                throw;
-            } catch (...) {
-                ctx.set_current_loop_label(prev_loop_label);
-                ctx.throw_exception(Value(std::string("Error in do-while-loop body execution")));
-                return Value();
-            }
-
-            Value test_value;
-            try {
-                test_value = test_->evaluate(ctx);
-                if (ctx.has_exception()) {
-                    ctx.set_current_loop_label(prev_loop_label);
-                    return Value();
-                }
-            } catch (...) {
-                ctx.set_current_loop_label(prev_loop_label);
-                ctx.throw_exception(Value(std::string("Error evaluating do-while-loop condition")));
-                return Value();
-            }
-
-            if (!test_value.to_boolean()) {
-                break;
-            }
-
-        } while (true);
-
-    } catch (const YieldException&) {
-        throw;
-    } catch (const GeneratorReturnException&) {
-        ctx.set_current_loop_label(prev_loop_label);
-        throw;
-    } catch (...) {
-        ctx.set_current_loop_label(prev_loop_label);
-        ctx.throw_exception(Value(std::string("Fatal error in do-while-loop execution")));
-        return Value();
-    }
-
-    ctx.set_current_loop_label(prev_loop_label);
-    g_empty_completion = false;
-    return V;
-}
 
 std::string DoWhileStatement::to_string() const {
     return "do " + body_->to_string() + " while (" + test_->to_string() + ")";
@@ -2591,20 +1167,7 @@ bool perform_with_push(Context& ctx, const Value& obj_value) {
     return true;
 }
 
-Value WithStatement::evaluate(Context& ctx) {
-    Value obj_value = object_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
-    if (!perform_with_push(ctx, obj_value)) return Value();
 
-    try {
-        Value result = body_->evaluate(ctx);
-        ctx.pop_with_scope();
-        return result;
-    } catch (...) {
-        ctx.pop_with_scope();
-        throw;
-    }
-}
 
 std::string WithStatement::to_string() const {
     return "with (" + object_->to_string() + ") " + body_->to_string();
@@ -2639,16 +1202,7 @@ Value perform_return_completion(Context& ctx, Value return_value, bool has_argum
     return return_value;
 }
 
-Value ReturnStatement::evaluate(Context& ctx) {
-    Value return_value;
 
-    if (has_argument()) {
-        return_value = argument_->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-    }
-
-    return perform_return_completion(ctx, return_value, has_argument(), /*do_record=*/true);
-}
 
 std::string ReturnStatement::to_string() const {
     std::ostringstream oss;
@@ -2670,11 +1224,7 @@ std::unique_ptr<ASTNode> ReturnStatement::clone() const {
 }
 
 
-Value BreakStatement::evaluate(Context& ctx) {
-    ctx.set_break(label_);
-    g_empty_completion = true;
-    return Value();
-}
+
 
 std::string BreakStatement::to_string() const {
     return label_.empty() ? "break;" : "break " + label_ + ";";
@@ -2685,11 +1235,7 @@ std::unique_ptr<ASTNode> BreakStatement::clone() const {
 }
 
 
-Value ContinueStatement::evaluate(Context& ctx) {
-    ctx.set_continue(label_);
-    g_empty_completion = true;
-    return Value();
-}
+
 
 std::string ContinueStatement::to_string() const {
     return label_.empty() ? "continue;" : "continue " + label_ + ";";
@@ -2700,181 +1246,7 @@ std::unique_ptr<ASTNode> ContinueStatement::clone() const {
 }
 
 
-Value TryStatement::evaluate(Context& ctx) {
-    Value result;
-    Value exception_value;
-    bool caught_exception = false;
 
-    try {
-        result = try_block_->evaluate(ctx);
-
-        if (ctx.has_exception()) {
-            caught_exception = true;
-            exception_value = ctx.get_exception();
-            ctx.clear_exception();
-        }
-    } catch (const YieldException&) {
-        throw;
-    } catch (const GeneratorReturnException&) {
-        // Generator return: run finally (if any), then re-throw.
-        // Return here to prevent the normal finally block below from running twice.
-        if (!finally_block_) {
-            throw;
-        }
-        finally_block_->evaluate(ctx);
-        // If finally had an abrupt completion, it takes precedence over the return.
-        if (ctx.has_exception() || ctx.has_return_value() || ctx.has_break() || ctx.has_continue()) {
-            return Value(); // propagate finally's completion via ctx
-        }
-        throw; // finally completed normally -- re-throw the generator return
-    } catch (const std::exception& e) {
-        caught_exception = true;
-        if (ctx.has_exception()) {
-            exception_value = ctx.get_exception();
-            ctx.clear_exception();
-        } else {
-            ctx.throw_exception(Value(std::string(e.what())));
-            exception_value = ctx.get_exception();
-            ctx.clear_exception();
-        }
-    } catch (...) {
-        caught_exception = true;
-        exception_value = Value(std::string("Error: Unknown error"));
-    }
-
-    bool catch_param_ok = true;
-    if (caught_exception && catch_clause_) {
-        CatchClause* catch_node = static_cast<CatchClause*>(catch_clause_.get());
-
-        // Spec sec-runtime-semantics-catchclauseevaluation: create a new scope
-        // for the catch parameter so it doesn't shadow or pollute the outer env.
-        Environment* catch_old_env = ctx.get_lexical_environment();
-        ctx.push_block_scope();
-
-        if (!catch_node->get_parameter_name().empty()) {
-            std::string param_name = catch_node->get_parameter_name();
-
-            if (param_name == "__destr_pattern__" && catch_node->get_destructuring_pattern()) {
-                auto* destr = static_cast<DestructuringAssignment*>(catch_node->get_destructuring_pattern());
-                // Pre-create lexical bindings so destructuring writes to the catch scope.
-                std::vector<std::string> bound;
-                destr->collect_bound_names(bound);
-                for (const auto& tname : bound) ctx.create_lexical_binding(tname, Value(), true);
-                destr->evaluate_with_value(ctx, exception_value);
-                if (ctx.has_exception()) { catch_param_ok = false; }
-            } else if (param_name.length() > 14 && param_name.substr(0, 14) == "__destr_array:") {
-                std::string vars_str = param_name.substr(14);
-                std::vector<std::string> var_names;
-                std::string cur;
-                for (char c : vars_str) {
-                    if (c == ',') { if (!cur.empty()) { var_names.push_back(cur); cur.clear(); } }
-                    else cur += c;
-                }
-                if (!cur.empty()) var_names.push_back(cur);
-
-                if (exception_value.is_object()) {
-                    Object* arr = exception_value.as_object();
-                    for (size_t vi = 0; vi < var_names.size(); vi++) {
-                        Value el = arr->get_element(static_cast<uint32_t>(vi));
-                        ctx.create_lexical_binding(var_names[vi], el, true);
-                    }
-                }
-            } else if (param_name.length() > 12 && param_name.substr(0, 12) == "__destr_obj:") {
-                std::string vars_str = param_name.substr(12);
-                std::vector<std::string> var_names;
-                std::string cur;
-                for (char c : vars_str) {
-                    if (c == ',') { if (!cur.empty()) { var_names.push_back(cur); cur.clear(); } }
-                    else cur += c;
-                }
-                if (!cur.empty()) var_names.push_back(cur);
-
-                if (exception_value.is_object()) {
-                    Object* obj = exception_value.as_object();
-                    for (const auto& vn : var_names) {
-                        Value val = obj->get_property(vn);
-                        ctx.create_lexical_binding(vn, val, true);
-                    }
-                }
-            } else {
-                ctx.create_lexical_binding(param_name, exception_value, true);
-            }
-        }
-
-        if (catch_param_ok) {
-            try {
-                result = catch_node->get_body()->evaluate(ctx);
-            } catch (const YieldException&) {
-                ctx.set_lexical_environment(catch_old_env);
-                throw;
-            } catch (const GeneratorReturnException&) {
-                ctx.set_lexical_environment(catch_old_env);
-                if (!finally_block_) throw;
-                finally_block_->evaluate(ctx);
-                if (ctx.has_exception() || ctx.has_return_value() || ctx.has_break() || ctx.has_continue()) {
-                    return Value();
-                }
-                throw;
-            } catch (const std::exception& e) {
-                if (!ctx.has_exception()) {
-                    ctx.throw_exception(Value(std::string(e.what())));
-                }
-            } catch (...) {
-                if (!ctx.has_exception()) {
-                    ctx.throw_exception(Value(std::string("Unknown error in catch block")));
-                }
-            }
-        }
-
-        ctx.set_lexical_environment(catch_old_env);
-    }
-
-    // No catch clause: restore the exception onto ctx so the finally save/restore logic below sees it.
-    if (caught_exception && !catch_clause_ && !ctx.has_exception()) {
-        ctx.throw_exception(exception_value, true);
-    }
-
-    if (finally_block_) {
-        // Save abrupt completion from try/catch so finally can override it
-        bool saved_break     = ctx.has_break();
-        bool saved_continue  = ctx.has_continue();
-        std::string saved_break_label    = ctx.get_break_label();
-        std::string saved_continue_label = ctx.get_continue_label();
-        bool saved_return    = ctx.has_return_value();
-        Value saved_ret_val  = saved_return ? ctx.get_return_value() : Value();
-        Value saved_exception = ctx.has_exception() ? ctx.get_exception() : Value();
-        bool saved_has_exc   = ctx.has_exception();
-
-        if (saved_break)    ctx.clear_break_continue();
-        if (saved_continue) ctx.clear_break_continue();
-        if (saved_return)   ctx.clear_return_value();
-        if (saved_has_exc)  ctx.clear_exception();
-
-        try {
-            finally_block_->evaluate(ctx);
-        } catch (const GeneratorReturnException&) {
-            throw; // yield-in-finally resumed via .return(): propagate, don't swallow
-        } catch (const std::exception& e) {
-            std::cerr << "Finally block error: " << e.what() << std::endl;
-        } catch (...) {
-            std::cerr << "Finally block unknown error" << std::endl;
-        }
-
-        // If finally completed normally (no abrupt), restore try/catch's completion
-        bool finally_abrupt = ctx.has_break() || ctx.has_continue() ||
-                              ctx.has_return_value() || ctx.has_exception();
-        if (!finally_abrupt) {
-            if (saved_has_exc)  ctx.throw_exception(saved_exception, true);
-            if (saved_return)   { ctx.set_return_value(saved_ret_val); }
-            if (saved_break)    ctx.set_break(saved_break_label);
-            if (saved_continue) ctx.set_continue(saved_continue_label);
-        }
-    } else if (ctx.has_exception() && !catch_param_ok) {
-        // Destructuring threw -- let exception propagate (don't clear it)
-    }
-
-    return result;
-}
 
 std::string TryStatement::to_string() const {
     std::string result = "try " + try_block_->to_string();
@@ -2903,9 +1275,7 @@ std::unique_ptr<ASTNode> TryStatement::clone() const {
     );
 }
 
-Value CatchClause::evaluate(Context& ctx) {
-    return body_->evaluate(ctx);
-}
+
 
 std::string CatchClause::to_string() const {
     return "catch (" + parameter_name_ + ") " + body_->to_string();
@@ -2917,13 +1287,7 @@ std::unique_ptr<ASTNode> CatchClause::clone() const {
     return c;
 }
 
-Value ThrowStatement::evaluate(Context& ctx) {
-    Value exception_value = expression_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
 
-    ctx.throw_exception(exception_value, true);
-    return Value();
-}
 
 std::string ThrowStatement::to_string() const {
     return "throw " + expression_->to_string();
@@ -2933,95 +1297,7 @@ std::unique_ptr<ASTNode> ThrowStatement::clone() const {
     return std::make_unique<ThrowStatement>(expression_->clone(), start_, end_);
 }
 
-Value SwitchStatement::evaluate(Context& ctx) {
-    std::string this_switch_label = ctx.get_next_statement_label();
-    ctx.set_next_statement_label("");
 
-    Value discriminant_value = discriminant_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
-
-    // Create block environment for switch (spec sec-switch-statement step 3-6)
-    ScopedLexicalEnv block_scope(
-        ctx, new Environment(Environment::Type::Declarative, ctx.get_lexical_environment()));
-    Environment* block_env_ptr = block_scope.get();
-    for (const auto& c : cases_) {
-        hoist_lexical_declarations(block_env_ptr,
-                                    static_cast<CaseClause*>(c.get())->get_consequent());
-    }
-    // BlockDeclarationInstantiation over the whole CaseBlock, which the spec
-    // runs before the case selectors are evaluated: every function declared in
-    // any clause is bound now, not where it stands. Their completion is empty,
-    // so none of this reaches the switch's own completion value.
-    for (const auto& c : cases_) {
-        for (const auto& stmt : static_cast<CaseClause*>(c.get())->get_consequent()) {
-            if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
-            stmt->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-        }
-    }
-
-    int matching_case_index = -1;
-    int default_case_index = -1;
-
-    for (size_t i = 0; i < cases_.size(); i++) {
-        CaseClause* case_clause = static_cast<CaseClause*>(cases_[i].get());
-
-        if (case_clause->is_default()) {
-            default_case_index = static_cast<int>(i);
-        } else {
-            Value test_value = case_clause->get_test()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-
-            if (discriminant_value.strict_equals(test_value)) {
-                matching_case_index = static_cast<int>(i);
-                break;
-            }
-        }
-    }
-
-    int start_index = -1;
-    if (matching_case_index >= 0) {
-        start_index = matching_case_index;
-    } else if (default_case_index >= 0) {
-        start_index = default_case_index;
-    }
-
-    if (start_index < 0) return Value();
-
-    Value V;
-
-    for (size_t i = static_cast<size_t>(start_index); i < cases_.size(); i++) {
-        CaseClause* case_clause = static_cast<CaseClause*>(cases_[i].get());
-
-        for (const auto& stmt : case_clause->get_consequent()) {
-            if (stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) continue;  // bound above
-            Value result = stmt->evaluate(ctx);
-            if (!g_empty_completion) V = result;
-            if (ctx.has_exception()) return Value();
-
-            if (ctx.has_break()) {
-                // Only a break targeting this switch itself (unlabeled, or
-                // matching its own label) is ours to consume -- one aimed at
-                // an outer construct must keep propagating.
-                if (ctx.get_break_label().empty() || ctx.get_break_label() == this_switch_label) {
-                    ctx.clear_break_continue();
-                }
-                g_empty_completion = false;
-                return V;
-            }
-
-            if (ctx.has_return_value()) return ctx.get_return_value();
-
-            if (ctx.has_continue()) {
-                g_empty_completion = false;
-                return V;
-            }
-        }
-    }
-
-    g_empty_completion = false;
-    return V;
-}
 
 std::string SwitchStatement::to_string() const {
     std::string result = "switch (" + discriminant_->to_string() + ") {\n";
@@ -3047,14 +1323,7 @@ std::unique_ptr<ASTNode> SwitchStatement::clone() const {
     );
 }
 
-Value CaseClause::evaluate(Context& ctx) {
-    Value result;
-    for (const auto& stmt : consequent_) {
-        result = stmt->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-    }
-    return result;
-}
+
 
 std::string CaseClause::to_string() const {
     std::string result;

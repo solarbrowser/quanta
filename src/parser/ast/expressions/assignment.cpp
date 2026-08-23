@@ -61,912 +61,7 @@ static void stamp_pattern_default_class(ASTNode* rhs, const ASTNode* target) {
     }
 }
 
-Value AssignmentExpression::evaluate(Context& ctx) {
-    // Declare right_value at function scope (will be evaluated at the right time)
-    Value right_value;
 
-    if (left_->get_type() == ASTNode::Type::IDENTIFIER) {
-        Identifier* id = static_cast<Identifier*>(left_.get());
-        std::string name = id->get_name();
-
-        // ES5: Cannot assign to eval or arguments in strict mode
-        if (ctx.is_strict_mode() && (name == "eval" || name == "arguments")) {
-            ctx.throw_syntax_error("'" + name + "' cannot be assigned in strict mode");
-            return Value();
-        }
-
-        // NamedEvaluation: static initializers observe the class name via
-        // this.name during evaluation, so it must be inferred beforehand.
-        if (operator_ == Operator::ASSIGN && !lhs_is_paren_ &&
-            right_->get_type() == ASTNode::Type::CLASS_DECLARATION) {
-            auto* cd = static_cast<ClassDeclaration*>(right_.get());
-            if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
-                cd->set_inferred_name(name);
-            }
-        }
-
-        // For compound assignments, capture left value BEFORE evaluating right side.
-        // Capture ref_env BEFORE get_binding because a getter may delete the property (object environment record: PutValue must write to the original env's binding object).
-        Value left_value;
-        Environment* ref_env = nullptr;
-        if (operator_ != Operator::ASSIGN) {
-            bool is_logical = operator_ == Operator::LOGICAL_AND_ASSIGN ||
-                              operator_ == Operator::LOGICAL_OR_ASSIGN  ||
-                              operator_ == Operator::NULLISH_ASSIGN;
-            // Capture the binding env before GetValue (getter may delete the property).
-            // find_binding_env checks @@unscopables exactly once; avoid has_binding/get_binding which would each re-check it and trigger extra Proxy traps.
-            ref_env = ctx.find_binding_env(name);
-            if (!ref_env) {
-                ctx.throw_reference_error("'" + name + "' is not defined");
-                return Value();
-            }
-            // GetValue on the left runs before the right side is evaluated, so
-            // a binding still in its temporal dead zone throws here. put_value
-            // repeats the check for the write, but by then the right side has
-            // already run and its side effects have happened.
-            if (ref_env && ref_env->binding_in_tdz(name)) {
-                ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                return Value();
-            }
-            left_value = ref_env->get_binding_direct(name, &ctx);
-            if (ctx.has_exception()) return Value();
-        }
-
-        // Logical assignment: short-circuit before evaluating RHS
-        if (operator_ == Operator::LOGICAL_AND_ASSIGN ||
-            operator_ == Operator::LOGICAL_OR_ASSIGN  ||
-            operator_ == Operator::NULLISH_ASSIGN) {
-            bool skip_assign =
-                (operator_ == Operator::LOGICAL_AND_ASSIGN && !left_value.to_boolean()) ||
-                (operator_ == Operator::LOGICAL_OR_ASSIGN  &&  left_value.to_boolean()) ||
-                (operator_ == Operator::NULLISH_ASSIGN     && !left_value.is_null() && !left_value.is_undefined());
-            if (skip_assign) return left_value;
-            // Evaluate RHS with NamedEvaluation
-            right_value = right_->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            if (right_value.is_function() && is_anonymous_function_def(right_.get())) {
-                const std::string& fname = right_value.as_function()->get_name();
-                if (fname.empty() || fname == "<arrow>") {
-                    right_value.as_function()->set_name(name);
-                }
-            }
-            // A logical assignment that reaches here is a real write, so a
-            // refused one raises like `x = v` does. Every other assignment
-            // form in this file already checks; this one did not.
-            if (!ctx.set_binding(name, right_value) &&
-                (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                return Value();
-            }
-            return right_value;
-        }
-
-        // For ASSIGN: capture ref_env before RHS evaluation (RHS may delete the binding).
-        // A single find_binding_env call (not has_binding+find_binding_env) avoids double-firing a binding object's @@unscopables getter / Proxy traps, and;
-        // avoids a second HasBinding racing against side effects from the first (e.g. the getter deleting the very property it's being looked up for).
-        if (operator_ == Operator::ASSIGN) {
-            ref_env = ctx.find_binding_env(name);
-        }
-
-        // Now evaluate right side
-        right_value = right_->evaluate(ctx);
-        if (ctx.has_exception()) {
-            return Value();
-        }
-
-        // PutValue helper: for object env records (with scopes), write directly to the
-        // binding object that was captured before GetValue - even if the property was
-        // deleted by the getter.  Strict mode + deleted property -> ReferenceError.
-        auto put_value = [&](const Value& val) {
-            if (ref_env && ref_env->binding_in_tdz(name)) {
-                ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                return;
-            }
-            if (ref_env && ref_env->get_type() == Environment::Type::Object &&
-                ref_env->get_binding_object()) {
-                Object* bobj = ref_env->get_binding_object();
-                bool still_exists = bobj->has_own_property(name);
-                if (!still_exists && ctx.is_strict_mode()) {
-                    ctx.throw_reference_error("'" + name + "' is not defined");
-                    return;
-                }
-                bool ok = bobj->set_property(name, val);
-                if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                }
-            } else if (ref_env && ref_env->get_type() != Environment::Type::Object &&
-                       ref_env->has_own_binding(name)) {
-                // Write directly to the captured env (not the current chain) so that
-                // eval-introduced inner bindings don't shadow the original reference.
-                bool ok = ref_env->set_binding(name, val);
-                if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                }
-            } else {
-                bool ok = ctx.set_binding(name, val);
-                if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                }
-            }
-        };
-
-        // ToPrimitive for compound += (spec 13.15.3 via 13.8.1)
-        auto to_primitive_add = [&ctx](Value v) -> Value {
-            if (!v.is_object()) return v;
-            Object* obj = v.as_object();
-            if (!obj) return v;
-            Symbol* tp_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
-            if (tp_sym) {
-                Value tp = obj->get_property(tp_sym->to_property_key());
-                if (tp.is_function()) {
-                    Value r = tp.as_function()->call(ctx, {Value(std::string("default"))}, v);
-                    if (!r.is_object()) return r;
-                    return v;
-                }
-                // GetMethod: a present but non-callable @@toPrimitive is a TypeError.
-                if (!tp.is_undefined() && !tp.is_null()) {
-                    ctx.throw_type_error("Symbol.toPrimitive is not a function");
-                    return Value();
-                }
-            }
-            Value vof = obj->get_property("valueOf");
-            if (vof.is_function()) {
-                try {
-                    Value r = vof.as_function()->call(ctx, {}, v);
-                    if (!r.is_object()) return r;
-                } catch (...) {}
-            }
-            Value ts = obj->get_property("toString");
-            if (ts.is_function()) {
-                try {
-                    Value r = ts.as_function()->call(ctx, {}, v);
-                    if (!r.is_object()) return r;
-                } catch (...) {}
-            }
-            return v;
-        };
-
-        switch (operator_) {
-            case Operator::ASSIGN: {
-                if (ref_env && ref_env->binding_in_tdz(name)) {
-                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
-                    return Value();
-                }
-                // SetFunctionName: x = (function(){}) -> x.name = 'x'
-                // Spec: only when IsIdentifierRef(LHS) -- parenthesized LHS is not an IdentifierRef.
-                if (!lhs_is_paren_ && right_value.is_function() && is_anonymous_function_def(right_.get())) {
-                    const std::string& fname = right_value.as_function()->get_name();
-                    if (fname.empty() || fname == "<arrow>") {
-                        right_value.as_function()->set_name(name);
-                    }
-                }
-                if (!ref_env) {
-                    // Unresolvable reference (binding didn't exist when we captured ref_env)
-                    if (ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
-                        return Value();
-                    }
-                    // ES5 8.7.2: PutValue on unresolvable reference -- set on global object (deletable)
-                    Object* global = ctx.get_global_object();
-                    if (global) global->set_property(name, right_value);
-                } else if (ref_env->get_type() == Environment::Type::Object &&
-                           ref_env->get_binding_object()) {
-                    // Object Environment Record PutValue: always write to binding object
-                    Object* bobj = ref_env->get_binding_object();
-                    bool still_exists = bobj->has_own_property(name);
-                    if (!still_exists && ctx.is_strict_mode()) {
-                        ctx.throw_reference_error("'" + name + "' is not defined");
-                        return Value();
-                    }
-                    bool ok = bobj->set_property(name, right_value);
-                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
-                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                        return Value();
-                    }
-                } else {
-                    // Write to the captured ref_env directly (not a fresh ctx.set_binding chain walk), so a closer same-named binding the RHS introduced (e.g. via eval) doesn't hijack a write meant for the originally resolved reference.
-                    bool success = ref_env->set_binding(name, right_value);
-                    if (!success) {
-                        if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
-                            ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                            return Value();
-                        }
-                    }
-                }
-                return right_value;
-            }
-            default: break;
-        }
-
-        // Every compound operator applies the same ApplyStringOrNumericBinary
-        // Operator the plain binary form does, so it delegates rather than
-        // reimplementing: the hand-written versions here reached for
-        // to_number() and disagreed with `a - b` on BigInt, both in what they
-        // threw and in what they said.
-        BinaryExpression::Operator bin_op;
-        switch (operator_) {
-            case Operator::PLUS_ASSIGN:   bin_op = BinaryExpression::Operator::ADD; break;
-            case Operator::MINUS_ASSIGN:  bin_op = BinaryExpression::Operator::SUBTRACT; break;
-            case Operator::MUL_ASSIGN:    bin_op = BinaryExpression::Operator::MULTIPLY; break;
-            case Operator::DIV_ASSIGN:    bin_op = BinaryExpression::Operator::DIVIDE; break;
-            case Operator::MOD_ASSIGN:    bin_op = BinaryExpression::Operator::MODULO; break;
-            case Operator::BITWISE_AND_ASSIGN: bin_op = BinaryExpression::Operator::BITWISE_AND; break;
-            case Operator::BITWISE_OR_ASSIGN:  bin_op = BinaryExpression::Operator::BITWISE_OR; break;
-            case Operator::BITWISE_XOR_ASSIGN: bin_op = BinaryExpression::Operator::BITWISE_XOR; break;
-            case Operator::LEFT_SHIFT_ASSIGN:  bin_op = BinaryExpression::Operator::LEFT_SHIFT; break;
-            case Operator::RIGHT_SHIFT_ASSIGN: bin_op = BinaryExpression::Operator::RIGHT_SHIFT; break;
-            case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN:
-                bin_op = BinaryExpression::Operator::UNSIGNED_RIGHT_SHIFT; break;
-            default:
-                ctx.throw_exception(Value(std::string("Unsupported assignment operator")));
-                return Value();
-        }
-        {
-            Value result = BinaryExpression::apply_operator(ctx, bin_op, left_value, right_value);
-            if (ctx.has_exception()) return Value();
-            put_value(result); if (ctx.has_exception()) return Value();
-            return result;
-        }
-        
-        return right_value;
-    }
-    
-    if (left_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
-        MemberExpression* member = static_cast<MemberExpression*>(left_.get());
-
-        // ES6: super.prop = val -- write to 'this', not to super
-        bool is_super_assignment = (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
-            static_cast<Identifier*>(member->get_object())->get_name() == "super");
-
-        // Spec: evaluate base, then key expression, then RHS, then ToPropertyKey
-        Value object_value = member->get_object()->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-
-        // For super.x = val, the write always goes to 'this', not to the super prototype.
-        // The object_value (super prototype) is only used for setter lookup.
-        Value write_target;
-        // GetSuperBase, resolved before the key expression evaluates (its ToPropertyKey can have
-        // side effects). __super__ may be a non-function sentinel for object-literal methods.
-        Object* super_lookup_proto = nullptr;
-        if (is_super_assignment) {
-            write_target = ctx.get_binding("this");
-            super_lookup_proto = resolve_super_base(ctx);
-        }
-
-        // Evaluate key expression once (before RHS per spec)
-        Value computed_key_value;
-        if (member->is_computed()) {
-            computed_key_value = member->get_property()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-        }
-
-        // Logical assignment: get current value, short-circuit before evaluating RHS
-        if (operator_ == Operator::LOGICAL_AND_ASSIGN ||
-            operator_ == Operator::LOGICAL_OR_ASSIGN  ||
-            operator_ == Operator::NULLISH_ASSIGN) {
-            // Resolve property name from already-evaluated key
-            std::string lprop;
-            if (member->is_computed()) {
-                if (computed_key_value.is_symbol())
-                    lprop = computed_key_value.as_symbol()->to_property_key();
-                else
-                    lprop = computed_key_value.to_string();
-            } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                lprop = static_cast<Identifier*>(member->get_property())->get_name();
-            }
-            // Spec: GetValue(ref) -> ToObject(base) throws TypeError for null/undefined.
-            // For super, the read side uses the resolved super base, not 'this'.
-            Object* lobj;
-            if (is_super_assignment) {
-                if (!super_lookup_proto) {
-                    ctx.throw_type_error("Cannot read properties of null (reading super property)");
-                    return Value();
-                }
-                lobj = super_lookup_proto;
-            } else {
-                if (object_value.is_null() || object_value.is_undefined()) {
-                    ctx.throw_type_error("Cannot read property of null or undefined");
-                    return Value();
-                }
-                lobj = object_value.is_object() ? object_value.as_object()
-                     : object_value.is_function() ? static_cast<Object*>(object_value.as_function())
-                     : nullptr;
-            }
-            // Private references: fields live under the qualified key on the
-            // instance; methods/accessors live (qualified) on the declaring
-            // prototype/constructor and read/write through getter/setter.
-            Object* priv_owner = nullptr;
-            PropertyDescriptor priv_desc;
-            if (lobj && !member->is_computed() && !lprop.empty() && lprop[0] == '#') {
-                std::string qualified = resolve_private_storage_key(lprop, lobj);
-                if (lobj->has_private_slot(qualified)) {
-                    lprop = qualified;
-                } else {
-                    priv_owner = resolve_private_accessor_owner(lprop);
-                    if (!priv_owner) {
-                        for (Object* p = lobj->get_prototype(); p; p = p->get_prototype()) {
-                            if (p->has_private_slot(qualified)) { priv_owner = p; break; }
-                        }
-                    }
-                    if (priv_owner) {
-                        priv_desc = priv_owner->get_property_descriptor(qualified);
-                        if (!priv_desc.is_accessor_descriptor() && !priv_desc.has_value()) {
-                            priv_desc = priv_owner->get_property_descriptor(lprop);
-                        }
-                    }
-                }
-            }
-            Value cur;
-            if (priv_owner && priv_desc.is_accessor_descriptor()) {
-                if (!priv_desc.has_getter()) {
-                    ctx.throw_type_error("'" + lprop + "' accessor has no getter");
-                    return Value();
-                }
-                Function* getter_fn = as_function(priv_desc.get_getter());
-                cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
-            } else if (priv_owner && priv_desc.has_value()) {
-                cur = priv_desc.get_value();
-            } else {
-                cur = lobj ? lobj->get_property(lprop) : Value();
-            }
-            if (ctx.has_exception()) return Value();
-            bool skip =
-                (operator_ == Operator::LOGICAL_AND_ASSIGN && !cur.to_boolean()) ||
-                (operator_ == Operator::LOGICAL_OR_ASSIGN  &&  cur.to_boolean()) ||
-                (operator_ == Operator::NULLISH_ASSIGN     && !cur.is_null() && !cur.is_undefined());
-            if (skip) return cur;
-            right_value = right_->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            if (priv_owner) {
-                if (priv_desc.is_accessor_descriptor()) {
-                    if (!priv_desc.has_setter()) {
-                        ctx.throw_type_error("'" + lprop + "' was defined without a setter");
-                        return Value();
-                    }
-                    Function* setter_fn = as_function(priv_desc.get_setter());
-                    if (setter_fn) setter_fn->call(ctx, {right_value}, object_value);
-                    if (ctx.has_exception()) return Value();
-                    return right_value;
-                }
-                ctx.throw_type_error("'" + lprop + "' is a private method and cannot be assigned to");
-                return Value();
-            }
-            // Private field slot: raw write (see the compound path below).
-            if (lobj && !lprop.empty() && lprop[0] == '#' && lobj->has_private_slot(lprop)) {
-                lobj->set_private_slot_value(lprop, right_value);
-                return right_value;
-            }
-            if (is_super_assignment) {
-                super_set_on(ctx, super_lookup_proto, lprop, right_value);
-                if (ctx.has_exception()) return Value();
-            } else if (lobj) {
-                bool ok = lobj->ordinary_set(lprop, right_value);
-                if (!ok && ctx.is_strict_mode()) {
-                    ctx.throw_type_error("Cannot assign to read only property '" + lprop + "'");
-                    return Value();
-                }
-            }
-            return right_value;
-        }
-
-        // Spec: for compound operators GetValue(lref) happens before RHS eval.
-        // This means CheckObjectCoercible(base) and ToPropertyKey(key) must happen first.
-        if (operator_ != Operator::ASSIGN) {
-            if (is_super_assignment) {
-                if (!super_lookup_proto) {
-                    ctx.throw_type_error("Cannot read properties of null (reading super property)");
-                    return Value();
-                }
-            } else if (object_value.is_null() || object_value.is_undefined()) {
-                ctx.throw_type_error(std::string("Cannot read properties of ") +
-                    (object_value.is_null() ? "null" : "undefined"));
-                return Value();
-            }
-            if (member->is_computed() && !computed_key_value.is_symbol() &&
-                (computed_key_value.is_object() || computed_key_value.is_function())) {
-                Object* pobj = computed_key_value.is_function()
-                    ? static_cast<Object*>(computed_key_value.as_function())
-                    : computed_key_value.as_object();
-                Value ts = pobj ? pobj->get_property("toString") : Value();
-                if (ts.is_function()) {
-                    Value str_result = ts.as_function()->call(ctx, {}, computed_key_value);
-                    if (ctx.has_exception()) return Value();
-                    if (!str_result.is_object() && !str_result.is_function())
-                        computed_key_value = str_result;
-                }
-            }
-        }
-
-        right_value = right_->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-
-        std::string str_value = object_value.is_string() ? object_value.to_string() : "";
-        
-        Object* obj = nullptr;
-
-        // Stores the final value. A super write is not an ordinary write to `this`:
-        // the lookup walks the super base's chain, so a setter or a read-only data
-        // property up there still governs the result (spec super [[Set]]).
-        auto store = [&](const std::string& key, const Value& val) -> bool {
-            if (is_super_assignment) {
-                super_set_on(ctx, super_lookup_proto, key, val);
-                return !ctx.has_exception();
-            }
-            if (!obj) return true;
-            if (obj->ordinary_set(key, val)) return true;
-            if (ctx.has_exception()) return false;
-            if (ctx.is_strict_mode()) {
-                ctx.throw_type_error("Cannot assign to read only property '" + key + "'");
-                return false;
-            }
-            return true;
-        };
-
-        // For super.x = val: write to 'this', not to super's prototype
-        Value effective_object = is_super_assignment ? write_target : object_value;
-
-        // PutValue step 5a: ToObject(V.[[Base]]) throws TypeError for null/undefined. For super,
-        // [[Base]] is the super base (super_lookup_proto), not 'this' -- 'this' can be perfectly
-        // valid while the super base is null (e.g. Object.setPrototypeOf(HomeObject, null)).
-        if (is_super_assignment) {
-            if (!super_lookup_proto) {
-                ctx.throw_type_error("Cannot set properties of null (super property)");
-                return Value();
-            }
-        } else if (effective_object.is_null() || effective_object.is_undefined()) {
-            ctx.throw_type_error(std::string("Cannot set properties of ") +
-                (effective_object.is_null() ? "null" : "undefined"));
-            return Value();
-        }
-
-        if (effective_object.is_object()) {
-            obj = effective_object.as_object();
-        } else if (effective_object.is_function()) {
-            obj = effective_object.as_function();
-        } else if (effective_object.is_string() || effective_object.is_number() || effective_object.is_boolean() || effective_object.is_symbol()) {
-            std::string str_val = effective_object.is_string() ? effective_object.to_string() : "";
-            // ES5: Check for accessor setter on prototype before failing
-            std::string ctor_name = effective_object.is_string() ? "String" :
-                (effective_object.is_number() ? "Number" :
-                (effective_object.is_boolean() ? "Boolean" : "Symbol"));
-            std::string prop_name;
-            if (member->is_computed()) {
-                if (computed_key_value.is_symbol()) {
-                    prop_name = computed_key_value.as_symbol()->to_property_key();
-                } else {
-                    prop_name = computed_key_value.to_string();
-                }
-            } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                prop_name = static_cast<Identifier*>(member->get_property())->get_name();
-            }
-            if (!prop_name.empty()) {
-                Value ctor = ctx.get_binding(ctor_name);
-                if (ctor.is_function()) {
-                    Value proto = ctor.as_function()->get_property("prototype");
-                    // Walk the whole prototype chain (not just XPrototype) for an inherited
-                    // setter/Proxy trap, passing the original primitive as receiver.
-                    Object* level = proto.is_object() ? proto.as_object() : nullptr;
-                    while (level) {
-                        if (level->get_type() == Object::ObjectType::Proxy) {
-                            static_cast<Proxy*>(level)->set_trap(Value(prop_name), right_value, object_value);
-                            if (ctx.has_exception()) return Value();
-                            return right_value;
-                        }
-                        PropertyDescriptor desc = level->get_property_descriptor(prop_name);
-                        if (desc.is_accessor_descriptor()) {
-                            if (desc.has_setter()) {
-                                Function* setter = as_function(desc.get_setter());
-                                if (setter) setter->call(ctx, {right_value}, object_value);
-                            }
-                            return right_value;
-                        }
-                        if (desc.has_value()) break; // non-writable (or shadowed) data property: stop, fall through to no-op/throw below
-                        level = level->get_prototype();
-                    }
-                }
-            }
-            // No setter found - silently fail or throw in strict mode
-            if (ctx.is_strict_mode()) {
-                ctx.throw_type_error("Cannot set property on primitive");
-            }
-            return right_value;
-        } else {
-            // ES1: In non-strict mode, setting property on primitive fails silently
-            if (ctx.is_strict_mode()) {
-                ctx.throw_type_error("Cannot set property on non-object");
-            }
-            return right_value;
-        }
-        
-        // Plain `=` only. The shortcut stores the right-hand value as it stands,
-        // which for `a[i] += x` is the operand rather than the result: the read
-        // and the operator both belong to the general path below.
-        if (operator_ == Operator::ASSIGN && member->is_computed() && obj && obj->is_array()) {
-            Value prop_value = computed_key_value;
-
-            if (__builtin_expect(prop_value.is_number(), 1)) {
-                double idx_double = prop_value.as_number();
-                if (__builtin_expect(idx_double >= 0 && idx_double <= 4294967294.0 && idx_double == std::floor(idx_double), 1)) {
-                    uint32_t index = static_cast<uint32_t>(idx_double);
-                    // If index is unowned and a Proxy is the prototype, delegate so the "set" trap fires with the right receiver.
-                    std::string index_key = std::to_string(index);
-                    // An index the array does not own is not this array's to
-                    // create on its own: [[Set]] consults the whole prototype
-                    // chain first, where an accessor has to run and a
-                    // non-writable data property has to block. Listing the
-                    // exotic prototypes to step around (Proxy, typed array)
-                    // missed the ordinary ones. ordinary_set is what the
-                    // compiled path calls and it covers all of them.
-                    bool ok = obj->has_own_property(index_key)
-                        // Owned: set_property, so an own accessor descriptor still wins.
-                        ? obj->set_property(index_key, right_value)
-                        : obj->ordinary_set(index_key, right_value);
-                    if (ctx.has_exception()) return Value();
-                    if (!ok && ctx.is_strict_mode()) {
-                        ctx.throw_type_error("Cannot assign to read only property '" + index_key + "'");
-                        return Value();
-                    }
-                    return right_value;
-                }
-            }
-        }
-
-        std::string prop_name;
-        if (member->is_computed()) {
-            // Use pre-evaluated key value (evaluated before RHS per spec)
-            Value prop_value = computed_key_value;
-            if (prop_value.is_symbol()) {
-                prop_name = prop_value.as_symbol()->to_property_key();
-            } else if (prop_value.is_object() || prop_value.is_function()) {
-                // ToPropertyKey uses ToPrimitive(hint="string"): toString first, then valueOf
-                Object* pobj = prop_value.is_function()
-                    ? static_cast<Object*>(prop_value.as_function())
-                    : prop_value.as_object();
-                Value ts = pobj ? pobj->get_property("toString") : Value();
-                bool resolved = false;
-                if (!ctx.has_exception() && ts.is_function()) {
-                    Value prim = ts.as_function()->call(ctx, {}, prop_value);
-                    if (ctx.has_exception()) return Value();
-                    if (!prim.is_object() && !prim.is_function()) {
-                        prop_name = prim.to_string();
-                        resolved = true;
-                    }
-                }
-                if (ctx.has_exception()) return Value();
-                if (!resolved) {
-                    Value vo = pobj ? pobj->get_property("valueOf") : Value();
-                    if (!ctx.has_exception() && vo.is_function()) {
-                        Value prim = vo.as_function()->call(ctx, {}, prop_value);
-                        if (ctx.has_exception()) return Value();
-                        if (prim.is_symbol()) {
-                            ctx.throw_type_error("Cannot convert a Symbol value to a string");
-                            return Value();
-                        }
-                        prop_name = prim.is_object() ? prop_value.to_string() : prim.to_string();
-                    } else {
-                        prop_name = prop_value.to_string();
-                    }
-                }
-            } else {
-                prop_name = prop_value.to_string();
-            }
-        } else {
-            if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                Identifier* id = static_cast<Identifier*>(member->get_property());
-                prop_name = id->get_name();
-            } else {
-                ctx.throw_exception(Value(std::string("Invalid property access")));
-                return Value();
-            }
-        }
-
-        // For a private accessor/method, the descriptor lives on the declaring class's own
-        // prototype, not necessarily the closest "#name" in obj's actual chain.
-        // Only the literal `.#name` syntax is a private reference -- a computed
-        // key that happens to spell "#name" is an ordinary property.
-        Object* private_owner = nullptr;
-        if (obj && !member->is_computed() &&
-            !prop_name.empty() && prop_name[0] == '#') {
-            if (!private_brand_check(ctx, obj, prop_name, false)) {
-                ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
-                return Value();
-            }
-            // Fields are stored under a qualified key (see resolve_private_storage_key); left untouched for methods/getters/setters, which aren't found directly on the instance.
-            // A bare "#x" own property can only be an ordinary computed-key
-            // property -- it never counts as the private slot here.
-            bool on_own_slot = false;
-            {
-                std::string qualified = resolve_private_storage_key(prop_name, obj);
-                if (obj->has_private_slot(qualified)) {
-                    prop_name = qualified;
-                    on_own_slot = true;
-                }
-            }
-            // For any assignment (including =), check if target is a private method or uninitialized field
-            if (on_own_slot) {
-                // Slot is directly on obj (fields; static private members on the
-                // class constructor). Fully raw access -- never through Proxy
-                // traps or exotic overrides (spec: private state bypasses
-                // [[Get]]/[[Set]]) -- including the compound read-modify-write.
-                PropertyDescriptor own_pd;
-                bool is_own_accessor = obj->get_private_slot_descriptor(prop_name, own_pd) &&
-                                       own_pd.is_accessor_descriptor();
-                if (!is_own_accessor && own_pd.has_value() && own_pd.get_value().is_function()) {
-                    Function* mfn = own_pd.get_value().as_function();
-                    if (mfn && mfn->has_internal_slot("__private_class_brand__")) {
-                        ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
-                        return Value();
-                    }
-                }
-                Value final_value = right_value;
-                if (operator_ != Operator::ASSIGN) {
-                    Value cur;
-                    if (is_own_accessor) {
-                        if (!own_pd.has_getter()) {
-                            ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
-                            return Value();
-                        }
-                        Function* getter_fn = as_function(own_pd.get_getter());
-                        cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
-                        if (ctx.has_exception()) return Value();
-                    } else {
-                        cur = obj->get_private_slot_value(prop_name);
-                    }
-                    switch (operator_) {
-                        case Operator::PLUS_ASSIGN:        final_value = cur.add(right_value); break;
-                        case Operator::MINUS_ASSIGN:       final_value = cur.subtract(right_value); break;
-                        case Operator::MUL_ASSIGN:         final_value = cur.multiply(right_value); break;
-                        case Operator::DIV_ASSIGN:         final_value = cur.divide(right_value); break;
-                        case Operator::MOD_ASSIGN:         final_value = cur.modulo(right_value); break;
-                        case Operator::BITWISE_AND_ASSIGN: final_value = cur.bitwise_and(right_value); break;
-                        case Operator::BITWISE_OR_ASSIGN:  final_value = cur.bitwise_or(right_value); break;
-                        case Operator::BITWISE_XOR_ASSIGN: final_value = cur.bitwise_xor(right_value); break;
-                        case Operator::LEFT_SHIFT_ASSIGN:  final_value = cur.left_shift(right_value); break;
-                        case Operator::RIGHT_SHIFT_ASSIGN: final_value = cur.right_shift(right_value); break;
-                        case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: final_value = cur.unsigned_right_shift(right_value); break;
-                        default: break;
-                    }
-                    if (ctx.has_exception()) return Value();
-                }
-                if (is_own_accessor) {
-                    if (!own_pd.has_setter()) {
-                        ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
-                        return Value();
-                    }
-                    Function* setter_fn = as_function(own_pd.get_setter());
-                    if (setter_fn) setter_fn->call(ctx, {final_value}, object_value);
-                    if (ctx.has_exception()) return Value();
-                    return final_value;
-                }
-                obj->set_private_slot_value(prop_name, final_value);
-                return final_value;
-            } else {
-                // Methods/accessors live under the qualified key on the declaring
-                // prototype/constructor (bare fallback for older paths).
-                std::string owner_qualified = resolve_private_storage_key(prop_name, obj);
-                private_owner = resolve_private_accessor_owner(prop_name);
-                PropertyDescriptor pd;
-                if (private_owner) {
-                    pd = private_owner->get_property_descriptor(owner_qualified);
-                    if (pd.has_value() || pd.is_accessor_descriptor()) {
-                        prop_name = owner_qualified;
-                    } else {
-                        pd = private_owner->get_property_descriptor(prop_name);
-                    }
-                }
-                bool found_on_proto = pd.has_value() || pd.is_accessor_descriptor();
-                if (!found_on_proto) {
-                    // Fallback: no frame declared this name (e.g. resumed after await/yield).
-                    private_owner = nullptr;
-                    Object* proto = obj->get_prototype();
-                    while (proto) {
-                        pd = proto->get_property_descriptor(owner_qualified);
-                        if (pd.has_value() || pd.is_accessor_descriptor()) {
-                            prop_name = owner_qualified;
-                            found_on_proto = true; private_owner = proto; break;
-                        }
-                        pd = proto->get_property_descriptor(prop_name);
-                        if (pd.has_value() || pd.is_accessor_descriptor()) { found_on_proto = true; private_owner = proto; break; }
-                        proto = proto->get_prototype();
-                    }
-                }
-                if (found_on_proto) {
-                    if (!pd.is_accessor_descriptor() && pd.get_value().is_function()) {
-                        ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
-                        return Value();
-                    }
-                    if (pd.is_accessor_descriptor() && !pd.has_setter()) {
-                        ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
-                        return Value();
-                    }
-                    if (pd.is_accessor_descriptor() && operator_ != Operator::ASSIGN) {
-                        // Compound (+= etc.) on a prototype-held private accessor:
-                        // read and write through the accessor pair with `this` =
-                        // the instance. The generic switch below would call the
-                        // getter via read_base->get_property, i.e. with the
-                        // declaring prototype as the receiver.
-                        if (!pd.has_getter()) {
-                            ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
-                            return Value();
-                        }
-                        Function* getter_fn = as_function(pd.get_getter());
-                        Value cur = getter_fn ? getter_fn->call(ctx, {}, object_value) : Value();
-                        if (ctx.has_exception()) return Value();
-                        Value final_value = right_value;
-                        switch (operator_) {
-                            case Operator::PLUS_ASSIGN:        final_value = cur.add(right_value); break;
-                            case Operator::MINUS_ASSIGN:       final_value = cur.subtract(right_value); break;
-                            case Operator::MUL_ASSIGN:         final_value = cur.multiply(right_value); break;
-                            case Operator::DIV_ASSIGN:         final_value = cur.divide(right_value); break;
-                            case Operator::MOD_ASSIGN:         final_value = cur.modulo(right_value); break;
-                            case Operator::BITWISE_AND_ASSIGN: final_value = cur.bitwise_and(right_value); break;
-                            case Operator::BITWISE_OR_ASSIGN:  final_value = cur.bitwise_or(right_value); break;
-                            case Operator::BITWISE_XOR_ASSIGN: final_value = cur.bitwise_xor(right_value); break;
-                            case Operator::LEFT_SHIFT_ASSIGN:  final_value = cur.left_shift(right_value); break;
-                            case Operator::RIGHT_SHIFT_ASSIGN: final_value = cur.right_shift(right_value); break;
-                            case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: final_value = cur.unsigned_right_shift(right_value); break;
-                            default: break;
-                        }
-                        if (ctx.has_exception()) return Value();
-                        Function* setter_fn = as_function(pd.get_setter());
-                        if (setter_fn) setter_fn->call(ctx, {final_value}, object_value);
-                        if (ctx.has_exception()) return Value();
-                        return final_value;
-                    }
-                } else {
-                    // Private instance field not yet initialized on this object
-                    ctx.throw_type_error("Cannot set private field " + prop_name + " on an object that has not been initialized");
-                    return Value();
-                }
-            }
-        }
-
-        // Descriptor lookup starts at the super base / private_owner, but the write target is always 'this'/obj.
-        Object* read_base = is_super_assignment ? super_lookup_proto : (private_owner ? private_owner : obj);
-
-        // For a Proxy, [[Set]] must go straight to set_trap; this descriptor pre-check would fire an extra getOwnPropertyDescriptor trap call.
-        if (read_base && read_base->get_type() != Object::ObjectType::Proxy) {
-            // Check own descriptor first, then prototype chain for setter
-            PropertyDescriptor desc = read_base->get_property_descriptor(prop_name);
-            bool found_inherited = false;
-            if (!desc.is_accessor_descriptor() && !read_base->has_own_property(prop_name)) {
-                // Walk prototype chain for accessor or non-writable data descriptor
-                Object* proto = read_base->get_prototype();
-                while (proto) {
-                    // Stop at a Proxy -- its [[Set]] handles everything; we'd fire an unexpected trap here.
-                    if (proto->get_type() == Object::ObjectType::Proxy) break;
-                    // Integer-Indexed exotic [[Set]] (10.4.5.5): a canonical-but-invalid numeric key on a TypedArray ancestor (receiver != this typed array) is a no-op success right here, it must not keep walking up to that TypedArray's own .prototype for the same key.
-                    if (proto->is_typed_array()) {
-                        double num_idx;
-                        if (TypedArrayBase::canonical_numeric_index(prop_name, num_idx) &&
-                            !static_cast<TypedArrayBase*>(proto)->is_valid_integer_index(num_idx)) {
-                            return right_value;
-                        }
-                    }
-                    PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
-                    if (proto_desc.is_accessor_descriptor()) {
-                        desc = proto_desc;
-                        found_inherited = true;
-                        break;
-                    }
-                    if (proto_desc.has_value()) {
-                        // Inherited non-writable data property blocks shadowing (spec 10.1.9 step 3b)
-                        if (!proto_desc.is_writable() && ctx.is_strict_mode()) {
-                            ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
-                            return Value();
-                        }
-                        found_inherited = !proto_desc.is_writable();
-                        if (!found_inherited) desc = proto_desc;
-                        break;
-                    }
-                    proto = proto->get_prototype();
-                }
-            }
-            (void)found_inherited;
-            // For plain assignment only: invoke setter directly here.
-            // Compound assignments (+=, &= etc.) need to read the current value first,
-            // so they go through the switch and call set_property (which invokes setters).
-            if (operator_ == Operator::ASSIGN && desc.is_accessor_descriptor() && desc.has_setter()) {
-                Object* setter = desc.get_setter();
-                if (setter) {
-                    Function* setter_fn = as_function(setter);
-                    if (setter_fn) {
-                        try {
-                            setter_fn->call(ctx, {right_value}, Value(obj));
-                            if (ctx.has_exception()) return Value();
-                            return right_value;
-                        } catch (const std::exception& e) {
-                            ctx.throw_exception(Value(std::string("Setter call failed: ") + e.what()));
-                            return Value();
-                        }
-                    }
-                }
-            }
-        }
-        
-        switch (operator_) {
-            case Operator::ASSIGN:
-                if (!store(prop_name, right_value)) return Value();
-                break;
-            case Operator::PLUS_ASSIGN: {
-                Value current_value = read_base ? read_base->get_property(prop_name) : Value();
-                if (ctx.has_exception()) return Value();
-                // String concatenation or numeric addition
-                Value computed;
-                if (current_value.is_string() || right_value.is_string()) {
-                    computed = Value(current_value.to_string() + right_value.to_string());
-                } else {
-                    computed = Value(current_value.to_number() + right_value.to_number());
-                }
-                if (!store(prop_name, computed)) return Value();
-                return computed;
-                break;
-            }
-            case Operator::MINUS_ASSIGN:
-            case Operator::MUL_ASSIGN:
-            case Operator::DIV_ASSIGN:
-            case Operator::MOD_ASSIGN:
-            case Operator::BITWISE_AND_ASSIGN:
-            case Operator::BITWISE_OR_ASSIGN:
-            case Operator::BITWISE_XOR_ASSIGN:
-            case Operator::LEFT_SHIFT_ASSIGN:
-            case Operator::RIGHT_SHIFT_ASSIGN:
-            case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: {
-                if (!obj) { ctx.throw_type_error("Cannot set property of null"); return Value(); }
-                Value cur = read_base ? read_base->get_property(prop_name) : Value();
-                if (ctx.has_exception()) return Value();
-                double l = cur.to_number();
-                double r = right_value.to_number();
-                double result;
-                switch (operator_) {
-                    case Operator::MINUS_ASSIGN:               result = l - r; break;
-                    case Operator::MUL_ASSIGN:                 result = l * r; break;
-                    case Operator::DIV_ASSIGN:                 result = l / r; break;
-                    case Operator::MOD_ASSIGN:                 result = std::fmod(l, r); break;
-                    case Operator::BITWISE_AND_ASSIGN:         result = static_cast<double>(static_cast<int32_t>(l) & static_cast<int32_t>(r)); break;
-                    case Operator::BITWISE_OR_ASSIGN:          result = static_cast<double>(static_cast<int32_t>(l) | static_cast<int32_t>(r)); break;
-                    case Operator::BITWISE_XOR_ASSIGN:         result = static_cast<double>(static_cast<int32_t>(l) ^ static_cast<int32_t>(r)); break;
-                    case Operator::LEFT_SHIFT_ASSIGN:          result = static_cast<double>(static_cast<int32_t>(l) << (static_cast<uint32_t>(r) & 0x1F)); break;
-                    case Operator::RIGHT_SHIFT_ASSIGN:         result = static_cast<double>(static_cast<int32_t>(l) >> (static_cast<uint32_t>(r) & 0x1F)); break;
-                    case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN:result = static_cast<double>(static_cast<uint32_t>(l) >> (static_cast<uint32_t>(r) & 0x1F)); break;
-                    default: result = l; break;
-                }
-                if (!store(prop_name, Value(result))) return Value();
-                return Value(result);
-            }
-            default:
-                ctx.throw_exception(Value(std::string("Unsupported assignment operator for member expression")));
-                return Value();
-        }
-        
-        return right_value;
-    }
-    
-    // ES6: Destructuring assignment with object or array pattern
-    if (operator_ == Operator::ASSIGN &&
-        (left_->get_type() == ASTNode::Type::OBJECT_LITERAL ||
-         left_->get_type() == ASTNode::Type::ARRAY_LITERAL)) {
-        right_value = right_->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-
-        destructuring_assign(ctx, left_.get(), right_value);
-        if (ctx.has_exception()) return Value();
-        return right_value;
-    }
-
-    if (operator_ == Operator::ASSIGN &&
-        left_->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-        right_value = right_->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-        auto* destr = static_cast<DestructuringAssignment*>(left_.get());
-        destr->evaluate_with_value(ctx, right_value);
-        if (ctx.has_exception()) return Value();
-        return right_value;
-    }
-
-    ctx.throw_exception(Value(std::string("Invalid assignment target")));
-    return Value();
-}
 
 // Helper: recursively perform destructuring assignment from an ObjectLiteral or ArrayLiteral pattern
 // A getter run while destructuring throws into Object::current_context_, which
@@ -1137,7 +232,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             // Get property name from key
             std::string prop_name;
             if (prop->computed) {
-                Value key_val = prop->key->evaluate(ctx);
+                Value key_val = prop->key->evaluate_compiled(ctx);
                 if (ctx.has_exception()) return;
                 // ToPropertyKey, not a raw stringify: an object key's own
                 // @@toPrimitive/toString has to run.
@@ -1181,10 +276,10 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             if (mode == DestructureMode::Assign && target &&
                 target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 auto* mem = static_cast<MemberExpression*>(target);
-                member_obj = mem->get_object()->evaluate(ctx);
+                member_obj = mem->get_object()->evaluate_compiled(ctx);
                 if (ctx.has_exception()) return;
                 if (mem->is_computed()) {
-                    member_key = mem->get_property()->evaluate(ctx);
+                    member_key = mem->get_property()->evaluate_compiled(ctx);
                     if (ctx.has_exception()) return;
                 }
                 has_member_ref = true;
@@ -1203,7 +298,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             // default's node kept from the unwrapping above.
             if (default_assign && prop_value.is_undefined()) {
                 stamp_pattern_default_class(default_assign->right_.get(), target);
-                prop_value = default_assign->right_->evaluate(ctx);
+                prop_value = default_assign->right_->evaluate_compiled(ctx);
                 if (ctx.has_exception()) return;
                 if (prop_value.is_function() &&
                         is_anonymous_function_def(default_assign->right_.get()) &&
@@ -1379,7 +474,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         if (tgt && tgt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                                             auto* mem = static_cast<MemberExpression*>(tgt);
                                             try {
-                                                mem->get_object()->evaluate(ctx);
+                                                mem->get_object()->evaluate_compiled(ctx);
                                             } catch (const GeneratorReturnException&) {
                                                 close_iter_for_generator_return();
                                                 return;
@@ -1387,7 +482,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                             if (ctx.has_exception()) { close_iter(); return; }
                                             if (mem->is_computed()) {
                                                 try {
-                                                    mem->get_property()->evaluate(ctx);
+                                                    mem->get_property()->evaluate_compiled(ctx);
                                                 } catch (const GeneratorReturnException&) {
                                                     close_iter_for_generator_return();
                                                     return;
@@ -1416,7 +511,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                     if (!iter_done && rest_target && rest_target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                                         auto* mem = static_cast<MemberExpression*>(rest_target);
                                         try {
-                                            mem->get_object()->evaluate(ctx);
+                                            mem->get_object()->evaluate_compiled(ctx);
                                         } catch (const GeneratorReturnException&) {
                                             close_iter_for_generator_return();
                                             return;
@@ -1424,7 +519,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         if (ctx.has_exception()) { close_iter(); return; }
                                         if (mem->is_computed()) {
                                             try {
-                                                mem->get_property()->evaluate(ctx);
+                                                mem->get_property()->evaluate_compiled(ctx);
                                             } catch (const GeneratorReturnException&) {
                                                 close_iter_for_generator_return();
                                                 return;
@@ -1477,7 +572,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         if (tgt && tgt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                                             auto* mem = static_cast<MemberExpression*>(tgt);
                                             try {
-                                                precomputed_member_obj[ei] = mem->get_object()->evaluate(ctx);
+                                                precomputed_member_obj[ei] = mem->get_object()->evaluate_compiled(ctx);
                                             } catch (const GeneratorReturnException&) {
                                                 close_iter_for_generator_return();
                                                 return;
@@ -1486,7 +581,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                             has_precomputed_member[ei] = true;
                                             if (mem->is_computed()) {
                                                 try {
-                                                    precomputed_member_key[ei] = mem->get_property()->evaluate(ctx);
+                                                    precomputed_member_key[ei] = mem->get_property()->evaluate_compiled(ctx);
                                                 } catch (const GeneratorReturnException&) {
                                                     close_iter_for_generator_return();
                                                     return;
@@ -1569,7 +664,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                     // Default may yield/return. On GeneratorReturnException, close iter first.
                     if (deferred_iter_close_needed) {
                         try {
-                            elem_value = assign->right_->evaluate(ctx);
+                            elem_value = assign->right_->evaluate_compiled(ctx);
                         } catch (const GeneratorReturnException&) {
                             // Spec 7.4.6 IteratorClose with return completion:
                             // Call iterator.return(); propagate its throw or TypeError for non-Object.
@@ -1589,7 +684,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                             throw; // iterator.return() ok -- propagate original return
                         }
                     } else {
-                        elem_value = assign->right_->evaluate(ctx);
+                        elem_value = assign->right_->evaluate_compiled(ctx);
                     }
                     // Break (not return) so the deferred IteratorClose below still runs -- it preserves this exception over any of its own.
                     if (ctx.has_exception()) break;
@@ -1687,7 +782,7 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
     } else if (target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         auto* member = static_cast<MemberExpression*>(target);
         // Reuse a reference already evaluated earlier (e.g. destructuring's evaluate-target-before-next() ordering) instead of re-evaluating and re-triggering side effects.
-        Value obj_val = precomputed_obj ? *precomputed_obj : member->get_object()->evaluate(ctx);
+        Value obj_val = precomputed_obj ? *precomputed_obj : member->get_object()->evaluate_compiled(ctx);
         if (ctx.has_exception()) return;
         if (obj_val.is_null() || obj_val.is_undefined()) {
             ctx.throw_type_error(std::string("Cannot set properties of ") +
@@ -1699,7 +794,7 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
                                               : static_cast<Object*>(obj_val.as_function());
             std::string prop_name;
             if (member->is_computed()) {
-                Value key_val = precomputed_key ? *precomputed_key : member->get_property()->evaluate(ctx);
+                Value key_val = precomputed_key ? *precomputed_key : member->get_property()->evaluate_compiled(ctx);
                 if (ctx.has_exception()) return;
                 prop_name = key_val.to_property_key();
                 if (ctx.has_exception()) return;
@@ -1848,17 +943,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
     return Value();
 }
 
-Value DestructuringAssignment::evaluate(Context& ctx) {
-    if (!source_) {
-        ctx.throw_exception(Value(std::string("DestructuringAssignment: source is null")));
-        return Value();
-    }
 
-    Value source_value = source_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
-
-    return evaluate_with_value(ctx, source_value);
-}
 
 std::string DestructuringAssignment::to_string() const {
     return pattern_literal_ ? pattern_literal_->to_string() : std::string("[destructuring]");

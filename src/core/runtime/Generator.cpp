@@ -74,11 +74,8 @@ void Generator::run_body() {
                     generator_context_->set_return_value(vm_result);
                 }
             } else {
-                // Only the uncompiled path wants the tree, and only then is
-                // it rebuilt.
-                if (ASTNode* body = generator_function_->ast_body()) {
-                    body->evaluate(*generator_context_);
-                }
+                generator_context_->throw_type_error(
+                    "Internal: function body could not be compiled");
             }
         }
     } catch (const GeneratorReturnException& e) {
@@ -763,7 +760,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
                 } else if (param->has_default()) {
-                    arg_val = param->get_default_value()->evaluate(gen_context);
+                    arg_val = VM::run_default_value(param->get_default_value(), gen_context);
                     if (gen_context.has_exception()) {
                         gen_context.set_in_param_eval(false);
                         ctx.throw_exception(gen_context.get_exception(), true);

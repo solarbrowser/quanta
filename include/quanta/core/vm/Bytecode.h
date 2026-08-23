@@ -319,7 +319,7 @@ enum class Op : uint8_t {
     // Arms the next call as a direct eval. CallDirectEval carries its own flag;
     // a spread call takes it this way because its opcode has no room left.
     SetDirectEval,             // u8
-    // k -- builds the class at BytecodeChunk::class_nodes[k]. The node is
+    // k -- builds the class at BytecodeChunk::ast_nodes[k]. The node is
     // read as the class's description, not walked as a tree: it is the one
     // construct still described by its own node rather than by something
     // built at compile time.
@@ -331,6 +331,11 @@ enum class Op : uint8_t {
     // `delete super.x` always throws (13.5.1.2 step 4.b), but only after the
     // reference is evaluated -- which the opcodes before this one did.
     ThrowSuperDelete,
+    // k -- runs the import/export declaration at BytecodeChunk::ast_nodes[k].
+    // Module linking is bookkeeping over the declaration itself (specifier
+    // lists, live local-name aliases), so like a class it is described by its
+    // node rather than by anything built at compile time.
+    LinkModule,                // k u8: whether the declaration was compiled
 
     kCount
 };
@@ -634,7 +639,7 @@ struct BytecodeChunk {
     // unlike IcFeedback these stay separate lazy pointers rather than one
     // bundle.
 
-    // Function literals only (Op::CreateClosure). Separate from class_nodes
+    // Function literals only (Op::CreateClosure). Separate from ast_nodes
     // because this is the permanent case: a literal always needs some
     // per-decl-site description to instantiate from. Holds prebuilt
     // ClosureTemplates rather than AST pointers, so creating a closure no
@@ -648,15 +653,17 @@ struct BytecodeChunk {
     // Class definitions (Op::DefineClass). The node is read as the class's
     // description -- its members, their keys and flags -- not walked: every
     // expression a class definition owns is compiled and run.
-    std::unique_ptr<std::vector<const ASTNode*>> class_nodes;
-    std::vector<const ASTNode*>& ensure_class_nodes() { if (!class_nodes) class_nodes = std::make_unique<std::vector<const ASTNode*>>(); return *class_nodes; }
+    // The constructs still described by their own node: classes and module
+    // declarations. Everything else the chunk needs was built at compile time.
+    std::unique_ptr<std::vector<const ASTNode*>> ast_nodes;
+    std::vector<const ASTNode*>& ensure_ast_nodes() { if (!ast_nodes) ast_nodes = std::make_unique<std::vector<const ASTNode*>>(); return *ast_nodes; }
 
     std::unique_ptr<std::vector<HandlerEntry>> handlers;
     std::vector<HandlerEntry>& ensure_handlers() { if (!handlers) handlers = std::make_unique<std::vector<HandlerEntry>>(); return *handlers; }
 
     // env_params/env_locals/loop_envs are only ever populated when env_mode
     // is true (see BytecodeCompiler), so they're bundled behind one lazy
-    // pointer -- unlike closures/class_nodes/handlers above,
+    // pointer -- unlike closures/ast_nodes/handlers above,
     // these three share a single real trigger condition.
     struct EnvBundle {
         std::vector<std::string> env_params;

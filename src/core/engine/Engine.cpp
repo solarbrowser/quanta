@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include "quanta/core/vm/Interpreter.h"
 #include "quanta/core/engine/Engine.h"
 #include <span>
 #include "quanta/core/gc/Collector.h"
@@ -237,7 +238,12 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
             }
 
             if (global_context_) {
-                Value result = expr_ast->evaluate(*global_context_);
+                bool compiled = false;
+                Value result = VM::run_expression(expr_ast.get(), *global_context_, compiled);
+                if (!compiled && !global_context_->has_exception()) {
+                    global_context_->throw_type_error(
+                        "Internal: expression could not be compiled");
+                }
 
                 if (global_context_->has_exception()) {
                     Value exception = global_context_->get_exception();

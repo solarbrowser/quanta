@@ -50,14 +50,22 @@ public:
     // lookup cache works at full strength because the script env is
     // persistent. Nested lexicals get the same register treatment as in
     // function bodies. Null = tree-walk the statements instead.
+    // `track_completion`: the chunk answers with the script's completion value
+    // rather than undefined, which is what `eval` is specified to return.
     static std::unique_ptr<BytecodeChunk> compile_script(
-        const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with = false);
+        const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with = false,
+        bool track_completion = false);
 
     // The same `arguments` scan compile() runs over a body, exposed for
     // callers checking a parameter default/destructuring pattern directly
     // (a suspendable body always compiles with an empty param list -- see
     // VM::compile_suspendable -- so compile()'s own scan never sees those).
     static bool references_arguments(const ASTNode* node);
+
+    // Whether an expression contains a yield/await that must suspend whatever
+    // fiber it is evaluated on (a computed class key is the one place this is
+    // asked from outside).
+    static bool expression_suspends(const ASTNode* node);
 
     // Conservative "could this subtree ever read identifier `name`" check
     // (true on eval/nested-class/unknown, same opacity rules as above).
@@ -90,6 +98,9 @@ private:
     bool is_local(const std::string& name) const;
     bool needs_with_target_resolve(const ASTNode* target, bool is_lexical) const;
     bool compile_if_branch(const ASTNode* branch);
+    bool lexical_out_of_scope(const std::string& name) const;
+    void emit_completion_reset();
+    void emit_completion_store();
     int lookup_local(const std::string& name) const;
     // The register a name lives in when reading it is a bare Ldar: not
     // env-resident, actually register-allocated here, and past its TDZ. -1
@@ -319,6 +330,20 @@ private:
     uint8_t resolved_env_slots_ = 0;  // `arguments` reads compile to LdaLookup (chunk needs_arguments set)
     bool suspendable_ = false;  // generator/async body, see compile()'s parameter
     bool script_mode_ = false;  // top-level Program chunk, see compile_script()
+    // Where the script's completion value lives while the statements run, or
+    // -1 when the caller does not ask for one. A statement that completes with
+    // a value writes it; the constructs the spec makes UpdateEmpty(_, undefined)
+    // clear it first (see emit_completion_reset).
+    int completion_reg_ = -1;
+    // The block-scoped names currently open, innermost last. Locals are
+    // allocated for the whole chunk, so this is the only record of where a
+    // `let` stops being visible -- which is what makes `typeof x` after its
+    // block answer "undefined" rather than reading a register that is out of
+    // scope.
+    std::vector<std::vector<std::string>> lexical_scopes_;
+    // Every name that has ever been pushed onto lexical_scopes_. A name absent
+    // from it was never block-scoped here, so nothing can be said about it.
+    std::unordered_set<std::string> block_scoped_names_;
     int try_env_depth_ = 0;
     int env_depth_ = 0;
     std::vector<size_t>* chain_shortcircuit_jumps_ = nullptr;

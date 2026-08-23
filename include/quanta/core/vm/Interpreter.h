@@ -40,6 +40,11 @@ std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
                                                    const std::vector<std::string>& env_bound,
                                                    bool outer_with = false);
 
+// A parameter's default expression. Suspendable functions bind their
+// parameters outside the compiled body, so this is the one place a default is
+// evaluated on its own rather than as part of the chunk that owns it.
+Value run_default_value(const ASTNode* expr, Context& ctx);
+
 // One expression belonging to a class definition -- a computed key, the
 // heritage, a static field's value, a static block -- evaluated by the
 // compiler instead of the tree-walker. `ok` reports whether it compiled; a
@@ -52,11 +57,8 @@ Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx, Function* 
 // Script tier: compile+run a Program's top-level statements (hoisting must
 // already be done by Program::evaluate). used_vm=false -> caller tree-walks.
 Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
-                 Context& ctx, bool& used_vm);
+                 Context& ctx, bool& used_vm, bool track_completion = false);
 
-// Process-wide switch, read once: on by default; QUANTA_VM=0 is the kill
-// switch back to the tree-walker (QUANTA_VM=1/unset/anything else: on).
-bool enabled();
 
 }
 

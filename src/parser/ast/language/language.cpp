@@ -381,7 +381,7 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
     // Only the instantiation that built the executable may do this. A later one
     // would reach an executable that has since materialized its body and
     // compiled from it, and dropping that tree leaves the chunk's own AST
-    // references (class_nodes) pointing at freed nodes.
+    // references (ast_nodes) pointing at freed nodes.
     if (!fresh) return;
     if (!exe || !lit->body_is_leaf() || !lit->has_body_token_range()) return;
     ScriptUnit* unit = lit->owning_unit();
@@ -654,9 +654,7 @@ Value declare_function(Context& ctx, const ClosureTemplate& tpl) {
     return Value();
 }
 
-Value FunctionDeclaration::evaluate(Context& ctx) {
-    return declare_function(ctx, closure_template_for(this));
-}
+
 
 
 std::string FunctionDeclaration::to_string() const {
@@ -785,11 +783,14 @@ static bool field_init_cannot_observe_cfi(const ASTNode* n) {
 static Value eval_class_expr(const ASTNode* expr, Context& ctx) {
     bool compiled = false;
     Value v = VM::run_expression(expr, ctx, compiled);
-    if (compiled) return v;
-    return const_cast<ASTNode*>(expr)->evaluate(ctx);
+    if (!compiled) {
+        ctx.throw_type_error("Internal: class expression could not be compiled");
+        return Value();
+    }
+    return v;
 }
 
-Value ClassDeclaration::evaluate(Context& ctx) { return define_class(ctx); }
+
 
 Value ClassDeclaration::define_class(Context& ctx) {
     std::string class_name = id_->get_name();
@@ -1871,9 +1872,7 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
 }
 
 
-Value ClassField::evaluate(Context& ctx) {
-    return Value();
-}
+
 
 std::unique_ptr<ASTNode> ClassField::clone() const {
     return std::make_unique<ClassField>(
@@ -1884,10 +1883,7 @@ std::unique_ptr<ASTNode> ClassField::clone() const {
     );
 }
 
-Value ClassStaticBlock::evaluate(Context& ctx) {
-    if (body_) body_->evaluate(ctx);
-    return Value();
-}
+
 
 std::unique_ptr<ASTNode> ClassStaticBlock::clone() const {
     return std::make_unique<ClassStaticBlock>(
@@ -1896,12 +1892,7 @@ std::unique_ptr<ASTNode> ClassStaticBlock::clone() const {
     );
 }
 
-Value MethodDefinition::evaluate(Context& ctx) {
-    if (value_) {
-        return value_->evaluate(ctx);
-    }
-    return Value();
-}
+
 
 std::string MethodDefinition::to_string() const {
     std::ostringstream oss;
@@ -1938,9 +1929,7 @@ std::unique_ptr<ASTNode> MethodDefinition::clone() const {
 }
 
 
-Value FunctionExpression::evaluate(Context& ctx) {
-    return instantiate_closure(ctx, closure_template_for(this));
-}
+
 
 
 std::string FunctionExpression::to_string() const {
@@ -1998,9 +1987,7 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
 }
 
 
-Value ArrowFunctionExpression::evaluate(Context& ctx) {
-    return instantiate_closure(ctx, closure_template_for(this));
-}
+
 
 
 std::string ArrowFunctionExpression::to_string() const {
@@ -2326,14 +2313,7 @@ Value perform_await(Context& ctx, Value awaited, bool has_argument) {
     return arg_value;
 }
 
-Value AwaitExpression::evaluate(Context& ctx) {
-    Value awaited;
-    if (argument_) {
-        awaited = argument_->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-    }
-    return perform_await(ctx, awaited, argument_ != nullptr);
-}
+
 
 std::string AwaitExpression::to_string() const {
     return "await " + argument_->to_string();
@@ -3316,21 +3296,7 @@ Value perform_yield_delegate(Context& ctx, Value iterable) {
     throw YieldException(elements[element_idx]);
 }
 
-Value YieldExpression::evaluate(Context& ctx) {
-    if (is_delegate_) {
-        Value iterable = argument_ ? argument_->evaluate(ctx) : Value();
-        if (ctx.has_exception()) return Value();
-        return perform_yield_delegate(ctx, iterable);
-    }
 
-    Value yield_value = Value();
-    if (argument_) {
-        yield_value = argument_->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-    }
-
-    return perform_yield(ctx, yield_value);
-}
 
 std::string YieldExpression::to_string() const {
     std::ostringstream oss;
@@ -3353,9 +3319,7 @@ std::unique_ptr<ASTNode> YieldExpression::clone() const {
 }
 
 
-Value AsyncFunctionExpression::evaluate(Context& ctx) {
-    return instantiate_closure(ctx, closure_template_for(this));
-}
+
 
 
 std::string AsyncFunctionExpression::to_string() const {
@@ -3397,9 +3361,7 @@ std::unique_ptr<ASTNode> AsyncFunctionExpression::clone() const {
 }
 
 
-Value ImportSpecifier::evaluate(Context& ctx) {
-    return Value();
-}
+
 
 std::string ImportSpecifier::to_string() const {
     if (imported_name_ != local_name_) {
@@ -3527,9 +3489,7 @@ std::unique_ptr<ASTNode> ImportStatement::clone() const {
     }
 }
 
-Value ExportSpecifier::evaluate(Context& ctx) {
-    return Value();
-}
+
 
 std::string ExportSpecifier::to_string() const {
     if (local_name_ != exported_name_) {
@@ -3542,7 +3502,9 @@ std::unique_ptr<ASTNode> ExportSpecifier::clone() const {
     return std::make_unique<ExportSpecifier>(local_name_, exported_name_, start_, end_);
 }
 
-Value ExportStatement::evaluate(Context& ctx) {
+Value ExportStatement::evaluate(Context& ctx) { return link(ctx, /*declaration_already_run=*/false); }
+
+Value ExportStatement::link(Context& ctx, bool declaration_already_run) {
     Value exports_value = ctx.get_binding("exports");
     Object* exports_obj = nullptr;
 
@@ -3608,7 +3570,9 @@ Value ExportStatement::evaluate(Context& ctx) {
                 break;
         }
 
-        Value default_value = default_export_->evaluate(ctx);
+        // The default is an ordinary expression (a function or class literal
+        // included), so it compiles like any other rather than being walked.
+        Value default_value = eval_class_expr(default_export_.get(), ctx);
         if (ctx.has_exception()) return Value();
 
         if (!default_local_name.empty()) {
@@ -3639,8 +3603,9 @@ Value ExportStatement::evaluate(Context& ctx) {
     }
 
     if (is_declaration_export_ && declaration_) {
-        Value decl_result = declaration_->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
+        // The declaration itself was compiled with the rest of the module;
+        // only the record it needs is kept here.
+        (void)declaration_already_run;
 
         if (declaration_->get_type() == Type::FUNCTION_DECLARATION) {
             FunctionDeclaration* func_decl = static_cast<FunctionDeclaration*>(declaration_.get());
@@ -3654,13 +3619,31 @@ Value ExportStatement::evaluate(Context& ctx) {
         } else if (declaration_->get_type() == Type::VARIABLE_DECLARATION) {
             VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(declaration_.get());
 
+            auto record = [&](const std::string& var_name) {
+                if (var_name.empty() || !ctx.has_binding(var_name)) return;
+                exports_obj->set_property(var_name, ctx.get_binding(var_name));
+                record_local_name(var_name, var_name);
+            };
             for (const auto& declarator : var_decl->get_declarations()) {
-                std::string var_name = declarator->get_id()->get_name();
-
-                if (ctx.has_binding(var_name)) {
-                    Value var_value = ctx.get_binding(var_name);
-                    exports_obj->set_property(var_name, var_value);
-                    record_local_name(var_name, var_name);
+                // `export const [a, b] = ...` binds through a pattern, so the
+                // names are its leaves rather than the declarator's own id.
+                if (declarator->get_init() &&
+                    declarator->get_init()->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                    std::vector<std::string> bound;
+                    static_cast<const DestructuringAssignment*>(declarator->get_init())
+                        ->collect_bound_names(bound);
+                    for (const auto& bn : bound) record(bn);
+                    continue;
+                }
+                record(declarator->get_id()->get_name());
+            }
+        } else if (declaration_->get_type() == Type::CLASS_DECLARATION) {
+            auto* class_decl = static_cast<ClassDeclaration*>(declaration_.get());
+            if (class_decl->get_id() && !class_decl->get_id()->get_name().empty()) {
+                const std::string& cname = class_decl->get_id()->get_name();
+                if (ctx.has_binding(cname)) {
+                    exports_obj->set_property(cname, ctx.get_binding(cname));
+                    record_local_name(cname, cname);
                 }
             }
         }

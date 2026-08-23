@@ -31,12 +31,6 @@
 
 namespace Quanta {
 
-// QUANTA_VM is read once at startup and never changes, but VM::enabled() lives
-// in another translation unit, so each of the three call sites below paid a
-// real call plus a static-init guard on every invocation -- one of them on the
-// register-mode gate, i.e. every JS call.
-static const bool g_vm_enabled = VM::enabled();
-
 // IsAnonymousFunctionDefinition, for the NamedEvaluation a default parameter
 // performs on its initializer.
 static bool is_anon_func_def(const ASTNode* node) {
@@ -538,7 +532,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // cannot be missed here, because `super`, a private name and a direct eval
     // each force env_mode, which this same condition already excludes.
     bool ctor_ok = !is_class_constructor_ || !is_derived_ctor();
-    if (g_vm_enabled && executable_ && executable_->fast_gate && ctor_ok &&
+    if (executable_ && executable_->fast_gate && ctor_ok &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
         // The context is heap-allocated and survivor-managed like the full
         // path: native code (promise reactions, job queues) can capture the
@@ -612,7 +606,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // constant or does not apply. Everything that is not constant is a term of
     // this gate, so entering here means the general path would have done
     // exactly what follows.
-    if (g_vm_enabled && executable_ && executable_->fast_env_gate && !is_arrow_ &&
+    if (executable_ && executable_->fast_env_gate && !is_arrow_ &&
         !is_class_constructor_ &&
         !(ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined())) {
         const ClassSlots& slots = class_slots();
@@ -902,7 +896,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     // so the per-call binding insert -- and the hash-map growth it forces in
     // the fresh Environment -- is skipped. First call (chunk not compiled
     // yet) and every non-VM path still bind normally.
-    bool vm_register_fast = g_vm_enabled && !executable_->vm_incompatible && executable_->bytecode_chunk &&
+    bool vm_register_fast = !executable_->vm_incompatible && executable_->bytecode_chunk &&
                             !executable_->bytecode_chunk->env_mode && !function_context.this_needs_super();
     if (!vm_register_fast) {
         if (!function_context.create_binding("this", actual_this, true)) {
@@ -966,7 +960,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     // A concise arrow body is an expression, and the compiler now takes one
     // (as an implicit return), so the shape of the body no longer decides
     // whether a function is compiled at all.
-    if (g_vm_enabled && !executable_->vm_incompatible && ast) {
+    if (!executable_->vm_incompatible && ast) {
         if (!executable_->bytecode_chunk) {
             // A `with` environment in the captured scope chain makes write-
             // reference resolution order observable: the target is bound (and
@@ -1075,266 +1069,10 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
         }
     }
 
-    // For non-simple params (defaults/rest/destructuring), create arguments early
-    // so default expressions can reference it (spec: unmapped arguments for non-simple).
-    if (!is_arrow_ && !parameter_objects_.empty()) {
-        bool has_complex = false;
-        for (const auto& p : parameter_objects_) {
-            if (p->has_default() || p->is_rest() || p->has_destructuring()) { has_complex = true; break; }
-        }
-        if (has_complex && !function_context.has_binding("arguments")) {
-            // The same object the ordinary path builds, which is where the
-            // prototype, @@iterator and the callee poison-pill come from. A
-            // non-simple parameter list makes it unmapped, which is what the
-            // spec asks for here anyway.
-            create_arguments_object(function_context, args);
-        }
-    }
-
-    if (!parameter_objects_.empty()) {
-        size_t regular_param_count = 0;
-
-        for (const auto& param : parameter_objects_) {
-            if (!param->is_rest()) {
-                regular_param_count++;
-            }
-        }
-
-        {
-            bool args_conflict = !is_arrow_;
-            if (!args_conflict) {
-                for (const auto& p : parameter_objects_) {
-                    if (!p->is_rest() && !p->has_destructuring() && p->get_name() && p->get_name()->get_name() == "arguments") {
-                        args_conflict = true;
-                        break;
-                    }
-                }
-            }
-            function_context.set_eval_arguments_conflict(args_conflict);
-        }
-        {
-            std::unordered_set<std::string> pnames;
-            for (const auto& p : parameter_objects_) {
-                if (p->get_name() && !p->get_name()->get_name().empty())
-                    pnames.insert(p->get_name()->get_name());
-            }
-            function_context.set_eval_param_names(std::move(pnames));
-        }
-        function_context.set_in_param_eval(true);
-        for (size_t i = 0; i < parameter_objects_.size(); ++i) {
-            const auto& param = parameter_objects_[i];
-
-            if (param->is_rest()) {
-                auto rest_array = ObjectFactory::create_array(0);
-
-                for (size_t j = regular_param_count; j < args.size(); ++j) {
-                    rest_array->push(args[j]);
-                }
-
-                Value rest_val(rest_array.release());
-                if (param->has_destructuring()) {
-                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
-                    if (destr) {
-                        declare_pattern_parameter_names(function_context, param->get_destructuring_pattern());
-                        destr->evaluate_with_value(function_context, rest_val);
-                        if (function_context.has_exception()) {
-                            function_context.set_in_param_eval(false);
-                            ctx.throw_exception(function_context.get_exception(), true);
-                            return Value();
-                        }
-                    }
-                } else {
-                    function_context.create_binding(param->get_name()->get_name(), rest_val, false);
-                }
-            } else {
-                const std::string& pname = param->get_name() ? param->get_name()->get_name() : std::string();
-                // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
-                if (!pname.empty() && !param->has_destructuring()) {
-                    if (function_context.get_lexical_environment())
-                        function_context.get_lexical_environment()->create_uninitialized_binding(pname);
-                }
-                Value arg_value;
-
-                if (i < args.size() && !args[i].is_undefined()) {
-                    arg_value = args[i];
-                } else if (param->has_default()) {
-                    // NamedEvaluation: an anonymous default takes the parameter's
-                    // name. A class has to learn it before evaluating, since its
-                    // static initializers can read this.name; everything else is
-                    // named once it exists.
-                    ASTNode* def = param->get_default_value();
-                    const bool infer = !pname.empty() && !param->has_destructuring();
-                    if (infer && def->get_type() == ASTNode::Type::CLASS_DECLARATION) {
-                        auto* cd = static_cast<ClassDeclaration*>(def);
-                        if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
-                            cd->set_inferred_name(pname);
-                        }
-                    }
-                    arg_value = def->evaluate(function_context);
-                    if (function_context.has_exception()) {
-                        function_context.set_in_param_eval(false);
-                        ctx.throw_exception(function_context.get_exception(), true);
-                        return Value();
-                    }
-                    if (infer && arg_value.is_function() && is_anon_func_def(def)) {
-                        Function* fn = arg_value.as_function();
-                        if (fn->get_name().empty() || fn->get_name() == "<arrow>") fn->set_name(pname);
-                    }
-                } else {
-                    arg_value = Value();
-                }
-
-                if (param->has_destructuring()) {
-                    auto* pattern = param->get_destructuring_pattern();
-                    auto* destructuring = dynamic_cast<DestructuringAssignment*>(pattern);
-                    if (destructuring) {
-                        declare_pattern_parameter_names(function_context, pattern);
-                        destructuring->evaluate_with_value(function_context, arg_value);
-                        if (function_context.has_exception()) {
-                            function_context.set_in_param_eval(false);
-                            ctx.throw_exception(function_context.get_exception(), true);
-                            return Value();
-                        }
-                    }
-                } else if (!pname.empty()) {
-                    // Initialize the binding (was in TDZ during default evaluation)
-                    if (function_context.get_lexical_environment())
-                        function_context.get_lexical_environment()->initialize_binding(pname, arg_value);
-                    else
-                        function_context.create_binding(pname, arg_value, true);
-                }
-            }
-        }
-        function_context.set_in_param_eval(false);
-    } else {
-        const std::vector<std::string>& params = get_parameters();
-        for (size_t i = 0; i < params.size(); ++i) {
-            Value arg_value = (i < args.size()) ? args[i] : Value();
-            // ES1: Function parameters are mutable bindings
-            function_context.create_binding(params[i], arg_value, true);
-        }
-    }
-    
-    // Arrow functions don't have their own arguments object -- they resolve
-    // `arguments` lexically through closure_environment_ to the enclosing scope.
-    // Everything else only gets one if the body (or a parameter initializer)
-    // can actually name it, mirroring the register path's needs_arguments gate.
-    // A direct eval keeps it: eval can name `arguments` at runtime, which no
-    // static walk of this body can see.
-    if (!is_arrow_) {
-        if (executable_->needs_arguments_state < 0) {
-            bool needs = true;
-            if (body_) {
-                needs = BytecodeCompiler::references_arguments(body_);
-                if (!needs) {
-                    for (const auto& p : parameter_objects_) {
-                        if ((p->has_default() &&
-                             BytecodeCompiler::references_arguments(p->get_default_value())) ||
-                            (p->has_destructuring() &&
-                             BytecodeCompiler::references_arguments(p->get_destructuring_pattern()))) {
-                            needs = true;
-                            break;
-                        }
-                    }
-                }
-                if (!needs && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT &&
-                    static_cast<BlockStatement*>(body_)->has_direct_eval_cached()) {
-                    needs = true;
-                }
-            }
-            executable_->needs_arguments_state = needs ? 1 : 0;
-        }
-        if (executable_->needs_arguments_state == 1) {
-            create_arguments_object(function_context, args);
-        }
-    }
-
-    // Use actual_this which respects strict mode (can be undefined in strict mode)
-    function_context.create_binding("this", actual_this, false);
-
-    if (body_) {
-        // ES5: Named function expressions have their name as an immutable binding
-        const std::string& self_name = get_name();
-        if (!self_name.empty() && self_name != "<anonymous>" && !function_context.has_binding(self_name)) {
-            function_context.create_binding(self_name, Value(this), false);
-        }
-
-        // The scope the parameters were bound in, kept only when the body gets
-        // a variable environment of its own below -- that is the one case where
-        // a var can repeat a parameter name and not find it.
-        Environment* param_env = nullptr;
-        {
-            bool has_complex_params = false;
-            for (const auto& p : parameter_objects_) {
-                if (p->has_default() || p->has_destructuring()) {
-                    has_complex_params = true;
-                    break;
-                }
-            }
-            if (has_complex_params) {
-                param_env = function_context.get_lexical_environment();
-                function_context.push_block_scope();
-                function_context.set_variable_environment(function_context.get_lexical_environment());
-            }
-        }
-
-        if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            scan_for_var_declarations(body_, function_context, param_env);
-        }
-
-        Context* prev_context = Object::current_context_;
-        Object::current_context_ = &function_context;
-        Value result = body_->evaluate(function_context);
-        Object::current_context_ = prev_context;
-
-        // Propagate super_called flag to parent context
-        if (function_context.was_super_called()) {
-            ctx.set_super_called(true);
-            if (function_context.last_super_override()) {
-                ctx.set_last_super_override(function_context.last_super_override());
-            }
-            if (is_arrow_ && closure_context_) {
-                closure_context_->set_super_called(true);
-                closure_context_->set_this_needs_super(false);
-            }
-        }
-
-        // Outer-variable writes during body execution went straight through
-        // closure_environment_ to the real defining Environment already (live,
-        // by construction) -- no post-hoc diff/write-back/sibling-update needed.
-
-        
-        if (function_context.has_return_value()) {
-            Value rv = function_context.get_return_value();
-            // A derived ctor's bare `return;` still resolves to the current
-            // `this` -- which super() may have swapped to an override object.
-            if (!(is_class_constructor_ && rv.is_undefined())) {
-                return rv;
-            }
-        }
-
-        if (function_context.has_exception()) {
-            ctx.throw_exception(function_context.get_exception(), true);
-            return Value();
-        }
-
-        // For class constructors: if super() updated this to a new object, return it
-        // so Function::construct() can use the correct object
-        if (is_class_constructor_) {
-            Object* final_this = function_context.get_this_binding();
-            if (final_this && actual_this.is_object() && final_this != actual_this.as_object()) {
-                return Value(final_this);
-            }
-        }
-
-        // Concise arrow functions (`() => expr`) have non-block bodies -- return the expression result.
-        // Functions with block bodies return undefined unless they have explicit `return`.
-        if (body_ && body_->get_type() != ASTNode::Type::BLOCK_STATEMENT) {
-            return result;  // concise arrow body
-        }
-        return Value();  // block body without explicit return
-    }
-    
+    // The body is compiled or it does not run: there is no second engine to
+    // hand it to. A refusal here is a gap in the compiler, and saying so is
+    // the only way it stays visible.
+    ctx.throw_type_error("Internal: function body could not be compiled");
     return Value();
 }
 

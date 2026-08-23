@@ -68,10 +68,7 @@ void decrement_loop_depth() {
 }
 
 
-Value NumberLiteral::evaluate(Context& ctx) {
-    (void)ctx;
-    return Value(value_);
-}
+
 
 std::string NumberLiteral::to_string() const {
     return Value(value_).to_string();
@@ -82,12 +79,7 @@ std::unique_ptr<ASTNode> NumberLiteral::clone() const {
 }
 
 
-Value StringLiteral::evaluate(Context& ctx) {
-    (void)ctx;
-    // No caching: an AST-held String* is invisible to the collector and dies
-    // at the first sweep; allocation is a bump-pointer hit anyway.
-    return Value(new String(value_));
-}
+
 
 std::string StringLiteral::to_string() const {
     return "\"" + value_ + "\"";
@@ -98,10 +90,7 @@ std::unique_ptr<ASTNode> StringLiteral::clone() const {
 }
 
 
-Value BooleanLiteral::evaluate(Context& ctx) {
-    (void)ctx;
-    return Value(value_);
-}
+
 
 std::string BooleanLiteral::to_string() const {
     return value_ ? "true" : "false";
@@ -112,10 +101,7 @@ std::unique_ptr<ASTNode> BooleanLiteral::clone() const {
 }
 
 
-Value NullLiteral::evaluate(Context& ctx) {
-    (void)ctx;
-    return Value::null();
-}
+
 
 std::string NullLiteral::to_string() const {
     return "null";
@@ -126,16 +112,7 @@ std::unique_ptr<ASTNode> NullLiteral::clone() const {
 }
 
 
-Value BigIntLiteral::evaluate(Context& ctx) {
-    (void)ctx;
-    try {
-        auto bigint = std::make_unique<BigInt>(value_);
-        return Value(bigint.release());
-    } catch (const std::exception& e) {
-        ctx.throw_error("Invalid BigInt literal: " + value_);
-        return Value();
-    }
-}
+
 
 std::string BigIntLiteral::to_string() const {
     return value_ + "n";
@@ -146,10 +123,7 @@ std::unique_ptr<ASTNode> BigIntLiteral::clone() const {
 }
 
 
-Value UndefinedLiteral::evaluate(Context& ctx) {
-    (void)ctx;
-    return Value();
-}
+
 
 std::string UndefinedLiteral::to_string() const {
     return "undefined";
@@ -230,22 +204,7 @@ void TemplateLiteral::cache_template_object(const Value& obj) {
     store[template_object_slot_] = obj;
 }
 
-Value TemplateLiteral::evaluate(Context& ctx) {
-    std::string result;
 
-    for (const auto& element : elements_) {
-        if (element.type == Element::Type::TEXT) {
-            result += element.text;
-        } else if (element.type == Element::Type::EXPRESSION) {
-            Value expr_value = element.expression->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            result += stringify_element(ctx, expr_value);
-            if (ctx.has_exception()) return Value();
-        }
-    }
-
-    return Value(result);
-}
 
 std::string TemplateLiteral::to_string() const {
     std::ostringstream oss;
@@ -278,10 +237,7 @@ std::unique_ptr<ASTNode> TemplateLiteral::clone() const {
 }
 
 
-Value Parameter::evaluate(Context& ctx) {
-    (void)ctx;
-    return Value();
-}
+
 
 std::string Parameter::to_string() const {
     std::string result = "";
@@ -308,64 +264,7 @@ std::unique_ptr<ASTNode> Parameter::clone() const {
 }
 
 
-Value Identifier::evaluate(Context& ctx) {
-    if (name_ == "super") {
-        if (ctx.this_needs_super()) {
-            ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
-            return Value();
-        }
-        Value super_constructor = ctx.get_binding("__super__");
-        return super_constructor;
-    }
-    // Derived-ctor this-TDZ (spec 9.1.1.3.4 GetThisBinding): `this` is uninitialized
-    // until super() returns. Only user-level reads route through here -- internal
-    // engine reads use ctx.get_binding("this") directly and stay exempt.
-    if (name_ == "this" && ctx.this_needs_super()) {
-        ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
-        return Value();
-    }
 
-    // `this` is frame state, not a scope-chain binding -- no environment owns
-    // it, so the walk below would report it undefined.
-    if (name_ == "this") return ctx.get_this_value();
-
-    // find_binding_env walks the scope chain exactly once (checking @@unscopables/Proxy traps at most once per env);
-    // avoid has_binding + get_binding which would each re-walk the chain and double-fire traps.
-    Environment* ref_env = ctx.find_binding_env(name_);
-    // A Proxy `has` trap consulted while walking the scope chain may have thrown (e.g. a with-statement binding object backed by a Proxy).
-    // Don't clobber that pending exception with a synthesized ReferenceError below.
-    if (ctx.has_exception()) return Value();
-    // The dead zone is a property of the binding the reference RESOLVED to,
-    // so it is asked here rather than on the way in. Asking first walked the
-    // chain past any object environment, which meant `with (o) { x }` reported
-    // an outer `let x` as unreachable even though o already bound the name and
-    // ended the search. Re-asking the chain instead is not an option: an
-    // object environment's HasBinding is observable through Proxy traps and
-    // @@unscopables, and must fire exactly once.
-    if (ref_env && ref_env->binding_in_tdz(name_)) {
-        ctx.throw_reference_error("Cannot access '" + name_ + "' before initialization");
-        return Value();
-    }
-    if (!ref_env) {
-        static const std::set<std::string> known_globals = {
-            "console", "Math", "JSON", "Date", "Array", "Object", "String", "Number",
-            "Boolean", "RegExp", "Error", "TypeError", "ReferenceError", "SyntaxError",
-            "undefined", "null", "true", "false", "Infinity", "NaN", "isNaN", "isFinite",
-            "parseInt", "parseFloat", "decodeURI", "decodeURIComponent", "encodeURI",
-            "encodeURIComponent", "globalThis", "window", "global", "self"
-        };
-
-        if (known_globals.find(name_) == known_globals.end()) {
-            ctx.throw_reference_error("'" + name_ + "' is not defined");
-            return Value();
-        }
-    }
-
-    Value result = ref_env ? ref_env->get_binding_direct(name_, &ctx) : ctx.get_binding(name_);
-    if (ctx.has_exception()) return Value();
-
-    return result;
-}
 
 std::string Identifier::to_string() const {
     return name_;
@@ -388,10 +287,7 @@ const char* EngineHelper::slot_name(Kind kind) {
     return "";
 }
 
-Value EngineHelper::evaluate(Context& ctx) {
-    Object* global = ctx.get_global_object();
-    return global ? global->get_internal_slot(slot_name(kind_)) : Value();
-}
+
 
 std::string EngineHelper::to_string() const {
     return slot_name(kind_);
