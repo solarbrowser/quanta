@@ -329,6 +329,10 @@ enum class Op : uint8_t {
     // construct the compiler hands back whole, and giving it its own opcode
     // keeps EvalAst meaning "a gap the compiler could not emit".
     DefineClass,               // k
+    // r -- super(...spread): the arguments are already gathered into the array
+    // in that register, so the ceremony reads them from there rather than from
+    // a run of registers the way SuperCall does.
+    SuperCallSpread,           // r
 
     kCount
 };

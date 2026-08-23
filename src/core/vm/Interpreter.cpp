@@ -3824,6 +3824,34 @@ Value h_gen_SetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_SuperCallSpread(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t arr_reg = code[pc];
+                pc += 1;
+                std::vector<Value> call_args;
+                if (Object* arr = regs[arr_reg].is_object() ? regs[arr_reg].as_object() : nullptr) {
+                    uint32_t n = static_cast<uint32_t>(arr->get_length());
+                    call_args.reserve(n);
+                    for (uint32_t i = 0; i < n; i++) call_args.push_back(arr->get_element(i));
+                }
+                acc = perform_super_call(ctx, call_args, ctx.was_super_called());
+                CHECK_EXC();
+                Collector::safepoint();
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_SuperCall(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5275,6 +5303,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::DeclareFunction)] = &h_gen_DeclareFunction;
     t[static_cast<uint8_t>(Op::EvalAst)] = &h_gen_EvalAst;
     t[static_cast<uint8_t>(Op::DefineClass)] = &h_gen_DefineClass;
+    t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
     t[static_cast<uint8_t>(Op::CopyRestProperties)] = &h_gen_CopyRestProperties;
     t[static_cast<uint8_t>(Op::Call)] = &h_gen_Call;
     t[static_cast<uint8_t>(Op::CallResolved)] = &h_gen_CallResolved;

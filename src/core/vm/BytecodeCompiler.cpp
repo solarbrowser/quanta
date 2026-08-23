@@ -5180,6 +5180,10 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 // the middle of the pattern, between the reference being
                 // resolved and the element being read. The tree-walker keeps
                 // that shape.
+                // A suspension inside the target's own expression parks the
+                // pattern between resolving the reference and reading the
+                // element; only a member target's does, since a plain name has
+                // no expression of its own.
                 if (suspendable_ && contains_suspend(m)) return false;
                 continue;
             }
@@ -5215,6 +5219,10 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
                 // the middle of the pattern, between the reference being
                 // resolved and the element being read. The tree-walker keeps
                 // that shape.
+                // A suspension inside the target's own expression parks the
+                // pattern between resolving the reference and reading the
+                // element; only a member target's does, since a plain name has
+                // no expression of its own.
                 if (suspendable_ && contains_suspend(m)) return false;
                 continue;
             }
@@ -6036,6 +6044,7 @@ bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
 // and any locals the delegated subtree captures resolve through a real
 // Environment (env_mode is forced whenever uses_super_or_private matches).
 bool BytecodeCompiler::emit_treewalker_delegate(const ASTNode* node) {
+
     if (!env_mode_) return false;
     if (!full_env_) {
         // Selective storage: the delegated subtree resolves names through the
@@ -8159,7 +8168,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // them, and nothing on the node itself tells the two apart.
             if (!compound && (expr->get_left()->get_type() == ASTNode::Type::ARRAY_LITERAL ||
                               expr->get_left()->get_type() == ASTNode::Type::OBJECT_LITERAL)) {
-                if (pattern_contains_suspension(expr->get_left()) ||
+                if (false ||
                     !pattern_is_emittable(expr->get_left(), /*is_lexical=*/false,
                                           /*is_assignment=*/true)) {
                     return emit_treewalker_delegate(node);
@@ -8320,13 +8329,19 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             if (call_args.size() > 200) return false;
             const bool spread_args = has_spread(call_args);
             if (spread_args) {
-                // `super(...)` needs the derived-constructor ceremony and stays
-                // on the tree-walker. A member callee falls through to the
-                // branch below, which resolves the receiver first and then
-                // emits the spread form.
+                // `super(...spread)`: the ceremony itself lives in
+                // perform_super_call, so this only has to gather the arguments
+                // the same way any other spread call does and hand the array
+                // over. The super bindings it reads live on the context chain.
                 if (callee->get_type() == ASTNode::Type::IDENTIFIER &&
                     static_cast<const Identifier*>(callee)->get_name() == "super") {
-                    return emit_treewalker_delegate(node);
+                    if (!env_mode_) return emit_treewalker_delegate(node);
+                    int super_arr = emit_spread_array(call_args);
+                    if (super_arr < 0) return emit_treewalker_delegate(node);
+                    emit(Op::SuperCallSpread);
+                    emit_u8(static_cast<uint8_t>(super_arr));
+                    free_temp(super_arr);
+                    return !failed_;
                 }
 
             }
@@ -9030,7 +9045,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             const ASTNode* lit = n->get_pattern_literal();
             // An arbitrary AssignmentTarget (a member expression) still goes to
             // the tree-walker whole; plain names the pattern emitter can write.
-            if (!lit || !n->get_source() || pattern_contains_suspension(lit) ||
+            if (!lit || !n->get_source() ||
                 !pattern_is_emittable(lit, /*is_lexical=*/false, /*is_assignment=*/true)) {
                 return emit_treewalker_delegate(node);
             }
