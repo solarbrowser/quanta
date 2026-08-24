@@ -14,10 +14,14 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/Promise.h"
+#include "quanta/core/runtime/Async.h"
+#include "quanta/core/vm/BytecodeCompiler.h"
+#include <algorithm>
 #include <fstream>
 #include <filesystem>
 #include <iostream>
-#include <algorithm>
+
 
 namespace Quanta {
 
@@ -108,6 +112,12 @@ void Module::add_star_source(Module* source) {
     if (!source || source == this) return;
     for (Module* m : star_sources_) if (m == source) return;
     star_sources_.push_back(source);
+}
+
+void Module::add_async_parent(Module* parent) {
+    if (!parent) return;
+    for (Module* m : async_parents_) if (m == parent) return;
+    async_parents_.push_back(parent);
 }
 
 void Module::add_requested(Module* dep) {
@@ -253,6 +263,7 @@ void Module::set_context(std::unique_ptr<Context> context) {
 void Module::gc_trace(Visitor& v) const {
     for (const auto& kv : exports_) v.visit(kv.second);
     v.visit(evaluation_promise_);
+    v.visit(completion_);
     v.visit(thrown_exception_);
     v.visit(namespace_);
 }
@@ -385,41 +396,184 @@ bool ModuleLoader::link_graph(Module* root) {
 // Dependencies first, each module once. A module whose dependency threw does
 // not run, and everything in a cycle reports the one error its root recorded.
 void ModuleLoader::evaluate_graph(Module* root) {
-    if (!root) return;
-    if (root->is_evaluated()) {
-        // Reaching a module that is still on the stack closes a cycle:
-        // everything that started since it began belongs to that cycle and
-        // reports the one error recorded on this root.
-        bool on_stack = false;
-        for (Module* m : evaluating_) if (m == root) { on_stack = true; break; }
-        if (on_stack) {
-            for (size_t i = evaluating_.size(); i-- > 0 && evaluating_[i] != root; ) {
-                root->add_cycle_member(evaluating_[i]);
+    if (!root || root->is_evaluated() || root->has_thrown_exception()) return;
+    std::vector<Module*> stack;
+    inner_evaluate(root, stack, 0);
+}
+
+// InnerModuleEvaluation. The index and the stack are what turn the walk into a
+// cycle detector: a module whose ancestor index comes back equal to its own
+// index is the root of everything still above it on the stack, and that root is
+// what an outsider waits on and what records the error the cycle reports.
+int ModuleLoader::inner_evaluate(Module* module, std::vector<Module*>& stack, int index) {
+    if (!module) return index;
+    if (module->is_evaluated()) return index;   // done, or already on this walk
+
+    module->mark_evaluating();
+    module->set_dfs_index(index);
+    module->set_dfs_ancestor_index(index);
+    ++index;
+    stack.push_back(module);
+
+    for (Module* dep : module->requested()) {
+        if (!dep) continue;
+        index = inner_evaluate(dep, stack, index);
+        if (dep->has_thrown_exception()) {
+            module->set_thrown_exception(dep->get_thrown_exception());
+            return index;
+        }
+        Module* waited_on = dep;
+        if (dep->is_on_eval_stack()) {
+            // Still climbing out of the component this module belongs to.
+            module->set_dfs_ancestor_index(
+                std::min(module->dfs_ancestor_index(), dep->dfs_ancestor_index()));
+        } else {
+            waited_on = dep->cycle_root();
+            if (waited_on->has_thrown_exception()) {
+                module->set_thrown_exception(waited_on->get_thrown_exception());
+                return index;
             }
+        }
+        if (waited_on->is_async_evaluating()) {
+            module->add_pending_async_dep();
+            waited_on->add_async_parent(module);
+        }
+    }
+
+    if (module->pending_async_deps() > 0 || module->has_top_level_await()) {
+        module->set_async_evaluating(true);
+        module->set_async_order(next_async_order_++);
+        if (module->pending_async_deps() == 0) {
+            execute_module_body(module, /*notify_on_success=*/true);
+        }
+    } else {
+        execute_module_body(module, /*notify_on_success=*/true);
+    }
+
+    if (module->dfs_ancestor_index() == module->dfs_index()) {
+        while (!stack.empty()) {
+            Module* member = stack.back();
+            stack.pop_back();
+            if (member->is_async_evaluating()) member->mark_evaluating_async();
+            else member->mark_evaluated();
+            member->set_cycle_root(module);
+            // The root records the error the whole component reports, so it
+            // has to know who else is in it.
+            module->add_cycle_member(member);
+            if (member == module) break;
+        }
+    }
+    return index;
+}
+
+void ModuleLoader::execute_module_body(Module* module, bool notify_on_success) {
+    if (!module || module->has_thrown_exception()) return;
+
+    evaluating_.push_back(module);
+    evaluate_module(module);
+    evaluating_.pop_back();
+
+    if (module->has_thrown_exception()) {
+        async_module_finished(module, /*ok=*/false, module->get_thrown_exception());
+        return;
+    }
+
+    // A body that suspended left a promise for its own completion behind.
+    Value completion = module->get_evaluation_promise();
+    Promise* pending = AsyncUtils::is_promise(completion)
+                           ? static_cast<Promise*>(completion.as_object())
+                           : nullptr;
+    if (!pending || pending->get_state() != PromiseState::PENDING) {
+        // Finished where it stands. A module run from an exec list still
+        // settles its own completion, but does not release its ancestors again:
+        // the gather that put it there already did.
+        async_module_finished(module, /*ok=*/true, Value(), /*wake_parents=*/notify_on_success);
+        return;
+    }
+
+    module->set_async_evaluating(true);
+    if (module->async_order() == 0) module->set_async_order(next_async_order_++);
+    ModuleLoader* self = this;
+    Module* waiting = module;
+    auto on_done = ObjectFactory::create_native_function("",
+        [self, waiting](Context&, std::span<const Value>, Value) -> Value {
+            self->async_module_finished(waiting, true, Value());
+            return Value();
+        }, 1);
+    auto on_fail = ObjectFactory::create_native_function("",
+        [self, waiting](Context&, std::span<const Value> a, Value) -> Value {
+            self->async_module_finished(waiting, false, a.empty() ? Value() : a[0]);
+            return Value();
+        }, 1);
+    pending->then(on_done.release(), on_fail.release());
+}
+
+// AsyncModuleExecutionFulfilled / Rejected: a module that finishes releases
+// everything that was counting on it, and the ones that reach zero run now.
+void ModuleLoader::async_module_finished(Module* module, bool ok, const Value& reason,
+                                        bool wake_parents) {
+    if (!module) return;
+    module->set_async_evaluating(false);
+    module->mark_evaluated();
+    if (!ok && !module->has_thrown_exception()) module->set_thrown_exception(reason);
+
+    // Settled before anything that was waiting on this module runs: whoever
+    // asked for the module directly sees it finish first.
+    if (Promise* own = AsyncUtils::is_promise(module->completion())
+                           ? static_cast<Promise*>(module->completion().as_object())
+                           : nullptr) {
+        if (own->get_state() == PromiseState::PENDING) {
+            if (ok) own->fulfill(Value());
+            else own->reject(module->get_thrown_exception());
+        }
+    }
+
+    if (module->has_thrown_exception()) {
+        for (Module* member : module->cycle_members()) {
+            if (!member->has_thrown_exception()) {
+                member->set_thrown_exception(module->get_thrown_exception());
+            }
+        }
+    }
+
+    if (!ok) {
+        // Copied: a parent's own completion can reach back here.
+        std::vector<Module*> parents = module->async_parents();
+        for (Module* parent : parents) {
+            if (!parent || parent->has_thrown_exception()) continue;
+            parent->set_thrown_exception(module->get_thrown_exception());
+            parent->set_async_evaluating(false);
+            async_module_finished(parent, false, module->get_thrown_exception());
         }
         return;
     }
-    if (root->has_thrown_exception()) return;
-    root->mark_evaluated();
 
-    evaluating_.push_back(root);
-    for (Module* dep : root->requested()) {
-        evaluate_graph(dep);
-        if (dep && dep->has_thrown_exception()) {
-            root->set_thrown_exception(dep->get_thrown_exception());
-            evaluating_.pop_back();
-            return;
-        }
+    if (!wake_parents) return;
+
+    // Which ancestors are now free is settled before any of them runs, and
+    // they run in the order they became async -- not in the order the walk
+    // happens to reach them. A module that suspends again takes its own
+    // ancestors with it, which is why the gather stops at one.
+    std::vector<Module*> exec_list;
+    gather_available_ancestors(module, exec_list);
+    std::sort(exec_list.begin(), exec_list.end(), [](Module* a, Module* b) {
+        return a->async_order() < b->async_order();
+    });
+    for (Module* m : exec_list) {
+        m->set_async_evaluating(false);
+        execute_module_body(m, /*notify_on_success=*/false);
     }
-    evaluate_module(root);
-    evaluating_.pop_back();
+}
 
-    if (root->has_thrown_exception()) {
-        for (Module* member : root->cycle_members()) {
-            if (!member->has_thrown_exception()) {
-                member->set_thrown_exception(root->get_thrown_exception());
-            }
-        }
+void ModuleLoader::gather_available_ancestors(Module* module, std::vector<Module*>& exec_list) {
+    for (Module* parent : module->async_parents()) {
+        if (!parent || parent->has_thrown_exception()) continue;
+        bool seen = false;
+        for (Module* m : exec_list) if (m == parent) { seen = true; break; }
+        if (seen) continue;
+        if (!parent->release_pending_async_dep()) continue;
+        exec_list.push_back(parent);
+        if (!parent->has_top_level_await()) gather_available_ancestors(parent, exec_list);
     }
 }
 
@@ -866,6 +1020,8 @@ bool ModuleLoader::prepare_module_file(Module* module, const std::string& filena
             return true;
         }
 
+        module->set_has_top_level_await(
+            BytecodeCompiler::module_body_suspends(ast->get_statements()));
         module->set_program(std::move(ast));
         return true;
     } catch (const std::exception& e) {
@@ -878,11 +1034,9 @@ void ModuleLoader::evaluate_module(Module* module) {
     Program* program = static_cast<Program*>(module->program());
     if (!program || !module->get_context()) return;
     try {
-        // A top-level await can only suspend when nothing is waiting on this
-        // module: an importer further down the stack has already started
-        // evaluating and has no way to be resumed yet, so those still run to
-        // completion where they stand.
-        program->set_may_suspend(evaluating_.size() <= 1);
+        // Any module may suspend: what waits on it counts it as a pending
+        // dependency and runs when it finishes.
+        program->set_may_suspend(true);
         program->evaluate(*module->get_context());
         module->set_evaluation_promise(program->completion_promise());
 

@@ -2789,6 +2789,13 @@ bool contains_suspend(const ASTNode* node) {
             for (const auto& s : n->get_statements()) if (contains_suspend(s.get())) return true;
             return false;
         }
+        case ASTNode::Type::EXPORT_STATEMENT: {
+            // `export default await x` and `export var y = await z` suspend the
+            // module exactly as the bare expressions would.
+            const auto* n = static_cast<const ExportStatement*>(node);
+            return contains_suspend(n->get_default_export()) ||
+                   contains_suspend(n->get_declaration());
+        }
         case ASTNode::Type::IF_STATEMENT: {
             const auto* n = static_cast<const IfStatement*>(node);
             return contains_suspend(n->get_test()) || contains_suspend(n->get_consequent()) ||
@@ -4344,13 +4351,17 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     return std::move(compiler.chunk_);
 }
 
+bool BytecodeCompiler::module_body_suspends(
+    const std::vector<std::unique_ptr<ASTNode>>& statements) {
+    for (const auto& st : statements) {
+        if (contains_suspend(st.get())) return true;
+    }
+    return false;
+}
+
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_module_body(
     const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with) {
-    bool suspends = false;
-    for (const auto& st : statements) {
-        if (contains_suspend(st.get())) { suspends = true; break; }
-    }
-    if (!suspends) return nullptr;
+    if (!module_body_suspends(statements)) return nullptr;
     return compile_script(statements, outer_with, /*track_completion=*/false,
                           /*suspendable=*/true);
 }

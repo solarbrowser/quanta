@@ -39,10 +39,31 @@ private:
     std::vector<Module*> cycle_members_;
     // Every module this one requests, in source order: the graph's edges.
     std::vector<Module*> requested_;
-    bool evaluated_ = false;
+    // Where the evaluation walk has got to. "Evaluating" means on the walk's
+    // own stack, which is what separates a module in the cycle being climbed
+    // out of from one that already belongs to a finished component.
+    enum class EvalStatus : uint8_t { NotStarted, Evaluating, EvaluatingAsync, Evaluated };
+    EvalStatus status_ = EvalStatus::NotStarted;
+    // A module is async while its own body is suspended on a top-level await,
+    // or while it is still waiting for a dependency that is. Its parents wait
+    // on it by counting; it wakes them when it finishes.
+    bool async_evaluating_ = false;
+    int pending_async_deps_ = 0;
+    std::vector<Module*> async_parents_;
+    // The order modules became async in, which is the order they run in once
+    // what they were waiting for arrives.
+    int async_order_ = 0;
+    bool has_tla_ = false;
+    // Tarjan bookkeeping for the evaluation walk. A cycle's members share one
+    // root, and that root is what an outsider waits on and what records the
+    // error the whole cycle reports.
+    int dfs_index_ = 0;
+    int dfs_ancestor_index_ = 0;
+    Module* cycle_root_ = nullptr;
     std::unique_ptr<Context> module_context_;
     std::unique_ptr<ASTNode> program_;
     Value evaluation_promise_;
+    Value completion_;
     bool loaded_;
     bool loading_;
     Value thrown_exception_;
@@ -112,8 +133,30 @@ public:
 
     void add_requested(Module* dep);
     const std::vector<Module*>& requested() const { return requested_; }
-    bool is_evaluated() const { return evaluated_; }
-    void mark_evaluated() { evaluated_ = true; }
+    bool is_evaluated() const { return status_ != EvalStatus::NotStarted; }
+    bool is_on_eval_stack() const { return status_ == EvalStatus::Evaluating; }
+    void mark_evaluating() { status_ = EvalStatus::Evaluating; }
+    void mark_evaluated() { status_ = EvalStatus::Evaluated; }
+    void mark_evaluating_async() { status_ = EvalStatus::EvaluatingAsync; }
+
+    bool is_async_evaluating() const { return async_evaluating_; }
+    void set_async_evaluating(bool v) { async_evaluating_ = v; }
+    int pending_async_deps() const { return pending_async_deps_; }
+    void add_pending_async_dep() { ++pending_async_deps_; }
+    bool release_pending_async_dep() { return --pending_async_deps_ <= 0; }
+    void add_async_parent(Module* parent);
+    const std::vector<Module*>& async_parents() const { return async_parents_; }
+    int async_order() const { return async_order_; }
+    void set_async_order(int n) { async_order_ = n; }
+    bool has_top_level_await() const { return has_tla_; }
+    void set_has_top_level_await(bool v) { has_tla_ = v; }
+
+    int dfs_index() const { return dfs_index_; }
+    void set_dfs_index(int n) { dfs_index_ = n; }
+    int dfs_ancestor_index() const { return dfs_ancestor_index_; }
+    void set_dfs_ancestor_index(int n) { dfs_ancestor_index_ = n; }
+    Module* cycle_root() { return cycle_root_ ? cycle_root_ : this; }
+    void set_cycle_root(Module* m) { cycle_root_ = m; }
     Value get_export(const std::string& name) const;
     bool has_export(const std::string& name) const;
     bool has_own_export(const std::string& name) const;
@@ -129,6 +172,12 @@ public:
     // This is what settles when it finishes, and what an importer waits on.
     void set_evaluation_promise(const Value& v) { evaluation_promise_ = v; }
     const Value& get_evaluation_promise() const { return evaluation_promise_; }
+
+    // What an outsider waits on. The module settles this itself, before it
+    // wakes anything that was waiting on it as a dependency -- the module's own
+    // completion is observed first.
+    const Value& completion() const { return completion_; }
+    void set_completion(const Value& v) { completion_ = v; }
 
     void set_thrown_exception(const Value& v) { thrown_exception_ = v; }
     const Value& get_thrown_exception() const { return thrown_exception_; }
@@ -365,7 +414,17 @@ private:
     bool prepare_module_file(Module* module, const std::string& filename);
     bool link_graph(Module* root);
     void evaluate_graph(Module* root);
+    // InnerModuleEvaluation: post-order over the graph, assigning each module
+    // the cycle it belongs to as it comes back up.
+    int inner_evaluate(Module* module, std::vector<Module*>& stack, int index);
     void evaluate_module(Module* module);
+    // Runs a module's body now that nothing it depends on is still pending,
+    // and settles what waits on it when it is done.
+    void execute_module_body(Module* module, bool notify_on_success);
+    void async_module_finished(Module* module, bool ok, const Value& reason,
+                               bool wake_parents = true);
+    void gather_available_ancestors(Module* module, std::vector<Module*>& exec_list);
+    int next_async_order_ = 1;
     std::string normalize_module_id(const std::string& module_id, const std::string& from_path);
     bool is_relative_path(const std::string& path);
     bool is_absolute_path(const std::string& path);

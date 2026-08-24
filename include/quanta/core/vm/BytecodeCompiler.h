@@ -61,6 +61,11 @@ public:
     // await suspends the fiber the module runs on instead of draining the
     // microtask queue where it stands. Null when the body has no suspension
     // point at all, or when it does not compile.
+    // Whether the body has a suspension point of its own, which is what makes
+    // a module async: everything waiting on it has to wait for a turn of the
+    // microtask queue even if it never actually blocks.
+    static bool module_body_suspends(const std::vector<std::unique_ptr<ASTNode>>& statements);
+
     static std::unique_ptr<BytecodeChunk> compile_module_body(
         const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with = false);
 

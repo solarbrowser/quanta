@@ -1377,10 +1377,17 @@ void register_global_builtins(Context& ctx) {
                         // not finished yet. What import() answers with is its
                         // completion, so the namespace is built once the module
                         // has actually produced its exports.
-                        Value evaluation = mod->get_evaluation_promise();
-                        Promise* pending = AsyncUtils::is_promise(evaluation)
-                                               ? static_cast<Promise*>(evaluation.as_object())
-                                               : nullptr;
+                        // A module still evaluating asynchronously settles its
+                        // own completion before it wakes anything waiting on it
+                        // as a dependency, so this is the promise to wait on.
+                        Promise* pending = nullptr;
+                        if (mod->is_async_evaluating()) {
+                            if (!AsyncUtils::is_promise(mod->completion())) {
+                                auto own = ObjectFactory::create_promise(engine->get_global_context());
+                                mod->set_completion(Value(own.release()));
+                            }
+                            pending = static_cast<Promise*>(mod->completion().as_object());
+                        }
                         if (pending && pending->get_state() == PromiseState::PENDING) {
                             Module* waiting_for = mod;
                             auto on_done = ObjectFactory::create_native_function("",
