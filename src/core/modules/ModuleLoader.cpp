@@ -361,20 +361,21 @@ bool ModuleLoader::link_graph(Module* root) {
             if (!src) continue;
             for (const auto& w : wanted) {
                 Module::Resolution r = src->resolve_export(w.first);
-                if (r.ambiguous) {
-                    auto err = Error::create_syntax_error(
-                        "The requested module '" + request + "' contains conflicting star exports for name '" +
-                        w.first + "'");
-                    module->set_thrown_exception(Value(err.release()));
-                    return false;
-                }
-                if (!r) {
-                    auto err = Error::create_syntax_error(
-                        "The requested module '" + request + "' does not provide an export named '" +
-                        w.first + "'");
-                    module->set_thrown_exception(Value(err.release()));
-                    return false;
-                }
+                if (r && !r.ambiguous) continue;
+                auto err = Error::create_syntax_error(
+                    r.ambiguous
+                        ? "The requested module '" + request +
+                              "' contains conflicting star exports for name '" + w.first + "'"
+                        : "The requested module '" + request +
+                              "' does not provide an export named '" + w.first + "'");
+                // The failure belongs to the whole link, not to the module the
+                // walk happened to be looking at: what asked for the graph is
+                // what has to see the error.
+                Value reason(err.release());
+                module->set_thrown_exception(reason);
+                if (!root->has_thrown_exception()) root->set_thrown_exception(reason);
+                last_module_exception_ = reason;
+                return false;
             }
         }
     }
@@ -505,7 +506,18 @@ static bool load_requested_modules(Module* module, const Program* program,
         }
         if (request.empty()) continue;
         Module* dep = loader->prepare_module(request, filename);
-        if (!dep) return false;
+        if (!dep) {
+            // A dependency that will not even parse is an error the importer
+            // reports, and it reports it before running: the whole graph is
+            // parsed during preparation, so an early error anywhere in it stops
+            // everything.
+            Value reason = loader->has_last_module_exception()
+                               ? loader->get_last_module_exception()
+                               : Value(Error::create_syntax_error(
+                                     "Failed to load module '" + request + "'").release());
+            module->set_thrown_exception(reason);
+            return false;
+        }
         module->add_requested(dep);
         if (dep->has_thrown_exception()) {
             module->set_thrown_exception(dep->get_thrown_exception());
