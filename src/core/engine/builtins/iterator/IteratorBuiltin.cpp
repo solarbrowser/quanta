@@ -18,6 +18,22 @@ namespace Quanta {
 
 // Steps an iterator using an already-resolved next method, not a re-fetched one -- avoids
 // re-triggering a `next` getter with side effects on every step.
+// ToNumber, not Value::to_number: an object argument's own valueOf has to run,
+// and it runs before anything is asked of the iterator.
+static double iterator_arg_to_number(Context& ctx, const Value& v) {
+    Value n = v;
+    if (n.is_object() || n.is_function()) {
+        Object* o = n.is_object() ? n.as_object() : static_cast<Object*>(n.as_function());
+        n = o->to_primitive("number");
+        if (ctx.has_exception()) return std::nan("");
+    }
+    if (n.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a number");
+        return std::nan("");
+    }
+    return n.to_number();
+}
+
 static std::pair<Value, bool> iterator_helper_step(Context& ctx, const Value& iter_val, const Value& next_method) {
     if (!next_method.is_function()) {
         ctx.throw_type_error("Iterator helper's underlying next is not a function");
@@ -498,11 +514,11 @@ void register_iterator_helpers(Context& ctx) {
             [iter_proto_obj](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 Object* iter = receiver.as_object_or_null();
                 if (!iter) { ctx.throw_type_error("take called on non-object"); return Value(); }
-                double num_limit = args.empty() ? std::nan("") : args[0].to_number();
+                double num_limit = args.empty() ? std::nan("") : iterator_arg_to_number(ctx, args[0]);
                 if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
                 if (std::isnan(num_limit)) { ctx.throw_range_error("Invalid count"); iterator_helper_close(ctx, Value(iter)); return Value(); }
                 double limit = (std::isinf(num_limit) && num_limit > 0) ? num_limit : std::trunc(num_limit);
-                if (limit < 0) { ctx.throw_range_error("Invalid count"); iterator_helper_close(ctx, Value(iter)); return Value(); }
+                if (limit < 0 || (!std::isinf(limit) && limit > 9007199254740991.0)) { ctx.throw_range_error("Invalid count"); iterator_helper_close(ctx, Value(iter)); return Value(); }
                 Value next_method = iter->get_property("next");
                 if (ctx.has_exception()) return Value();
 
@@ -531,11 +547,11 @@ void register_iterator_helpers(Context& ctx) {
             [iter_proto_obj](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 Object* iter = receiver.as_object_or_null();
                 if (!iter) { ctx.throw_type_error("drop called on non-object"); return Value(); }
-                double num_limit = args.empty() ? std::nan("") : args[0].to_number();
+                double num_limit = args.empty() ? std::nan("") : iterator_arg_to_number(ctx, args[0]);
                 if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
                 if (std::isnan(num_limit)) { ctx.throw_range_error("Invalid count"); iterator_helper_close(ctx, Value(iter)); return Value(); }
                 double limit = (std::isinf(num_limit) && num_limit > 0) ? num_limit : std::trunc(num_limit);
-                if (limit < 0) { ctx.throw_range_error("Invalid count"); iterator_helper_close(ctx, Value(iter)); return Value(); }
+                if (limit < 0 || (!std::isinf(limit) && limit > 9007199254740991.0)) { ctx.throw_range_error("Invalid count"); iterator_helper_close(ctx, Value(iter)); return Value(); }
                 Value next_method = iter->get_property("next");
                 if (ctx.has_exception()) return Value();
 
@@ -565,6 +581,7 @@ void register_iterator_helpers(Context& ctx) {
                 return Value(helper);
             }, 1);
         iter_proto_obj->set_property("drop", Value(iter_drop2.release()));
+
     }
 }
 
@@ -857,7 +874,7 @@ void register_iterator_constructor(Context& ctx) {
         [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("take called on non-object"); return Value(); }
-            double num_limit = args.empty() ? std::nan("") : args[0].to_number();
+            double num_limit = args.empty() ? std::nan("") : iterator_arg_to_number(ctx, args[0]);
             if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
             if (std::isnan(num_limit)) {
                 ctx.throw_range_error("Invalid count");
@@ -865,7 +882,7 @@ void register_iterator_constructor(Context& ctx) {
                 return Value();
             }
             double limit = (std::isinf(num_limit) && num_limit > 0) ? num_limit : std::trunc(num_limit);
-            if (limit < 0) {
+            if (limit < 0 || (!std::isinf(limit) && limit > 9007199254740991.0)) {
                 ctx.throw_range_error("Invalid count");
                 iterator_helper_close(ctx, Value(iter));
                 return Value();
@@ -903,7 +920,7 @@ void register_iterator_constructor(Context& ctx) {
         [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("drop called on non-object"); return Value(); }
-            double num_limit = args.empty() ? std::nan("") : args[0].to_number();
+            double num_limit = args.empty() ? std::nan("") : iterator_arg_to_number(ctx, args[0]);
             if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
             if (std::isnan(num_limit)) {
                 ctx.throw_range_error("Invalid count");
@@ -911,7 +928,7 @@ void register_iterator_constructor(Context& ctx) {
                 return Value();
             }
             double limit = (std::isinf(num_limit) && num_limit > 0) ? num_limit : std::trunc(num_limit);
-            if (limit < 0) {
+            if (limit < 0 || (!std::isinf(limit) && limit > 9007199254740991.0)) {
                 ctx.throw_range_error("Invalid count");
                 iterator_helper_close(ctx, Value(iter));
                 return Value();
@@ -1040,6 +1057,264 @@ void register_iterator_constructor(Context& ctx) {
             return Value(helper);
         }, 1);
     { PropertyDescriptor _d(Value(iter_flatMap_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("flatMap", _d); }
+
+    // A size for chunks/windows is a Number and nothing else: the argument
+    // is not coerced, so an object with a valueOf is a TypeError rather
+    // than a number. Out of range is a RangeError, and both are decided
+    // before `next` is looked up.
+    // Anything that is not an integral Number is the wrong kind of argument --
+    // Infinity and 0.5 included; an integer outside the allowed span is the
+    // right kind and the wrong value. `low` is the smallest one accepted, and
+    // +Infinity is allowed only where the caller says so.
+    auto validate_count = [](Context& ctx, const Value& arg, const Value& iter, double low,
+                             double high, bool infinity_ok, double& out) -> bool {
+        double n = arg.is_number() ? arg.to_number() : 0;
+        bool infinite = arg.is_number() && std::isinf(n);
+        // Where an unbounded count is meaningful, +Infinity is a value and
+        // -Infinity is merely out of range; where it is not, neither is a
+        // count at all.
+        if (infinite && infinity_ok) {
+            if (n < 0) {
+                ctx.throw_range_error("argument out of range");
+                iterator_helper_close(ctx, iter);
+                return false;
+            }
+            out = n;
+            return true;
+        }
+        if (!arg.is_number() || std::isnan(n) || infinite || n != std::trunc(n)) {
+            ctx.throw_type_error("argument must be an integral number");
+            iterator_helper_close(ctx, iter);
+            return false;
+        }
+        if (n < low || n > high) {
+            ctx.throw_range_error("argument out of range");
+            iterator_helper_close(ctx, iter);
+            return false;
+        }
+        out = n;
+        return true;
+    };
+    auto validate_size = [validate_count](Context& ctx, std::span<const Value> args,
+                                          const Value& iter, double& out) -> bool {
+        return validate_count(ctx, args.empty() ? Value() : args[0], iter, 1, 4294967295.0,
+                              /*infinity_ok=*/false, out);
+    };
+
+    auto iter_chunks = ObjectFactory::create_native_function("chunks",
+        [iterator_proto_ptr, validate_size](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
+            if (!iter) { ctx.throw_type_error("chunks called on non-object"); return Value(); }
+            double size = 0;
+            if (!validate_size(ctx, args, Value(iter), size)) return Value();
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+
+            Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
+            helper->set_internal_slot("__ih_size__", Value(size));
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
+                    Value iter_val = self->get_internal_slot("__ih_iter__");
+                    if (!iter_val.is_object()) return Value(make_iter_result(Value(), true));
+                    size_t size = static_cast<size_t>(
+                        self->get_internal_slot("__ih_size__").to_number());
+                    Value next_method = self->get_internal_slot("__ih_next__");
+                    auto chunk = ObjectFactory::create_array(0);
+                    uint32_t count = 0;
+                    for (size_t i = 0; i < size; ++i) {
+                        auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                        if (ctx.has_exception()) return Value();
+                        if (done) {
+                            self->set_internal_slot("__ih_iter__", Value());
+                            // A partial chunk is still a chunk; only an
+                            // empty one means the iterator is spent.
+                            if (count == 0) return Value(make_iter_result(Value(), true));
+                            break;
+                        }
+                        chunk->set_element(count++, val);
+                    }
+                    chunk->set_property("length", Value(static_cast<double>(count)));
+                    return Value(make_iter_result(Value(chunk.release()), false));
+                }, 0);
+            set_guarded_next(helper, std::move(next_fn));
+            return Value(helper);
+        }, 1);
+{ PropertyDescriptor _d(Value(iter_chunks.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("chunks", _d); }
+
+    auto iter_windows = ObjectFactory::create_native_function("windows",
+        [iterator_proto_ptr, validate_size](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
+            if (!iter) { ctx.throw_type_error("windows called on non-object"); return Value(); }
+            double size = 0;
+            if (!validate_size(ctx, args, Value(iter), size)) return Value();
+            // The second argument names what happens when the iterator ends
+            // before a window is full: "only-full" drops it, "allow-partial"
+            // hands it over. Anything else is not a mode at all.
+            bool allow_partial = false;
+            if (args.size() > 1 && !args[1].is_undefined()) {
+                std::string mode = args[1].is_string() ? args[1].to_string() : std::string();
+                if (mode == "allow-partial") {
+                    allow_partial = true;
+                } else if (mode != "only-full") {
+                    ctx.throw_type_error("windows mode must be 'only-full' or 'allow-partial'");
+                    iterator_helper_close(ctx, Value(iter));
+                    return Value();
+                }
+            }
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+
+            Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
+            helper->set_internal_slot("__ih_size__", Value(size));
+            helper->set_internal_slot("__ih_partial__", Value(allow_partial));
+            // The window slides by one, so the previous one is kept and
+            // its oldest element dropped rather than read again.
+            auto buffer = ObjectFactory::create_array(0);
+            helper->set_internal_slot("__ih_window__", Value(buffer.release()));
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                    Object* self = receiver.as_object_or_null();
+                    Value iter_val = self->get_internal_slot("__ih_iter__");
+                    if (!iter_val.is_object()) return Value(make_iter_result(Value(), true));
+                    uint32_t size = static_cast<uint32_t>(
+                        self->get_internal_slot("__ih_size__").to_number());
+                    Value next_method = self->get_internal_slot("__ih_next__");
+                    Object* buffer = self->get_internal_slot("__ih_window__").as_object_or_null();
+                    if (!buffer) return Value(make_iter_result(Value(), true));
+
+                    uint32_t held = static_cast<uint32_t>(
+                        buffer->get_property("length").to_number());
+                    if (held == size && size > 0) {
+                        for (uint32_t i = 1; i < held; ++i) {
+                            buffer->set_element(i - 1, buffer->get_element(i));
+                        }
+                        --held;
+                        buffer->set_property("length", Value(static_cast<double>(held)));
+                    }
+                    bool allow_partial = self->get_internal_slot("__ih_partial__").to_boolean();
+                    while (held < size) {
+                        auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                        if (ctx.has_exception()) return Value();
+                        if (done) {
+                            self->set_internal_slot("__ih_iter__", Value());
+                            if (!allow_partial || held == 0) {
+                                return Value(make_iter_result(Value(), true));
+                            }
+                            break;
+                        }
+                        buffer->set_element(held++, val);
+                        buffer->set_property("length", Value(static_cast<double>(held)));
+                    }
+
+                    auto window = ObjectFactory::create_array(0);
+                    for (uint32_t i = 0; i < held; ++i) window->set_element(i, buffer->get_element(i));
+                    window->set_property("length", Value(static_cast<double>(held)));
+                    return Value(make_iter_result(Value(window.release()), false));
+                }, 0);
+            set_guarded_next(helper, std::move(next_fn));
+            return Value(helper);
+        }, 1);
+{ PropertyDescriptor _d(Value(iter_windows.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("windows", _d); }
+
+    auto iter_includes = ObjectFactory::create_native_function("includes",
+        [validate_count](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
+            if (!iter) { ctx.throw_type_error("includes called on non-object"); return Value(); }
+            Value target = args.empty() ? Value() : args[0];
+            // The second argument is how many elements to pass over before
+            // looking. Infinity is allowed and simply consumes everything.
+            double skip = 0;
+            if (args.size() > 1 && !args[1].is_undefined()) {
+                if (!validate_count(ctx, args[1], Value(iter), 0, 9007199254740991.0,
+                                    /*infinity_ok=*/true, skip)) {
+                    return Value();
+                }
+            }
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+            while (skip > 0) {
+                auto [val, done] = iterator_helper_step(ctx, Value(iter), next_method);
+                (void)val;
+                if (ctx.has_exception()) return Value();
+                if (done) return Value(false);
+                skip -= 1;
+            }
+            while (true) {
+                auto [val, done] = iterator_helper_step(ctx, Value(iter), next_method);
+                if (ctx.has_exception()) return Value();
+                if (done) return Value(false);
+                // SameValueZero: NaN matches itself, +0 matches -0.
+                bool match = (val.is_number() && target.is_number() &&
+                              std::isnan(val.to_number()) && std::isnan(target.to_number()))
+                                 ? true
+                                 : val.strict_equals(target);
+                if (match) {
+                    iterator_helper_close(ctx, Value(iter));
+                    if (ctx.has_exception()) return Value();
+                    return Value(true);
+                }
+            }
+        }, 1);
+{ PropertyDescriptor _d(Value(iter_includes.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("includes", _d); }
+
+    auto iter_join = ObjectFactory::create_native_function("join",
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            Object* iter = receiver.as_object_or_null();
+            if (!iter) { ctx.throw_type_error("join called on non-object"); return Value(); }
+            // The separator is coerced before `next` is even looked up, and
+            // a coercion that throws closes the iterator.
+            // ToString, not Value::to_string: an object's own toString has to
+            // run, and exactly once.
+            auto to_string_checked = [&ctx](Value v, std::string& out) -> bool {
+                if (v.is_object() || v.is_function()) {
+                    Object* o = v.is_object() ? v.as_object()
+                                              : static_cast<Object*>(v.as_function());
+                    v = o->to_primitive("string");
+                    if (ctx.has_exception()) return false;
+                }
+                if (v.is_symbol()) {
+                    ctx.throw_type_error("Cannot convert a Symbol value to a string");
+                    return false;
+                }
+                out = v.to_string();
+                return !ctx.has_exception();
+            };
+
+            std::string sep = ",";
+            if (!args.empty() && !args[0].is_undefined()) {
+                if (!to_string_checked(args[0], sep)) {
+                    iterator_helper_close(ctx, Value(iter));
+                    return Value();
+                }
+            }
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+
+            std::string out;
+            bool first = true;
+            while (true) {
+                auto [val, done] = iterator_helper_step(ctx, Value(iter), next_method);
+                if (ctx.has_exception()) return Value();
+                if (done) break;
+                if (!first) out += sep;
+                first = false;
+                // null and undefined contribute nothing, exactly as they do
+                // in Array.prototype.join.
+                if (val.is_undefined() || val.is_null()) continue;
+                std::string piece;
+                if (!to_string_checked(val, piece)) {
+                    iterator_helper_close(ctx, Value(iter));
+                    return Value();
+                }
+                out += piece;
+            }
+            return Value(out);
+        }, 1);
+{ PropertyDescriptor _d(Value(iter_join.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("join", _d); }
+
 
     // Add @@iterator to prototype (writable:true, enumerable:false, configurable:true per spec)
     {
