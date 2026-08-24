@@ -53,6 +53,7 @@ protected:
 private:
     std::shared_ptr<BackingStore> store_;
     bool is_detached_;
+    bool is_immutable_ = false;
     bool is_resizable_;
 
     std::vector<TypedArrayBase*> attached_views_;
@@ -74,6 +75,11 @@ public:
     bool is_detached() const { return is_detached_; }
     bool is_resizable() const { return is_resizable_; }
     bool is_shared() const { return is_shared_; }
+
+    // An immutable buffer's bytes never change after it is made. A module
+    // imported for its bytes is the only thing that makes one.
+    bool is_immutable() const { return is_immutable_; }
+    void set_immutable(bool v) { is_immutable_ = v; }
 
     uint8_t* data() { return (is_detached_ || !store_) ? nullptr : store_->data; }
     const uint8_t* data() const { return (is_detached_ || !store_) ? nullptr : store_->data; }

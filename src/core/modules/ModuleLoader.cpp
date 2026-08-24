@@ -13,6 +13,10 @@
 #include "quanta/lexer/Lexer.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
+#include <cstring>
+#include "quanta/core/runtime/ArrayBuffer.h"
+#include "quanta/core/runtime/TypedArray.h"
+#include "quanta/core/runtime/JSON.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/core/runtime/Async.h"
@@ -285,10 +289,14 @@ void ModuleLoader::gc_trace(Visitor& v) const {
     v.visit(last_module_exception_);
 }
 
-Module* ModuleLoader::prepare_module(const std::string& module_id, const std::string& from_path) {
+Module* ModuleLoader::prepare_module(const std::string& module_id, const std::string& from_path,
+                                     const std::string& module_type) {
     last_module_exception_ = Value();
     std::string resolved_path = resolve_module_path(module_id, from_path);
     std::string normalized_id = normalize_module_id(module_id, from_path);
+    // One file asked for as two kinds is two modules; asked for twice as the
+    // same kind it is one, which is what makes a JSON import idempotent.
+    if (!module_type.empty()) normalized_id += "\x01" + module_type;
 
     auto it = modules_.find(normalized_id);
     if (it != modules_.end()) return it->second.get();
@@ -301,7 +309,9 @@ Module* ModuleLoader::prepare_module(const std::string& module_id, const std::st
     module_ptr->set_loading(true);
 
     preparing_.push_back(module_ptr);
-    bool prepared = prepare_module_file(module_ptr, resolved_path);
+    bool prepared = module_type.empty()
+                        ? prepare_module_file(module_ptr, resolved_path)
+                        : prepare_typed_module(module_ptr, resolved_path, module_type);
     preparing_.pop_back();
 
     module_ptr->set_loading(false);
@@ -377,7 +387,8 @@ bool ModuleLoader::subgraph_has_top_level_await(Module* module) {
     return subgraph_has_tla(module, seen);
 }
 
-Module* ModuleLoader::load_module(const std::string& module_id, const std::string& from_path) {
+Module* ModuleLoader::load_module(const std::string& module_id, const std::string& from_path,
+                                  const std::string& module_type) {
     // Preparing reaches every module in the graph; only the request that
     // started it links and evaluates what it found. A request made while
     // preparing is one of those dependencies and is left to that walk. A
@@ -385,7 +396,7 @@ Module* ModuleLoader::load_module(const std::string& module_id, const std::strin
     // import -- is a graph of its own, and one already evaluated is done.
     const bool during_prepare = !preparing_.empty();
 
-    Module* module = prepare_module(module_id, from_path);
+    Module* module = prepare_module(module_id, from_path, module_type);
     if (!module) return nullptr;
     if (during_prepare) return module;
 
@@ -418,11 +429,13 @@ bool ModuleLoader::link_graph(Module* root) {
         for (const auto& stmt : program->get_statements()) {
             if (!stmt) continue;
             std::string request;
+            std::string request_type;
             std::vector<std::pair<std::string, bool>> wanted;  // name, is_namespace
             if (stmt->get_type() == ASTNode::Type::IMPORT_STATEMENT) {
                 const auto* im = static_cast<const ImportStatement*>(stmt.get());
                 if (im->is_deferred()) continue;
                 request = im->get_module_source();
+                request_type = im->get_module_type();
                 if (im->is_default_import() && !im->get_default_alias().empty()) {
                     wanted.emplace_back("default", false);
                 }
@@ -440,7 +453,7 @@ bool ModuleLoader::link_graph(Module* root) {
                 }
             }
             if (request.empty() || wanted.empty()) continue;
-            Module* src = prepare_module(request, module->get_filename());
+            Module* src = prepare_module(request, module->get_filename(), request_type);
             if (!src) continue;
             for (const auto& w : wanted) {
                 Module::Resolution r = src->resolve_export(w.first);
@@ -721,6 +734,7 @@ static bool load_requested_modules(Module* module, const Program* program,
     for (const auto& stmt : program->get_statements()) {
         if (!stmt) continue;
         std::string request;
+        std::string request_type;
         bool deferred = false;
         if (stmt->get_type() == ASTNode::Type::IMPORT_STATEMENT) {
             const auto* im = static_cast<const ImportStatement*>(stmt.get());
@@ -729,11 +743,18 @@ static bool load_requested_modules(Module* module, const Program* program,
             // before anything runs. Only its evaluation waits.
             deferred = im->is_deferred();
             request = im->get_module_source();
+            request_type = im->get_module_type();
         } else if (stmt->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
             request = static_cast<const ExportStatement*>(stmt.get())->get_source_module();
         }
         if (request.empty()) continue;
-        Module* dep = loader->prepare_module(request, filename);
+        if (!ModuleLoader::is_supported_module_type(request_type)) {
+            auto err = Error::create_type_error(
+                "Import attribute type '" + request_type + "' is not supported");
+            module->set_thrown_exception(Value(err.release()));
+            return false;
+        }
+        Module* dep = loader->prepare_module(request, filename, request_type);
         if (!dep) {
             // A dependency that will not even parse is an error the importer
             // reports, and it reports it before running: the whole graph is
@@ -905,7 +926,7 @@ void DeferredNamespaceObject::ensure_evaluated() {
         Context* reader = Object::current_context_;
         // Reaching into a module that is part way through its own evaluation
         // cannot be answered: there is nothing to give and no way to wait.
-        if (Module* pending = loader_->prepare_module(module_source_, from_path_)) {
+        if (Module* pending = loader_->prepare_module(module_source_, from_path_, module_type_)) {
             if (loader_->subgraph_evaluation_in_progress(pending)) {
                 if (reader) {
                     reader->throw_type_error("Cannot access '" + module_source_ +
@@ -914,7 +935,7 @@ void DeferredNamespaceObject::ensure_evaluated() {
                 return;
             }
         }
-        Module* mod = loader_->load_module(module_source_, from_path_);
+        Module* mod = loader_->load_module(module_source_, from_path_, module_type_);
         if (!mod) return;
         // A module that threw keeps throwing: every later access reports the
         // error its evaluation ended with.
@@ -1057,6 +1078,66 @@ void ModuleLoader::register_builtin_module(const std::string& module_id, std::un
 
 std::unique_ptr<Module> ModuleLoader::create_module(const std::string& module_id, const std::string& filename) {
     return std::make_unique<Module>(module_id, filename);
+}
+
+// A module whose body is not source text. The file becomes one value -- parsed
+// JSON, the text itself, its bytes -- and that value is the module's default
+// export. There is nothing to link and nothing to evaluate, so it is finished
+// the moment it is prepared.
+bool ModuleLoader::prepare_typed_module(Module* module, const std::string& filename,
+                                        const std::string& module_type) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file.is_open()) {
+        auto err = Error::create_type_error("Failed to fetch imported module '" + filename + "'");
+        last_module_exception_ = Value(err.release());
+        return false;
+    }
+    std::string source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    Value exported;
+    if (module_type == "json") {
+        try {
+            exported = JSON::parse(source);
+        } catch (...) {
+            auto err = Error::create_syntax_error("Invalid JSON module '" + filename + "'");
+            module->set_thrown_exception(Value(err.release()));
+            module->declare_export("default", std::string());
+            module->mark_evaluated();
+            return true;
+        }
+    } else if (module_type == "text") {
+        exported = Value(source);
+    } else if (module_type == "bytes") {
+        auto buffer = std::make_unique<ArrayBuffer>(
+            reinterpret_cast<const uint8_t*>(source.data()), source.size());
+        ArrayBuffer* raw = buffer.release();
+        raw->set_immutable(true);
+        auto view = TypedArrayFactory::create_uint8_array_from_buffer(raw);
+        // Nothing built here goes through a constructor, so the intrinsic
+        // prototypes are wired by hand.
+        if (Context* realm = engine_ ? engine_->get_global_context() : nullptr) {
+            if (Object* ctor = realm->get_built_in_object("Uint8Array")) {
+                Value proto = ctor->get_property("prototype");
+                if (proto.is_object()) view->set_prototype(proto.as_object());
+            }
+            if (Object* ctor = realm->get_built_in_object("ArrayBuffer")) {
+                Value proto = ctor->get_property("prototype");
+                if (proto.is_object()) raw->set_prototype(proto.as_object());
+            }
+        }
+        exported = Value(view.release());
+    } else {
+        auto err = Error::create_type_error("Unsupported module type '" + module_type + "'");
+        last_module_exception_ = Value(err.release());
+        return false;
+    }
+
+    // `default` and nothing else: a name other than that is a link error, which
+    // is what makes `import { x } from './m.json' with { type: 'json' }` fail.
+    module->declare_export("default", std::string());
+    module->add_export("default", exported, std::string());
+    module->mark_evaluated();
+    return true;
 }
 
 bool ModuleLoader::prepare_module_file(Module* module, const std::string& filename) {

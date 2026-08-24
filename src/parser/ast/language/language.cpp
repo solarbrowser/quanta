@@ -3406,7 +3406,7 @@ Value ImportStatement::evaluate(Context& ctx) {
         if (!is_namespace_import_ && (!is_default_import_ || is_mixed_import())) {
             if (specifiers_.empty()) {
                 // Side-effect-only import: execute the module for its side effects
-                if (dependency_failed(module_loader->load_module(module_source_, from_path))) return Value();
+                if (dependency_failed(module_loader->load_module(module_source_, from_path, module_type_))) return Value();
             } else {
                 for (const auto& specifier : specifiers_) {
                     std::string imported_name = specifier->get_imported_name();
@@ -3415,7 +3415,7 @@ Value ImportStatement::evaluate(Context& ctx) {
                     // The binding is an alias for the exporting module's
                     // own, resolved where it is read: a value that module has
                     // not produced yet is still seen once it exists.
-                    Module* src = module_loader->load_module(module_source_, from_path);
+                    Module* src = module_loader->load_module(module_source_, from_path, module_type_);
                     if (dependency_failed(src)) return Value();
                     // Two `export *` sources disagreeing about a name make it
                     // ambiguous, which is not an error until something asks for
@@ -3437,23 +3437,27 @@ Value ImportStatement::evaluate(Context& ctx) {
                 // `import defer` still loads and links the module; only its
                 // evaluation waits. Resolving it here is what lets two deferred
                 // imports of one module name the same object.
-                Module* deferred = module_loader->prepare_module(module_source_, from_path);
+                Module* deferred = module_loader->prepare_module(module_source_, from_path, module_type_);
                 if (deferred && !deferred->get_deferred_namespace().is_undefined()) {
                     namespace_obj = deferred->get_deferred_namespace();
                 } else {
-                    namespace_obj = Value(new DeferredNamespaceObject(module_loader, module_source_, from_path));
+                    namespace_obj = Value(new DeferredNamespaceObject(module_loader, module_source_, from_path, module_type_));
                     if (deferred) deferred->set_deferred_namespace(namespace_obj);
                 }
             } else {
-                if (dependency_failed(module_loader->load_module(module_source_, from_path))) return Value();
-                namespace_obj = module_loader->import_namespace_from_module(module_source_, from_path);
+                Module* src = module_loader->load_module(module_source_, from_path, module_type_);
+                if (dependency_failed(src)) return Value();
+                // Built from the module the type resolved to, not from the
+                // specifier again: one file imported as JSON and as source is
+                // two modules with two namespaces.
+                namespace_obj = ModuleLoader::build_module_namespace(src);
             }
             ctx.create_binding(namespace_alias_, namespace_obj,
                                /*mutable_binding=*/false, /*deletable=*/false);
         }
 
         if (is_default_import_) {
-            Module* src = module_loader->load_module(module_source_, from_path);
+            Module* src = module_loader->load_module(module_source_, from_path, module_type_);
             if (dependency_failed(src)) return Value();
             ctx.create_import_binding(default_alias_,
                                       Value(new ImportBindingObject(src, "default")));

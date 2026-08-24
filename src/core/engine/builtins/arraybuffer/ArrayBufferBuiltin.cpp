@@ -133,6 +133,9 @@ static Value array_buffer_copy_and_detach(Context& ctx, Object* this_obj, std::s
     if (this_obj->is_shared_array_buffer()) { ctx.throw_type_error("Cannot transfer a SharedArrayBuffer"); return Value(); }
     ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
     if (ab->is_detached()) { ctx.throw_type_error("Cannot transfer a detached ArrayBuffer"); return Value(); }
+    // Transferring detaches the source, which an immutable buffer's bytes
+    // outliving it is exactly what rules out.
+    if (ab->is_immutable()) { ctx.throw_type_error("Cannot transfer an immutable ArrayBuffer"); return Value(); }
 
     double new_len_double = (args.empty() || args[0].is_undefined())
         ? static_cast<double>(ab->byte_length()) : to_number_checked(ctx, args[0]);
@@ -279,6 +282,24 @@ void register_arraybuffer_builtins(Context& ctx) {
     detached_desc.set_configurable(true);
     arraybuffer_prototype->set_property_descriptor("detached", detached_desc);
 
+    // A buffer whose bytes never change after it is made. The only one this
+    // engine produces is the store behind a module imported for its bytes.
+    auto immutable_getter = ObjectFactory::create_native_function("get immutable",
+        [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+            Object* this_obj = receiver.is_object() ? receiver.as_object() : nullptr;
+            if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
+                ctx.throw_type_error("ArrayBuffer.prototype.immutable called on non-ArrayBuffer");
+                return Value();
+            }
+            return Value(static_cast<ArrayBuffer*>(this_obj)->is_immutable());
+        }, 0);
+
+    PropertyDescriptor immutable_desc;
+    immutable_desc.set_getter(immutable_getter.release());
+    immutable_desc.set_enumerable(false);
+    immutable_desc.set_configurable(true);
+    arraybuffer_prototype->set_property_descriptor("immutable", immutable_desc);
+
     auto ab_slice_fn = ObjectFactory::create_native_function("slice",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* this_obj = receiver.as_object_or_null();
@@ -325,6 +346,10 @@ void register_arraybuffer_builtins(Context& ctx) {
                 return Value();
             }
             ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
+            if (ab->is_immutable()) {
+                ctx.throw_type_error("Cannot resize an immutable ArrayBuffer");
+                return Value();
+            }
             if (!ab->is_resizable()) {
                 ctx.throw_type_error("Cannot resize a non-resizable ArrayBuffer");
                 return Value();

@@ -1325,6 +1325,7 @@ void register_global_builtins(Context& ctx) {
             // "[object Object]". Every abrupt completion here becomes a
             // rejection; none of it escapes to the caller.
             std::string specifier;
+            std::string module_type;
             if (!args.empty()) {
                 Value sv = args[0];
                 if (sv.is_object() || sv.is_function()) {
@@ -1427,11 +1428,15 @@ void register_global_builtins(Context& ctx) {
                                               "' must be a string");
                             return Value(promise_obj.release());
                         }
-                        // No attribute type is supported yet, so any the caller
-                        // asks for is one this host cannot honour.
-                        reject_type_error("import() does not support the attribute '" +
-                                          key + "'");
-                        return Value(promise_obj.release());
+                        // `type` is the one attribute this host honours, and
+                        // only for the kinds of module it can build.
+                        if (key != "type" ||
+                            !ModuleLoader::is_supported_module_type(v.to_string())) {
+                            reject_type_error("import() does not support the attribute '" +
+                                              key + "'");
+                            return Value(promise_obj.release());
+                        }
+                        module_type = v.to_string();
                     }
                 }
             }
@@ -1440,9 +1445,10 @@ void register_global_builtins(Context& ctx) {
             std::string current_file = ctx.get_current_filename();
             Engine* engine = ctx.get_engine();
             Promise* promise_ptr = promise;
+            std::string requested_type = module_type;
 
             Context* queue_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : &ctx;
-            queue_ctx->queue_microtask([specifier, current_file, engine, promise_ptr]() {
+            queue_ctx->queue_microtask([specifier, current_file, engine, promise_ptr, requested_type]() {
                 std::string resolved;
                 if ((specifier.length() >= 2 && specifier.substr(0, 2) == "./") ||
                     (specifier.length() >= 3 && specifier.substr(0, 3) == "../")) {
@@ -1456,7 +1462,7 @@ void register_global_builtins(Context& ctx) {
 
                 if (engine && engine->get_module_loader()) {
                     auto* loader = engine->get_module_loader();
-                    Module* mod = loader->load_module(resolved, current_file);
+                    Module* mod = loader->load_module(resolved, current_file, requested_type);
                     if (mod) {
                         if (mod->has_thrown_exception()) {
                             promise_ptr->reject(mod->get_thrown_exception());

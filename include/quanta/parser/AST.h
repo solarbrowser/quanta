@@ -2155,6 +2155,7 @@ private:
     bool is_namespace_import_;
     bool is_default_import_;
     bool is_deferred_;
+    std::string module_type_;
 
 public:
     Value evaluate(Context& ctx) override;
@@ -2204,6 +2205,11 @@ public:
     bool is_default_import() const { return is_default_import_; }
     bool is_mixed_import() const { return is_default_import_ && !specifiers_.empty(); }
     bool is_deferred() const { return is_deferred_; }
+
+    // The `type` import attribute, if the clause named one. It decides what
+    // kind of module the specifier resolves to.
+    void set_module_type(const std::string& t) { module_type_ = t; }
+    const std::string& get_module_type() const { return module_type_; }
 
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

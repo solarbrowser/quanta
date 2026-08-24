@@ -9372,7 +9372,10 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
     }
     advance();
 
-    // Parse optional 'with { ... }' import attributes clause; validate no duplicate keys
+    // Parse optional 'with { ... }' import attributes clause; validate no
+    // duplicate keys. Only `type` names anything the engine acts on -- it
+    // decides what kind of module the specifier resolves to.
+    std::string module_type;
     auto skip_import_with = [&]() {
         if (!match(TokenType::WITH)) return;
         advance();
@@ -9396,15 +9399,24 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                 add_error("SyntaxError: Duplicate import attribute key '" + key + "'");
                 return;
             }
-            // skip ':' and value
             if (match(TokenType::COLON)) {
                 advance();
-                if (!at_end() && !match(TokenType::RIGHT_BRACE) && !match(TokenType::COMMA))
+                if (!at_end() && !match(TokenType::RIGHT_BRACE) && !match(TokenType::COMMA)) {
+                    if (key == "type" && match(TokenType::STRING)) {
+                        module_type = token_string(current_token());
+                    }
                     advance();
+                }
             }
             if (match(TokenType::COMMA)) advance();
         }
         if (match(TokenType::RIGHT_BRACE)) advance();
+    };
+
+    auto finish_import = [&](auto&&... parts) {
+        auto stmt = std::make_unique<ImportStatement>(std::forward<decltype(parts)>(parts)...);
+        stmt->set_module_type(module_type);
+        return stmt;
     };
 
     // Side-effect import: import "module"
@@ -9414,7 +9426,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         skip_import_with();
         Position end = get_current_position();
         std::vector<std::unique_ptr<ImportSpecifier>> specifiers;
-        return std::make_unique<ImportStatement>(std::move(specifiers), module_source, start, end);
+        return finish_import(std::move(specifiers), module_source, start, end);
     }
 
     if (match(TokenType::MULTIPLY)) {
@@ -9450,7 +9462,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         std::string module_source = token_string(current_token());
         advance(); skip_import_with();
         Position end = get_current_position();
-        return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end);
+        return finish_import(namespace_alias, module_source, start, end);
     }
 
     if (match(TokenType::LEFT_BRACE)) {
@@ -9499,7 +9511,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         std::string module_source = token_string(current_token());
         advance(); skip_import_with();
         Position end = get_current_position();
-        return std::make_unique<ImportStatement>(std::move(specifiers), module_source, start, end);
+        return finish_import(std::move(specifiers), module_source, start, end);
     }
 
     if (match(TokenType::IDENTIFIER)) {
@@ -9532,7 +9544,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                 std::string module_source = token_string(current_token());
                 advance(); skip_import_with();
                 Position end = get_current_position();
-                return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end, true);
+                return finish_import(namespace_alias, module_source, start, end, true);
             }
             // Not import defer *, treat 'defer' as a default import alias
             current_token_index_ = saved_idx;
@@ -9571,7 +9583,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                 advance(); skip_import_with();
                 Position end = get_current_position();
                 // ImportStatement with both default alias and namespace alias
-                return std::make_unique<ImportStatement>(default_alias, namespace_alias, module_source, start, end);
+                return finish_import(default_alias, namespace_alias, module_source, start, end);
             }
 
             // ImportedDefaultBinding , NamedImports
@@ -9615,7 +9627,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             std::string module_source = token_string(current_token());
             advance(); skip_import_with();
             Position end = get_current_position();
-            return std::make_unique<ImportStatement>(default_alias, std::move(specifiers), module_source, start, end);
+            return finish_import(default_alias, std::move(specifiers), module_source, start, end);
         }
 
         if (current_token().get_type() != TokenType::FROM) {
@@ -9631,7 +9643,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         std::string module_source = token_string(current_token());
         advance(); skip_import_with();
         Position end = get_current_position();
-        return std::make_unique<ImportStatement>(default_alias, module_source, true, start, end);
+        return finish_import(default_alias, module_source, true, start, end);
     }
     
     add_error("Invalid import statement syntax");

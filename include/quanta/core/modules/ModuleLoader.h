@@ -389,11 +389,19 @@ public:
     explicit ModuleLoader(Engine* engine);
     ~ModuleLoader() = default;
 
-    Module* load_module(const std::string& module_id, const std::string& from_path = "");
+    Module* load_module(const std::string& module_id, const std::string& from_path = "",
+                        const std::string& module_type = "");
     // Parses a module, stands up its scope and settles its export table --
     // and does the same for everything it requests -- without running any of
     // it. load_module is this plus linking and evaluating the graph.
-    Module* prepare_module(const std::string& module_id, const std::string& from_path);
+    // `module_type` is the `type` import attribute: empty for source text,
+    // otherwise "json", "text" or "bytes", each of which produces a module
+    // whose only export is the file turned into one value.
+    Module* prepare_module(const std::string& module_id, const std::string& from_path,
+                           const std::string& module_type = "");
+    static bool is_supported_module_type(const std::string& type) {
+        return type.empty() || type == "json" || type == "text" || type == "bytes";
+    }
 
     // Whether anything in this module's subgraph suspends on a top-level
     // await. Deferring such a module is not possible: reaching through the
@@ -450,6 +458,10 @@ private:
     // running a single statement of any of it. Only once the whole graph is
     // prepared and linked does anything evaluate.
     bool prepare_module_file(Module* module, const std::string& filename);
+    // A module whose body is not source text: the file becomes one value and
+    // that value is its default export. Nothing of it is ever evaluated.
+    bool prepare_typed_module(Module* module, const std::string& filename,
+                              const std::string& module_type);
     bool link_graph(Module* root);
     void evaluate_graph(Module* root);
     // InnerModuleEvaluation: post-order over the graph, assigning each module
@@ -485,6 +497,7 @@ class DeferredNamespaceObject : public CustomObjectBase {
     ModuleLoader* loader_;
     std::string module_source_;
     std::string from_path_;
+    std::string module_type_;
     bool evaluated_ = false;
 
     void ensure_evaluated();
@@ -499,12 +512,13 @@ class DeferredNamespaceObject : public CustomObjectBase {
     }
 
 public:
-    DeferredNamespaceObject(ModuleLoader* loader, const std::string& src, const std::string& from)
+    DeferredNamespaceObject(ModuleLoader* loader, const std::string& src, const std::string& from,
+                            const std::string& type = "")
         // Explicit ObjectType::Custom (matching ModuleNamespaceObject, its
         // non-deferred sibling) -- previously fell through to the implicit
         // default (ObjectType::Ordinary), which the GC sweep's destructor
         // dispatch cannot tell apart from a genuinely plain Object.
-        : CustomObjectBase(ObjectType::Custom), loader_(loader), module_source_(src), from_path_(from) {
+        : CustomObjectBase(ObjectType::Custom), loader_(loader), module_source_(src), from_path_(from), module_type_(type) {
         set_custom_kind(CustomKind::DeferredNamespace);
         // Stamped before the object closes: reading it must not be what makes
         // the module evaluate.
