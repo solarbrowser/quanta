@@ -3417,6 +3417,14 @@ Value ImportStatement::evaluate(Context& ctx) {
                     // not produced yet is still seen once it exists.
                     Module* src = module_loader->load_module(module_source_, from_path);
                     if (dependency_failed(src)) return Value();
+                    // Two `export *` sources disagreeing about a name make it
+                    // ambiguous, which is not an error until something asks for
+                    // it by name. This is that moment.
+                    if (src && src->resolve_export(imported_name).ambiguous) {
+                        ctx.throw_syntax_error("Ambiguous import of '" + imported_name +
+                                               "' from '" + module_source_ + "'");
+                        return Value();
+                    }
                     ctx.create_import_binding(
                         local_name, Value(new ImportBindingObject(src, imported_name)));
                 }
@@ -3508,6 +3516,25 @@ std::unique_ptr<ASTNode> ExportSpecifier::clone() const {
 
 Value ExportStatement::evaluate(Context& ctx) { return link(ctx, /*declaration_already_run=*/false); }
 
+bool ExportStatement::default_is_hoistable() const {
+    if (!is_default_export_ || !default_export_) return false;
+    // The parser already made the distinction the grammar draws: a
+    // HoistableDeclaration is marked as such, while `export default (function
+    // (){})` came through AssignmentExpression and keeps its dead zone.
+    switch (default_export_->get_type()) {
+        case Type::FUNCTION_EXPRESSION:
+            return static_cast<const FunctionExpression*>(default_export_.get())->is_decl_form();
+        case Type::ASYNC_FUNCTION_EXPRESSION:
+            return static_cast<const AsyncFunctionExpression*>(default_export_.get())->is_decl_form();
+        default:
+            return false;
+    }
+}
+
+void ExportStatement::hoist_default(Context& ctx) {
+    if (default_is_hoistable()) link(ctx, /*declaration_already_run=*/false);
+}
+
 Value ExportStatement::link(Context& ctx, bool declaration_already_run) {
     Value exports_value = ctx.get_binding("exports");
     Object* exports_obj = nullptr;
@@ -3576,8 +3603,18 @@ Value ExportStatement::link(Context& ctx, bool declaration_already_run) {
 
         // The default is an ordinary expression (a function or class literal
         // included), so it compiles like any other rather than being walked.
-        Value default_value = eval_class_expr(default_export_.get(), ctx);
-        if (ctx.has_exception()) return Value();
+        // A hoistable one was already built and bound before the module's
+        // statements ran; reaching the statement itself must not replace the
+        // function an importer may already be holding.
+        const std::string default_binding =
+            default_local_name.empty() ? std::string("*default*") : default_local_name;
+        Value default_value;
+        if (default_is_hoistable() && ctx.has_binding(default_binding)) {
+            default_value = ctx.get_binding(default_binding);
+        } else {
+            default_value = eval_class_expr(default_export_.get(), ctx);
+            if (ctx.has_exception()) return Value();
+        }
 
         if (!default_local_name.empty()) {
             if (!ctx.has_binding(default_local_name)) {
@@ -3683,45 +3720,13 @@ Value ExportStatement::link(Context& ctx, bool declaration_already_run) {
                     }
                     if (src_mod) {
                         if (export_name == "*") {
-                            // Get or create star-export tracker to detect ambiguous names
-                            // (persists across multiple export* statements in the same module)
-                            const std::string STAR_KEY = "\x01star";
-                            Object* star_tracker = nullptr;
-                            Value tracker_val = ctx.get_binding(STAR_KEY);
-                            if (tracker_val.is_object()) {
-                                star_tracker = tracker_val.as_object();
-                            } else {
-                                auto t = ObjectFactory::create_object();
-                                if (t) {
-                                    star_tracker = t.get();
-                                    ctx.create_binding(STAR_KEY, Value(t.release()));
-                                }
-                            }
-
-                            for (const auto& name : src_mod->get_export_names()) {
-                                if (name == "default") continue;
-                                Value val = src_mod->get_export(name);
-                                if (val.is_undefined() && src_mod->is_loading() && src_mod->get_context()) {
-                                    val = src_mod->get_context()->get_binding(name);
-                                }
-                                if (star_tracker && star_tracker->has_own_property(name)) {
-                                    // Same name from two export* sources -- only ambiguous if they resolve to different bindings.
-                                    // Per spec, same Module+BindingName is unambiguous. As a heuristic: same non-undefined
-                                    // value means they resolved from the same binding (undefined is common across modules).
-                                    Value prev = star_tracker->get_property(name);
-                                    if (!prev.is_undefined() && prev.strict_equals(val)) {
-                                        continue; // same non-undefined value -- same binding, unambiguous
-                                    }
-                                    ctx.throw_syntax_error("Ambiguous re-export of '" + name + "'");
-                                    return Value();
-                                }
-                                if (exports_obj->has_own_property(name)) {
-                                    // Name was set by a direct export -- direct wins, skip
-                                    continue;
-                                }
-                                if (star_tracker) star_tracker->set_property(name, val);
-                                exports_obj->set_property(name, val);
-                            }
+                            // `export * from` contributes nothing of this
+                            // module's own. The source was recorded as a star
+                            // source before the module ran, and resolving a
+                            // name walks those -- copying the source's names
+                            // here would make them look like own exports, and
+                            // a name two sources disagree about would stop
+                            // being ambiguous.
                         } else {
                             // export * as ns from './module.js' -- use cached namespace object
                             // (same source module must always yield the same namespace object identity
@@ -3743,6 +3748,11 @@ Value ExportStatement::link(Context& ctx, bool declaration_already_run) {
                 }
                 if (src_mod->has_thrown_exception()) {
                     ctx.throw_exception(src_mod->get_thrown_exception());
+                    return Value();
+                }
+                if (src_mod->resolve_export(local_name).ambiguous) {
+                    ctx.throw_syntax_error("Ambiguous re-export of '" + local_name + "' from '" +
+                                           source_module_ + "'");
                     return Value();
                 }
                 if (!src_mod->is_loading() && !src_mod->has_export(local_name)) {

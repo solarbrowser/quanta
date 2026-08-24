@@ -171,6 +171,15 @@ Value Program::evaluate(Context& ctx) {
             if (ctx.has_exception()) {
                 return Value();
             }
+            continue;
+        }
+        // `export default function () {}` hoists too: the binding holds the
+        // function before any statement runs, so a module that imports its own
+        // default -- or reaches it round a cycle -- sees the function.
+        if (statement->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+            auto* ex = static_cast<ExportStatement*>(statement.get());
+            ex->hoist_default(ctx);
+            if (ctx.has_exception()) return Value();
         }
     }
 

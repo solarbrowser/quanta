@@ -80,6 +80,9 @@ Value Module::get_export(const std::string& name) const {
     // through the module namespace, per ES module live-binding semantics.
     Resolution r = resolve_export(name);
     if (!r) return Value();
+    if (r.name == "*") {
+        return ModuleLoader::build_module_namespace(const_cast<Module*>(r.module));
+    }
     if (r.module != this) return r.module->get_export(r.name);
 
     auto local_it = export_local_names_.find(r.name);
@@ -132,6 +135,14 @@ Module::Resolution resolve_export_impl(const Module* module, const std::string& 
     seen.emplace_back(module, name);
 
     if (const auto* link = module->indirect_export(name)) {
+        if (link->second == "*") {
+            // The source's namespace, which every path to it shares: two
+            // re-exports of the same module's namespace agree.
+            Module::Resolution r;
+            r.module = link->first;
+            r.name = "*";
+            return r;
+        }
         return resolve_export_impl(link->first, link->second, seen);
     }
     if (module->has_own_export(name)) {
@@ -212,6 +223,14 @@ std::vector<std::string> Module::get_export_names() const {
     std::vector<std::string> names;
     std::vector<const Module*> seen;
     collect_export_names_through_stars(this, seen, names, /*with_default=*/true);
+    // A name two star sources disagree about is ambiguous, and an ambiguous
+    // name is not an export at all: it is absent from the namespace, and only
+    // an import that asks for it by name is an error.
+    names.erase(std::remove_if(names.begin(), names.end(),
+                               [this](const std::string& n) {
+                                   return resolve_export(n).ambiguous;
+                               }),
+                names.end());
     return names;
 }
 
@@ -358,6 +377,30 @@ static bool declare_module_exports(Module* module, const Program* program,
                                    ModuleLoader* loader, const std::string& filename,
                                    std::string& link_error) {
     if (!module || !program) return true;
+
+    // ParseModule: `import { x } from './m'; export { x };` is not a local
+    // export. The name belongs to the import, so the entry points where the
+    // import does -- which is what makes two paths to the same binding
+    // unambiguous rather than a disagreement between two modules.
+    struct ImportedName { std::string request; std::string name; };
+    std::unordered_map<std::string, ImportedName> imported;
+    for (const auto& stmt : program->get_statements()) {
+        if (!stmt || stmt->get_type() != ASTNode::Type::IMPORT_STATEMENT) continue;
+        const auto* im = static_cast<const ImportStatement*>(stmt.get());
+        // A namespace import re-exported by name is an indirect entry too, and
+        // "*" is how the entry says it names the source's namespace rather
+        // than one of its exports.
+        if (im->is_namespace_import() && !im->get_namespace_alias().empty()) {
+            imported[im->get_namespace_alias()] = {im->get_module_source(), "*"};
+        }
+        if (im->is_default_import() && !im->get_default_alias().empty()) {
+            imported[im->get_default_alias()] = {im->get_module_source(), "default"};
+        }
+        for (const auto& spec : im->get_specifiers()) {
+            imported[spec->get_local_name()] = {im->get_module_source(), spec->get_imported_name()};
+        }
+    }
+
     for (const auto& stmt : program->get_statements()) {
         if (!stmt || stmt->get_type() != ASTNode::Type::EXPORT_STATEMENT) continue;
         const auto* ex = static_cast<const ExportStatement*>(stmt.get());
@@ -429,13 +472,20 @@ static bool declare_module_exports(Module* module, const Program* program,
             }
             if (exported.empty()) continue;
             if (!ex->is_re_export()) {
+                auto from_import = imported.find(local);
+                if (loader && from_import != imported.end() &&
+                    !from_import->second.request.empty()) {
+                    module->declare_export(exported, std::string());
+                    module->declare_indirect_export(
+                        exported, loader->load_module(from_import->second.request, filename),
+                        from_import->second.name);
+                    continue;
+                }
                 module->declare_export(exported, local);
                 continue;
             }
             module->declare_export(exported, std::string());
-            // `export * as ns from` names the source's namespace, not one of
-            // its exports, so it stays a value this module owns.
-            if (loader && local != "*" && !ex->get_source_module().empty()) {
+            if (loader && !ex->get_source_module().empty()) {
                 module->declare_indirect_export(
                     exported, loader->load_module(ex->get_source_module(), filename), local);
             }

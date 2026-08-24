@@ -206,6 +206,9 @@ Token Lexer::next_token() {
     if (ch == '<' && peek_char() == '!' && peek_char(2) == '-' && peek_char(3) == '-') {
         if (options_.source_type_module) {
             add_error("SyntaxError: HTML comments are not allowed in module code");
+            // The token still has to consume what it names. Reporting the error
+            // without moving on leaves the scan sitting on the same character.
+            for (int i = 0; i < 4; i++) advance();
             return create_token(TokenType::INVALID, "<!--", current_position_);
         }
         return read_single_line_comment();
@@ -214,6 +217,7 @@ Token Lexer::next_token() {
     if (ch == '-' && peek_char() == '-' && peek_char(2) == '>') {
         if (options_.source_type_module) {
             add_error("SyntaxError: HTML comments are not allowed in module code");
+            for (int i = 0; i < 3; i++) advance();
             return create_token(TokenType::INVALID, "-->", current_position_);
         }
         if (current_position_.column == 1 || is_at_line_start()) {

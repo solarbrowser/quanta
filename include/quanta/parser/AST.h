@@ -2260,6 +2260,12 @@ public:
     // declaration itself and then asks for this, so the declaration is not
     // run a second time.
     Value link(Context& ctx, bool declaration_already_run);
+    // `export default function () {}` is a HoistableDeclaration: its binding
+    // holds the function before any statement of the module runs. Only the
+    // function forms hoist -- a class, or any other expression, keeps its
+    // dead zone.
+    bool default_is_hoistable() const;
+    void hoist_default(Context& ctx);
     
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
