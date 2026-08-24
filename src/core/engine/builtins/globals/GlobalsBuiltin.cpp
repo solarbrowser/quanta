@@ -1317,31 +1317,33 @@ void register_global_builtins(Context& ctx) {
             auto* promise = Quanta::as_promise(promise_obj.get());
             if (!promise) return Value(promise_obj.release());
 
-            // Coerce specifier with ToString() -- handles objects with custom toString()
+            // ToString(specifier). The whole coercion is observable -- it runs
+            // @@toPrimitive, then valueOf/toString in the string order -- and an
+            // object with no primitive route at all (import.meta, whose prototype
+            // is null) has to reject the promise rather than stringify to
+            // "[object Object]". Every abrupt completion here becomes a
+            // rejection; none of it escapes to the caller.
             std::string specifier;
             if (!args.empty()) {
                 Value sv = args[0];
                 if (sv.is_object() || sv.is_function()) {
                     Object* obj = sv.is_object() ? sv.as_object() : static_cast<Object*>(sv.as_function());
-                    Value ts = obj->get_property("toString");
-                    if (ts.is_function()) {
-                        Value res = ts.as_function()->call(ctx, {}, sv);
-                        if (ctx.has_exception()) {
-                            Value exc = ctx.get_exception();
-                            ctx.clear_exception();
-                            promise->reject(exc);
-                            return Value(promise_obj.release());
-                        }
-                        specifier = res.to_string();
-                    } else {
-                        specifier = sv.to_string();
-                    }
-                } else {
-                    specifier = sv.to_string();
+                    sv = obj->to_primitive("string");
                 }
+                if (!ctx.has_exception() && sv.is_symbol()) {
+                    ctx.throw_type_error("Cannot convert a Symbol value to a string");
+                }
+                if (ctx.has_exception()) {
+                    Value exc = ctx.get_exception();
+                    ctx.clear_exception();
+                    promise->reject(exc);
+                    return Value(promise_obj.release());
+                }
+                specifier = sv.to_string();
             }
             if (specifier.empty()) {
-                promise->reject(Value(std::string("TypeError: import() requires a specifier")));
+                auto err = Error::create_type_error("import() requires a specifier");
+                promise->reject(Value(err.release()));
                 return Value(promise_obj.release());
             }
 

@@ -3394,10 +3394,19 @@ Value ImportStatement::evaluate(Context& ctx) {
         // Use the current module's filename so relative imports resolve correctly
         std::string from_path = ctx.get_current_filename();
 
+        // InnerModuleEvaluation: a module whose dependency threw does not
+        // evaluate. The dependency's own error object is what propagates, so an
+        // importer that catches it sees the value the failing module threw.
+        auto dependency_failed = [&ctx](Module* m) -> bool {
+            if (!m || !m->has_thrown_exception()) return false;
+            ctx.throw_exception(m->get_thrown_exception());
+            return true;
+        };
+
         if (!is_namespace_import_ && (!is_default_import_ || is_mixed_import())) {
             if (specifiers_.empty()) {
                 // Side-effect-only import: execute the module for its side effects
-                module_loader->load_module(module_source_, from_path);
+                if (dependency_failed(module_loader->load_module(module_source_, from_path))) return Value();
             } else {
                 for (const auto& specifier : specifiers_) {
                     std::string imported_name = specifier->get_imported_name();
@@ -3407,6 +3416,7 @@ Value ImportStatement::evaluate(Context& ctx) {
                     // own, resolved where it is read: a value that module has
                     // not produced yet is still seen once it exists.
                     Module* src = module_loader->load_module(module_source_, from_path);
+                    if (dependency_failed(src)) return Value();
                     ctx.create_import_binding(
                         local_name, Value(new ImportBindingObject(src, imported_name)));
                 }
@@ -3418,6 +3428,7 @@ Value ImportStatement::evaluate(Context& ctx) {
             if (is_deferred_) {
                 namespace_obj = Value(new DeferredNamespaceObject(module_loader, module_source_, from_path));
             } else {
+                if (dependency_failed(module_loader->load_module(module_source_, from_path))) return Value();
                 namespace_obj = module_loader->import_namespace_from_module(module_source_, from_path);
             }
             ctx.create_binding(namespace_alias_, namespace_obj,
@@ -3426,6 +3437,7 @@ Value ImportStatement::evaluate(Context& ctx) {
 
         if (is_default_import_) {
             Module* src = module_loader->load_module(module_source_, from_path);
+            if (dependency_failed(src)) return Value();
             ctx.create_import_binding(default_alias_,
                                       Value(new ImportBindingObject(src, "default")));
         }

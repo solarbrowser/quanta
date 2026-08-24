@@ -32,6 +32,7 @@ private:
     std::unordered_map<std::string, Value> exports_;
     std::unordered_map<std::string, std::string> export_local_names_;
     std::vector<Module*> star_sources_;
+    std::vector<Module*> cycle_members_;
     std::unique_ptr<Context> module_context_;
     bool loaded_;
     bool loading_;
@@ -62,6 +63,12 @@ public:
     // record is still growing while a cycle is being instantiated.
     void add_star_source(Module* source);
     const std::vector<Module*>& star_sources() const { return star_sources_; }
+
+    // Modules that reached back into this one while it was still evaluating,
+    // i.e. the rest of the strongly connected component this module roots.
+    // They share its evaluation error.
+    void add_cycle_member(Module* member);
+    const std::vector<Module*>& cycle_members() const { return cycle_members_; }
     Value get_export(const std::string& name) const;
     bool has_export(const std::string& name) const;
     bool has_own_export(const std::string& name) const;
@@ -225,6 +232,9 @@ private:
     Engine* engine_;
     std::unordered_map<std::string, std::unique_ptr<Module>> modules_;
     std::unordered_set<std::string> loading_modules_;
+    // Modules currently being evaluated, innermost last: a cycle is closed when
+    // an import reaches one of these.
+    std::vector<Module*> evaluating_;
     std::vector<std::string> module_search_paths_;
     Value last_module_exception_;
 

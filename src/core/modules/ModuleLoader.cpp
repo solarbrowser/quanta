@@ -66,6 +66,12 @@ void Module::add_star_source(Module* source) {
     star_sources_.push_back(source);
 }
 
+void Module::add_cycle_member(Module* member) {
+    if (!member || member == this) return;
+    for (Module* m : cycle_members_) if (m == member) return;
+    cycle_members_.push_back(member);
+}
+
 // A star source can name this module back, so the walk carries the modules it
 // is already inside rather than trusting the graph to be a tree.
 static bool module_has_export_through_stars(const Module* module, const std::string& name,
@@ -149,7 +155,16 @@ Module* ModuleLoader::load_module(const std::string& module_id, const std::strin
     
     auto it = modules_.find(normalized_id);
     if (it != modules_.end()) {
-        return it->second.get();
+        Module* found = it->second.get();
+        // Reaching a module that is still evaluating closes a cycle. Everything
+        // that started evaluating since it began is part of that cycle, and the
+        // whole cycle reports the one evaluation error recorded on this root.
+        if (found->is_loading()) {
+            for (size_t i = evaluating_.size(); i-- > 0 && evaluating_[i] != found; ) {
+                found->add_cycle_member(evaluating_[i]);
+            }
+        }
+        return found;
     }
     
     if (loading_modules_.find(normalized_id) != loading_modules_.end()) {
@@ -168,10 +183,21 @@ Module* ModuleLoader::load_module(const std::string& module_id, const std::strin
     loading_modules_.insert(normalized_id);
     module_ptr->set_loading(true);
 
-    if (!execute_module_file(module_ptr, resolved_path)) {
+    evaluating_.push_back(module_ptr);
+    bool executed = execute_module_file(module_ptr, resolved_path);
+    evaluating_.pop_back();
+    if (!executed) {
         loading_modules_.erase(normalized_id);
         modules_.erase(normalized_id);
         return nullptr;
+    }
+
+    if (module_ptr->has_thrown_exception()) {
+        for (Module* member : module_ptr->cycle_members()) {
+            if (!member->has_thrown_exception()) {
+                member->set_thrown_exception(module_ptr->get_thrown_exception());
+            }
+        }
     }
     
     loading_modules_.erase(normalized_id);
@@ -320,6 +346,27 @@ static bool declare_module_exports(Module* module, const Program* program,
     }
     return true;
 }
+
+namespace {
+// A module's own scope ends where the realm's globals begin. The module
+// environment chains into the global one so the module sees the realm's
+// intrinsics, and that must not make a plain global variable answer for one of
+// the module's own bindings -- an export it never declared would resolve, and a
+// link error would go unreported.
+Environment* module_scope_owner(Context* mc, const std::string& name) {
+    if (!mc) return nullptr;
+    Environment* realm_globals = nullptr;
+    if (Engine* e = mc->get_engine()) {
+        if (Context* g = e->get_global_context()) realm_globals = g->get_variable_environment();
+    }
+    for (Environment* env = mc->get_lexical_environment(); env && env != realm_globals;
+         env = env->get_outer()) {
+        if (env->has_own_binding(name)) return env;
+    }
+    return nullptr;
+}
+}  // namespace
+
 Value ImportBindingObject::resolve() const {
     if (!module_) return Value();
     // A re-export can name a binding that is itself an import of the same
@@ -351,7 +398,7 @@ Value ImportBindingObject::resolve() const {
             }
         }
     }
-    if (mc->has_binding(export_name_)) return mc->get_binding(export_name_);
+    if (module_scope_owner(mc, export_name_)) return mc->get_binding(export_name_);
     return v;
 }
 
@@ -364,7 +411,8 @@ Value ModuleLoader::import_from_module(const std::string& module_id, const std::
 
     Value result = module->get_export(import_name);
     // Module is partially loaded (circular/self-import): fall back to context bindings
-    if (result.is_undefined() && module->is_loading() && module->get_context()) {
+    if (result.is_undefined() && module->is_loading() &&
+        module_scope_owner(module->get_context(), import_name)) {
         result = module->get_context()->get_binding(import_name);
     }
     return result;
@@ -384,7 +432,7 @@ bool ModuleLoader::module_provides_export(const std::string& module_id,
     // binding its own scope already holds is the answer (a hoisted function,
     // or anything a cycle has reached).
     if (module->is_loading()) {
-        return !module->get_context() || module->get_context()->has_binding(import_name);
+        return !module->get_context() || module_scope_owner(module->get_context(), import_name);
     }
     // The record is the whole story now: it is written from the module's own
     // declarations before it runs, and a `export * from` contributes the
@@ -431,28 +479,24 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
     }
     
     try {
-        auto module_context = std::make_unique<Context>(engine_);
-
-        // Share globalThis with the engine's global context so that cross-module
-        // globalThis.xxx assignments are visible to the main script and vice versa.
-        if (engine_ && engine_->get_global_context()) {
-            Object* shared_global = engine_->get_global_context()->get_global_object();
-            if (shared_global && module_context->get_global_object()) {
-                PropertyDescriptor desc(Value(shared_global),
-                    static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-                module_context->get_global_object()->set_property_descriptor("globalThis", desc);
-                module_context->get_global_object()->set_property_descriptor("global", desc);
-                module_context->get_global_object()->set_property_descriptor("window", desc);
-
-                // A module shares its realm's global object: unqualified `this` inside a
-                // sloppy-mode function (e.g. Function('return this;')()) called from module
-                // code must resolve to the SAME global object the main script observes,
-                // not the module's own isolated pseudo-global. The module's own global
-                // object remains the binding object for its top-level var/function
-                // declarations (captured by the lexical environment at construction), so
-                // this only redirects `this`/Function.prototype.call resolution.
-                module_context->set_global_object(shared_global);
-            }
+        // A module is not its own realm. A fresh Global context would stand up
+        // a second set of intrinsics, so `Error` inside the module and `Error`
+        // in the importing script would be different functions and every
+        // cross-module instanceof against them would answer false. The module
+        // keeps a scope of its own for its top-level declarations, but that
+        // scope's outer is the realm's global environment.
+        Context* realm = engine_ ? engine_->get_global_context() : nullptr;
+        std::unique_ptr<Context> module_context;
+        if (realm) {
+            module_context = std::make_unique<Context>(engine_, realm, Context::Type::Module);
+            Object* module_scope = ObjectFactory::create_object().release();
+            auto module_env = std::make_unique<Environment>(module_scope, realm->get_variable_environment());
+            module_context->set_lexical_environment(module_env.get());
+            module_context->set_variable_environment(module_env.release());
+            module_context->set_global_object(realm->get_global_object());
+            module_context->set_this_value(Value(realm->get_global_object()));
+        } else {
+            module_context = std::make_unique<Context>(engine_);
         }
 
         auto module_obj = std::make_shared<Object>();
