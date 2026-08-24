@@ -110,6 +110,12 @@ void Module::add_star_source(Module* source) {
     star_sources_.push_back(source);
 }
 
+void Module::add_requested(Module* dep) {
+    if (!dep) return;
+    for (Module* m : requested_) if (m == dep) return;
+    requested_.push_back(dep);
+}
+
 void Module::add_cycle_member(Module* member) {
     if (!member || member == this) return;
     for (Module* m : cycle_members_) if (m == member) return;
@@ -261,64 +267,161 @@ void ModuleLoader::gc_trace(Visitor& v) const {
     v.visit(last_module_exception_);
 }
 
-Module* ModuleLoader::load_module(const std::string& module_id, const std::string& from_path) {
+Module* ModuleLoader::prepare_module(const std::string& module_id, const std::string& from_path) {
     last_module_exception_ = Value();
     std::string resolved_path = resolve_module_path(module_id, from_path);
     std::string normalized_id = normalize_module_id(module_id, from_path);
-    
+
     auto it = modules_.find(normalized_id);
-    if (it != modules_.end()) {
-        Module* found = it->second.get();
-        // Reaching a module that is still evaluating closes a cycle. Everything
-        // that started evaluating since it began is part of that cycle, and the
-        // whole cycle reports the one evaluation error recorded on this root.
-        if (found->is_loading()) {
-            for (size_t i = evaluating_.size(); i-- > 0 && evaluating_[i] != found; ) {
-                found->add_cycle_member(evaluating_[i]);
-            }
-        }
-        return found;
-    }
-    
-    if (loading_modules_.find(normalized_id) != loading_modules_.end()) {
-        std::cerr << "Circular dependency detected for module: " << normalized_id << std::endl;
-        return nullptr;
-    }
-    
+    if (it != modules_.end()) return it->second.get();
+
     auto module = create_module(normalized_id, resolved_path);
-    if (!module) {
-        return nullptr;
-    }
-    
+    if (!module) return nullptr;
+
     Module* module_ptr = module.get();
     modules_[normalized_id] = std::move(module);
-    
-    loading_modules_.insert(normalized_id);
     module_ptr->set_loading(true);
 
-    evaluating_.push_back(module_ptr);
-    bool executed = execute_module_file(module_ptr, resolved_path);
-    evaluating_.pop_back();
-    if (!executed) {
-        loading_modules_.erase(normalized_id);
+    preparing_.push_back(module_ptr);
+    bool prepared = prepare_module_file(module_ptr, resolved_path);
+    preparing_.pop_back();
+
+    module_ptr->set_loading(false);
+    if (!prepared) {
         modules_.erase(normalized_id);
         return nullptr;
     }
+    module_ptr->set_loaded(true);
+    return module_ptr;
+}
 
-    if (module_ptr->has_thrown_exception()) {
-        for (Module* member : module_ptr->cycle_members()) {
-            if (!member->has_thrown_exception()) {
-                member->set_thrown_exception(module_ptr->get_thrown_exception());
+Module* ModuleLoader::load_module(const std::string& module_id, const std::string& from_path) {
+    // Preparing reaches every module in the graph; only the request that
+    // started it links and evaluates what it found. A request made while
+    // preparing is one of those dependencies and is left to that walk. A
+    // request made later -- reaching through a deferred namespace, a dynamic
+    // import -- is a graph of its own, and one already evaluated is done.
+    const bool during_prepare = !preparing_.empty();
+
+    Module* module = prepare_module(module_id, from_path);
+    if (!module) return nullptr;
+    if (during_prepare) return module;
+
+    if (module->is_evaluated() || module->has_thrown_exception()) return module;
+    if (!link_graph(module)) return module;
+    evaluate_graph(module);
+    return module;
+}
+
+namespace {
+void collect_graph(Module* module, std::vector<Module*>& out) {
+    if (!module) return;
+    for (Module* m : out) if (m == module) return;
+    out.push_back(module);
+    for (Module* dep : module->requested()) collect_graph(dep, out);
+}
+}  // namespace
+
+// Every name an import asks for has to resolve before any of the graph runs.
+// A name the exporting module does not provide, or one two `export *` sources
+// disagree about, is a SyntaxError raised here -- not something the importer
+// discovers halfway through its own body.
+bool ModuleLoader::link_graph(Module* root) {
+    std::vector<Module*> graph;
+    collect_graph(root, graph);
+    for (Module* module : graph) {
+        const Program* program = static_cast<const Program*>(module->program());
+        if (!program) continue;
+        for (const auto& stmt : program->get_statements()) {
+            if (!stmt) continue;
+            std::string request;
+            std::vector<std::pair<std::string, bool>> wanted;  // name, is_namespace
+            if (stmt->get_type() == ASTNode::Type::IMPORT_STATEMENT) {
+                const auto* im = static_cast<const ImportStatement*>(stmt.get());
+                if (im->is_deferred()) continue;
+                request = im->get_module_source();
+                if (im->is_default_import() && !im->get_default_alias().empty()) {
+                    wanted.emplace_back("default", false);
+                }
+                for (const auto& spec : im->get_specifiers()) {
+                    wanted.emplace_back(spec->get_imported_name(), false);
+                }
+            } else if (stmt->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+                const auto* ex = static_cast<const ExportStatement*>(stmt.get());
+                request = ex->get_source_module();
+                if (request.empty() || !ex->is_re_export()) continue;
+                for (const auto& spec : ex->get_specifiers()) {
+                    const std::string& local = spec->get_local_name();
+                    if (local == "*") continue;  // the source's namespace, always resolvable
+                    wanted.emplace_back(local, false);
+                }
+            }
+            if (request.empty() || wanted.empty()) continue;
+            Module* src = prepare_module(request, module->get_filename());
+            if (!src) continue;
+            for (const auto& w : wanted) {
+                Module::Resolution r = src->resolve_export(w.first);
+                if (r.ambiguous) {
+                    auto err = Error::create_syntax_error(
+                        "The requested module '" + request + "' contains conflicting star exports for name '" +
+                        w.first + "'");
+                    module->set_thrown_exception(Value(err.release()));
+                    return false;
+                }
+                if (!r) {
+                    auto err = Error::create_syntax_error(
+                        "The requested module '" + request + "' does not provide an export named '" +
+                        w.first + "'");
+                    module->set_thrown_exception(Value(err.release()));
+                    return false;
+                }
             }
         }
     }
-    
-    loading_modules_.erase(normalized_id);
-    module_ptr->set_loading(false);
-    module_ptr->set_loaded(true);
-    
-    return module_ptr;
+    return true;
 }
+
+// Dependencies first, each module once. A module whose dependency threw does
+// not run, and everything in a cycle reports the one error its root recorded.
+void ModuleLoader::evaluate_graph(Module* root) {
+    if (!root) return;
+    if (root->is_evaluated()) {
+        // Reaching a module that is still on the stack closes a cycle:
+        // everything that started since it began belongs to that cycle and
+        // reports the one error recorded on this root.
+        bool on_stack = false;
+        for (Module* m : evaluating_) if (m == root) { on_stack = true; break; }
+        if (on_stack) {
+            for (size_t i = evaluating_.size(); i-- > 0 && evaluating_[i] != root; ) {
+                root->add_cycle_member(evaluating_[i]);
+            }
+        }
+        return;
+    }
+    if (root->has_thrown_exception()) return;
+    root->mark_evaluated();
+
+    evaluating_.push_back(root);
+    for (Module* dep : root->requested()) {
+        evaluate_graph(dep);
+        if (dep && dep->has_thrown_exception()) {
+            root->set_thrown_exception(dep->get_thrown_exception());
+            evaluating_.pop_back();
+            return;
+        }
+    }
+    evaluate_module(root);
+    evaluating_.pop_back();
+
+    if (root->has_thrown_exception()) {
+        for (Module* member : root->cycle_members()) {
+            if (!member->has_thrown_exception()) {
+                member->set_thrown_exception(root->get_thrown_exception());
+            }
+        }
+    }
+}
+
 
 Module* ModuleLoader::get_module(const std::string& module_id) {
     auto it = modules_.find(module_id);
@@ -401,8 +504,10 @@ static bool load_requested_modules(Module* module, const Program* program,
             request = static_cast<const ExportStatement*>(stmt.get())->get_source_module();
         }
         if (request.empty()) continue;
-        Module* dep = loader->load_module(request, filename);
-        if (dep && dep->has_thrown_exception()) {
+        Module* dep = loader->prepare_module(request, filename);
+        if (!dep) return false;
+        module->add_requested(dep);
+        if (dep->has_thrown_exception()) {
             module->set_thrown_exception(dep->get_thrown_exception());
             return false;
         }
@@ -654,7 +759,7 @@ std::unique_ptr<Module> ModuleLoader::create_module(const std::string& module_id
     return std::make_unique<Module>(module_id, filename);
 }
 
-bool ModuleLoader::execute_module_file(Module* module, const std::string& filename) {
+bool ModuleLoader::prepare_module_file(Module* module, const std::string& filename) {
     std::string source = read_file(filename);
     if (source.empty()) {
         auto err = Error::create_type_error("Failed to fetch dynamically imported module '" + filename + "'");
@@ -749,13 +854,23 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
             return true;
         }
 
+        module->set_program(std::move(ast));
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error preparing module " << filename << ": " << e.what() << std::endl;
+        return false;
+    }
+}
+
+void ModuleLoader::evaluate_module(Module* module) {
+    Program* program = static_cast<Program*>(module->program());
+    if (!program || !module->get_context()) return;
+    try {
         // A top-level await can only suspend when nothing is waiting on this
         // module: an importer further down the stack has already started
         // evaluating and has no way to be resumed yet, so those still run to
         // completion where they stand.
-        ast->set_may_suspend(evaluating_.size() <= 1);
-        Program* program = ast.get();
-        module->set_program(std::move(ast));
+        program->set_may_suspend(evaluating_.size() <= 1);
         program->evaluate(*module->get_context());
         module->set_evaluation_promise(program->completion_promise());
 
@@ -788,11 +903,10 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
                 module->add_export(key, prop_value, local_name);
             }
         }
-        
-        return true;
     } catch (const std::exception& e) {
-        std::cerr << "Error executing module " << filename << ": " << e.what() << std::endl;
-        return false;
+        if (!module->has_thrown_exception()) {
+            module->set_thrown_exception(Value(std::string(e.what())));
+        }
     }
 }
 

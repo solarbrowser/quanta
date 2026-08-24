@@ -37,6 +37,9 @@ private:
     // them, which is what lets a chain run back through a cycle.
     std::unordered_map<std::string, std::pair<Module*, std::string>> indirect_exports_;
     std::vector<Module*> cycle_members_;
+    // Every module this one requests, in source order: the graph's edges.
+    std::vector<Module*> requested_;
+    bool evaluated_ = false;
     std::unique_ptr<Context> module_context_;
     std::unique_ptr<ASTNode> program_;
     Value evaluation_promise_;
@@ -106,6 +109,11 @@ public:
         return it == indirect_exports_.end() ? nullptr : &it->second;
     }
     const std::vector<Module*>& cycle_members() const { return cycle_members_; }
+
+    void add_requested(Module* dep);
+    const std::vector<Module*>& requested() const { return requested_; }
+    bool is_evaluated() const { return evaluated_; }
+    void mark_evaluated() { evaluated_ = true; }
     Value get_export(const std::string& name) const;
     bool has_export(const std::string& name) const;
     bool has_own_export(const std::string& name) const;
@@ -302,6 +310,9 @@ private:
     // Modules currently being evaluated, innermost last: a cycle is closed when
     // an import reaches one of these.
     std::vector<Module*> evaluating_;
+    // Modules being prepared, innermost last. A request reaching one of these
+    // closes a cycle in the graph.
+    std::vector<Module*> preparing_;
     std::vector<std::string> module_search_paths_;
     Value last_module_exception_;
 
@@ -310,6 +321,10 @@ public:
     ~ModuleLoader() = default;
 
     Module* load_module(const std::string& module_id, const std::string& from_path = "");
+    // Parses a module, stands up its scope and settles its export table --
+    // and does the same for everything it requests -- without running any of
+    // it. load_module is this plus linking and evaluating the graph.
+    Module* prepare_module(const std::string& module_id, const std::string& from_path);
     Module* get_module(const std::string& module_id);
     bool is_module_loaded(const std::string& module_id) const;
     const Value& get_last_module_exception() const { return last_module_exception_; }
@@ -342,7 +357,15 @@ public:
 
 private:
     std::unique_ptr<Module> create_module(const std::string& module_id, const std::string& filename);
-    bool execute_module_file(Module* module, const std::string& filename);
+    // Linking and evaluation are separate passes over the graph. Preparing a
+    // module parses it, stands up its scope, hoists its declarations and
+    // settles its export table, and prepares everything it requests -- without
+    // running a single statement of any of it. Only once the whole graph is
+    // prepared and linked does anything evaluate.
+    bool prepare_module_file(Module* module, const std::string& filename);
+    bool link_graph(Module* root);
+    void evaluate_graph(Module* root);
+    void evaluate_module(Module* module);
     std::string normalize_module_id(const std::string& module_id, const std::string& from_path);
     bool is_relative_path(const std::string& path);
     bool is_absolute_path(const std::string& path);
