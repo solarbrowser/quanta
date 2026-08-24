@@ -55,7 +55,14 @@ public:
     // rather than undefined, which is what `eval` is specified to return.
     static std::unique_ptr<BytecodeChunk> compile_script(
         const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with = false,
-        bool track_completion = false);
+        bool track_completion = false, bool suspendable = false);
+
+    // A module body compiled for the suspendable convention, so a top-level
+    // await suspends the fiber the module runs on instead of draining the
+    // microtask queue where it stands. Null when the body has no suspension
+    // point at all, or when it does not compile.
+    static std::unique_ptr<BytecodeChunk> compile_module_body(
+        const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with = false);
 
     // A parameter's destructuring pattern, compiled on its own. A suspendable
     // function binds its parameters outside the chunk that owns its body, so

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Value.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
@@ -44,6 +45,13 @@ public:
                   std::unique_ptr<Context> exec_ctx,
                   Promise* outer_promise,
                   Engine* engine);
+    // A module body with top-level await. The chunk is compiled by the caller
+    // and runs in the module's own context, which the executor borrows rather
+    // than owns: the module outlives the fiber.
+    AsyncExecutor(std::unique_ptr<BytecodeChunk> module_chunk,
+                  Context* module_ctx,
+                  Promise* outer_promise,
+                  Engine* engine);
     ~AsyncExecutor();
 
     void run();                                       // start or resume fiber (from microtask)
@@ -66,8 +74,15 @@ public:
 
 private:
     AsyncFunction* owner_fn_;
+    // Owned here, not by the module's parse tree: the tree is gone by the time
+    // a suspended module body resumes. The roots go with it -- nothing else
+    // reaches an ownerless chunk's constants or the cells its caches hold.
+    std::unique_ptr<BytecodeChunk> module_chunk_;
+    std::unique_ptr<ChunkFeedbackRoot> module_feedback_root_;
+    std::unique_ptr<ValueArrayRoot> module_const_root_;
     static constinit thread_local AsyncExecutor* current_;
     static void fiber_entry(mco_coro* co);
+    void start_fiber();
 };
 
 

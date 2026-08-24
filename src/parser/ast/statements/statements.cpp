@@ -10,6 +10,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/vm/Interpreter.h"
+#include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
@@ -196,6 +197,30 @@ Value Program::evaluate(Context& ctx) {
     // Script tier: with hoisting done, the statement loop itself runs as
     // bytecode. An eval asks for the completion value the spec makes it
     // answer with; a script's own result is not observable.
+    // A module body with a top-level await runs on a fiber of its own, so the
+    // await suspends instead of draining the microtask queue where it stands.
+    // The promise it settles is the module's completion.
+    // Not from inside another fiber: a module reached that way has an importer
+    // already running on the fiber below, and nothing yet knows how to hand
+    // that importer a completion to wait on. Those still run where they stand.
+    if (may_suspend_ && !AsyncExecutor::get_current()) {
+        bool outer_with = false;
+        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+            if (e->is_with_environment()) { outer_with = true; break; }
+        }
+        auto module_body = BytecodeCompiler::compile_module_body(statements_, outer_with);
+        if (module_body) {
+            ctx.mark_exposed_to_escape();
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* promise_raw = static_cast<Promise*>(promise_obj.get());
+            completion_promise_ = Value(promise_obj.release());
+            auto executor = std::make_shared<AsyncExecutor>(
+                std::move(module_body), &ctx, promise_raw, ctx.get_engine());
+            executor->run();
+            return Value();
+        }
+    }
+
     {
         const bool is_eval = ctx.get_type() == Context::Type::Eval;
         bool used_vm = false;

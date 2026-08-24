@@ -1373,6 +1373,29 @@ void register_global_builtins(Context& ctx) {
                             promise_ptr->reject(mod->get_thrown_exception());
                             return;
                         }
+                        // A module whose body suspended on a top-level await is
+                        // not finished yet. What import() answers with is its
+                        // completion, so the namespace is built once the module
+                        // has actually produced its exports.
+                        Value evaluation = mod->get_evaluation_promise();
+                        Promise* pending = AsyncUtils::is_promise(evaluation)
+                                               ? static_cast<Promise*>(evaluation.as_object())
+                                               : nullptr;
+                        if (pending && pending->get_state() == PromiseState::PENDING) {
+                            Module* waiting_for = mod;
+                            auto on_done = ObjectFactory::create_native_function("",
+                                [promise_ptr, waiting_for](Context&, std::span<const Value>, Value) -> Value {
+                                    promise_ptr->fulfill(ModuleLoader::build_module_namespace(waiting_for));
+                                    return Value();
+                                }, 1);
+                            auto on_fail = ObjectFactory::create_native_function("",
+                                [promise_ptr](Context&, std::span<const Value> a, Value) -> Value {
+                                    promise_ptr->reject(a.empty() ? Value() : a[0]);
+                                    return Value();
+                                }, 1);
+                            pending->then(on_done.release(), on_fail.release());
+                            return;
+                        }
                         // Spec 10.4.6: live-binding module namespace (same object each call)
                         Value ns_val = ModuleLoader::build_module_namespace(mod);
                         promise_ptr->fulfill(ns_val);

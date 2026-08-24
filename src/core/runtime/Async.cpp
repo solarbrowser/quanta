@@ -67,6 +67,26 @@ AsyncExecutor::AsyncExecutor(AsyncFunction* owner_fn,
       exec_context_(exec_context_owned_.get()),
       engine_(engine),
       owner_fn_(owner_fn) {
+    start_fiber();
+}
+
+AsyncExecutor::AsyncExecutor(std::unique_ptr<BytecodeChunk> module_chunk,
+                              Context* module_ctx,
+                              Promise* outer_promise,
+                              Engine* engine)
+    : outer_promise_(outer_promise),
+      exec_context_(module_ctx),
+      engine_(engine),
+      owner_fn_(nullptr),
+      module_chunk_(std::move(module_chunk)) {
+    if (module_chunk_) {
+        module_feedback_root_ = std::make_unique<ChunkFeedbackRoot>(module_chunk_.get());
+        module_const_root_ = std::make_unique<ValueArrayRoot>(&module_chunk_->constants);
+    }
+    start_fiber();
+}
+
+void AsyncExecutor::start_fiber() {
     mco_desc desc = mco_desc_init(fiber_entry, STACK_SIZE);
     desc.user_data = this;
     desc.alloc_cb = fiber_alloc_cb;
@@ -95,7 +115,11 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
     try {
         // Asked of the function rather than held: the compiled form below
         // never reads the tree.
-        if (self->owner_fn_ && self->owner_fn_->has_runnable_body()) {
+        if (self->module_chunk_) {
+            // A module body: its bindings are already in the module's own
+            // context, and nothing owns the chunk, so it runs ownerless.
+            VM::run_suspendable_chunk(*self->module_chunk_, *ctx, nullptr);
+        } else if (self->owner_fn_ && self->owner_fn_->has_runnable_body()) {
             // Bindings already live in exec_context_; a delegated await suspends
             // the fiber from inside the VM dispatch loop (see Generator::run_body).
             const BytecodeChunk* chunk = self->owner_fn_ ? self->owner_fn_->get_suspendable_chunk(*ctx) : nullptr;
@@ -143,7 +167,9 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
     }
 
     // Function is fully done and won't be resumed again -- release the retain taken in AsyncFunction::call.
-    EventLoop::instance().release_context(ctx);
+    // A module's context is borrowed and the module keeps it: there is no
+    // retain of ours to give back.
+    if (!self->module_chunk_) EventLoop::instance().release_context(ctx);
 
     // Return control to whoever called run()/resume()
     quanta_fiber_yield(self->fiber_.get());

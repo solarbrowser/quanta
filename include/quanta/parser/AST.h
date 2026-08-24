@@ -2091,6 +2091,8 @@ class Program : public ASTNode {
 private:
     std::vector<std::unique_ptr<ASTNode>> statements_;
     bool is_strict_ = false;
+    bool may_suspend_ = false;
+    Value completion_promise_;
 
     void check_use_strict_directive(Context& ctx);
     void hoist_var_declarations(Context& ctx);
@@ -2107,6 +2109,13 @@ public:
     
     const std::vector<std::unique_ptr<ASTNode>>& get_statements() const { return statements_; }
     size_t statement_count() const { return statements_.size(); }
+
+    // A module body may suspend on a top-level await instead of draining the
+    // microtask queue where it stands. Set by the loader when nothing is
+    // waiting on this module's evaluation; the promise it leaves behind is the
+    // module's completion.
+    void set_may_suspend(bool v) { may_suspend_ = v; }
+    const Value& completion_promise() const { return completion_promise_; }
     
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

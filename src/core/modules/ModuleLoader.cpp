@@ -98,6 +98,12 @@ Value Module::get_export(const std::string& name) const {
     return Value();
 }
 
+Module::~Module() = default;
+
+void Module::set_program(std::unique_ptr<ASTNode> program) {
+    program_ = std::move(program);
+}
+
 void Module::add_star_source(Module* source) {
     if (!source || source == this) return;
     for (Module* m : star_sources_) if (m == source) return;
@@ -240,6 +246,7 @@ void Module::set_context(std::unique_ptr<Context> context) {
 
 void Module::gc_trace(Visitor& v) const {
     for (const auto& kv : exports_) v.visit(kv.second);
+    v.visit(evaluation_promise_);
     v.visit(thrown_exception_);
     v.visit(namespace_);
 }
@@ -646,10 +653,13 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
             module_context = std::make_unique<Context>(engine_);
         }
 
-        auto module_obj = std::make_shared<Object>();
-        module_context->create_binding("module", Value(module_obj.get()));
-        auto exports_obj = std::make_shared<Object>();
-        module_context->create_binding("exports", Value(exports_obj.get()));
+        // Handed to the collector, not held here: a body that suspends on a
+        // top-level await still reaches for `exports` long after this function
+        // has returned, and the binding is what keeps them reachable.
+        auto module_obj = ObjectFactory::create_object();
+        module_context->create_binding("module", Value(module_obj.release()));
+        auto exports_obj = ObjectFactory::create_object();
+        module_context->create_binding("exports", Value(exports_obj.release()));
         module_context->create_binding("__filename", Value(filename));
         module_context->create_binding("__dirname", Value(std::filesystem::path(filename).parent_path().string()));
         
@@ -688,7 +698,15 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
             return true;
         }
 
-        ast->evaluate(*module->get_context());
+        // A top-level await can only suspend when nothing is waiting on this
+        // module: an importer further down the stack has already started
+        // evaluating and has no way to be resumed yet, so those still run to
+        // completion where they stand.
+        ast->set_may_suspend(evaluating_.size() <= 1);
+        Program* program = ast.get();
+        module->set_program(std::move(ast));
+        program->evaluate(*module->get_context());
+        module->set_evaluation_promise(program->completion_promise());
 
         if (module->get_context()->has_exception()) {
             module->set_thrown_exception(module->get_context()->get_exception());

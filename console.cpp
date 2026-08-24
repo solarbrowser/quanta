@@ -124,6 +124,17 @@ public:
             }
 
             if (module) {
+                // A body that suspended on a top-level await finished during
+                // the event loop above, and a rejected completion is how it
+                // reports the error it threw after suspending.
+                if (!module->has_thrown_exception()) {
+                    Value evaluation = module->get_evaluation_promise();
+                    if (Promise* p = Quanta::as_promise(evaluation.as_object_or_null())) {
+                        if (p->get_state() == PromiseState::REJECTED) {
+                            module->set_thrown_exception(p->take_settled_value());
+                        }
+                    }
+                }
                 if (module->has_thrown_exception()) {
                     Value exc = module->get_thrown_exception();
                     std::cerr << exc.to_string() << std::endl;

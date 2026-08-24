@@ -38,13 +38,21 @@ private:
     std::unordered_map<std::string, std::pair<Module*, std::string>> indirect_exports_;
     std::vector<Module*> cycle_members_;
     std::unique_ptr<Context> module_context_;
+    std::unique_ptr<ASTNode> program_;
+    Value evaluation_promise_;
     bool loaded_;
     bool loading_;
     Value thrown_exception_;
 
 public:
     Module(const std::string& id, const std::string& filename);
-    ~Module() = default;
+    ~Module();
+
+    // The module keeps its own parse tree. A body that suspends on a top-level
+    // await is still running after the loader has returned, and the chunk it
+    // runs holds the export statements it has to link.
+    void set_program(std::unique_ptr<ASTNode> program);
+    ASTNode* program() const { return program_.get(); }
 
     // Visits exports_/thrown_exception_/namespace_ -- the collector's own
     // roots have no reach into modules at all otherwise. module_context_ is
@@ -109,6 +117,11 @@ public:
 
     void set_loaded(bool loaded) { loaded_ = loaded; }
     void set_loading(bool loading) { loading_ = loading; }
+    // A body with a top-level await is still running when the loader returns.
+    // This is what settles when it finishes, and what an importer waits on.
+    void set_evaluation_promise(const Value& v) { evaluation_promise_ = v; }
+    const Value& get_evaluation_promise() const { return evaluation_promise_; }
+
     void set_thrown_exception(const Value& v) { thrown_exception_ = v; }
     const Value& get_thrown_exception() const { return thrown_exception_; }
     bool has_thrown_exception() const { return !thrown_exception_.is_undefined(); }

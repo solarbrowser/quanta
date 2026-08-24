@@ -4344,9 +4344,20 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     return std::move(compiler.chunk_);
 }
 
+std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_module_body(
+    const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with) {
+    bool suspends = false;
+    for (const auto& st : statements) {
+        if (contains_suspend(st.get())) { suspends = true; break; }
+    }
+    if (!suspends) return nullptr;
+    return compile_script(statements, outer_with, /*track_completion=*/false,
+                          /*suspendable=*/true);
+}
+
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with,
-    bool track_completion) {
+    bool track_completion, bool suspendable) {
     // Scan the whole program once. Modules and anything opaque to the
     // scanners tree-walk; class definitions and closure-side eval only
     // disable the nested-register refinement (top-level names are outer
@@ -4502,6 +4513,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     BytecodeCompiler compiler({}, /*env_mode=*/true,
                               script_has_with ? nullptr : &env_resident);
     if (compiler.failed_) return nullptr;
+    compiler.suspendable_ = suspendable;
     // Every lexically declared name, known before a single instruction is
     // emitted. Learning it while compiling made the answer depend on source
     // order: a reference written ABOVE the block that declares the name saw
