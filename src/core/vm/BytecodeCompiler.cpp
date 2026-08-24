@@ -6918,6 +6918,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::IMPORT_STATEMENT:
+            // Instantiated before the body ran, same as a function declaration.
+            return script_mode_;
+
         case ASTNode::Type::EXPORT_STATEMENT: {
             if (!script_mode_) return false;  // only a Program has module declarations
             if (chunk_->ensure_ast_nodes().size() >= 0xFFFF) return false;

@@ -3403,11 +3403,12 @@ Value ImportStatement::evaluate(Context& ctx) {
                     std::string imported_name = specifier->get_imported_name();
                     std::string local_name = specifier->get_local_name();
 
-                    Value imported_value = module_loader->import_from_module(
-                        module_source_, imported_name, from_path
-                    );
-
-                    ctx.create_binding(local_name, imported_value);
+                    // The binding is an alias for the exporting module's
+                    // own, resolved where it is read: a value that module has
+                    // not produced yet is still seen once it exists.
+                    Module* src = module_loader->load_module(module_source_, from_path);
+                    ctx.create_import_binding(
+                        local_name, Value(new ImportBindingObject(src, imported_name)));
                 }
             }
         }
@@ -3419,23 +3420,14 @@ Value ImportStatement::evaluate(Context& ctx) {
             } else {
                 namespace_obj = module_loader->import_namespace_from_module(module_source_, from_path);
             }
-            ctx.create_binding(namespace_alias_, namespace_obj);
+            ctx.create_binding(namespace_alias_, namespace_obj,
+                               /*mutable_binding=*/false, /*deletable=*/false);
         }
 
         if (is_default_import_) {
-            Value default_value = module_loader->import_default_from_module(
-                module_source_, from_path
-            );
-
-            if (default_value.is_undefined()) {
-                if (engine->has_default_export(module_source_)) {
-                    default_value = engine->get_default_export(module_source_);
-                } else if (engine->has_default_export("")) {
-                    default_value = engine->get_default_export("");
-                }
-            }
-
-            ctx.create_binding(default_alias_, default_value);
+            Module* src = module_loader->load_module(module_source_, from_path);
+            ctx.create_import_binding(default_alias_,
+                                      Value(new ImportBindingObject(src, "default")));
         }
 
         return Value();

@@ -158,6 +158,7 @@ Value Program::evaluate(Context& ctx) {
     // Hoist function declarations AFTER pushing the script-level lexical env so
     // that function closures can access let/const bindings from the same script.
     for (const auto& statement : statements_) {
+        if (statement->get_type() == ASTNode::Type::IMPORT_STATEMENT) continue;
         // `export function f(){}` hoists exactly as a bare one does; the
         // export record itself is kept later, where the statement runs.
         const ASTNode* fn = statement.get();
@@ -171,6 +172,16 @@ Value Program::evaluate(Context& ctx) {
                 return Value();
             }
         }
+    }
+
+    // Every import is instantiated before any statement runs, and after the
+    // function declarations are in place: a module that imports a name it
+    // exports itself resolves it from its own scope, which is where a
+    // hoisted function already is.
+    for (const auto& statement : statements_) {
+        if (statement->get_type() != ASTNode::Type::IMPORT_STATEMENT) continue;
+        statement->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
     }
 
     // Script tier: with hoisting done, the statement loop itself runs as

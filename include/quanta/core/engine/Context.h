@@ -342,6 +342,9 @@ public:
     bool is_strict_const(const std::string& name) const;
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);
     void create_binding_force(const std::string& name, const Value& value);
+    // An imported name, bound to the exporting module's own binding rather
+    // than to a copy of what it held at instantiation.
+    void create_import_binding(const std::string& name, const Value& target);
     void create_lexical_binding_force(const std::string& name, const Value& value);
     bool create_var_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
     bool create_lexical_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
@@ -498,6 +501,11 @@ public:
         // Object environments keep no slot, so those still use the sets below.
         bool lexical = false;
         bool const_binding = false;
+        // An import: `value` holds the ImportBindingObject that says which
+        // module and which export, and a read resolves through it. The bit
+        // costs nothing (it lands in padding the other flags already use) and
+        // keeps the resolution off every ordinary read.
+        bool indirect = false;
     };
 
     // Like HybridDescriptorMap's inline array (Object.h), but can't copy its
@@ -982,6 +990,7 @@ public:
     bool set_binding_direct(const std::string& name, const Value& value, Context* ctx = nullptr);
     Environment* find_binding_env(const std::string& name);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);
+    void create_import_binding(const std::string& name, const Value& target);
     void force_set_binding(const std::string& name, const Value& value);
     bool delete_binding(const std::string& name);
 

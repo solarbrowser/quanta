@@ -82,6 +82,27 @@ private:
 // Moved here (out of ModuleLoader.cpp) so CustomObjectBase's own switch
 // (Object.cpp) can name this class directly for its ObjectType::Custom /
 // CustomKind::ModuleNamespace case.
+// One imported name, resolved where it is read rather than where it was
+// imported. An import is an alias for the exporting module's binding, so a
+// value the exporting module has not produced yet (a class it declares later,
+// a name a cycle reaches back for) is still seen once it exists.
+class ImportBindingObject : public CustomObjectBase {
+    Module* module_;
+    std::string export_name_;
+
+public:
+    ImportBindingObject(Module* module, std::string export_name)
+        : CustomObjectBase(ObjectType::Custom), module_(module),
+          export_name_(std::move(export_name)) {
+        set_custom_kind(CustomKind::ImportBinding);
+        set_prototype(nullptr);
+    }
+
+    Module* module() const { return module_; }
+    const std::string& export_name() const { return export_name_; }
+    Value resolve() const;
+};
+
 class ModuleNamespaceObject : public CustomObjectBase {
     Module* module_;
 
@@ -202,6 +223,11 @@ public:
     void add_search_path(const std::string& path);
 
     Value import_from_module(const std::string& module_id, const std::string& import_name, const std::string& from_path = "");
+    // Whether the module provides this export at all, which is a different
+    // question from what it holds: a name bound to undefined resolves, a name
+    // never exported is a link error.
+    bool module_provides_export(const std::string& module_id, const std::string& import_name,
+                                const std::string& from_path = "");
     Value import_default_from_module(const std::string& module_id, const std::string& from_path = "");
     Value import_namespace_from_module(const std::string& module_id, const std::string& from_path = "");
 

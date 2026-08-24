@@ -181,6 +181,22 @@ void ModuleLoader::add_search_path(const std::string& path) {
     module_search_paths_.push_back(path);
 }
 
+Value ImportBindingObject::resolve() const {
+    if (!module_) return Value();
+    Value v = module_->get_export(export_name_);
+    if (!v.is_undefined()) return v;
+    Context* mc = module_->get_context();
+    if (!mc) return v;
+    // The module's export record is only assembled once its body finishes, so
+    // while it is still running the answer is the record it is building.
+    Value exports = mc->get_binding("exports");
+    if (exports.is_object() && exports.as_object()->has_property(export_name_)) {
+        return exports.as_object()->get_property(export_name_);
+    }
+    if (mc->has_binding(export_name_)) return mc->get_binding(export_name_);
+    return v;
+}
+
 Value ModuleLoader::import_from_module(const std::string& module_id, const std::string& import_name, const std::string& from_path) {
 
     Module* module = load_module(module_id, from_path);
@@ -194,6 +210,32 @@ Value ModuleLoader::import_from_module(const std::string& module_id, const std::
         result = module->get_context()->get_binding(import_name);
     }
     return result;
+}
+
+// Whether the module actually provides this export, which is a different
+// question from what the export holds: a name bound to undefined resolves,
+// and a name that was never exported is a link error the importer has to
+// raise before any of its own code runs.
+bool ModuleLoader::module_provides_export(const std::string& module_id,
+                                          const std::string& import_name,
+                                          const std::string& from_path) {
+    Module* module = load_module(module_id, from_path);
+    if (!module) return false;
+    if (module->has_export(import_name)) return true;
+    // A module still evaluating has not recorded its exports yet, so the
+    // binding its own scope already holds is the answer (a hoisted function,
+    // or anything a cycle has reached).
+    if (module->is_loading()) {
+        return !module->get_context() || module->get_context()->has_binding(import_name);
+    }
+    // A finished module's record is only the whole story when nothing reaches
+    // it indirectly: `export * from` contributes names this record never sees,
+    // so a miss there is not evidence of a missing export.
+    if (Context* mc = module->get_context()) {
+        if (mc->has_binding("\x01star")) return true;
+        if (mc->has_binding(import_name)) return true;
+    }
+    return false;
 }
 
 Value ModuleLoader::import_default_from_module(const std::string& module_id, const std::string& from_path) {

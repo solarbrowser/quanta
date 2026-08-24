@@ -801,7 +801,7 @@ public:
     enum class CustomKind : uint8_t {
         Generator, AsyncGenerator, AsyncIterator,
         ArrayIterator, StringIterator, MapIterator, SetIterator,
-        ModuleNamespace, DeferredNamespace
+        ModuleNamespace, DeferredNamespace, ImportBinding
     };
 
 private:

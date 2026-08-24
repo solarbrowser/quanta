@@ -1031,6 +1031,15 @@ static bool is_internal_env_slot(const std::string& name) {
            name == "__eval_private_names__";
 }
 
+// An import resolves where it is read: the slot holds the alias, not a value.
+static inline Value resolve_binding_slot(const Environment::BindingSlot& slot) {
+    if (!slot.indirect) return slot.value;
+    if (Object* o = slot.value.as_object_or_null()) {
+        return static_cast<const ImportBindingObject*>(o)->resolve();
+    }
+    return Value();
+}
+
 Value Environment::get_binding(const std::string& name) const {
     return get_binding_with_depth(name, 0);
 }
@@ -1045,7 +1054,7 @@ Value Environment::get_binding_with_depth(const std::string& name, int depth) co
             return binding_object_->get_property(name);
         } else {
             if (const BindingSlot* slot = slots_.find(name)) {
-                return slot->value;
+                return resolve_binding_slot(*slot);
             }
         }
     }
@@ -1091,13 +1100,13 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
         }
         return binding_object_->get_property(name);
     }
-    if (const BindingSlot* slot = slots_.find(name)) return slot->value;
+    if (const BindingSlot* slot = slots_.find(name)) return resolve_binding_slot(*slot);
     return Value();
 }
 
 Value Environment::get_binding_direct_interned(const std::string* key, Context* ctx) const {
     if (type_ == Type::Object && binding_object_) return get_binding_direct(*key, ctx);
-    if (const BindingSlot* slot = slots_.find_interned(key)) return slot->value;
+    if (const BindingSlot* slot = slots_.find_interned(key)) return resolve_binding_slot(*slot);
     return Value();
 }
 
@@ -1106,10 +1115,26 @@ bool Environment::cacheable_object_binding(const std::string& name, uint32_t& sl
     return binding_object_->cacheable_data_slot(name, slot_index);
 }
 
+void Context::create_import_binding(const std::string& name, const Value& target) {
+    if (Environment* env = get_lexical_environment()) env->create_import_binding(name, target);
+}
+
+void Environment::create_import_binding(const std::string& name, const Value& target) {
+    Collector::write_barrier_env_for(this, target);
+    auto& slot = slots_.get_or_create(name);
+    slot.value = target;
+    slot.initialized = true;
+    slot.mutable_flag = false;
+    slot.deletable = false;
+    slot.indirect = true;
+}
+
 Value* Environment::stable_binding_slot(const std::string& name, bool* writable) {
     if (type_ == Type::Object || is_with_environment_) return nullptr;
     BindingSlot* slot = slots_.find(name);
     if (!slot) return nullptr;
+    // An import's address is the alias, not the value it stands for.
+    if (slot->indirect) return nullptr;
     // Deletable and uninitialized still disqualify: an erasable slot's address
     // can be reused, and an uninitialized one is in its TDZ. Immutability does
     // not -- the caller is told instead.
@@ -1344,7 +1369,7 @@ bool Environment::try_get_binding_interned(const std::string* key, Value& out, C
     if (type_ != Type::Object || !binding_object_) {
         const BindingSlot* slot = slots_.find_interned(key);
         if (!slot) return false;
-        out = slot->value;
+        out = resolve_binding_slot(*slot);
         return true;
     }
     return try_get_binding(*key, out, ctx);
