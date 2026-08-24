@@ -42,20 +42,55 @@ void Module::add_export(const std::string& name, const Value& value, const std::
     }
 }
 
+namespace {
+// A module's own scope ends where the realm's globals begin. The module
+// environment chains into the global one so the module sees the realm's
+// intrinsics, and that must not make a plain global variable answer for one of
+// the module's own bindings -- an export it never declared would resolve, and a
+// link error would go unreported.
+Environment* module_scope_owner(Context* mc, const std::string& name) {
+    if (!mc) return nullptr;
+    Environment* realm_globals = nullptr;
+    if (Engine* e = mc->get_engine()) {
+        if (Context* g = e->get_global_context()) realm_globals = g->get_variable_environment();
+    }
+    for (Environment* env = mc->get_lexical_environment(); env && env != realm_globals;
+         env = env->get_outer()) {
+        if (env->has_own_binding(name)) return env;
+    }
+    return nullptr;
+}
+
+// An export can be an alias for another module's export -- `export { x } from`
+// records the link, not the value, so a name that only resolves once the whole
+// cycle is loaded still resolves. Reading one follows the chain.
+Value unwrap_import_binding(const Value& v) {
+    Object* o = v.as_object_or_null();
+    if (!o || o->get_type() != Object::ObjectType::Custom) return v;
+    auto* custom = static_cast<CustomObjectBase*>(o);
+    if (custom->get_custom_kind() != CustomObjectBase::CustomKind::ImportBinding) return v;
+    return static_cast<const ImportBindingObject*>(o)->resolve();
+}
+}  // namespace
+
 Value Module::get_export(const std::string& name) const {
     // Live binding: if this export is a direct alias for a module-scope binding
     // (the common case -- `export var x`, `export { x }`, `export default function fn(){}`),
     // read the binding's CURRENT value so later reassignments are observable
     // through the module namespace, per ES module live-binding semantics.
-    auto local_it = export_local_names_.find(name);
+    Resolution r = resolve_export(name);
+    if (!r) return Value();
+    if (r.module != this) return r.module->get_export(r.name);
+
+    auto local_it = export_local_names_.find(r.name);
     if (local_it != export_local_names_.end() && module_context_ &&
-        module_context_->has_binding(local_it->second)) {
+        module_scope_owner(module_context_.get(), local_it->second)) {
         return module_context_->get_binding(local_it->second);
     }
 
-    auto it = exports_.find(name);
+    auto it = exports_.find(r.name);
     if (it != exports_.end()) {
-        return it->second;
+        return unwrap_import_binding(it->second);
     }
     return Value();
 }
@@ -72,29 +107,83 @@ void Module::add_cycle_member(Module* member) {
     cycle_members_.push_back(member);
 }
 
-// A star source can name this module back, so the walk carries the modules it
-// is already inside rather than trusting the graph to be a tree.
-static bool module_has_export_through_stars(const Module* module, const std::string& name,
-                                            std::vector<const Module*>& seen) {
-    for (const Module* m : seen) if (m == module) return false;
-    seen.push_back(module);
-    if (module->has_own_export(name)) return true;
-    for (Module* src : module->star_sources()) {
-        if (name == "default") continue;  // `export *` never carries default
-        if (module_has_export_through_stars(src, name, seen)) return true;
-    }
-    return false;
+void Module::declare_indirect_export(const std::string& export_name, Module* source,
+                                     const std::string& import_name) {
+    if (!source) return;
+    indirect_exports_[export_name] = {source, import_name};
 }
 
 bool Module::has_own_export(const std::string& name) const {
-    return exports_.find(name) != exports_.end();
+    return exports_.find(name) != exports_.end() &&
+           indirect_exports_.find(name) == indirect_exports_.end();
+}
+
+namespace {
+using ResolveSet = std::vector<std::pair<const Module*, std::string>>;
+
+// ResolveExport. A module reached again for the same name on one walk is a
+// cycle: it resolves to nothing rather than to itself, which is what lets a
+// sibling star source answer instead.
+Module::Resolution resolve_export_impl(const Module* module, const std::string& name,
+                                       ResolveSet& seen) {
+    Module::Resolution none;
+    if (!module) return none;
+    for (const auto& e : seen) if (e.first == module && e.second == name) return none;
+    seen.emplace_back(module, name);
+
+    if (const auto* link = module->indirect_export(name)) {
+        return resolve_export_impl(link->first, link->second, seen);
+    }
+    if (module->has_own_export(name)) {
+        Module::Resolution r;
+        r.module = module;
+        r.name = name;
+        return r;
+    }
+    if (name == "default") return none;  // `export *` never carries default
+
+    Module::Resolution found;
+    for (Module* src : module->star_sources()) {
+        Module::Resolution r = resolve_export_impl(src, name, seen);
+        if (r.ambiguous) return r;
+        if (!r) continue;
+        if (!found) {
+            found = r;
+        } else if (found.module != r.module || found.name != r.name) {
+            Module::Resolution amb;
+            amb.ambiguous = true;
+            return amb;
+        }
+    }
+    return found;
+}
+}  // namespace
+
+Module::Resolution Module::resolve_export(const std::string& name) const {
+    ResolveSet seen;
+    return resolve_export_impl(this, name, seen);
+}
+
+bool Module::export_is_uninitialized(const std::string& name) const {
+    Resolution r = resolve_export(name);
+    if (!r) return false;
+    const Module* owner = r.module;
+    Context* mc = owner->get_context();
+    if (!mc) return false;
+    auto local_it = owner->export_local_names_.find(r.name);
+    if (local_it == owner->export_local_names_.end()) return false;
+    const std::string& local = local_it->second;
+    Environment* env = module_scope_owner(mc, local);
+    if (!env) return true;  // declared as an export, no binding yet
+    // Only a declarative slot can be uninitialized. An object environment holds
+    // the binding as a property, and a property that is there has a value.
+    if (env->get_type() == Environment::Type::Object) return false;
+    return !env->is_initialized_binding(local);
 }
 
 bool Module::has_export(const std::string& name) const {
-    if (exports_.find(name) != exports_.end()) return true;
-    if (star_sources_.empty() || name == "default") return false;
-    std::vector<const Module*> seen;
-    return module_has_export_through_stars(this, name, seen);
+    Resolution r = resolve_export(name);
+    return r.module != nullptr || r.ambiguous;
 }
 
 // The same walk has_export does, collecting instead of answering.
@@ -121,10 +210,8 @@ std::vector<std::string> Module::own_export_names() const {
 
 std::vector<std::string> Module::get_export_names() const {
     std::vector<std::string> names;
-    names.reserve(exports_.size());
-    for (const auto& pair : exports_) {
-        names.push_back(pair.first);
-    }
+    std::vector<const Module*> seen;
+    collect_export_names_through_stars(this, seen, names, /*with_default=*/true);
     return names;
 }
 
@@ -341,31 +428,30 @@ static bool declare_module_exports(Module* module, const Program* program,
                 continue;
             }
             if (exported.empty()) continue;
-            module->declare_export(exported, ex->is_re_export() ? std::string() : local);
+            if (!ex->is_re_export()) {
+                module->declare_export(exported, local);
+                continue;
+            }
+            module->declare_export(exported, std::string());
+            // `export * as ns from` names the source's namespace, not one of
+            // its exports, so it stays a value this module owns.
+            if (loader && local != "*" && !ex->get_source_module().empty()) {
+                module->declare_indirect_export(
+                    exported, loader->load_module(ex->get_source_module(), filename), local);
+            }
         }
     }
     return true;
 }
 
-namespace {
-// A module's own scope ends where the realm's globals begin. The module
-// environment chains into the global one so the module sees the realm's
-// intrinsics, and that must not make a plain global variable answer for one of
-// the module's own bindings -- an export it never declared would resolve, and a
-// link error would go unreported.
-Environment* module_scope_owner(Context* mc, const std::string& name) {
-    if (!mc) return nullptr;
-    Environment* realm_globals = nullptr;
-    if (Engine* e = mc->get_engine()) {
-        if (Context* g = e->get_global_context()) realm_globals = g->get_variable_environment();
+
+bool ModuleNamespaceObject::reading_would_throw(const std::string& key) const {
+    if (!module_ || !module_->export_is_uninitialized(key)) return false;
+    if (Context* reader = Object::current_context_) {
+        reader->throw_reference_error("Cannot access '" + key + "' before initialization");
     }
-    for (Environment* env = mc->get_lexical_environment(); env && env != realm_globals;
-         env = env->get_outer()) {
-        if (env->has_own_binding(name)) return env;
-    }
-    return nullptr;
+    return true;
 }
-}  // namespace
 
 Value ImportBindingObject::resolve() const {
     if (!module_) return Value();
@@ -381,6 +467,17 @@ Value ImportBindingObject::resolve() const {
     } pop{in_progress};
     Value v = module_->get_export(export_name_);
     if (!v.is_undefined()) return v;
+    // Undefined here is two different answers. If the export resolves to a
+    // binding whose module has not reached the declaration yet, the name is in
+    // its temporal dead zone and reading it throws, exactly as it would inside
+    // the module that owns it.
+    if (module_->export_is_uninitialized(export_name_)) {
+        if (Context* reader = Object::current_context_) {
+            reader->throw_reference_error("Cannot access '" + export_name_ +
+                                          "' before initialization");
+        }
+        return Value();
+    }
     Context* mc = module_->get_context();
     if (!mc) return v;
     // While the module is still running, its record is the `exports` object it

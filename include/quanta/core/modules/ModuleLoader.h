@@ -32,6 +32,10 @@ private:
     std::unordered_map<std::string, Value> exports_;
     std::unordered_map<std::string, std::string> export_local_names_;
     std::vector<Module*> star_sources_;
+    // `export { x as y } from './m'`: the export name and where it forwards to.
+    // ResolveExport follows these; the module holds no binding of its own for
+    // them, which is what lets a chain run back through a cycle.
+    std::unordered_map<std::string, std::pair<Module*, std::string>> indirect_exports_;
     std::vector<Module*> cycle_members_;
     std::unique_ptr<Context> module_context_;
     bool loaded_;
@@ -68,6 +72,31 @@ public:
     // i.e. the rest of the strongly connected component this module roots.
     // They share its evaluation error.
     void add_cycle_member(Module* member);
+
+    void declare_indirect_export(const std::string& export_name, Module* source,
+                                 const std::string& import_name);
+
+    // ResolveExport: which module actually owns a name, following both
+    // indirect re-exports and star sources. A name reached twice on one walk
+    // is circular and resolves to nothing; two star sources arriving at
+    // different owners make it ambiguous.
+    struct Resolution {
+        const Module* module = nullptr;
+        std::string name;
+        bool ambiguous = false;
+        explicit operator bool() const { return module != nullptr; }
+    };
+    Resolution resolve_export(const std::string& name) const;
+
+    // Whether the binding this export names exists but has not run yet.
+    // Reading it through an import has to fail the way reading the name in
+    // its own module would, not answer undefined.
+    bool export_is_uninitialized(const std::string& name) const;
+
+    const std::pair<Module*, std::string>* indirect_export(const std::string& name) const {
+        auto it = indirect_exports_.find(name);
+        return it == indirect_exports_.end() ? nullptr : &it->second;
+    }
     const std::vector<Module*>& cycle_members() const { return cycle_members_; }
     Value get_export(const std::string& name) const;
     bool has_export(const std::string& name) const;
@@ -135,16 +164,28 @@ public:
         set_prototype(nullptr);
     }
 
+    // A binding the module declared but has not reached yet is in its dead
+    // zone, and reading it through the namespace throws exactly as reading the
+    // name inside the module would. Every namespace read that produces a value
+    // goes through here, [[GetOwnProperty]] included, since that one reads the
+    // value to build its descriptor.
+    bool reading_would_throw(const std::string& key) const;
+
     // [[Get]]: live binding for exports; "Module" for @@toStringTag
     Value get_property(const std::string& key) const {
         std::string tk = tag_key();
         if (!tk.empty() && key == tk) return Value(std::string("Module"));
-        if (module_ && module_->has_export(key)) return module_->get_export(key);
+        if (module_ && module_->has_export(key)) {
+            if (reading_would_throw(key)) return Value();
+            return module_->get_export(key);
+        }
         return Value();
     }
 
-    // [[HasProperty]] / [[GetOwnProperty]] presence check
-    bool has_own_property(const std::string& key) const {
+    // Whether the name is one of this namespace's own properties, asked
+    // without reading anything. [[Delete]] and the export listings want this;
+    // [[GetOwnProperty]] wants the reading version below.
+    bool exports_include(const std::string& key) const {
         std::string tk = tag_key();
         if (!tk.empty() && key == tk) return true;
         if (module_) {
@@ -152,6 +193,13 @@ public:
                 if (n == key) return true;
         }
         return false;
+    }
+
+    // [[GetOwnProperty]] presence check. It builds a descriptor, which means
+    // reading the value, so a binding still in its dead zone throws here too.
+    bool has_own_property(const std::string& key) const {
+        if (!exports_include(key)) return false;
+        return !reading_would_throw(key);
     }
 
     // [[OwnPropertyKeys]]: sorted string export names, then @@toStringTag
@@ -166,12 +214,17 @@ public:
         return keys;
     }
 
-    // Enumerable keys: only the sorted string exports (@@toStringTag is non-enumerable)
+    // Enumerable keys: only the sorted string exports (@@toStringTag is
+    // non-enumerable). Deciding a name is enumerable means asking for its
+    // descriptor, so a binding in its dead zone stops the enumeration.
     std::vector<std::string> get_enumerable_keys() const {
         std::vector<std::string> keys;
         if (module_) {
             keys = module_->get_export_names();
             std::sort(keys.begin(), keys.end());
+            for (const auto& k : keys) {
+                if (reading_would_throw(k)) return {};
+            }
         }
         return keys;
     }
@@ -205,7 +258,7 @@ public:
 
     // [[Delete]]: false for any own property (all non-configurable), true otherwise
     bool delete_property(const std::string& key) {
-        if (has_own_property(key)) return false;
+        if (exports_include(key)) return false;
         return true;
     }
 
@@ -218,6 +271,7 @@ public:
         }
         if (module_ && module_->has_export(key)) {
             // Spec 10.4.6.8: exports are {writable: true, enumerable: true, configurable: false}
+            if (reading_would_throw(key)) return PropertyDescriptor();
             return PropertyDescriptor(module_->get_export(key), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable));
         }
         return PropertyDescriptor();

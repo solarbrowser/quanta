@@ -308,6 +308,7 @@ int main(int argc, char* argv[]) {
         bool force_module = false;
         std::string code_to_execute;
         std::string filename;
+        std::vector<std::string> preloads;
 
         for (int i = 1; i < argc; i++) {
             std::string arg = argv[i];
@@ -319,6 +320,10 @@ int main(int argc, char* argv[]) {
                 continue;
             } else if (arg == "--module") {
                 force_module = true;
+                continue;
+            } else if (arg == "--preload" && i + 1 < argc) {
+                preloads.push_back(argv[i + 1]);
+                i++;
                 continue;
             } else if (arg == "--version" || arg == "-v") {
 #ifdef QUANTA_VERSION
@@ -332,6 +337,7 @@ int main(int argc, char* argv[]) {
                           << "Options:\n"
                           << "  -c <code>      Execute the given code and exit\n"
                           << "  --module       Force-load the file as an ES module\n"
+                          << "  --preload <f>  Run <f> as a script in the same realm first (repeatable)\n"
                           << "  -v, --version  Print the engine version and exit\n"
                           << "  -h, --help     Show this help message and exit\n\n"
                           << "With no file and no -c, starts the interactive REPL.\n";
@@ -344,6 +350,22 @@ int main(int argc, char* argv[]) {
         }
 
         QuantaConsole console;
+
+        // Preloads share the realm with whatever runs next, which is the only
+        // way a module can see names a script defined: its own imports are
+        // instantiated before any of its statements run, so code inside the
+        // module is already too late. They run ahead of -c and of the REPL for
+        // the same reason -- the flag means the same thing wherever it appears.
+        for (const std::string& pre : preloads) {
+            std::ifstream pf(pre);
+            if (!pf.is_open()) {
+                std::cerr << "Error: Cannot open preload file " << pre << std::endl;
+                return 1;
+            }
+            std::stringstream pbuf;
+            pbuf << pf.rdbuf();
+            if (!console.evaluate_expression(pbuf.str(), false, false, pre)) return 1;
+        }
 
         if (execute_code) {
             bool success = console.evaluate_expression(code_to_execute, false, true);

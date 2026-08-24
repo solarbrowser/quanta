@@ -3745,20 +3745,16 @@ Value ExportStatement::link(Context& ctx, bool declaration_already_run) {
                     ctx.throw_exception(src_mod->get_thrown_exception());
                     return Value();
                 }
-                export_value = src_mod->get_export(local_name);
-                if (export_value.is_undefined() && src_mod->is_loading() && src_mod->get_context()) {
-                    if (src_mod->get_context()->has_binding(local_name)) {
-                        export_value = src_mod->get_context()->get_binding(local_name);
-                    } else {
-                        // Circular import: name not in source context -- unresolvable
-                        ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" + source_module_ + "'");
-                        return Value();
-                    }
-                } else if (!src_mod->is_loading() && !src_mod->has_export(local_name)) {
+                if (!src_mod->is_loading() && !src_mod->has_export(local_name)) {
                     // Fully loaded source doesn't export this name
                     ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" + source_module_ + "'");
                     return Value();
                 }
+                // What this records is the link, not the value behind it. A
+                // re-export chain that runs back through a cycle names a
+                // binding the source has not produced yet, and reading the
+                // export later follows the chain to whoever really owns it.
+                export_value = Value(new ImportBindingObject(src_mod, local_name));
             }
         } else {
             if (ctx.has_binding(local_name)) {
