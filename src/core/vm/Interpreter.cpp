@@ -5364,7 +5364,7 @@ Value run_dispatch(Frame& f) {
 }
 
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
-          const Value* this_val, Function* owner) {
+          const Value* this_val, Function* owner, const Value* initial_acc) {
     // Only the registers the chunk actually uses: a fixed 256 put the whole
     // bank on the C++ stack and zeroed it on every call, when the compiler
     // already knows the real count and it is small for most functions.
@@ -5528,7 +5528,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     Frame frame{chunk, ctx, args, owner, feedback_rooted, regs, env_saves, resolved_envs,
                 lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
-                this_value, Value(), 0, 0, 0, this_resolved};
+                this_value, initial_acc ? *initial_acc : Value(), 0, 0, 0, this_resolved};
 
     for (;;) {
       try {
@@ -5616,13 +5616,32 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     return run(*chunk, ctx, {}, &script_this);
 }
 
+void run_pattern_binder(const Parameter* param, Context& ctx, const Value& source) {
+    const ASTNode* pattern = param ? param->get_destructuring_pattern() : nullptr;
+    if (!pattern) return;
+    if (!param->pattern_chunk_tried()) {
+        param->mark_pattern_chunk_tried();
+        const auto* da = pattern->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT
+                             ? static_cast<const DestructuringAssignment*>(pattern)
+                             : nullptr;
+        param->set_pattern_chunk(BytecodeCompiler::compile_pattern_binder(
+            da ? da->get_pattern_literal() : pattern));
+    }
+    BytecodeChunk* chunk = param->pattern_chunk();
+    if (!chunk) {
+        ctx.throw_type_error("Internal: parameter pattern could not be compiled");
+        return;
+    }
+    run(*chunk, ctx, {}, nullptr, nullptr, &source);
+}
+
 Value run_default_value(const Parameter* param, Context& ctx) {
     if (!param || !param->get_default_value()) return Value();
     if (!param->default_chunk_tried()) {
         param->mark_default_chunk_tried();
         static const std::vector<std::unique_ptr<Parameter>> no_params;
-        param->set_default_chunk(BytecodeCompiler::compile(
-            param->get_default_value(), no_params,
+        param->set_default_chunk(BytecodeCompiler::compile_default_value(
+            param->get_default_value(),
             BytecodeCompiler::expression_suspends(param->get_default_value())));
     }
     BytecodeChunk* chunk = param->default_chunk();

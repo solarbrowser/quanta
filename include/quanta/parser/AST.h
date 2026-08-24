@@ -522,18 +522,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 
     // ES6: Destructuring assignment helpers
-    // How a pattern's leaf targets are bound. Assign is the assignment form
-    // (`[a,b] = v`), which writes through existing references; the three
-    // declaration modes create fresh bindings. Only the leaf differs, so the
-    // walk itself is shared between both destructuring forms.
-    enum class DestructureMode : uint8_t { Assign, Var, Let, Const };
-
-    static void destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value,
-                                     DestructureMode mode = DestructureMode::Assign);
-    static void assign_to_target(Context& ctx, ASTNode* target, const Value& value,
-                                  const Value* precomputed_obj = nullptr,
-                                  const Value* precomputed_key = nullptr,
-                                  DestructureMode mode = DestructureMode::Assign);
 };
 
 class DestructuringAssignment : public ASTNode {
@@ -593,12 +581,6 @@ public:
     void set_source(std::unique_ptr<ASTNode> source) { source_ = std::move(source); }
 
     
-    // as_lexical: bind each target as a fresh `let`/`const` in the current
-    // scope instead of the default has_binding()-then-create-or-set walk
-    // (correct for `var`/plain assignment, but would leak `let`/`const`
-    // past its block). Only VariableDeclaration's let/const case passes true.
-    Value evaluate_with_value(Context& ctx, const Value& source_value,
-                               bool as_lexical = false, bool is_const = false);
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
@@ -1025,6 +1007,8 @@ private:
     // like the expression it came from: compiled once, shared by every call.
     mutable std::unique_ptr<BytecodeChunk> default_chunk_;
     mutable bool default_chunk_tried_ = false;
+    mutable std::unique_ptr<BytecodeChunk> pattern_chunk_;
+    mutable bool pattern_chunk_tried_ = false;
     bool is_rest_;
 
 public:
@@ -1039,6 +1023,10 @@ public:
     void set_default_chunk(std::unique_ptr<BytecodeChunk> c) const { default_chunk_ = std::move(c); }
     bool default_chunk_tried() const { return default_chunk_tried_; }
     void mark_default_chunk_tried() const { default_chunk_tried_ = true; }
+    BytecodeChunk* pattern_chunk() const { return pattern_chunk_.get(); }
+    void set_pattern_chunk(std::unique_ptr<BytecodeChunk> c) const { pattern_chunk_ = std::move(c); }
+    bool pattern_chunk_tried() const { return pattern_chunk_tried_; }
+    void mark_pattern_chunk_tried() const { pattern_chunk_tried_ = true; }
     bool has_default() const { return default_value_ != nullptr; }
     bool is_rest() const { return is_rest_; }
     ASTNode* get_destructuring_pattern() const { return destructuring_pattern_.get(); }

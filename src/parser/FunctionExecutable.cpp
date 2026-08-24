@@ -50,7 +50,9 @@ void FunctionExecutable::gc_trace_roots(Visitor& v) {
         // A suspendable function's parameter defaults are chunks of their own,
         // reached from nothing else.
         for (const auto& p : exe->parameter_objects) {
-            if (p && p->default_chunk()) p->default_chunk()->trace(v);
+            if (!p) continue;
+            if (p->default_chunk()) p->default_chunk()->trace(v);
+            if (p->pattern_chunk()) p->pattern_chunk()->trace(v);
         }
     }
 }

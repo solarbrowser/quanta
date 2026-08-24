@@ -41,7 +41,8 @@ public:
                                                  bool is_arrow = false,
                                                  bool is_strict = false,
                                                  const std::vector<std::string>* env_bound = nullptr,
-                                                 bool outer_with = false);
+                                                 bool outer_with = false,
+                                                 bool allow_arguments = false);
 
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,
@@ -55,6 +56,17 @@ public:
     static std::unique_ptr<BytecodeChunk> compile_script(
         const std::vector<std::unique_ptr<ASTNode>>& statements, bool outer_with = false,
         bool track_completion = false);
+
+    // A parameter's destructuring pattern, compiled on its own. A suspendable
+    // function binds its parameters outside the chunk that owns its body, so
+    // the pattern is a chunk of its own; it expects the value to bind in the
+    // accumulator and creates the bindings in the environment it runs in.
+    static std::unique_ptr<BytecodeChunk> compile_pattern_binder(const ASTNode* pattern);
+
+    // A parameter's default expression, on its own. Same reason as the binder
+    // above, and the same access to `arguments`, which exists by then.
+    static std::unique_ptr<BytecodeChunk> compile_default_value(const ASTNode* expr,
+                                                                bool suspendable);
 
     // The same `arguments` scan compile() runs over a body, exposed for
     // callers checking a parameter default/destructuring pattern directly

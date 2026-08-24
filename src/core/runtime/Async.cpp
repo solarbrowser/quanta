@@ -334,14 +334,11 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
                 Value rest_val(rest_arr.release());
                 if (param->has_destructuring()) {
-                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
-                    if (destr) {
-                        destr->evaluate_with_value(*exec_ctx, rest_val);
-                        if (exec_ctx->has_exception()) {
-                            exec_ctx->set_in_param_eval(false);
-                            promise_raw->reject(exec_ctx->get_exception());
-                            return promise_value;
-                        }
+                    VM::run_pattern_binder(param.get(), *exec_ctx, rest_val);
+                    if (exec_ctx->has_exception()) {
+                        exec_ctx->set_in_param_eval(false);
+                        promise_raw->reject(exec_ctx->get_exception());
+                        return promise_value;
                     }
                 } else {
                     exec_ctx->create_binding(param->get_name()->get_name(), rest_val, false);
@@ -365,14 +362,11 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
                     }
                 }
                 if (param->has_destructuring()) {
-                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
-                    if (destr) {
-                        destr->evaluate_with_value(*exec_ctx, arg_val);
-                        if (exec_ctx->has_exception()) {
-                            exec_ctx->set_in_param_eval(false);
-                            promise_raw->reject(exec_ctx->get_exception());
-                            return promise_value;
-                        }
+                    VM::run_pattern_binder(param.get(), *exec_ctx, arg_val);
+                    if (exec_ctx->has_exception()) {
+                        exec_ctx->set_in_param_eval(false);
+                        promise_raw->reject(exec_ctx->get_exception());
+                        return promise_value;
                     }
                 } else if (!pname.empty()) {
                     // Initialize the binding (was in TDZ during default evaluation)
@@ -1623,14 +1617,11 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
                 Value rest_val(rest_arr.release());
                 if (param->has_destructuring()) {
-                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
-                    if (destr) {
-                        destr->evaluate_with_value(*gen_ctx, rest_val);
-                        if (gen_ctx->has_exception()) {
-                            gen_ctx->set_in_param_eval(false);
-                            ctx.throw_exception(gen_ctx->get_exception(), true);
-                            return Value();
-                        }
+                    VM::run_pattern_binder(param.get(), *gen_ctx, rest_val);
+                    if (gen_ctx->has_exception()) {
+                        gen_ctx->set_in_param_eval(false);
+                        ctx.throw_exception(gen_ctx->get_exception(), true);
+                        return Value();
                     }
                 } else {
                     gen_ctx->create_binding(param->get_name()->get_name(), rest_val, false);
@@ -1654,10 +1645,8 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
                     }
                 }
                 if (param->has_destructuring()) {
-                    auto* pat = param->get_destructuring_pattern();
-                    auto* destr = dynamic_cast<DestructuringAssignment*>(pat);
-                    if (destr) {
-                        destr->evaluate_with_value(*gen_ctx, arg_val);
+                    VM::run_pattern_binder(param.get(), *gen_ctx, arg_val);
+                    {
                         if (gen_ctx->has_exception()) {
                             gen_ctx->set_in_param_eval(false);
                             ctx.throw_exception(gen_ctx->get_exception(), true);

@@ -30,7 +30,8 @@ namespace VM {
 // reference (see FeedbackSlot::ProtoEntry). Null for run_script's ownerless
 // top-level chunk -- that cache is simply inert there (see run_script).
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
-          const Value* this_val = nullptr, Function* owner = nullptr);
+          const Value* this_val = nullptr, Function* owner = nullptr,
+          const Value* initial_acc = nullptr);
 
 // Compiles a generator/async BODY for the suspendable calling convention
 // (bindings already live in ctx; yield/await suspend the fiber from inside
@@ -46,6 +47,10 @@ std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
 // parameters outside the compiled body, so this is the one place a default is
 // evaluated on its own rather than as part of the chunk that owns it.
 Value run_default_value(const Parameter* param, Context& ctx);
+
+// A parameter's destructuring pattern, given the value to bind. Compiled once
+// and kept on the Parameter, like the default beside it.
+void run_pattern_binder(const Parameter* param, Context& ctx, const Value& source);
 
 // One expression belonging to a class definition -- a computed key, the
 // heritage, a static field's value, a static block -- evaluated by the

@@ -737,14 +737,11 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
                 Value rest_val(rest_arr.release());
                 if (param->has_destructuring()) {
-                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
-                    if (destr) {
-                        destr->evaluate_with_value(gen_context, rest_val);
-                        if (gen_context.has_exception()) {
-                            gen_context.set_in_param_eval(false);
-                            ctx.throw_exception(gen_context.get_exception(), true);
-                            return nullptr;
-                        }
+                    VM::run_pattern_binder(param.get(), gen_context, rest_val);
+                    if (gen_context.has_exception()) {
+                        gen_context.set_in_param_eval(false);
+                        ctx.throw_exception(gen_context.get_exception(), true);
+                        return nullptr;
                     }
                 } else {
                     gen_context.create_binding(param->get_name()->get_name(), rest_val, false);
@@ -768,10 +765,8 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
                     }
                 }
                 if (param->has_destructuring()) {
-                    auto* pat = param->get_destructuring_pattern();
-                    auto* destr = dynamic_cast<DestructuringAssignment*>(pat);
-                    if (destr) {
-                        destr->evaluate_with_value(gen_context, arg_val);
+                    VM::run_pattern_binder(param.get(), gen_context, arg_val);
+                    {
                         if (gen_context.has_exception()) {
                             gen_context.set_in_param_eval(false);
                             ctx.throw_exception(gen_context.get_exception(), true);
