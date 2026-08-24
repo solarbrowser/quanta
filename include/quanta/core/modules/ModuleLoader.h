@@ -39,6 +39,9 @@ private:
     std::vector<Module*> cycle_members_;
     // Every module this one requests, in source order: the graph's edges.
     std::vector<Module*> requested_;
+    // Requested with `import defer`: part of the graph that gets linked, but
+    // not part of what evaluates when this module does.
+    std::vector<Module*> deferred_requests_;
     // Where the evaluation walk has got to. "Evaluating" means on the walk's
     // own stack, which is what separates a module in the cycle being climbed
     // out of from one that already belongs to a finished component.
@@ -133,8 +136,14 @@ public:
 
     void add_requested(Module* dep);
     const std::vector<Module*>& requested() const { return requested_; }
+    void add_deferred_request(Module* dep);
+    const std::vector<Module*>& deferred_requests() const { return deferred_requests_; }
     bool is_evaluated() const { return status_ != EvalStatus::NotStarted; }
     bool is_on_eval_stack() const { return status_ == EvalStatus::Evaluating; }
+    // Started but not finished: on the walk's stack, or suspended partway.
+    bool evaluation_in_progress() const {
+        return status_ == EvalStatus::Evaluating || status_ == EvalStatus::EvaluatingAsync;
+    }
     void mark_evaluating() { status_ = EvalStatus::Evaluating; }
     void mark_evaluated() { status_ = EvalStatus::Evaluated; }
     void mark_evaluating_async() { status_ = EvalStatus::EvaluatingAsync; }
@@ -183,6 +192,11 @@ public:
     const Value& get_thrown_exception() const { return thrown_exception_; }
     bool has_thrown_exception() const { return !thrown_exception_.is_undefined(); }
 
+    // Deferring the same module twice names the same object, so the loader
+    // keeps it here rather than making a new one per import statement.
+    const Value& get_deferred_namespace() const { return deferred_namespace_; }
+    void set_deferred_namespace(const Value& v) { deferred_namespace_ = v; }
+
     // Cached namespace object -- spec requires same namespace for same module
     const Value& get_namespace() const { return namespace_; }
     bool has_namespace() const { return !namespace_.is_undefined(); }
@@ -190,6 +204,7 @@ public:
 
 private:
     Value namespace_;
+    Value deferred_namespace_;
 };
 
 // ES2022 10.4.6: Module Namespace Exotic Object.
@@ -264,6 +279,11 @@ public:
         }
         return false;
     }
+
+    // [[HasProperty]] (10.4.6.4) answers from the export list alone. It reads
+    // no value, so a binding still in its dead zone is present, not an error --
+    // unlike [[GetOwnProperty]] below, which has to build a descriptor.
+    bool has_property(const std::string& key) const { return exports_include(key); }
 
     // [[GetOwnProperty]] presence check. It builds a descriptor, which means
     // reading the value, so a binding still in its dead zone throws here too.
@@ -374,6 +394,24 @@ public:
     // and does the same for everything it requests -- without running any of
     // it. load_module is this plus linking and evaluating the graph.
     Module* prepare_module(const std::string& module_id, const std::string& from_path);
+
+    // Whether anything in this module's subgraph suspends on a top-level
+    // await. Deferring such a module is not possible: reaching through the
+    // namespace later would have to wait, and a property read cannot.
+    bool subgraph_has_top_level_await(Module* module);
+
+    // Whether anything in this module's subgraph is part way through its own
+    // evaluation. Evaluating the module now would mean waiting on one of
+    // those, and a property read cannot wait.
+    bool subgraph_evaluation_in_progress(Module* module);
+
+    // The modules inside a deferred subgraph that cannot wait to be evaluated:
+    // the ones that suspend. They run with everything else, while the module
+    // that was deferred stays deferred.
+    void collect_async_roots(Module* module, std::vector<Module*>& out);
+
+    // Links and evaluates a module that is already prepared.
+    void evaluate_module_graph(Module* module);
     Module* get_module(const std::string& module_id);
     bool is_module_loaded(const std::string& module_id) const;
     const Value& get_last_module_exception() const { return last_module_exception_; }
@@ -439,23 +477,17 @@ private:
 // .cpp-local) for the same reason as ModuleNamespaceObject above --
 // CustomObjectBase's switch dispatch (Object.cpp) needs to name it directly.
 class DeferredNamespaceObject : public CustomObjectBase {
+    static std::string tag_key() {
+        Symbol* s = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        return s ? s->to_property_key() : std::string();
+    }
+
     ModuleLoader* loader_;
     std::string module_source_;
     std::string from_path_;
     bool evaluated_ = false;
 
-    void ensure_evaluated() {
-        if (evaluated_) return;
-        evaluated_ = true;
-        Module* mod = loader_->load_module(module_source_, from_path_);
-        if (!mod) return;
-        // The namespace is observably non-extensible; re-open it only for this
-        // internal export copy.
-        reopen_extensible();
-        for (const auto& name : mod->get_export_names())
-            Object::set_property_default(name, mod->get_export(name));
-        prevent_extensions();
-    }
+    void ensure_evaluated();
 
     static bool is_symbol_like(const std::string& key) {
         // Per spec: Symbol keys and "then" do not trigger deferred evaluation.
@@ -474,6 +506,13 @@ public:
         // dispatch cannot tell apart from a genuinely plain Object.
         : CustomObjectBase(ObjectType::Custom), loader_(loader), module_source_(src), from_path_(from) {
         set_custom_kind(CustomKind::DeferredNamespace);
+        // Stamped before the object closes: reading it must not be what makes
+        // the module evaluate.
+        std::string tag = tag_key();
+        if (!tag.empty()) {
+            Object::set_property_default(tag, Value(std::string("Deferred Module")),
+                                         PropertyAttributes::None);
+        }
         // Namespace objects are never extensible (spec 10.4.6): PrivateFieldAdd
         // on one throws TypeError without triggering deferred evaluation.
         prevent_extensions();
@@ -522,14 +561,29 @@ public:
         return Object::delete_property_default(key);
     }
 
+    // @@toStringTag is an own property of a namespace, deferred or not, and it
+    // comes after the exports: the string keys are sorted, the symbol is last.
     std::vector<std::string> get_own_property_keys() const {
         const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
-        return Object::get_own_property_keys_default();
+        std::vector<std::string> keys;
+        std::string tag = tag_key();
+        for (const auto& k : Object::get_own_property_keys_default()) {
+            if (k != tag) keys.push_back(k);
+        }
+        std::sort(keys.begin(), keys.end());
+        if (!tag.empty()) keys.push_back(tag);
+        return keys;
     }
 
     std::vector<std::string> get_enumerable_keys() const {
         const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
-        return Object::get_enumerable_keys_default();
+        std::vector<std::string> keys;
+        std::string tag = tag_key();
+        for (const auto& k : Object::get_enumerable_keys_default()) {
+            if (k != tag) keys.push_back(k);
+        }
+        std::sort(keys.begin(), keys.end());
+        return keys;
     }
 };
 

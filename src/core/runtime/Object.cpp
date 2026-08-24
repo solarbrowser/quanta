@@ -1522,6 +1522,16 @@ bool Object::ordinary_set(const std::string& key, const Value& value) {
     if (get_type() == ObjectType::Proxy) {
         return set_property(key, value);
     }
+    // A namespace's [[Set]] is "always false" and looks at nothing. Falling
+    // into the own-property probe below would ask a deferred namespace for a
+    // property, which is exactly what makes its module evaluate.
+    if (get_type() == ObjectType::Custom) {
+        auto kind = static_cast<CustomObjectBase*>(this)->get_custom_kind();
+        if (kind == CustomObjectBase::CustomKind::ModuleNamespace ||
+            kind == CustomObjectBase::CustomKind::DeferredNamespace) {
+            return false;
+        }
+    }
     if (!has_own_property(key)) {
         Object* cur = proto_;
         while (cur) {
@@ -2690,6 +2700,7 @@ void CustomObjectBase::trace(Visitor& v) {
 
 bool CustomObjectBase::has_property(const std::string& key) const {
     switch (get_custom_kind()) {
+        case CustomKind::ModuleNamespace: return static_cast<const ModuleNamespaceObject*>(this)->has_property(key);
         case CustomKind::DeferredNamespace: return static_cast<const DeferredNamespaceObject*>(this)->has_property(key);
         default: return has_property_default(key);
     }

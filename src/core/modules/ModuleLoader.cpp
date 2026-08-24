@@ -120,6 +120,12 @@ void Module::add_async_parent(Module* parent) {
     async_parents_.push_back(parent);
 }
 
+void Module::add_deferred_request(Module* dep) {
+    if (!dep) return;
+    for (Module* m : deferred_requests_) if (m == dep) return;
+    deferred_requests_.push_back(dep);
+}
+
 void Module::add_requested(Module* dep) {
     if (!dep) return;
     for (Module* m : requested_) if (m == dep) return;
@@ -266,6 +272,7 @@ void Module::gc_trace(Visitor& v) const {
     v.visit(completion_);
     v.visit(thrown_exception_);
     v.visit(namespace_);
+    v.visit(deferred_namespace_);
 }
 
 ModuleLoader::ModuleLoader(Engine* engine) : engine_(engine) {
@@ -306,6 +313,70 @@ Module* ModuleLoader::prepare_module(const std::string& module_id, const std::st
     return module_ptr;
 }
 
+namespace {
+bool subgraph_has_tla(Module* module, std::vector<Module*>& seen) {
+    if (!module) return false;
+    for (Module* m : seen) if (m == module) return false;
+    seen.push_back(module);
+    if (module->has_top_level_await()) return true;
+    for (Module* dep : module->requested()) {
+        if (subgraph_has_tla(dep, seen)) return true;
+    }
+    for (Module* dep : module->deferred_requests()) {
+        if (subgraph_has_tla(dep, seen)) return true;
+    }
+    return false;
+}
+}  // namespace
+
+namespace {
+bool subgraph_evaluating(Module* module, std::vector<Module*>& seen) {
+    if (!module) return false;
+    for (Module* m : seen) if (m == module) return false;
+    seen.push_back(module);
+    if (module->evaluation_in_progress()) return true;
+    for (Module* dep : module->requested()) {
+        if (subgraph_evaluating(dep, seen)) return true;
+    }
+    for (Module* dep : module->deferred_requests()) {
+        if (subgraph_evaluating(dep, seen)) return true;
+    }
+    return false;
+}
+}  // namespace
+
+void ModuleLoader::evaluate_module_graph(Module* module) {
+    if (!module || module->is_evaluated() || module->has_thrown_exception()) return;
+    if (!link_graph(module)) return;
+    evaluate_graph(module);
+}
+
+void ModuleLoader::collect_async_roots(Module* module, std::vector<Module*>& out) {
+    if (!module) return;
+    auto visit = [&](Module* child) {
+        if (!child || !subgraph_has_top_level_await(child)) return;
+        if (child->has_top_level_await()) {
+            for (Module* m : out) if (m == child) return;
+            out.push_back(child);
+            return;
+        }
+        // Sync itself, so it stays deferred; only what is async under it runs.
+        collect_async_roots(child, out);
+    };
+    for (Module* child : module->requested()) visit(child);
+    for (Module* child : module->deferred_requests()) visit(child);
+}
+
+bool ModuleLoader::subgraph_evaluation_in_progress(Module* module) {
+    std::vector<Module*> seen;
+    return subgraph_evaluating(module, seen);
+}
+
+bool ModuleLoader::subgraph_has_top_level_await(Module* module) {
+    std::vector<Module*> seen;
+    return subgraph_has_tla(module, seen);
+}
+
 Module* ModuleLoader::load_module(const std::string& module_id, const std::string& from_path) {
     // Preparing reaches every module in the graph; only the request that
     // started it links and evaluates what it found. A request made while
@@ -330,6 +401,7 @@ void collect_graph(Module* module, std::vector<Module*>& out) {
     for (Module* m : out) if (m == module) return;
     out.push_back(module);
     for (Module* dep : module->requested()) collect_graph(dep, out);
+    for (Module* dep : module->deferred_requests()) collect_graph(dep, out);
 }
 }  // namespace
 
@@ -649,11 +721,13 @@ static bool load_requested_modules(Module* module, const Program* program,
     for (const auto& stmt : program->get_statements()) {
         if (!stmt) continue;
         std::string request;
+        bool deferred = false;
         if (stmt->get_type() == ASTNode::Type::IMPORT_STATEMENT) {
             const auto* im = static_cast<const ImportStatement*>(stmt.get());
-            // `import defer` is a request not to evaluate: the module is
-            // resolved when something actually reaches through the namespace.
-            if (im->is_deferred()) continue;
+            // `import defer` still loads and links what it names -- a module
+            // that will not parse, or a name it cannot resolve, is an error
+            // before anything runs. Only its evaluation waits.
+            deferred = im->is_deferred();
             request = im->get_module_source();
         } else if (stmt->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
             request = static_cast<const ExportStatement*>(stmt.get())->get_source_module();
@@ -672,8 +746,27 @@ static bool load_requested_modules(Module* module, const Program* program,
             module->set_thrown_exception(reason);
             return false;
         }
-        module->add_requested(dep);
-        if (dep->has_thrown_exception()) {
+        if (deferred) {
+            module->add_deferred_request(dep);
+            // What suspends cannot be evaluated later from a property read, so
+            // it is evaluated now. A deferred module that suspends itself is
+            // one of those; one that merely depends on such a module stays
+            // deferred while they run.
+            if (dep->has_top_level_await()) {
+                module->add_requested(dep);
+            } else {
+                std::vector<Module*> async_roots;
+                loader->collect_async_roots(dep, async_roots);
+                for (Module* root : async_roots) module->add_requested(root);
+            }
+        } else {
+            module->add_requested(dep);
+        }
+        // A deferred import defers evaluation, not loading: an error from
+        // parsing or linking the dependency still stops this module. An error
+        // it recorded while actually evaluating -- which only a module that has
+        // already run can carry -- is the deferred namespace's to report.
+        if (dep->has_thrown_exception() && (!deferred || !dep->is_evaluated())) {
             module->set_thrown_exception(dep->get_thrown_exception());
             return false;
         }
@@ -698,7 +791,11 @@ static bool declare_module_exports(Module* module, const Program* program,
         // A namespace import re-exported by name is an indirect entry too, and
         // "*" is how the entry says it names the source's namespace rather
         // than one of its exports.
-        if (im->is_namespace_import() && !im->get_namespace_alias().empty()) {
+        // A deferred namespace is an object this module owns, not the source's
+        // namespace: re-exporting it by name has to hand out that same object,
+        // not the eager one the source would resolve to.
+        if (im->is_namespace_import() && !im->is_deferred() &&
+            !im->get_namespace_alias().empty()) {
             imported[im->get_namespace_alias()] = {im->get_module_source(), "*"};
         }
         if (im->is_default_import() && !im->get_default_alias().empty()) {
@@ -802,6 +899,43 @@ static bool declare_module_exports(Module* module, const Program* program,
     return true;
 }
 
+
+void DeferredNamespaceObject::ensure_evaluated() {
+        if (evaluated_) return;
+        Context* reader = Object::current_context_;
+        // Reaching into a module that is part way through its own evaluation
+        // cannot be answered: there is nothing to give and no way to wait.
+        if (Module* pending = loader_->prepare_module(module_source_, from_path_)) {
+            if (loader_->subgraph_evaluation_in_progress(pending)) {
+                if (reader) {
+                    reader->throw_type_error("Cannot access '" + module_source_ +
+                                             "' while it is being evaluated");
+                }
+                return;
+            }
+        }
+        Module* mod = loader_->load_module(module_source_, from_path_);
+        if (!mod) return;
+        // A module that threw keeps throwing: every later access reports the
+        // error its evaluation ended with.
+        if (mod->has_thrown_exception()) {
+            if (reader) reader->throw_exception(mod->get_thrown_exception(), true);
+            return;
+        }
+        evaluated_ = true;
+        // The namespace is observably non-extensible; re-open it only for this
+        // internal export copy.
+        reopen_extensible();
+        for (const auto& name : mod->get_export_names()) {
+            // A namespace's exports are writable and enumerable but never
+            // configurable, the same as the non-deferred namespace's.
+            Object::set_property_default(
+                name, mod->get_export(name),
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                                                PropertyAttributes::Enumerable));
+        }
+        prevent_extensions();
+    }
 
 bool ModuleNamespaceObject::reading_would_throw(const std::string& key) const {
     if (!module_ || !module_->export_is_uninitialized(key)) return false;
@@ -1037,7 +1171,13 @@ void ModuleLoader::evaluate_module(Module* module) {
         // Any module may suspend: what waits on it counts it as a pending
         // dependency and runs when it finishes.
         program->set_may_suspend(true);
+        // Evaluating a module points the engine's current-context pointer at
+        // that module and leaves it there. A module evaluated from inside
+        // another one -- reaching through a deferred namespace does exactly
+        // that -- must not leave the importer looking at its dependency.
+        Context* outer_current = Object::current_context_;
         program->evaluate(*module->get_context());
+        Object::current_context_ = outer_current;
         module->set_evaluation_promise(program->completion_promise());
 
         if (module->get_context()->has_exception()) {

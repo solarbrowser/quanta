@@ -11,6 +11,7 @@
 #include <functional>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/lexer/Lexer.h"
 #include "quanta/parser/Parser.h"
@@ -1342,9 +1343,97 @@ void register_global_builtins(Context& ctx) {
                 specifier = sv.to_string();
             }
             if (specifier.empty()) {
-                auto err = Error::create_type_error("import() requires a specifier");
-                promise->reject(Value(err.release()));
+                ctx.throw_type_error("import() requires a specifier");
+                Value exc = ctx.get_exception();
+                ctx.clear_exception();
+                promise->reject(exc);
                 return Value(promise_obj.release());
+            }
+
+            // EvaluateImportCall step 7: the options argument. Everything it
+            // touches is observable and every abrupt completion rejects rather
+            // than escaping -- reading `with`, enumerating it, reading each
+            // value. Attribute values are strings, not something coerced to
+            // one: a non-string is a TypeError, not a stringification.
+            // Through the context, not Error::create_type_error: only that path
+            // gives the error the realm's TypeError.prototype, and what a
+            // rejection handler asks first is error.constructor.
+            auto reject_type_error = [&](const std::string& msg) {
+                ctx.throw_type_error(msg);
+                Value exc = ctx.get_exception();
+                ctx.clear_exception();
+                promise->reject(exc);
+            };
+            auto reject_pending_exception = [&]() {
+                Value exc = ctx.get_exception();
+                ctx.clear_exception();
+                promise->reject(exc);
+            };
+            if (args.size() > 1 && !args[1].is_undefined()) {
+                if (!args[1].is_object() && !args[1].is_function()) {
+                    reject_type_error("import() options must be an object");
+                    return Value(promise_obj.release());
+                }
+                Object* options = args[1].is_function()
+                                      ? static_cast<Object*>(args[1].as_function())
+                                      : args[1].as_object();
+                Value with_val = options->get_property("with");
+                if (ctx.has_exception()) {
+                    reject_pending_exception();
+                    return Value(promise_obj.release());
+                }
+                if (!with_val.is_undefined()) {
+                    if (!with_val.is_object() && !with_val.is_function()) {
+                        reject_type_error("import() attributes must be an object");
+                        return Value(promise_obj.release());
+                    }
+                    Object* attrs = with_val.is_function()
+                                        ? static_cast<Object*>(with_val.as_function())
+                                        : with_val.as_object();
+                    // EnumerableOwnProperties: an exotic object decides its own
+                    // keys, and a trap that throws rejects rather than being
+                    // stepped over.
+                    std::vector<std::string> keys;
+                    if (attrs->get_type() == Object::ObjectType::Proxy) {
+                        Proxy* proxy = static_cast<Proxy*>(attrs);
+                        for (const auto& k : proxy->own_keys_trap()) {
+                            if (ctx.has_exception()) break;
+                            // Only string keys carry attributes; a symbol is
+                            // skipped rather than read. Both spellings a symbol
+                            // key takes here are symbols.
+                            if (k.rfind("Symbol.", 0) == 0 || k.rfind("@@sym:", 0) == 0) continue;
+                            PropertyDescriptor d =
+                                proxy->get_own_property_descriptor_trap(Value(k));
+                            if (ctx.has_exception()) break;
+                            // A key the trap reports no descriptor for is not
+                            // an own property, and is never read.
+                            if (d.has_enumerable() && d.is_enumerable()) keys.push_back(k);
+                        }
+                    } else {
+                        keys = attrs->get_enumerable_keys();
+                    }
+                    if (ctx.has_exception()) {
+                        reject_pending_exception();
+                        return Value(promise_obj.release());
+                    }
+                    for (const auto& key : keys) {
+                        Value v = attrs->get_property(key);
+                        if (ctx.has_exception()) {
+                            reject_pending_exception();
+                            return Value(promise_obj.release());
+                        }
+                        if (!v.is_string()) {
+                            reject_type_error("import() attribute '" + key +
+                                              "' must be a string");
+                            return Value(promise_obj.release());
+                        }
+                        // No attribute type is supported yet, so any the caller
+                        // asks for is one this host cannot honour.
+                        reject_type_error("import() does not support the attribute '" +
+                                          key + "'");
+                        return Value(promise_obj.release());
+                    }
+                }
             }
 
             // Deferred to a microtask (HostLoadImportedModule is a job, not inline) -- otherwise the module's top-level side effects would run before the importer's remaining synchronous code.
@@ -1424,6 +1513,132 @@ void register_global_builtins(Context& ctx) {
     // import.source() -- spec EvaluateImportCall with phase=source:
     // Step 6: ToString(specifier) -- IfAbruptRejectPromise if it throws.
     // Step 9: HostLoadImportedModule -> GetModuleSource -> always SyntaxError for SourceTextModuleRecord.
+    // import.defer(specifier): the module is loaded and linked but not
+    // evaluated, and what the promise carries is the same deferred namespace a
+    // static `import defer` of it would name.
+    auto import_defer_fn = ObjectFactory::create_native_function("__import_defer__",
+        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            auto* promise = Quanta::as_promise(promise_obj.get());
+            if (!promise) return Value(promise_obj.release());
+            // ToString(specifier), the same observable coercion import() runs:
+            // an abrupt completion anywhere in it rejects rather than escaping.
+            std::string specifier;
+            if (!args.empty()) {
+                Value sv = args[0];
+                if (sv.is_object() || sv.is_function()) {
+                    Object* obj = sv.is_object() ? sv.as_object()
+                                                 : static_cast<Object*>(sv.as_function());
+                    sv = obj->to_primitive("string");
+                }
+                if (!ctx.has_exception() && sv.is_symbol()) {
+                    ctx.throw_type_error("Cannot convert a Symbol value to a string");
+                }
+                if (ctx.has_exception()) {
+                    Value exc = ctx.get_exception();
+                    ctx.clear_exception();
+                    promise->reject(exc);
+                    return Value(promise_obj.release());
+                }
+                specifier = sv.to_string();
+            }
+            Engine* engine = ctx.get_engine();
+            ModuleLoader* loader = engine ? engine->get_module_loader() : nullptr;
+            if (!loader || specifier.empty()) {
+                ctx.throw_type_error("import.defer() requires a specifier");
+                Value exc = ctx.get_exception();
+                ctx.clear_exception();
+                promise->reject(exc);
+                return Value(promise_obj.release());
+            }
+            std::string current_file = ctx.get_current_filename();
+            Module* mod = loader->prepare_module(specifier, current_file);
+            if (!mod) {
+                ctx.throw_type_error("Failed to load module '" + specifier + "'");
+                Value exc = ctx.get_exception();
+                ctx.clear_exception();
+                promise->reject(exc);
+                return Value(promise_obj.release());
+            }
+            // What suspends cannot be evaluated later from a property read, so
+            // it is evaluated now: the module itself when it is the one that
+            // suspends, otherwise only the parts of its subgraph that do.
+            std::vector<Module*> eager;
+            if (mod->has_top_level_await()) {
+                eager.push_back(mod);
+            } else {
+                loader->collect_async_roots(mod, eager);
+            }
+            for (Module* root : eager) loader->evaluate_module_graph(root);
+            if (mod->has_thrown_exception()) {
+                promise->reject(mod->get_thrown_exception());
+                return Value(promise_obj.release());
+            }
+            // Anything still suspended has to finish before the namespace is
+            // handed out: reaching through it later cannot wait.
+            std::vector<Promise*> waiting;
+            for (Module* root : eager) {
+                if (!root || !root->is_async_evaluating()) continue;
+                if (!AsyncUtils::is_promise(root->completion())) {
+                    auto own = ObjectFactory::create_promise(engine->get_global_context());
+                    root->set_completion(Value(own.release()));
+                }
+                Promise* p = static_cast<Promise*>(root->completion().as_object());
+                if (p->get_state() == PromiseState::PENDING) waiting.push_back(p);
+            }
+            if (!waiting.empty()) {
+                auto remaining = std::make_shared<int>(static_cast<int>(waiting.size()));
+                Module* waiting_for = mod;
+                for (Promise* p : waiting) {
+                    auto on_done = ObjectFactory::create_native_function("",
+                        [promise, waiting_for, remaining](Context&, std::span<const Value>, Value) -> Value {
+                            if (--*remaining == 0) {
+                                promise->fulfill(waiting_for->get_deferred_namespace());
+                            }
+                            return Value();
+                        }, 1);
+                    auto on_fail = ObjectFactory::create_native_function("",
+                        [promise](Context&, std::span<const Value> a, Value) -> Value {
+                            promise->reject(a.empty() ? Value() : a[0]);
+                            return Value();
+                        }, 1);
+                    p->then(on_done.release(), on_fail.release());
+                }
+            }
+            if (mod->get_deferred_namespace().is_undefined()) {
+                mod->set_deferred_namespace(
+                    Value(new DeferredNamespaceObject(loader, specifier, current_file)));
+            }
+            if (!waiting.empty()) return Value(promise_obj.release());
+            // A module still suspended has nothing to hand out yet: reaching
+            // through the namespace cannot wait, so the promise does.
+            if (mod->is_async_evaluating()) {
+                if (!AsyncUtils::is_promise(mod->completion())) {
+                    auto own = ObjectFactory::create_promise(engine->get_global_context());
+                    mod->set_completion(Value(own.release()));
+                }
+                Promise* pending = static_cast<Promise*>(mod->completion().as_object());
+                if (pending->get_state() == PromiseState::PENDING) {
+                    Module* waiting_for = mod;
+                    auto on_done = ObjectFactory::create_native_function("",
+                        [promise, waiting_for](Context&, std::span<const Value>, Value) -> Value {
+                            promise->fulfill(waiting_for->get_deferred_namespace());
+                            return Value();
+                        }, 1);
+                    auto on_fail = ObjectFactory::create_native_function("",
+                        [promise](Context&, std::span<const Value> a, Value) -> Value {
+                            promise->reject(a.empty() ? Value() : a[0]);
+                            return Value();
+                        }, 1);
+                    pending->then(on_done.release(), on_fail.release());
+                    return Value(promise_obj.release());
+                }
+            }
+            promise->fulfill(mod->get_deferred_namespace());
+            return Value(promise_obj.release());
+        }, 1);
+    ctx.get_global_object()->set_internal_slot("__import_defer__", Value(import_defer_fn.release()));
+
     auto import_source_fn = ObjectFactory::create_native_function("__import_source__",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             auto promise_obj = ObjectFactory::create_promise(&ctx);

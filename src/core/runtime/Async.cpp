@@ -178,10 +178,15 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
 void AsyncExecutor::run() {
     auto* prev = current_;
     current_ = this;
+    // The body about to run belongs to exec_context_, and a resume arrives from
+    // a microtask that left the engine looking at somewhere else entirely.
+    Context* prev_context = Object::current_context_;
+    if (exec_context_) Object::current_context_ = exec_context_;
     {
         FiberEnterScope enter_scope;
         quanta_fiber_resume(fiber_.get());  // enter or re-enter fiber
     }
+    Object::current_context_ = prev_context;
     current_ = prev;
 }
 

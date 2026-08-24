@@ -1022,11 +1022,15 @@ Value Reflect::reflect_get(Context& ctx, std::span<const Value> args, Value rece
 bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx) {
     // A module namespace's own [[Set]] is "always false" (10.4.6.9), so it
     // never reaches the define step OrdinarySet would take on the receiver --
-    // where a no-change define would have reported success.
-    if (O && O->get_type() == Object::ObjectType::Custom &&
-        static_cast<CustomObjectBase*>(O)->get_custom_kind() ==
-            CustomObjectBase::CustomKind::ModuleNamespace) {
-        return false;
+    // where a no-change define would have reported success. A deferred
+    // namespace answers the same way, and reaching the define step would have
+    // asked it for a descriptor, which is what makes a module evaluate.
+    if (O && O->get_type() == Object::ObjectType::Custom) {
+        auto kind = static_cast<CustomObjectBase*>(O)->get_custom_kind();
+        if (kind == CustomObjectBase::CustomKind::ModuleNamespace ||
+            kind == CustomObjectBase::CustomKind::DeferredNamespace) {
+            return false;
+        }
     }
     // TypedArray's own [[Set]] bypasses OrdinarySet entirely for a canonical numeric key.
     if (O->get_type() == Object::ObjectType::TypedArray) {

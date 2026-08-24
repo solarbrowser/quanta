@@ -8106,7 +8106,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
                     return nullptr;
                 }
                 Position end = get_current_position();
-                auto import_id = std::make_unique<Identifier>("import", start, start);
+                auto import_id = std::make_unique<EngineHelper>(EngineHelper::Kind::ImportDefer, start, start);
                 return std::make_unique<CallExpression>(std::move(import_id), std::move(args), start, end);
             }
             // import.UNKNOWN etc. are SyntaxErrors
@@ -8128,14 +8128,17 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
         return nullptr;
     }
 
-    // Optional second argument: import attributes -- parse and ignore
+    // Optional second argument: the options object, whose `with` names the
+    // import attributes. Everything it touches is observable, so it is passed
+    // along rather than discarded.
     // Must reset no_in_mode_ because 'in' is valid inside call args (e.g. import(x, a in b))
+    std::unique_ptr<ASTNode> options;
     if (match(TokenType::COMMA)) {
         advance();
         if (!match(TokenType::RIGHT_PAREN)) {
             bool saved_no_in_imp = no_in_mode_;
             no_in_mode_ = false;
-            parse_assignment_expression(); // consume and discard options argument
+            options = parse_assignment_expression();
             no_in_mode_ = saved_no_in_imp;
         }
         if (match(TokenType::COMMA)) advance();
@@ -8151,6 +8154,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
     auto import_id = std::make_unique<Identifier>("import", start, get_current_position());
     std::vector<std::unique_ptr<ASTNode>> args;
     args.push_back(std::move(specifier));
+    if (options) args.push_back(std::move(options));
 
     return std::make_unique<CallExpression>(std::move(import_id), std::move(args), start, end);
 }
