@@ -2092,6 +2092,7 @@ private:
     std::vector<std::unique_ptr<ASTNode>> statements_;
     bool is_strict_ = false;
     bool may_suspend_ = false;
+    bool hoisted_ = false;
     Value completion_promise_;
 
     void check_use_strict_directive(Context& ctx);
@@ -2101,6 +2102,12 @@ private:
 
 public:
     Value evaluate(Context& ctx) override;
+
+    // Everything InitializeEnvironment creates before a single statement runs:
+    // vars, lexicals, function declarations. The module loader runs this before
+    // resolving what the module imports, so a dependency calling back into this
+    // module finds its functions already there. Idempotent.
+    void hoist_declarations(Context& ctx);
     Program(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)
         : ASTNode(Type::PROGRAM, start, end), statements_(std::move(statements)) {}
 

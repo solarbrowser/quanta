@@ -134,10 +134,9 @@ void hoist_lexical_declarations(Environment* env,
 ClosureTemplate closure_template_for(const ASTNode* literal);
 Value declare_function(Context& ctx, const ClosureTemplate& tpl);
 
-Value Program::evaluate(Context& ctx) {
-    Object::current_context_ = &ctx;
-
-    Value last_value;
+void Program::hoist_declarations(Context& ctx) {
+    if (hoisted_) return;
+    hoisted_ = true;
 
     if (is_strict_) {
         ctx.set_strict_mode(true);
@@ -169,9 +168,7 @@ Value Program::evaluate(Context& ctx) {
         }
         if (fn && fn->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
             declare_function(ctx, closure_template_for(fn));
-            if (ctx.has_exception()) {
-                return Value();
-            }
+            if (ctx.has_exception()) return;
             continue;
         }
         // `export default function () {}` hoists too: the binding holds the
@@ -180,9 +177,18 @@ Value Program::evaluate(Context& ctx) {
         if (statement->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
             auto* ex = static_cast<ExportStatement*>(statement.get());
             ex->hoist_default(ctx);
-            if (ctx.has_exception()) return Value();
+            if (ctx.has_exception()) return;
         }
     }
+}
+
+Value Program::evaluate(Context& ctx) {
+    Object::current_context_ = &ctx;
+
+    Value last_value;
+
+    hoist_declarations(ctx);
+    if (ctx.has_exception()) return Value();
 
     // Every import is instantiated before any statement runs, and after the
     // function declarations are in place: a module that imports a name it

@@ -5608,9 +5608,9 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     // alive: no function owns this chunk. Rooted for the run, they work here
     // the same as they do inside a function.
     ChunkFeedbackRoot feedback_root(chunk.get());
-    // An eval runs with the this value its caller had; a script's own is the
-    // global object.
-    Value script_this = track_completion
+    // An eval runs with the this value its caller had, and so does module code,
+    // whose own is undefined. A script's is the global object.
+    Value script_this = (track_completion || ctx.get_type() == Context::Type::Module)
         ? ctx.get_this_value()
         : (ctx.get_global_object() ? Value(ctx.get_global_object()) : Value());
     return run(*chunk, ctx, {}, &script_this);

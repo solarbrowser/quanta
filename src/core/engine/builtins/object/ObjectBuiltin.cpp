@@ -1427,6 +1427,25 @@ void register_object_builtins(Context& ctx) {
                     proxy->define_property_trap(key_val, desc);
                     if (ctx.has_exception()) return Value();
                 }
+            } else if (obj->get_type() == Object::ObjectType::Custom) {
+                // An exotic object decides for itself whether a property may be
+                // redefined, and SetIntegrityLevel goes through that decision
+                // rather than around it. A module namespace refuses every
+                // redefinition, so it cannot be frozen at all.
+                obj->prevent_extensions();
+                for (const auto& key : obj->get_own_property_keys()) {
+                    PropertyDescriptor current = obj->get_property_descriptor(key);
+                    if (ctx.has_exception()) return Value();
+                    PropertyDescriptor desc;
+                    desc.set_configurable(false);
+                    if (current.is_data_descriptor()) desc.set_writable(false);
+                    bool defined = obj->set_property_descriptor(key, desc);
+                    if (ctx.has_exception()) return Value();
+                    if (!defined) {
+                        ctx.throw_type_error("Cannot redefine property: " + key);
+                        return Value();
+                    }
+                }
             } else {
                 obj->freeze();
             }

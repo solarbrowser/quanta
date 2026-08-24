@@ -380,6 +380,36 @@ void ModuleLoader::add_search_path(const std::string& path) {
 // from what running it happened to record. Instantiation needs them: a module
 // that reaches a name it exports itself, and an importer asking whether a name
 // resolves at all, both come before any of that module's code has run.
+// Every module this one requests, resolved in source order. The spec settles
+// the whole graph before any of it runs, and source order is what decides
+// which dependency evaluates first; leaving each request to the statement that
+// names it puts `export ... from` sources out of order, and one with no
+// specifiers at all never gets asked for.
+static bool load_requested_modules(Module* module, const Program* program,
+                                   ModuleLoader* loader, const std::string& filename) {
+    if (!program || !loader) return true;
+    for (const auto& stmt : program->get_statements()) {
+        if (!stmt) continue;
+        std::string request;
+        if (stmt->get_type() == ASTNode::Type::IMPORT_STATEMENT) {
+            const auto* im = static_cast<const ImportStatement*>(stmt.get());
+            // `import defer` is a request not to evaluate: the module is
+            // resolved when something actually reaches through the namespace.
+            if (im->is_deferred()) continue;
+            request = im->get_module_source();
+        } else if (stmt->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+            request = static_cast<const ExportStatement*>(stmt.get())->get_source_module();
+        }
+        if (request.empty()) continue;
+        Module* dep = loader->load_module(request, filename);
+        if (dep && dep->has_thrown_exception()) {
+            module->set_thrown_exception(dep->get_thrown_exception());
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool declare_module_exports(Module* module, const Program* program,
                                    ModuleLoader* loader, const std::string& filename,
                                    std::string& link_error) {
@@ -648,7 +678,10 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
             module_context->set_lexical_environment(module_env.get());
             module_context->set_variable_environment(module_env.release());
             module_context->set_global_object(realm->get_global_object());
-            module_context->set_this_value(Value(realm->get_global_object()));
+            // A module's top-level `this` is undefined, not the global. The
+            // global object is still the realm's, so a sloppy function called
+            // from module code resolves its own `this` to it as usual.
+            module_context->set_this_value(Value());
         } else {
             module_context = std::make_unique<Context>(engine_);
         }
@@ -689,6 +722,24 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
         // What this module exports is settled before it runs, so a name it
         // reaches through itself (or through a cycle) resolves, and an
         // importer asking whether a name exists gets a real answer.
+        // Hoisting first: a dependency evaluated below can call back into this
+        // module, and what it finds has to be what InitializeEnvironment would
+        // have put there.
+        ast->hoist_declarations(*module->get_context());
+        if (module->get_context()->has_exception()) {
+            module->set_thrown_exception(module->get_context()->get_exception());
+            module->get_context()->clear_exception();
+            module->set_loading(false);
+            module->set_loaded(true);
+            return true;
+        }
+
+        if (!load_requested_modules(module, ast.get(), this, filename)) {
+            module->set_loading(false);
+            module->set_loaded(true);
+            return true;
+        }
+
         std::string link_error;
         if (!declare_module_exports(module, ast.get(), this, filename, link_error)) {
             auto err = Error::create_syntax_error(link_error);
