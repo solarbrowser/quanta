@@ -26,6 +26,7 @@
 #include "quanta/core/engine/builtins/RegExpBuiltin.h"
 #include "quanta/core/engine/builtins/PromiseBuiltin.h"
 #include "quanta/core/engine/builtins/DisposableBuiltin.h"
+#include "quanta/core/engine/builtins/ShadowRealmBuiltin.h"
 #include "quanta/core/engine/builtins/IteratorBuiltin.h"
 #include "quanta/core/engine/builtins/ArrayBufferBuiltin.h"
 #include "quanta/core/engine/builtins/TypedArrayBuiltin.h"
@@ -828,15 +829,23 @@ Object* Context::primitive_prototype(PrimitiveKind kind) {
 }
 
 void Context::capture_primitive_prototypes() {
+    // These are one set per thread, and a second realm standing up its own
+    // intrinsics must not take them over: doing so re-pointed the FIRST realm's
+    // primitive boxing at the new realm's prototypes, so `"".constructor
+    // === String` stopped holding in the realm that created the other one.
+    // Whichever realm gets here first keeps them.
     static const char* names[] = {"String", "Number", "Boolean", "BigInt", "Symbol"};
     for (size_t i = 0; i < static_cast<size_t>(PrimitiveKind::Count); i++) {
+        if (g_primitive_protos[i]) continue;
         Value ctor = get_binding(names[i]);
         if (!ctor.is_function()) continue;
         Value proto = ctor.as_function()->get_property("prototype");
         if (proto.is_object()) g_primitive_protos[i] = proto.as_object();
     }
-    Value promise_ctor = get_binding("Promise");
-    if (promise_ctor.is_function()) g_intrinsic_promise = promise_ctor.as_function();
+    if (!g_intrinsic_promise) {
+        Value promise_ctor = get_binding("Promise");
+        if (promise_ctor.is_function()) g_intrinsic_promise = promise_ctor.as_function();
+    }
 }
 
 void Context::initialize_built_ins() {
@@ -896,6 +905,8 @@ void Context::initialize_built_ins() {
     register_disposable_builtins(*this);
 
     register_iterator_constructor(*this);
+
+    register_shadow_realm_builtins(*this);
 
     register_arraybuffer_builtins(*this);
     Proxy::setup_proxy(*this);
