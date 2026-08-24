@@ -3584,6 +3584,17 @@ Value ExportStatement::link(Context& ctx, bool declaration_already_run) {
                     fn->set_property_descriptor("name", nm_desc);
                 }
             }
+            // An anonymous default still needs a module-scope binding to be an
+            // alias FOR: an importer resolves through the local name, and
+            // without one it would only ever see what the export record held
+            // when the import was made.
+            const std::string anon_default = "*default*";
+            if (!ctx.has_binding(anon_default)) {
+                ctx.create_binding(anon_default, default_value, true);
+            } else {
+                ctx.set_binding(anon_default, default_value);
+            }
+            record_local_name("default", anon_default);
         }
 
         exports_obj->set_property("default", default_value);

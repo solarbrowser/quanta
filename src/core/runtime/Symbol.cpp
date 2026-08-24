@@ -140,6 +140,13 @@ Symbol* Symbol::find_by_property_key(const std::string& key) {
     if (it != user_symbol_registry_.end()) {
         return it->second;
     }
+    // A well-known symbol's key is its own name ("Symbol.iterator"), which the
+    // user registry never holds. Without this the reflective operations --
+    // getOwnPropertySymbols, Reflect.ownKeys -- reported the key as a string
+    // and never as the symbol it is.
+    for (const auto& e : well_known_symbols_) {
+        if (e.second && e.second->to_property_key() == key) return e.second.get();
+    }
     return nullptr;
 }
 

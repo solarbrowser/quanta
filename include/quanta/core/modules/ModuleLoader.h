@@ -31,6 +31,7 @@ private:
     std::string filename_;
     std::unordered_map<std::string, Value> exports_;
     std::unordered_map<std::string, std::string> export_local_names_;
+    std::vector<Module*> star_sources_;
     std::unique_ptr<Context> module_context_;
     bool loaded_;
     bool loading_;
@@ -54,9 +55,18 @@ public:
     bool is_loading() const { return loading_; }
 
     void add_export(const std::string& name, const Value& value, const std::string& local_name = "");
+    // The name is exported; what it holds is decided when the module runs.
+    void declare_export(const std::string& name, const std::string& local_name = "");
+    // `export * from './m'`: what that module exports is this module's too,
+    // minus its default. Kept as a link rather than a copy -- the source's own
+    // record is still growing while a cycle is being instantiated.
+    void add_star_source(Module* source);
+    const std::vector<Module*>& star_sources() const { return star_sources_; }
     Value get_export(const std::string& name) const;
     bool has_export(const std::string& name) const;
+    bool has_own_export(const std::string& name) const;
     std::vector<std::string> get_export_names() const;
+    std::vector<std::string> own_export_names() const;
 
     void set_context(std::unique_ptr<Context> context);
     Context* get_context() const { return module_context_.get(); }
@@ -166,8 +176,24 @@ public:
     }
 
     // [[DefineOwnProperty]]: always false per ES2022 10.4.6.4
-    bool set_property_descriptor(const std::string& /*key*/, const PropertyDescriptor& /*desc*/) {
-        return false;
+    // [[DefineOwnProperty]] (ES2024 10.4.6.6). A namespace's exports are fixed,
+    // so nothing can be added or altered -- but a descriptor that ASKS for
+    // nothing the property does not already have is a no-op, and a no-op
+    // succeeds. `Object.seal` and friends lean on that.
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+        if (!has_own_property(key)) return false;
+        if (desc.is_accessor_descriptor()) return false;
+        if (desc.has_configurable() && desc.is_configurable()) return false;
+        // @@toStringTag is the one own property that is not enumerable and not
+        // writable; the exports are both.
+        const bool is_tag = (key == tag_key());
+        if (desc.has_enumerable() && desc.is_enumerable() == is_tag) return false;
+        if (desc.has_writable() && desc.is_writable() == is_tag) return false;
+        if (desc.has_value()) {
+            PropertyDescriptor current = get_property_descriptor(key);
+            return desc.get_value().same_value(current.get_value());
+        }
+        return true;
     }
 
     // [[Delete]]: false for any own property (all non-configurable), true otherwise

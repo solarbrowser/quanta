@@ -28,6 +28,13 @@ Module::Module(const std::string& id, const std::string& filename)
     : id_(id), filename_(filename), loaded_(false), loading_(false) {
 }
 
+void Module::declare_export(const std::string& name, const std::string& local_name) {
+    // Records that the name is exported without claiming a value for it yet:
+    // an insert only, so a later add_export with the real value still wins.
+    exports_.emplace(name, Value());
+    if (!local_name.empty()) export_local_names_.emplace(name, local_name);
+}
+
 void Module::add_export(const std::string& name, const Value& value, const std::string& local_name) {
     exports_[name] = value;
     if (!local_name.empty()) {
@@ -53,8 +60,57 @@ Value Module::get_export(const std::string& name) const {
     return Value();
 }
 
-bool Module::has_export(const std::string& name) const {
+void Module::add_star_source(Module* source) {
+    if (!source || source == this) return;
+    for (Module* m : star_sources_) if (m == source) return;
+    star_sources_.push_back(source);
+}
+
+// A star source can name this module back, so the walk carries the modules it
+// is already inside rather than trusting the graph to be a tree.
+static bool module_has_export_through_stars(const Module* module, const std::string& name,
+                                            std::vector<const Module*>& seen) {
+    for (const Module* m : seen) if (m == module) return false;
+    seen.push_back(module);
+    if (module->has_own_export(name)) return true;
+    for (Module* src : module->star_sources()) {
+        if (name == "default") continue;  // `export *` never carries default
+        if (module_has_export_through_stars(src, name, seen)) return true;
+    }
+    return false;
+}
+
+bool Module::has_own_export(const std::string& name) const {
     return exports_.find(name) != exports_.end();
+}
+
+bool Module::has_export(const std::string& name) const {
+    if (exports_.find(name) != exports_.end()) return true;
+    if (star_sources_.empty() || name == "default") return false;
+    std::vector<const Module*> seen;
+    return module_has_export_through_stars(this, name, seen);
+}
+
+// The same walk has_export does, collecting instead of answering.
+static void collect_export_names_through_stars(const Module* module,
+                                               std::vector<const Module*>& seen,
+                                               std::vector<std::string>& out, bool with_default) {
+    for (const Module* m : seen) if (m == module) return;
+    seen.push_back(module);
+    for (const auto& n : module->own_export_names()) {
+        if (!with_default && n == "default") continue;
+        if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    }
+    for (Module* src : module->star_sources()) {
+        collect_export_names_through_stars(src, seen, out, /*with_default=*/false);
+    }
+}
+
+std::vector<std::string> Module::own_export_names() const {
+    std::vector<std::string> names;
+    names.reserve(exports_.size());
+    for (const auto& pair : exports_) names.push_back(pair.first);
+    return names;
 }
 
 std::vector<std::string> Module::get_export_names() const {
@@ -181,17 +237,119 @@ void ModuleLoader::add_search_path(const std::string& path) {
     module_search_paths_.push_back(path);
 }
 
+// The names a module exports, known from its own declarations rather than
+// from what running it happened to record. Instantiation needs them: a module
+// that reaches a name it exports itself, and an importer asking whether a name
+// resolves at all, both come before any of that module's code has run.
+static bool declare_module_exports(Module* module, const Program* program,
+                                   ModuleLoader* loader, const std::string& filename,
+                                   std::string& link_error) {
+    if (!module || !program) return true;
+    for (const auto& stmt : program->get_statements()) {
+        if (!stmt || stmt->get_type() != ASTNode::Type::EXPORT_STATEMENT) continue;
+        const auto* ex = static_cast<const ExportStatement*>(stmt.get());
+
+        if (ex->is_default_export()) {
+            // Which module-scope name the default stands for, decided here so
+            // an importer resolves through it rather than through whatever the
+            // export record held when the import was made. A named function or
+            // class keeps its own name; anything else gets the reserved one
+            // ExportStatement::link binds.
+            std::string local = "*default*";
+            if (const ASTNode* de = ex->get_default_export()) {
+                if (de->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                    const auto* fe = static_cast<const FunctionExpression*>(de);
+                    if (fe->is_named()) local = fe->get_id()->get_name();
+                } else if (de->get_type() == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION) {
+                    const auto* afe = static_cast<const AsyncFunctionExpression*>(de);
+                    if (afe->get_id()) local = afe->get_id()->get_name();
+                } else if (de->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                    const auto* cd = static_cast<const ClassDeclaration*>(de);
+                    if (cd->get_id() && !cd->get_id()->get_name().empty()) {
+                        local = cd->get_id()->get_name();
+                    }
+                }
+            }
+            module->declare_export("default", local);
+            continue;
+        }
+
+        if (ex->is_declaration_export() && ex->get_declaration()) {
+            const ASTNode* decl = ex->get_declaration();
+            if (decl->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                const auto* fd = static_cast<const FunctionDeclaration*>(decl);
+                if (fd->get_id()) module->declare_export(fd->get_id()->get_name(),
+                                                         fd->get_id()->get_name());
+            } else if (decl->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                const auto* cd = static_cast<const ClassDeclaration*>(decl);
+                if (cd->get_id()) module->declare_export(cd->get_id()->get_name(),
+                                                         cd->get_id()->get_name());
+            } else if (decl->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                const auto* vd = static_cast<const VariableDeclaration*>(decl);
+                for (const auto& d : vd->get_declarations()) {
+                    if (d->get_init() &&
+                        d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                        std::vector<std::string> bound;
+                        static_cast<const DestructuringAssignment*>(d->get_init())
+                            ->collect_bound_names(bound);
+                        for (const auto& bn : bound) module->declare_export(bn, bn);
+                        continue;
+                    }
+                    if (d->get_id() && !d->get_id()->get_name().empty()) {
+                        module->declare_export(d->get_id()->get_name(), d->get_id()->get_name());
+                    }
+                }
+            }
+            continue;
+        }
+
+        for (const auto& spec : ex->get_specifiers()) {
+            const std::string& exported = spec->get_exported_name();
+            const std::string& local = spec->get_local_name();
+            if (exported == "*") {
+                // `export * from './m'` contributes whatever that module has,
+                // minus its default. Asking for it links that module, which
+                // link time does anyway.
+                if (!loader || ex->get_source_module().empty()) continue;
+                module->add_star_source(loader->load_module(ex->get_source_module(), filename));
+                continue;
+            }
+            if (exported.empty()) continue;
+            module->declare_export(exported, ex->is_re_export() ? std::string() : local);
+        }
+    }
+    return true;
+}
 Value ImportBindingObject::resolve() const {
     if (!module_) return Value();
+    // A re-export can name a binding that is itself an import of the same
+    // name, which is a legal cycle to write and an endless one to follow.
+    // Whatever asked first gets undefined rather than a second trip round.
+    static thread_local std::vector<const ImportBindingObject*> in_progress;
+    for (const ImportBindingObject* b : in_progress) if (b == this) return Value();
+    in_progress.push_back(this);
+    struct Pop {
+        std::vector<const ImportBindingObject*>& v;
+        ~Pop() { v.pop_back(); }
+    } pop{in_progress};
     Value v = module_->get_export(export_name_);
     if (!v.is_undefined()) return v;
     Context* mc = module_->get_context();
     if (!mc) return v;
-    // The module's export record is only assembled once its body finishes, so
-    // while it is still running the answer is the record it is building.
-    Value exports = mc->get_binding("exports");
-    if (exports.is_object() && exports.as_object()->has_property(export_name_)) {
-        return exports.as_object()->get_property(export_name_);
+    // While the module is still running, its record is the `exports` object it
+    // is building. Read the module's OWN binding for it rather than walking
+    // out: the chain reaches the global, whose `exports` belongs to something
+    // else entirely.
+    if (Environment* env = mc->get_lexical_environment()) {
+        if (env->has_own_binding("exports")) {
+            Value exports = env->get_binding("exports");
+            if (exports.is_object()) {
+                Object* eo = exports.as_object();
+                if (eo && eo->has_own_property(export_name_)) {
+                    return eo->get_property(export_name_);
+                }
+            }
+        }
     }
     if (mc->has_binding(export_name_)) return mc->get_binding(export_name_);
     return v;
@@ -228,13 +386,9 @@ bool ModuleLoader::module_provides_export(const std::string& module_id,
     if (module->is_loading()) {
         return !module->get_context() || module->get_context()->has_binding(import_name);
     }
-    // A finished module's record is only the whole story when nothing reaches
-    // it indirectly: `export * from` contributes names this record never sees,
-    // so a miss there is not evidence of a missing export.
-    if (Context* mc = module->get_context()) {
-        if (mc->has_binding("\x01star")) return true;
-        if (mc->has_binding(import_name)) return true;
-    }
+    // The record is the whole story now: it is written from the module's own
+    // declarations before it runs, and a `export * from` contributes the
+    // source's names to it at the same time.
     return false;
 }
 
@@ -331,6 +485,18 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
         module->set_context(std::move(module_context));
         module->get_context()->set_current_filename(filename);
 
+        // What this module exports is settled before it runs, so a name it
+        // reaches through itself (or through a cycle) resolves, and an
+        // importer asking whether a name exists gets a real answer.
+        std::string link_error;
+        if (!declare_module_exports(module, ast.get(), this, filename, link_error)) {
+            auto err = Error::create_syntax_error(link_error);
+            module->set_thrown_exception(Value(err.release()));
+            module->set_loading(false);
+            module->set_loaded(true);
+            return true;
+        }
+
         ast->evaluate(*module->get_context());
 
         if (module->get_context()->has_exception()) {
@@ -374,6 +540,16 @@ std::string ModuleLoader::normalize_module_id(const std::string& module_id, cons
     if (is_relative_path(module_id) && !from_path.empty()) {
         std::string base_path = std::filesystem::path(from_path).parent_path().string();
         return std::filesystem::weakly_canonical(std::filesystem::path(base_path) / module_id).string();
+    }
+    // A file named two ways is one module. The entry is given as it was typed
+    // and a relative import of the same file canonicalises, so without this
+    // the two spellings became two module records and the file was evaluated
+    // twice -- which a module that imports itself does by definition.
+    std::error_code ec;
+    if (std::filesystem::exists(std::filesystem::path(module_id), ec) && !ec) {
+        std::string canonical = std::filesystem::weakly_canonical(
+            std::filesystem::path(module_id), ec).string();
+        if (!ec && !canonical.empty()) return canonical;
     }
     return module_id;
 }

@@ -1020,6 +1020,14 @@ Value Reflect::reflect_get(Context& ctx, std::span<const Value> args, Value rece
 // [[GetOwnProperty]]/[[DefineOwnProperty]] (which fire Proxy traps if Receiver is a
 // Proxy), not a plain write on the original target.
 bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx) {
+    // A module namespace's own [[Set]] is "always false" (10.4.6.9), so it
+    // never reaches the define step OrdinarySet would take on the receiver --
+    // where a no-change define would have reported success.
+    if (O && O->get_type() == Object::ObjectType::Custom &&
+        static_cast<CustomObjectBase*>(O)->get_custom_kind() ==
+            CustomObjectBase::CustomKind::ModuleNamespace) {
+        return false;
+    }
     // TypedArray's own [[Set]] bypasses OrdinarySet entirely for a canonical numeric key.
     if (O->get_type() == Object::ObjectType::TypedArray) {
         TypedArrayBase* ta = static_cast<TypedArrayBase*>(O);
@@ -1239,7 +1247,9 @@ Value Reflect::reflect_own_keys(Context& ctx, std::span<const Value> args, Value
     std::vector<std::pair<uint32_t, std::string>> index_keys;
     std::vector<std::string> string_keys, symbol_keys;
     for (const auto& key : keys) {
-        if (key.find("@@sym:") == 0) {
+        // A well-known symbol's key is its own name rather than the "@@sym:"
+        // form a user symbol gets, and it is no less a symbol for it.
+        if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) {
             symbol_keys.push_back(key);
             continue;
         }

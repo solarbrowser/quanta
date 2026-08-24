@@ -25,7 +25,7 @@ static Value from_prop_key(const std::string& key) {
         Symbol* sym = Symbol::get_well_known(key);
         if (sym) return Value(sym);
     }
-    if (key.find("@@sym:") == 0) {
+    if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) {
         Symbol* sym = Symbol::find_by_property_key(key);
         if (sym) return Value(sym);
     }
@@ -1169,7 +1169,7 @@ void register_object_builtins(Context& ctx) {
             }
             uint32_t idx = 0;
             for (const auto& key : props) {
-                if (key.find("@@sym:") == 0) {
+                if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) {
                     Symbol* sym = Symbol::find_by_property_key(key);
                     if (sym) {
                         result->set_element(idx++, Value(sym));
