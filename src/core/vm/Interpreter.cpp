@@ -2129,7 +2129,7 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 }
                 CHECK_EXC();
                 if (found) {
-                    if (beyond_frame && env != entry_env) {
+                    if (beyond_frame && env != entry_env && !env->is_per_call_scope()) {
                         uint32_t obj_slot = 0;
                         bool slot_writable = false;
                         // See the identical block in the main dispatch loop.
@@ -2277,7 +2277,7 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                         bool slot_writable = false;
                         Value* slot = beyond_frame ? env->stable_binding_slot(name, &slot_writable)
                                                    : nullptr;
-                        if (slot && slot_writable) {
+                        if (slot && slot_writable && !env->is_per_call_scope()) {
                             env->mark_referenced();  // see Op::LdaLookup's note
                             lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true,
                                                               Environment::binding_shadow_epoch()};
@@ -5616,11 +5616,41 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     return run(*chunk, ctx, {}, &script_this);
 }
 
-Value run_default_value(const ASTNode* expr, Context& ctx) {
-    bool ok = false;
-    Value v = run_expression(expr, ctx, ok);
-    if (!ok) ctx.throw_type_error("Internal: parameter default could not be compiled");
-    return v;
+Value run_default_value(const Parameter* param, Context& ctx) {
+    if (!param || !param->get_default_value()) return Value();
+    if (!param->default_chunk_tried()) {
+        param->mark_default_chunk_tried();
+        static const std::vector<std::unique_ptr<Parameter>> no_params;
+        param->set_default_chunk(BytecodeCompiler::compile(
+            param->get_default_value(), no_params,
+            BytecodeCompiler::expression_suspends(param->get_default_value())));
+    }
+    BytecodeChunk* chunk = param->default_chunk();
+    if (!chunk) {
+        ctx.throw_type_error("Internal: parameter default could not be compiled");
+        return Value();
+    }
+    // A `with` on the chain would make the reference ordering observable the
+    // way it does anywhere else, and this chunk was built without knowing.
+    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        if (e->is_with_environment()) {
+            bool ok = false;
+            Value v = run_expression(param->get_default_value(), ctx, ok);
+            if (!ok) ctx.throw_type_error("Internal: parameter default could not be compiled");
+            return v;
+        }
+    }
+    // The chunk-level lookup cache resolves a binding against one environment
+    // chain, and this chunk is shared by every call -- a generator's parameter
+    // scope is fresh each time. Dropping what the last call learned is what
+    // keeps the name resolving where it is written rather than where it was
+    // first seen.
+    if (auto* entries = chunk->lookup_cache.data()) {
+        for (uint32_t i = 0; i < chunk->lookup_cache.size(); i++) {
+            entries[i] = BytecodeChunk::LookupCacheEntry{};
+        }
+    }
+    return run(*chunk, ctx, {}, nullptr);
 }
 
 Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {

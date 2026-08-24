@@ -12,6 +12,8 @@
 
 namespace Quanta {
 
+class Parameter;
+
 class Context;
 class Function;
 
@@ -43,7 +45,7 @@ std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
 // A parameter's default expression. Suspendable functions bind their
 // parameters outside the compiled body, so this is the one place a default is
 // evaluated on its own rather than as part of the chunk that owns it.
-Value run_default_value(const ASTNode* expr, Context& ctx);
+Value run_default_value(const Parameter* param, Context& ctx);
 
 // One expression belonging to a class definition -- a computed key, the
 // heritage, a static field's value, a static block -- evaluated by the

@@ -760,7 +760,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
                 } else if (param->has_default()) {
-                    arg_val = VM::run_default_value(param->get_default_value(), gen_context);
+                    arg_val = VM::run_default_value(param.get(), gen_context);
                     if (gen_context.has_exception()) {
                         gen_context.set_in_param_eval(false);
                         ctx.throw_exception(gen_context.get_exception(), true);
@@ -807,6 +807,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
             // Captured before the push: the parameters stay in this scope, and
             // a body var of the same name is seeded from one (spec FDI step 28).
             param_env = gen_context.get_lexical_environment();
+            if (param_env) param_env->mark_per_call_scope();
             gen_context.push_block_scope();
             gen_context.set_variable_environment(gen_context.get_lexical_environment());
         }

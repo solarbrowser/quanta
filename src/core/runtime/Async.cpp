@@ -357,7 +357,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
                 } else if (param->has_default()) {
-                    arg_val = VM::run_default_value(param->get_default_value(), *exec_ctx);
+                    arg_val = VM::run_default_value(param.get(), *exec_ctx);
                     if (exec_ctx->has_exception()) {
                         exec_ctx->set_in_param_eval(false);
                         promise_raw->reject(exec_ctx->get_exception());
@@ -403,6 +403,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
             // Captured before the push: the parameters stay in this scope, and
             // a body var of the same name is seeded from one (spec FDI step 28).
             param_env = exec_ctx->get_lexical_environment();
+            if (param_env) param_env->mark_per_call_scope();
             exec_ctx->push_block_scope();
             exec_ctx->set_variable_environment(exec_ctx->get_lexical_environment());
         }
@@ -1645,7 +1646,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
                 } else if (param->has_default()) {
-                    arg_val = VM::run_default_value(param->get_default_value(), *gen_ctx);
+                    arg_val = VM::run_default_value(param.get(), *gen_ctx);
                     if (gen_ctx->has_exception()) {
                         gen_ctx->set_in_param_eval(false);
                         ctx.throw_exception(gen_ctx->get_exception(), true);
@@ -1723,6 +1724,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
             // Captured before the push: the parameters stay in this scope, and
             // a body var of the same name is seeded from one (spec FDI step 28).
             param_env = gen_ctx->get_lexical_environment();
+            if (param_env) param_env->mark_per_call_scope();
             gen_ctx->push_block_scope();
             gen_ctx->set_variable_environment(gen_ctx->get_lexical_environment());
         }

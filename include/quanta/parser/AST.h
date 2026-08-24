@@ -18,6 +18,8 @@
 
 namespace Quanta {
 
+class BytecodeChunk;
+
 namespace ast_detail {
 // A literal records its body span exactly once, and literals are constructed
 // innermost-first, so the span recorded immediately before this one belongs to
@@ -1018,6 +1020,11 @@ private:
     std::unique_ptr<Identifier> name_;
     std::unique_ptr<ASTNode> default_value_;
     std::unique_ptr<ASTNode> destructuring_pattern_;
+    // A suspendable function binds its parameters outside the chunk that owns
+    // its body, so the default is a chunk of its own. It is decl-site data
+    // like the expression it came from: compiled once, shared by every call.
+    mutable std::unique_ptr<BytecodeChunk> default_chunk_;
+    mutable bool default_chunk_tried_ = false;
     bool is_rest_;
 
 public:
@@ -1028,6 +1035,10 @@ public:
 
     Identifier* get_name() const { return name_.get(); }
     ASTNode* get_default_value() const { return default_value_.get(); }
+    BytecodeChunk* default_chunk() const { return default_chunk_.get(); }
+    void set_default_chunk(std::unique_ptr<BytecodeChunk> c) const { default_chunk_ = std::move(c); }
+    bool default_chunk_tried() const { return default_chunk_tried_; }
+    void mark_default_chunk_tried() const { default_chunk_tried_ = true; }
     bool has_default() const { return default_value_ != nullptr; }
     bool is_rest() const { return is_rest_; }
     ASTNode* get_destructuring_pattern() const { return destructuring_pattern_.get(); }

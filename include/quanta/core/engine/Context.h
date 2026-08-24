@@ -720,6 +720,10 @@ private:
     Object* binding_object_;
     bool is_with_environment_ = false; // ES6 8.1.1.2.1 HasBinding: only `with` object environments consult @@unscopables
     bool is_closure_boundary_ = false; // marks script-level env: stop snapshot loops here
+    // A scope this call built and the next call will build again -- a complex
+    // parameter list's own scope. A binding found here must never reach a
+    // lookup cache: the cache outlives the call, the scope does not.
+    bool is_per_call_scope_ = false;
     bool escaped_ = false;  // see is_escaped()
     bool referenced_ = false;  // see mark_referenced()
     // How many live environments name this one as their outer_environment_.
@@ -877,6 +881,8 @@ public:
     }
     void set_with_environment(bool value) { is_with_environment_ = value; }
     bool is_closure_boundary() const { return is_closure_boundary_; }
+    bool is_per_call_scope() const { return is_per_call_scope_; }
+    void mark_per_call_scope() { is_per_call_scope_ = true; }
     void mark_closure_boundary() { is_closure_boundary_ = true; }
 
     // Escape tracking: a block-scope env that was never captured (by a closure's
