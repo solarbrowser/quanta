@@ -642,6 +642,14 @@ public:
     // Callers must also check has_descriptor_override(key) before trusting
     // the slot value.
     Shape* get_shape() const { return shape_.get(); }
+    // Whether a for-in reaching this object would report anything of its own.
+    // A prototype that would not contributes nothing to the objects below it,
+    // and answering that cheaply is what lets an ordinary for-in skip the
+    // chain entirely -- see ForInStatement::collect_keys.
+    bool any_own_enumerable() const;
+    // Own enumerable keys of a plain object in insertion order, or false when
+    // this object is not one of the shapes this can answer for.
+    bool for_in_own_keys_fast(std::vector<std::string>& out) const;
     const Value* get_shape_slot_unchecked(uint32_t index) const {
         return index < shape_capacity() ? shape_slot_ptr(index) : nullptr;
     }
@@ -985,6 +993,18 @@ public:
         return const_cast<HybridDescriptorMap*>(this)->find(key);
     }
     bool count(const std::string& key) const { return find(key) != nullptr; }
+
+    // Asked once per prototype per for-in, where the answer for every
+    // built-in prototype is "no" -- so it must not allocate or build keys.
+    bool any_enumerable() const {
+        for (size_t i = 0; i < inline_count_; i++) {
+            if (inline_[i].desc.is_enumerable()) return true;
+        }
+        if (overflow_) {
+            for (const auto& kv : *overflow_) if (kv.second.is_enumerable()) return true;
+        }
+        return false;
+    }
 
     PropertyDescriptor& operator[](const std::string& key) {
         if (PropertyDescriptor* existing = find(key)) return *existing;

@@ -92,6 +92,18 @@ public:
     struct PropertyInfo { const std::string* key; uint32_t slot_index; bool is_accessor; };
     std::vector<PropertyInfo> properties_in_order() const;
 
+    // The same walk without the vector, for an enumeration that only passes
+    // over the list once. The chain runs child-to-parent, so the recursion is
+    // what puts the keys back in insertion order; its depth is the property
+    // count, which the shape system caps at kMaxSlots.
+    template <typename Fn>
+    void for_each_property(Fn&& fn) const {
+        if (!parent_) return;
+        parent_->for_each_property(fn);
+        uint32_t width = is_accessor_added_ ? 2u : 1u;
+        fn(PropertyInfo{added_key_, slot_count_ - width, is_accessor_added_});
+    }
+
     // Canonicalizes `key` to a stable address. Backed by a thread_local set
     // that, like Shape itself, is never erased from for the thread's
     // lifetime, so returned pointers stay valid for as long as the thread

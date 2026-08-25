@@ -1958,6 +1958,58 @@ static bool is_symbol_key(const std::string& key) {
     return key.find("Symbol.") == 0 || key.find("@@sym:") == 0;
 }
 
+// Internal storage that must never surface as an own key: the "[[...]]"
+// names that stand in for spec internal slots, the qualified private-field
+// and brand slots, and symbol keys (which a for-in never reports).
+static bool is_hidden_own_key(const std::string& k) {
+    if (k.size() >= 4 && k[0] == '[' && k[1] == '[') return true;
+    if (!k.empty() && k[0] == '#' &&
+        (k.find('@') != std::string::npos || (k.size() > 2 && k[1] == '[' && k[2] == '['))) return true;
+    return is_symbol_key(k) || k.rfind("Symbol(", 0) == 0;
+}
+
+bool Object::any_own_enumerable() const {
+    // Whitelist: only the storage shapes answerable without building a key
+    // list. Everything else says "yes", which costs the caller nothing but
+    // its fast path.
+    if (get_type() != ObjectType::Ordinary) return true;
+    if (elements_length() > 0) return true;
+    const RareExtras* extras = peek_extras();
+    Shape* sh = get_shape();
+    if (sh && sh->slot_count() > 0) {
+        // A shape-resident property carries the default attributes unless a
+        // descriptor overrides them, and the default is enumerable.
+        if (!extras || !extras->descriptors) return true;
+        bool found = false;
+        sh->for_each_property([&](const Shape::PropertyInfo& p) {
+            if (found) return;
+            const PropertyDescriptor* d = extras->descriptors->find(*p.key);
+            if ((!d || d->is_enumerable()) && !is_hidden_own_key(*p.key)) found = true;
+        });
+        if (found) return true;
+    }
+    if (!extras) return false;
+    if (extras->sparse_overflow && !extras->sparse_overflow->empty()) return true;
+    if (extras->descriptors && extras->descriptors->any_enumerable()) return true;
+    return false;
+}
+
+bool Object::for_in_own_keys_fast(std::vector<std::string>& out) const {
+    if (get_type() != ObjectType::Ordinary) return false;
+    if (elements_length() > 0) return false;
+    // Extras mean descriptors, sparse elements or deletions, any of which can
+    // change what the shape order alone would say.
+    if (peek_extras()) return false;
+    Shape* sh = get_shape();
+    if (!sh) return true;
+    out.reserve(out.size() + sh->slot_count());
+    sh->for_each_property([&](const Shape::PropertyInfo& p) {
+        if (is_hidden_own_key(*p.key)) return;
+        out.push_back(*p.key);
+    });
+    return true;
+}
+
 void Object::collect_named_keys_in_order(std::vector<std::string>& raw_keys) const {
     // Merges shape-resident properties (Shape::properties_in_order()) with
     // extras-resident ones by logical-clock snapshot -- the two can

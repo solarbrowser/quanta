@@ -713,6 +713,25 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 // level. Shared with evaluate() below (which calls this instead of the old
 // inline version) and with the VM's Op::CreateForInKeys.
 bool ForInStatement::collect_keys(Context& ctx, Object* obj, std::vector<std::string>& out_keys) {
+    // A plain object under a prototype chain that reports nothing is what an
+    // AST walk (and most other for-in) actually iterates, and the general path
+    // below charges it a hash set keyed by a copy of every property name, a
+    // descriptor built per property, and a full enumeration of every prototype
+    // -- whose properties are all non-enumerable and so can never be reported
+    // at all. Asking each prototype whether it would report anything is one
+    // cheap question per level; when the answer everywhere is no, nothing can
+    // be shadowed and the shape's own key order is the whole answer.
+    {
+        bool chain_reports_nothing = true;
+        for (Object* p = obj->get_prototype(); p; p = p->get_prototype()) {
+            if (p->any_own_enumerable()) { chain_reports_nothing = false; break; }
+        }
+        if (chain_reports_nothing && obj->get_type() != Object::ObjectType::Proxy &&
+            obj->for_in_own_keys_fast(out_keys)) {
+            return true;
+        }
+    }
+
     std::unordered_set<std::string> blocked; // seen at any closer level (blocks inherited)
     Object* cur = obj;
     while (cur) {
