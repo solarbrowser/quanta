@@ -60,11 +60,11 @@ static Value toBigIntCoerce(Context& ctx, const Value& v) {
     return v;
 }
 
-// ToNumeric for ++/--: ToPrimitive with a number hint, then a Number unless the
+// ToNumeric: ToPrimitive with a number hint, then a Number unless the
 // primitive is a BigInt. The hand-written version here consulted valueOf and
 // toString directly and never looked at @@toPrimitive, so an object that only
 // defines that method converted to NaN.
-static Value postfix_to_numeric(Context& ctx, const Value& val) {
+static Value ordinary_to_numeric(Context& ctx, const Value& val) {
     if (val.is_bigint()) return val;
     Value prim = val;
     if (val.is_object() || val.is_function()) {
@@ -84,7 +84,7 @@ static Value postfix_to_numeric(Context& ctx, const Value& val) {
 }
 
 Value UnaryExpression::to_numeric(Context& ctx, const Value& v) {
-    return postfix_to_numeric(ctx, v);
+    return ordinary_to_numeric(ctx, v);
 }
 
 // `#name in obj` (ergonomic brand check), shared with Op::HasPrivate so the
@@ -253,9 +253,13 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
         }
         case Operator::SUBTRACT:
         case Operator::MULTIPLY: {
-            Value left_coerced = toPrimitive(left_value, "number");
+            // ToNumeric on the left completely -- conversion included -- before
+            // the right is touched at all. Converting both to primitives first
+            // and only then to numbers runs the right operand's valueOf even
+            // when the left one already has no numeric value.
+            Value left_coerced = ordinary_to_numeric(ctx, left_value);
             if (ctx.has_exception()) return Value();
-            Value right_coerced = toPrimitive(right_value, "number");
+            Value right_coerced = ordinary_to_numeric(ctx, right_value);
             if (ctx.has_exception()) return Value();
             try {
                 if (op == Operator::SUBTRACT) {
@@ -271,13 +275,9 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
         case Operator::DIVIDE:
         case Operator::MODULO:
         case Operator::EXPONENT: {
-            Value lv = left_value, rv = right_value;
-            if (lv.is_bigint() && rv.is_object()) rv = toBigIntCoerce(ctx, rv);
-            else if (rv.is_bigint() && lv.is_object()) lv = toBigIntCoerce(ctx, lv);
+            Value lv = ordinary_to_numeric(ctx, left_value);
             if (ctx.has_exception()) return Value();
-            // Also apply toPrimitive so Object(1n) becomes 1n
-            if (lv.is_object()) lv = toPrimitive(lv, "number");
-            if (rv.is_object()) rv = toPrimitive(rv, "number");
+            Value rv = ordinary_to_numeric(ctx, right_value);
             if (ctx.has_exception()) return Value();
             try {
                 if (op == Operator::DIVIDE) return lv.divide(rv);
@@ -473,12 +473,9 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
         case Operator::LEFT_SHIFT:
         case Operator::RIGHT_SHIFT:
         case Operator::UNSIGNED_RIGHT_SHIFT: {
-            Value lv = toPrimitive(left_value, "number");
+            Value lv = ordinary_to_numeric(ctx, left_value);
             if (ctx.has_exception()) return Value();
-            Value rv = toPrimitive(right_value, "number");
-            if (ctx.has_exception()) return Value();
-            if (lv.is_bigint() && rv.is_object()) rv = toBigIntCoerce(ctx, rv);
-            else if (rv.is_bigint() && lv.is_object()) lv = toBigIntCoerce(ctx, lv);
+            Value rv = ordinary_to_numeric(ctx, right_value);
             if (ctx.has_exception()) return Value();
             try {
                 if (op == Operator::BITWISE_AND) return lv.bitwise_and(rv);
