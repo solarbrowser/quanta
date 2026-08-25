@@ -72,6 +72,38 @@ Value::Value(const std::string& str) {
     #endif
 }
 
+bool Value::to_number_checked(Context& ctx, double& out) const {
+    Value v = *this;
+    if (v.is_object() || v.is_function()) {
+        Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+        if (!obj) { out = 0; return true; }
+        v = obj->to_primitive(ctx, "number");
+        if (ctx.has_exception()) return false;
+    }
+    if (v.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a number");
+        return false;
+    }
+    out = v.to_number();
+    return !ctx.has_exception();
+}
+
+bool Value::to_string_checked(Context& ctx, std::string& out) const {
+    Value v = *this;
+    if (v.is_object() || v.is_function()) {
+        Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+        if (!obj) { out = "null"; return true; }
+        v = obj->to_primitive(ctx, "string");
+        if (ctx.has_exception()) return false;
+    }
+    if (v.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+        return false;
+    }
+    out = v.to_string();
+    return !ctx.has_exception();
+}
+
 std::string Value::to_string() const {
     if (is_undefined()) {
         return "undefined";
@@ -157,16 +189,15 @@ std::string Value::to_string() const {
     if (is_symbol()) {
         return as_symbol()->to_string();
     }
-    if (is_object()) {
-        Object* obj = as_object();
-        if (!obj) {
-            return "null";
-        }
+    if (is_object() || is_function()) {
+        Object* obj = is_function() ? static_cast<Object*>(as_function()) : as_object();
+        if (!obj) return "null";
 
-        return obj->to_string();
-    }
-    if (is_function()) {
-        return as_function()->to_string();
+        // NOT ToString: describe() imitates the answer rather than running the
+        // object's own toString, and it never throws. Every caller that needs
+        // the real conversion has to do it itself -- see the comment on
+        // Object::describe.
+        return obj->describe();
     }
     return "unknown";
 }

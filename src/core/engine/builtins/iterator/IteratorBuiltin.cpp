@@ -18,22 +18,6 @@ namespace Quanta {
 
 // Steps an iterator using an already-resolved next method, not a re-fetched one -- avoids
 // re-triggering a `next` getter with side effects on every step.
-// ToNumber, not Value::to_number: an object argument's own valueOf has to run,
-// and it runs before anything is asked of the iterator.
-static double iterator_arg_to_number(Context& ctx, const Value& v) {
-    Value n = v;
-    if (n.is_object() || n.is_function()) {
-        Object* o = n.is_object() ? n.as_object() : static_cast<Object*>(n.as_function());
-        n = o->to_primitive("number");
-        if (ctx.has_exception()) return std::nan("");
-    }
-    if (n.is_symbol()) {
-        ctx.throw_type_error("Cannot convert a Symbol value to a number");
-        return std::nan("");
-    }
-    return n.to_number();
-}
-
 static std::pair<Value, bool> iterator_helper_step(Context& ctx, const Value& iter_val, const Value& next_method) {
     if (!next_method.is_function()) {
         ctx.throw_type_error("Iterator helper's underlying next is not a function");
@@ -514,7 +498,7 @@ void register_iterator_helpers(Context& ctx) {
             [iter_proto_obj](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 Object* iter = receiver.as_object_or_null();
                 if (!iter) { ctx.throw_type_error("take called on non-object"); return Value(); }
-                double num_limit = args.empty() ? std::nan("") : iterator_arg_to_number(ctx, args[0]);
+                double num_limit = args.empty() ? std::nan("") : args[0].to_number();
                 if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
                 if (std::isnan(num_limit)) { ctx.throw_range_error("Invalid count"); iterator_helper_close(ctx, Value(iter)); return Value(); }
                 double limit = (std::isinf(num_limit) && num_limit > 0) ? num_limit : std::trunc(num_limit);
@@ -547,7 +531,7 @@ void register_iterator_helpers(Context& ctx) {
             [iter_proto_obj](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 Object* iter = receiver.as_object_or_null();
                 if (!iter) { ctx.throw_type_error("drop called on non-object"); return Value(); }
-                double num_limit = args.empty() ? std::nan("") : iterator_arg_to_number(ctx, args[0]);
+                double num_limit = args.empty() ? std::nan("") : args[0].to_number();
                 if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
                 if (std::isnan(num_limit)) { ctx.throw_range_error("Invalid count"); iterator_helper_close(ctx, Value(iter)); return Value(); }
                 double limit = (std::isinf(num_limit) && num_limit > 0) ? num_limit : std::trunc(num_limit);
@@ -874,7 +858,7 @@ void register_iterator_constructor(Context& ctx) {
         [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("take called on non-object"); return Value(); }
-            double num_limit = args.empty() ? std::nan("") : iterator_arg_to_number(ctx, args[0]);
+            double num_limit = args.empty() ? std::nan("") : args[0].to_number();
             if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
             if (std::isnan(num_limit)) {
                 ctx.throw_range_error("Invalid count");
@@ -920,7 +904,7 @@ void register_iterator_constructor(Context& ctx) {
         [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("drop called on non-object"); return Value(); }
-            double num_limit = args.empty() ? std::nan("") : iterator_arg_to_number(ctx, args[0]);
+            double num_limit = args.empty() ? std::nan("") : args[0].to_number();
             if (ctx.has_exception()) { iterator_helper_close(ctx, Value(iter)); return Value(); }
             if (std::isnan(num_limit)) {
                 ctx.throw_range_error("Invalid count");
@@ -1266,26 +1250,9 @@ void register_iterator_constructor(Context& ctx) {
             if (!iter) { ctx.throw_type_error("join called on non-object"); return Value(); }
             // The separator is coerced before `next` is even looked up, and
             // a coercion that throws closes the iterator.
-            // ToString, not Value::to_string: an object's own toString has to
-            // run, and exactly once.
-            auto to_string_checked = [&ctx](Value v, std::string& out) -> bool {
-                if (v.is_object() || v.is_function()) {
-                    Object* o = v.is_object() ? v.as_object()
-                                              : static_cast<Object*>(v.as_function());
-                    v = o->to_primitive("string");
-                    if (ctx.has_exception()) return false;
-                }
-                if (v.is_symbol()) {
-                    ctx.throw_type_error("Cannot convert a Symbol value to a string");
-                    return false;
-                }
-                out = v.to_string();
-                return !ctx.has_exception();
-            };
-
             std::string sep = ",";
             if (!args.empty() && !args[0].is_undefined()) {
-                if (!to_string_checked(args[0], sep)) {
+                if (!args[0].to_string_checked(ctx, sep)) {
                     iterator_helper_close(ctx, Value(iter));
                     return Value();
                 }
@@ -1305,7 +1272,7 @@ void register_iterator_constructor(Context& ctx) {
                 // in Array.prototype.join.
                 if (val.is_undefined() || val.is_null()) continue;
                 std::string piece;
-                if (!to_string_checked(val, piece)) {
+                if (!val.to_string_checked(ctx, piece)) {
                     iterator_helper_close(ctx, Value(iter));
                     return Value();
                 }

@@ -204,19 +204,7 @@ bool this_time_value(Context& ctx, const Value& receiver, double& t) {
 Value nan_result() { return Value(nan_value()); }
 
 Value ordinary_to_primitive(Context& ctx, Object* obj, bool prefer_string) {
-    const char* order[2] = {"valueOf", "toString"};
-    if (prefer_string) { order[0] = "toString"; order[1] = "valueOf"; }
-    for (const char* name : order) {
-        Value fn = obj->get_property(name);
-        if (ctx.has_exception()) return Value();
-        if (fn.is_function()) {
-            Value r = fn.as_function()->call(ctx, {}, Value(obj));
-            if (ctx.has_exception()) return Value();
-            if (!r.is_object() && !r.is_function()) return r;
-        }
-    }
-    ctx.throw_type_error("Cannot convert object to primitive value");
-    return Value();
+    return obj ? obj->ordinary_to_primitive(ctx, prefer_string ? "string" : "number") : Value();
 }
 
 Value to_primitive(Context& ctx, const Value& v, const char* hint) {

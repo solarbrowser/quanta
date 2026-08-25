@@ -38,39 +38,7 @@ static Object* resolve_error_prototype(Context& ctx, const Value& receiver, Obje
 
 // ToString(argument): unlike to_property_key(), throws when the ToPrimitive result is a Symbol.
 static bool error_arg_to_string(Context& ctx, const Value& v, std::string& out) {
-    if (v.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return false; }
-    if (!v.is_object() && !v.is_function()) { out = v.to_string(); return true; }
-    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
-    Value prim;
-    Value toPrim_fn = obj->get_property("Symbol.toPrimitive");
-    if (ctx.has_exception()) return false;
-    if (toPrim_fn.is_function()) {
-        prim = toPrim_fn.as_function()->call(ctx, {Value(std::string("string"))}, v);
-        if (ctx.has_exception()) return false;
-        if (prim.is_object() || prim.is_function()) { ctx.throw_type_error("Cannot convert object to primitive value"); return false; }
-    } else {
-        Value toString_fn = obj->get_property("toString");
-        if (ctx.has_exception()) return false;
-        bool got = false;
-        if (toString_fn.is_function()) {
-            prim = toString_fn.as_function()->call(ctx, {}, v);
-            if (ctx.has_exception()) return false;
-            got = !prim.is_object() && !prim.is_function();
-        }
-        if (!got) {
-            Value valueOf_fn = obj->get_property("valueOf");
-            if (ctx.has_exception()) return false;
-            if (valueOf_fn.is_function()) {
-                prim = valueOf_fn.as_function()->call(ctx, {}, v);
-                if (ctx.has_exception()) return false;
-                got = !prim.is_object() && !prim.is_function();
-            }
-        }
-        if (!got) { ctx.throw_type_error("Cannot convert object to primitive value"); return false; }
-    }
-    if (prim.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return false; }
-    out = prim.to_string();
-    return true;
+    return v.to_string_checked(ctx, out);
 }
 
 // IterableToList(errors): GetIterator then IteratorStep/IteratorValue, propagating any abrupt step.

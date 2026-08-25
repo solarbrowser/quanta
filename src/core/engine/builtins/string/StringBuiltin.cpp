@@ -985,7 +985,8 @@ void register_string_builtins(Context& ctx) {
             std::string str = get_string_this(ctx, receiver, this_ok);
             if (!this_ok) return Value();
 
-            std::string that = args.empty() ? "undefined" : args[0].to_string();
+            std::string that = "undefined";
+            if (!args.empty() && !args[0].to_string_checked(ctx, that)) return Value();
 
             if (str < that) return Value(-1.0);
             if (str > that) return Value(1.0);

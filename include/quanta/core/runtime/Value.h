@@ -342,7 +342,16 @@ public:
 
     bool to_boolean() const;
     double to_number() const;
+    // NOT ToString: an object is described rather than asked (see
+    // Object::describe), and this never throws.
     std::string to_string() const;
+    // ToString as the spec defines it: an object goes through its own
+    // @@toPrimitive, toString or valueOf, and a Symbol is a TypeError. Returns
+    // false with an exception pending on `ctx` when the conversion is abrupt.
+    bool to_string_checked(Context& ctx, std::string& out) const;
+    // ToNumber, the same way: an object goes through its own conversion methods
+    // with a number hint, a Symbol is a TypeError.
+    bool to_number_checked(Context& ctx, double& out) const;
     std::string to_property_key() const;
     // Corrected ToPropertyKey for object-literal computed keys: unlike
     // to_property_key() above, this throws TypeError (GetMethod semantics)

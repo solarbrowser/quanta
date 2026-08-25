@@ -45,52 +45,7 @@ static std::string accessor_function_name(const std::string& prop_key, const std
 // Unlike Value::to_property_key(), this throws TypeError when @@toPrimitive is
 // non-callable or when OrdinaryToPrimitive finds neither toString nor valueOf.
 static std::string computed_key_to_property_key(Context& ctx, const Value& val) {
-    if (val.is_symbol()) return val.as_symbol()->to_property_key();
-    if (!val.is_object() && !val.is_function()) return val.to_string();
-
-    Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
-
-    Symbol* tp_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
-    if (tp_sym) {
-        Value tp = obj->get_property(tp_sym->to_property_key());
-        if (ctx.has_exception()) return "";
-        if (!tp.is_undefined()) {
-            if (!tp.is_function()) {
-                ctx.throw_type_error("Cannot convert object to primitive value");
-                return "";
-            }
-            Value result = tp.as_function()->call(ctx, {Value(std::string("string"))}, val);
-            if (ctx.has_exception()) return "";
-            if (result.is_object() || result.is_function()) {
-                ctx.throw_type_error("Cannot convert object to primitive value");
-                return "";
-            }
-            if (result.is_symbol()) return result.as_symbol()->to_property_key();
-            return result.to_string();
-        }
-    }
-
-    // OrdinaryToPrimitive with hint "string": toString first, then valueOf
-    Value ts = obj->get_property("toString");
-    if (ctx.has_exception()) return "";
-    if (ts.is_function()) {
-        Value r = ts.as_function()->call(ctx, {}, val);
-        if (ctx.has_exception()) return "";
-        if (r.is_symbol()) return r.as_symbol()->to_property_key();
-        if (!r.is_object() && !r.is_function()) return r.to_string();
-    }
-
-    Value vof = obj->get_property("valueOf");
-    if (ctx.has_exception()) return "";
-    if (vof.is_function()) {
-        Value r = vof.as_function()->call(ctx, {}, val);
-        if (ctx.has_exception()) return "";
-        if (r.is_symbol()) return r.as_symbol()->to_property_key();
-        if (!r.is_object() && !r.is_function()) return r.to_string();
-    }
-
-    ctx.throw_type_error("Cannot convert object to primitive value");
-    return "";
+    return val.to_property_key_strict(ctx);
 }
 
 // Detects a literal eval() call anywhere in this function's own body (stopping at nested function/class boundaries); such functions skip closure capture/write-back below, since eval can introduce a same-named var our static analysis can't see.

@@ -18,32 +18,7 @@ namespace Quanta {
 static Value to_primitive_number(Context& ctx, Value v) {
     if (!v.is_object() && !v.is_function()) return v;
     Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
-    Symbol* to_prim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
-    Value fn = to_prim_sym ? obj->get_property(to_prim_sym->to_property_key()) : Value();
-    if (ctx.has_exception()) return Value();
-    if (fn.is_function()) {
-        Value r = fn.as_function()->call(ctx, {Value(std::string("number"))}, v);
-        if (ctx.has_exception()) return Value();
-        if (r.is_object() || r.is_function()) {
-            ctx.throw_type_error("Symbol.toPrimitive returned an object");
-            return Value();
-        }
-        return r;
-    }
-    if (!fn.is_undefined() && !fn.is_null()) {
-        ctx.throw_type_error("Symbol.toPrimitive is not a function");
-        return Value();
-    }
-    for (const char* name : {"valueOf", "toString"}) {
-        Value m = obj->get_property(name);
-        if (ctx.has_exception()) return Value();
-        if (!m.is_function()) continue;
-        Value r = m.as_function()->call(ctx, {}, Value(obj));
-        if (ctx.has_exception()) return Value();
-        if (!r.is_object() && !r.is_function()) return r;
-    }
-    ctx.throw_type_error("Cannot convert object to primitive value");
-    return Value();
+    return obj ? obj->to_primitive(ctx, "number") : v;
 }
 
 // StringToBigInt: trimmed empty -> 0n, optional sign only on decimal, 0b/0o/0x

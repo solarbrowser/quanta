@@ -63,31 +63,11 @@ static Object* array_to_object(Context& ctx, const Value& receiver) {
     return raw;
 }
 
-// ToPrimitive("string") for sort's default comparator: toString() then valueOf(), matching
-// String(x) rather than Value::to_string()'s "default" hint (valueOf() first).
+// Array's own string conversion is the ordinary one: Value::to_string_checked.
 static std::string sort_default_to_string(Context& ctx, const Value& v) {
-    if (v.is_symbol()) {
-        ctx.throw_type_error("Cannot convert a Symbol value to a string");
-        return "";
-    }
-    if (!v.is_object() && !v.is_function()) return v.to_string();
-    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
-    Value toString_fn = obj->get_property("toString");
-    if (ctx.has_exception()) return "";
-    if (toString_fn.is_function()) {
-        Value prim = toString_fn.as_function()->call(ctx, {}, v);
-        if (ctx.has_exception()) return "";
-        if (!prim.is_object() && !prim.is_function()) return prim.to_string();
-    }
-    Value valueOf_fn = obj->get_property("valueOf");
-    if (ctx.has_exception()) return "";
-    if (valueOf_fn.is_function()) {
-        Value prim = valueOf_fn.as_function()->call(ctx, {}, v);
-        if (ctx.has_exception()) return "";
-        if (!prim.is_object() && !prim.is_function()) return prim.to_string();
-    }
-    ctx.throw_type_error("Cannot convert object to primitive value");
-    return "";
+    std::string out;
+    v.to_string_checked(ctx, out);
+    return out;
 }
 
 // ToNumber via ToPrimitive("number"): valueOf() then toString(), throwing if neither yields a

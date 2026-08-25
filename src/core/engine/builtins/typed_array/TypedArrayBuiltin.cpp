@@ -196,25 +196,9 @@ inline LastChunkHandling parse_last_chunk_handling(const std::string& s) {
 
 // ToString via ToPrimitive("string"): Value::to_string() for objects ignores user toString.
 static std::string to_string_via_toprimitive(Context& ctx, const Value& v) {
-    if (v.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return ""; }
-    if (!v.is_object() && !v.is_function()) return v.to_string();
-    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
-    Value toString_fn = obj->get_property("toString");
-    if (ctx.has_exception()) return "";
-    if (toString_fn.is_function()) {
-        Value prim = toString_fn.as_function()->call(ctx, {}, v);
-        if (ctx.has_exception()) return "";
-        if (!prim.is_object() && !prim.is_function()) return prim.to_string();
-    }
-    Value valueOf_fn = obj->get_property("valueOf");
-    if (ctx.has_exception()) return "";
-    if (valueOf_fn.is_function()) {
-        Value prim = valueOf_fn.as_function()->call(ctx, {}, v);
-        if (ctx.has_exception()) return "";
-        if (!prim.is_object() && !prim.is_function()) return prim.to_string();
-    }
-    ctx.throw_type_error("Cannot convert object to primitive value");
-    return "";
+    std::string out;
+    v.to_string_checked(ctx, out);
+    return out;
 }
 
 // Value::to_number() returns NaN for Symbol/BigInt instead of throwing (no Context access there).

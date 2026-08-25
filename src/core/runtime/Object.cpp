@@ -1203,9 +1203,13 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 // present; otherwise the two ordinary orders are toString-then-valueOf for the
 // string hint and valueOf-then-toString for the others.
 Value Object::to_primitive(const std::string& hint) const {
-    Context* ctx = current_context_;
+    if (!current_context_) return Value(const_cast<Object*>(this));
+    return to_primitive(*current_context_, hint);
+}
+
+Value Object::to_primitive(Context& ctx_ref, const std::string& hint) const {
+    Context* ctx = &ctx_ref;
     Object* self = const_cast<Object*>(this);
-    if (!ctx) return Value(self);
 
     Symbol* to_prim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
     if (to_prim_sym) {
@@ -1225,17 +1229,22 @@ Value Object::to_primitive(const std::string& hint) const {
         }
     }
 
+    return ordinary_to_primitive(*ctx, hint);
+}
+
+Value Object::ordinary_to_primitive(Context& ctx, const std::string& hint) const {
+    Object* self = const_cast<Object*>(this);
     const char* order[2] = {"valueOf", "toString"};
     if (hint == "string") { order[0] = "toString"; order[1] = "valueOf"; }
     for (const char* name : order) {
         Value fn = self->get_property(name);
-        if (ctx->has_exception()) return Value();
+        if (ctx.has_exception()) return Value();
         if (!fn.is_function()) continue;
-        Value r = fn.as_function()->call(*ctx, {}, Value(self));
-        if (ctx->has_exception()) return Value();
+        Value r = fn.as_function()->call(ctx, {}, Value(self));
+        if (ctx.has_exception()) return Value();
         if (!r.is_object() && !r.is_function()) return r;
     }
-    ctx->throw_type_error("Cannot convert object to primitive value");
+    ctx.throw_type_error("Cannot convert object to primitive value");
     return Value();
 }
 
@@ -3494,7 +3503,7 @@ void Object::clear_properties() {
     proto_.clear_flags();
 }
 
-std::string Object::to_string() const {
+std::string Object::describe() const {
     // String/Number wrapper objects store their primitive in [[PrimitiveValue]]
     if (has_property("[[PrimitiveValue]]")) {
         Value pv = get_property("[[PrimitiveValue]]");

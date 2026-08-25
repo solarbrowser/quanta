@@ -616,8 +616,21 @@ public:
 
     Value groupBy(Function* callback, Context& ctx);
     
+    // ToPrimitive. The exception from an abrupt conversion lands on the context
+    // passed in; the argument-less form uses whichever context is current,
+    // which is not always the one a native function was handed.
+    Value to_primitive(Context& ctx, const std::string& hint = "") const;
+    // OrdinaryToPrimitive: valueOf/toString in the hint's order, WITHOUT
+    // consulting @@toPrimitive. A @@toPrimitive method that wants the ordinary
+    // behaviour -- Date's does -- calls this, since going through to_primitive
+    // would call it back.
+    Value ordinary_to_primitive(Context& ctx, const std::string& hint) const;
     Value to_primitive(const std::string& hint = "") const;
-    std::string to_string() const;
+    // NOT ToString. This imitates the answer -- it joins arrays, formats errors
+    // as "name: message" -- without running the object's own toString, and it
+    // never throws. It exists for diagnostics, where running JS is not an
+    // option. Everything else wants Value::to_string, which asks the object.
+    std::string describe() const;
     double to_number() const;
     bool to_boolean() const;
     

@@ -10,6 +10,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
+#include <limits>
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/DataView.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -20,31 +21,9 @@ namespace Quanta {
 
 // Value::to_number() silently returns NaN instead of throwing when ToPrimitive fails.
 static double to_number_checked(Context& ctx, const Value& v) {
-    double n = v.to_number();
-    if (!std::isnan(n) || !v.is_object()) return n;
-    Object* obj = v.as_object();
-    bool got_primitive = false;
-    Value valueOf_fn = obj->get_property("valueOf");
-    if (ctx.has_exception()) return 0.0;
-    if (valueOf_fn.is_function()) {
-        Value prim = valueOf_fn.as_function()->call(ctx, {}, v);
-        if (ctx.has_exception()) return 0.0;
-        got_primitive = !prim.is_object() && !prim.is_function();
-    }
-    if (!got_primitive) {
-        Value toString_fn = obj->get_property("toString");
-        if (ctx.has_exception()) return 0.0;
-        if (toString_fn.is_function()) {
-            Value prim = toString_fn.as_function()->call(ctx, {}, v);
-            if (ctx.has_exception()) return 0.0;
-            got_primitive = !prim.is_object() && !prim.is_function();
-        }
-    }
-    if (!got_primitive) {
-        ctx.throw_type_error("Cannot convert object to primitive value");
-        return 0.0;
-    }
-    return n;
+    double out = 0;
+    if (!v.to_number_checked(ctx, out)) return std::numeric_limits<double>::quiet_NaN();
+    return out;
 }
 
 // ToIntegerOrInfinity: NaN -> 0, +-Infinity pass through, finite values truncate toward zero.

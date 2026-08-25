@@ -60,43 +60,27 @@ static Value toBigIntCoerce(Context& ctx, const Value& v) {
     return v;
 }
 
-// ToNumeric for ++/--, calling ToPrimitive("number") on objects with exception propagation.
+// ToNumeric for ++/--: ToPrimitive with a number hint, then a Number unless the
+// primitive is a BigInt. The hand-written version here consulted valueOf and
+// toString directly and never looked at @@toPrimitive, so an object that only
+// defines that method converted to NaN.
 static Value postfix_to_numeric(Context& ctx, const Value& val) {
     if (val.is_bigint()) return val;
+    Value prim = val;
     if (val.is_object() || val.is_function()) {
         Object* obj = val.is_function()
             ? static_cast<Object*>(val.as_function())
             : val.as_object();
         if (!obj) return Value(std::numeric_limits<double>::quiet_NaN());
-        if (obj->has_property("[[PrimitiveValue]]")) {
-            Value pv = obj->get_property("[[PrimitiveValue]]");
-            if (pv.is_bigint()) return pv;
-            // Skip for Symbol wrappers so overridden valueOf/toString are honored below.
-            if (!pv.is_object() && !pv.is_symbol()) return Value(pv.to_number());
-        }
-        Value valueOf_method = obj->get_property("valueOf");
+        prim = obj->to_primitive(ctx, "number");
         if (ctx.has_exception()) return Value();
-        if (valueOf_method.is_function()) {
-            Value result = valueOf_method.as_function()->call(ctx, {}, val);
-            if (ctx.has_exception()) return Value();
-            if (!result.is_object() && !result.is_function()) {
-                if (result.is_bigint()) return result;
-                return Value(result.to_number());
-            }
-        }
-        Value toString_method = obj->get_property("toString");
-        if (ctx.has_exception()) return Value();
-        if (toString_method.is_function()) {
-            Value result = toString_method.as_function()->call(ctx, {}, val);
-            if (ctx.has_exception()) return Value();
-            if (!result.is_object() && !result.is_function()) {
-                return Value(result.to_number());
-            }
-        }
-        ctx.throw_type_error("Cannot convert object to primitive value");
+    }
+    if (prim.is_bigint()) return prim;
+    if (prim.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a number");
         return Value();
     }
-    return Value(val.to_number());
+    return Value(prim.to_number());
 }
 
 Value UnaryExpression::to_numeric(Context& ctx, const Value& v) {
@@ -235,65 +219,10 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
         }
     }
     
-    // ES6 ToPrimitive: Check Symbol.toPrimitive, Date objects prefer toString, others prefer valueOf
     auto toPrimitive = [&ctx](const Value& val, const std::string& hint = "default") -> Value {
         if (!val.is_object_like() || val.is_string()) return val;
         Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
-        if (!obj) return val;
-        // ES6: Check Symbol.toPrimitive via well-known symbol key
-        Symbol* toPrim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
-        std::string toPrim_key = toPrim_sym ? toPrim_sym->to_property_key() : "Symbol.toPrimitive";
-        Value toPrim = obj->get_property(toPrim_key);
-        if (ctx.has_exception()) return Value();
-        if (toPrim.is_function()) {
-            Value result = toPrim.as_function()->call(ctx, {Value(hint)}, val);
-            if (ctx.has_exception()) return Value();
-            if (!result.is_object_like()) return result;
-            ctx.throw_type_error("Cannot convert object to primitive value");
-            return Value();
-        }
-        // GetMethod: a present but non-callable @@toPrimitive is a TypeError.
-        if (!toPrim.is_undefined() && !toPrim.is_null()) {
-            ctx.throw_type_error("Symbol.toPrimitive is not a function");
-            return Value();
-        }
-        // What makes `date + 1` concatenate is Date.prototype's own
-        // @@toPrimitive, which reads "default" as "string" and is consulted
-        // above. Reaching here means a Date no longer has it, and then the
-        // ordinary rule applies to a Date like anything else: "default"
-        // behaves as "number" and valueOf goes first.
-        bool prefer_string = hint == "string";
-
-        if (prefer_string) {
-            Value toString_method = obj->get_property("toString");
-            if (toString_method.is_function()) {
-                Value result = toString_method.as_function()->call(ctx, {}, val);
-                if (ctx.has_exception()) return Value();
-                if (!result.is_object_like()) return result;
-            }
-            Value valueOf_method = obj->get_property("valueOf");
-            if (valueOf_method.is_function()) {
-                Value result = valueOf_method.as_function()->call(ctx, {}, val);
-                if (ctx.has_exception()) return Value();
-                if (!result.is_object_like()) return result;
-            }
-        } else {
-            Value valueOf_method = obj->get_property("valueOf");
-            if (valueOf_method.is_function()) {
-                Value result = valueOf_method.as_function()->call(ctx, {}, val);
-                if (ctx.has_exception()) return Value();
-                if (!result.is_object_like()) return result;
-            }
-            Value toString_method = obj->get_property("toString");
-            if (toString_method.is_function()) {
-                Value result = toString_method.as_function()->call(ctx, {}, val);
-                if (ctx.has_exception()) return Value();
-                if (!result.is_object_like()) return result;
-            }
-        }
-        // Both valueOf and toString returned objects — spec requires TypeError
-        ctx.throw_type_error("Cannot convert object to primitive value");
-        return Value();
+        return obj ? obj->to_primitive(ctx, hint) : val;
     };
 
     switch (op) {
