@@ -6,6 +6,7 @@
 
 #define PCRE2_CODE_UNIT_WIDTH 16
 #include "quanta/core/runtime/RegExp.h"
+#include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/RegExpBacktrack.h"
 #include "quanta/core/runtime/Object.h"
 #include "utf8proc.h"
@@ -55,26 +56,31 @@ thread_local std::unordered_map<std::string, CompiledRegexEntry> g_regex_cache;
 
 // Decode WTF-8 (UTF-8 plus 3-byte-encoded lone surrogates) to UTF-16 code units.
 std::u16string wtf8_to_utf16(const std::string& s) {
+    // Written into a buffer sized up front: no encoding produces more units
+    // than bytes, so s.size() is an upper bound, and appending one unit at a
+    // time cost a capacity check per character of the subject.
     std::u16string out;
-    out.reserve(s.size());
-    size_t i = 0;
+    out.resize(s.size());
+    char16_t* w = out.data();
+    size_t n = 0, i = 0;
     while (i < s.size()) {
         unsigned char c = (unsigned char)s[i];
-        if (c < 0x80) { out += (char16_t)c; i++; continue; }
+        if (c < 0x80) { w[n++] = (char16_t)c; i++; continue; }
         size_t len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
-        if (i + len > s.size()) { out += u'�'; break; }
+        if (i + len > s.size()) { w[n++] = u'�'; break; }
         uint32_t cp = len == 2 ? (c & 0x1F) : len == 3 ? (c & 0x0F) : (c & 0x07);
         for (size_t k = 1; k < len; k++)
             cp = (cp << 6) | ((unsigned char)s[i+k] & 0x3F);
         if (cp >= 0x10000) {
             cp -= 0x10000;
-            out += (char16_t)(0xD800 + (cp >> 10));
-            out += (char16_t)(0xDC00 + (cp & 0x3FF));
+            w[n++] = (char16_t)(0xD800 + (cp >> 10));
+            w[n++] = (char16_t)(0xDC00 + (cp & 0x3FF));
         } else {
-            out += (char16_t)cp; // includes WTF-8 lone surrogates as-is
+            w[n++] = (char16_t)cp; // includes WTF-8 lone surrogates as-is
         }
         i += len;
     }
+    out.resize(n);
     return out;
 }
 
@@ -2405,33 +2411,87 @@ static void sanitize_utf16_surrogates(std::u16string& s) {
     }
 }
 
-// The last subject decoded to UTF-16, with the bytes it came from. A global
+// Subjects already decoded to UTF-16, with the bytes they came from. A global
 // regex is driven one exec per match, so each call used to re-decode the whole
 // subject: walking a string cost a decode per match rather than one decode.
 //
-// One entry, shared by every RegExp on the thread rather than stored per
-// instance. Repeated decoding of the same subject is a property of the call
-// sequence, not of the pattern -- a replace and a match over the same text hit
-// it too -- and RegExp is size-checked, so a per-instance copy would cost
-// every regex in the program for a benefit only the hot one sees.
+// Several ways, not one, because a parser interleaves its source with the large
+// slices it takes out of that source, and every such slice evicted the source
+// that had just been decoded -- so the source was decoded again on the next
+// match, once per slice, which is quadratic in its length. Shared by every
+// RegExp on the thread rather than stored per instance: repeated decoding of
+// the same subject is a property of the call sequence, not of the pattern -- a
+// replace and a match over the same text hit it too -- and RegExp is
+// size-checked, so a per-instance copy would cost every regex in the program
+// for a benefit only the hot one sees.
 //
 // Keyed on the bytes, not on the String object: this is not a GC-traced type,
 // so it must neither keep a cell alive nor read one that may have been swept.
 // The comparison is a memcmp where the miss is a full decode.
-static const std::u16string& decode_subject(const std::string& str, std::u16string& scratch) {
-    static thread_local std::string cached_src;
-    static thread_local std::u16string cached;
-    if (cached_src.size() == str.size() && cached_src == str) return cached;
+static constexpr size_t kSubjectWays = 4;
+// Source bytes the ways may hold between them. A way also holds the units it
+// decoded, which cost twice its source again, so the real ceiling is three
+// times this -- kept well under what parsing text of that size already costs.
+static constexpr size_t kSubjectBudget = 24u << 20;
+
+static const std::u16string& decode_subject(const std::string& str, std::u16string& scratch,
+                                            uint64_t* id = nullptr,
+                                            const String* cell = nullptr) {
+    // A cell knows which units it decoded to; without one the ways below have
+    // to recognise the subject by its bytes.
+    if (cell) return cell->utf16_units(id);
+    struct Way {
+        std::string src;
+        std::u16string units;
+        uint64_t used = 0;
+        // Never reused for different text: whoever derives something from
+        // these units can key on it instead of comparing the units again.
+        uint64_t id = 0;
+    };
+    static thread_local Way ways[kSubjectWays];
+    static thread_local uint64_t tick = 0;
+
     // Only long subjects are worth remembering. Storing one costs a copy of
     // the bytes, and for the short strings a router or a validator matches
     // against -- each one different, so never a hit -- that copy is pure loss.
-    if (str.size() < 256) {
+    if (id) *id = 0;
+    if (str.size() < 256 || str.size() > kSubjectBudget) {
         scratch = wtf8_to_utf16(str);
         return scratch;
     }
-    cached = wtf8_to_utf16(str);
-    cached_src = str;
-    return cached;
+    for (Way& w : ways) {
+        if (w.used && w.src.size() == str.size() && w.src == str) {
+            w.used = ++tick;
+            if (id) *id = w.id;
+            return w.units;
+        }
+    }
+    Way* victim = &ways[0];
+    for (Way& w : ways) if (w.used < victim->used) victim = &w;
+    static thread_local uint64_t next_id = 0;
+    victim->src = str;
+    victim->units = wtf8_to_utf16(str);
+    victim->used = ++tick;
+    victim->id = ++next_id;
+    if (id) *id = victim->id;
+    // Drop the coldest ways until what is held fits the budget again.
+    for (;;) {
+        size_t held = 0;
+        for (const Way& w : ways) held += w.src.size();
+        if (held <= kSubjectBudget) break;
+        Way* coldest = nullptr;
+        for (Way& w : ways) {
+            if (&w == victim || !w.used) continue;
+            if (!coldest || w.used < coldest->used) coldest = &w;
+        }
+        if (!coldest) break;
+        coldest->src.clear();
+        coldest->src.shrink_to_fit();
+        coldest->units.clear();
+        coldest->units.shrink_to_fit();
+        coldest->used = 0;
+    }
+    return victim->units;
 }
 
 // True when the units contain a surrogate that is not part of a valid pair.
@@ -2451,9 +2511,10 @@ static bool has_lone_surrogate(const std::u16string& s) {
     return false;
 }
 
-bool RegExp::test(const std::string& str) {
+bool RegExp::test(const std::string& str, const String* cell) {
     std::u16string decode_scratch;
-    const std::u16string& decoded = decode_subject(str, decode_scratch);
+    uint64_t subject_id = 0;
+    const std::u16string& decoded = decode_subject(str, decode_scratch, &subject_id, cell);
     std::u16string sanitized;
     if (unicode_ && has_lone_surrogate(decoded)) {
         sanitized = decoded;
@@ -2475,7 +2536,8 @@ bool RegExp::test(const std::string& str) {
 
     if (backtrack_engine_) {
         BacktrackMatch bm;
-        found = backtrack_engine_->exec(subject, start, sticky_, bm);
+        found = backtrack_engine_->exec(subject, start, sticky_, bm,
+                                        (&subject == &sanitized) ? 0 : subject_id);
         if (found) match_end = bm.end;
     } else {
         if (!code_) return false;
@@ -2511,7 +2573,8 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     if (!code_) return false;
 
     std::u16string decode_scratch;
-    const std::u16string& orig = decode_subject(str, decode_scratch);
+    uint64_t subject_id = 0;
+    const std::u16string& orig = decode_subject(str, decode_scratch, &subject_id);
     std::u16string sanitized;
     if (unicode_ && has_lone_surrogate(orig)) {
         sanitized = orig;
@@ -2556,10 +2619,11 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     return true;
 }
 
-Value RegExp::exec(const std::string& str) {
+Value RegExp::exec(const std::string& str, const String* cell) {
     // orig holds the unsanitized units so capture text preserves lone surrogates.
     std::u16string decode_scratch;
-    const std::u16string& orig = decode_subject(str, decode_scratch);
+    uint64_t subject_id = 0;
+    const std::u16string& orig = decode_subject(str, decode_scratch, &subject_id, cell);
     std::u16string sanitized;
     if (unicode_ && has_lone_surrogate(orig)) {
         sanitized = orig;
@@ -2585,7 +2649,8 @@ Value RegExp::exec(const std::string& str) {
 
     if (backtrack_engine_) {
         BacktrackMatch bm;
-        found = backtrack_engine_->exec(subject, start, sticky_, bm);
+        found = backtrack_engine_->exec(subject, start, sticky_, bm,
+                                        (&subject == &sanitized) ? 0 : subject_id);
         if (found) {
             capture_count = backtrack_engine_->capture_count();
             match_start = bm.start;

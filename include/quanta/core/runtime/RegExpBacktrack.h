@@ -35,7 +35,12 @@ public:
     uint32_t capture_count() const;
 
     // start_at/sticky are UTF-16 unit offsets.
-    bool exec(const std::u16string& subject, size_t start_at, bool sticky, BacktrackMatch& out) const;
+    // `subject_id` names the decoded subject: nonzero ids are handed out by
+    // the decode cache and never reused for different text, which is what lets
+    // the atom table below be kept across calls without comparing the subject
+    // to recognise it. 0 means "unknown", and nothing is kept.
+    bool exec(const std::u16string& subject, size_t start_at, bool sticky, BacktrackMatch& out,
+              uint64_t subject_id = 0) const;
 
     static bool pattern_needs_backtrack_engine(const std::string& pattern);
 

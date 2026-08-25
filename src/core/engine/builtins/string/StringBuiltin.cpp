@@ -173,6 +173,64 @@ static std::string get_string_this(Context& ctx, const Value& receiver, bool& ok
     return string_this_coerce(ctx, receiver, ok);
 }
 
+// RequireObjectCoercible + ToString, as a free function so the borrowing form
+// below can share it with the lambda that used to be its only copy.
+static std::string to_string_this(Context& ctx, const Value& this_value) {
+    if (this_value.is_nullish()) {
+        ctx.throw_type_error("String method called on null or undefined");
+        return "";
+    }
+    if (this_value.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+        return "";
+    }
+    if (this_value.is_object() || this_value.is_function()) {
+        bool _ok;
+        return string_this_coerce(ctx, this_value, _ok);
+    }
+    return this_value.to_string();
+}
+
+// The receiver's bytes WITHOUT copying them when it is already a primitive
+// string. A String method is typically called in a loop over one long source,
+// and copying the whole receiver per call made every such call cost the length
+// of the string rather than the length of its answer: one indexOf on a
+// multi-megabyte source spent far more on the copy than on the search.
+// `scratch` owns the bytes only for a receiver that had to be built.
+static const std::string& borrow_string_this(Context& ctx, const Value& receiver,
+                                             std::string& scratch, bool& ok) {
+    if (receiver.is_string()) { ok = true; return receiver.as_string()->str(); }
+    scratch = get_string_this(ctx, receiver, ok);
+    return scratch;
+}
+
+// The cached answer when the receiver is a string cell, a scan otherwise. Each
+// of these free functions walks the whole subject from byte 0, so calling one
+// per builtin call is what made `s.indexOf(x, i)` and friends cost the length
+// of the subject rather than the length of their answer.
+static bool bytes_are_ascii(const Value& v, const std::string& s) {
+    return v.is_string() ? v.as_string()->is_ascii() : utf8_is_ascii(s);
+}
+static size_t bytes_utf16_length(const Value& v, const std::string& s) {
+    return v.is_string() ? v.as_string()->utf16_length() : utf16_length(s);
+}
+static int32_t bytes_code_unit_at(const Value& v, const std::string& s, size_t i) {
+    return v.is_string() ? v.as_string()->code_unit_at(i) : utf16_code_unit_at(s, i);
+}
+static size_t bytes_byte_pos(const Value& v, const std::string& s, size_t i) {
+    return v.is_string() ? v.as_string()->byte_pos(i) : utf16_index_to_byte_pos(s, i);
+}
+static size_t bytes_index_of_byte(const Value& v, const std::string& s, size_t b) {
+    return v.is_string() ? v.as_string()->index_of_byte(b) : utf16_index_from_byte_pos(s, b);
+}
+
+static const std::string& borrow_to_string_this(Context& ctx, const Value& this_value,
+                                                std::string& scratch) {
+    if (this_value.is_string()) return this_value.as_string()->str();
+    scratch = to_string_this(ctx, this_value);
+    return scratch;
+}
+
 void register_string_builtins(Context& ctx) {
     auto string_constructor = ObjectFactory::create_native_constructor("String",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
@@ -247,7 +305,9 @@ void register_string_builtins(Context& ctx) {
 
     auto padStart_fn = ObjectFactory::create_native_function("padStart",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+            bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
             
             if (args.empty()) return Value(str);
             
@@ -265,7 +325,7 @@ void register_string_builtins(Context& ctx) {
                 return " ";
             })();
             if (ctx.has_exception()) return Value();
-            size_t str_len = utf16_length(str), target = static_cast<size_t>(tl);
+            size_t str_len = bytes_utf16_length(receiver, str), target = static_cast<size_t>(tl);
             if (target <= str_len) return Value(str);
             size_t pad_need = target - str_len;
             std::string padding;
@@ -301,7 +361,9 @@ void register_string_builtins(Context& ctx) {
 
     auto padEnd_fn = ObjectFactory::create_native_function("padEnd",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+            bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
             if (args.empty()) return Value(str);
             double tl = args[0].to_number();
             if (std::isnan(tl) || tl <= 0 || tl == std::numeric_limits<double>::infinity()) return Value(str);
@@ -317,7 +379,7 @@ void register_string_builtins(Context& ctx) {
                 return " ";
             })();
             if (ctx.has_exception()) return Value();
-            size_t str_len = utf16_length(str), target = static_cast<size_t>(tl);
+            size_t str_len = bytes_utf16_length(receiver, str), target = static_cast<size_t>(tl);
             if (target <= str_len) return Value(str);
             size_t pad_need = target - str_len;
             std::string padding;
@@ -396,7 +458,9 @@ void register_string_builtins(Context& ctx) {
 
     auto str_includes_fn = ObjectFactory::create_native_function("includes",
         [obj_to_string](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+            bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
 
             if (args.empty()) return Value(false);
 
@@ -452,7 +516,8 @@ void register_string_builtins(Context& ctx) {
     auto startsWith_fn = ObjectFactory::create_native_function("startsWith",
         [obj_to_string](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             if (args.empty()) return Value(false);
@@ -490,11 +555,19 @@ void register_string_builtins(Context& ctx) {
                 position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
             }
 
-            if (position >= str.length()) {
-                return Value(search_string.empty());
-            }
-
-            return Value(str.substr(position, search_string.length()) == search_string);
+            // The position is a UTF-16 index and the buffer is UTF-8, so it is
+            // not a byte offset: with any non-ASCII character before it the two
+            // disagree and the comparison started at the wrong place. Cutting
+            // the units out costs only the prefix plus the needle, and it is
+            // also the only way a lone surrogate can compare equal to half of
+            // an encoded pair.
+            size_t search_units = utf16_length(search_string);
+            if (search_units == 0) return Value(true);
+            // Every code unit costs at least one byte, so a unit index past the
+            // byte length is past the end -- and this keeps the sum below from
+            // overflowing on a position like 1e21.
+            if (position > str.size()) return Value(false);
+            return Value(utf16_substring(str, position, position + search_units) == search_string);
         });
     PropertyDescriptor startsWith_length_desc(Value(1.0), PropertyAttributes::Configurable);
     startsWith_length_desc.set_enumerable(false);
@@ -507,7 +580,8 @@ void register_string_builtins(Context& ctx) {
     auto endsWith_fn = ObjectFactory::create_native_function("endsWith",
         [obj_to_string](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             if (args.empty()) return Value(false);
@@ -536,13 +610,18 @@ void register_string_builtins(Context& ctx) {
             }
 
             std::string search_string = obj_to_string(ctx, args[0]);
-            size_t length = args.size() > 1 ?
-                static_cast<size_t>(std::max(0.0, args[1].to_number())) : str.length();
-
-            if (length > str.length()) length = str.length();
-            if (search_string.length() > length) return Value(false);
-
-            return Value(str.substr(length - search_string.length(), search_string.length()) == search_string);
+            // A UTF-16 index, not a byte offset -- see startsWith.
+            size_t utf16len = bytes_utf16_length(receiver, str);
+            size_t end = utf16len;
+            if (args.size() > 1 && !args[1].is_undefined()) {
+                double ep = args[1].to_number();
+                end = std::isnan(ep) || ep < 0 ? 0
+                    : (ep > static_cast<double>(utf16len) ? utf16len : static_cast<size_t>(ep));
+            }
+            size_t search_units = utf16_length(search_string);
+            if (search_units == 0) return Value(true);
+            if (search_units > end) return Value(false);
+            return Value(utf16_substring(str, end - search_units, end) == search_string);
         });
     PropertyDescriptor endsWith_length_desc(Value(1.0), PropertyAttributes::Configurable);
     endsWith_length_desc.set_enumerable(false);
@@ -554,20 +633,7 @@ void register_string_builtins(Context& ctx) {
 
     // Helper to convert this value to string for String.prototype methods
     auto toString_helper = [](Context& ctx, const Value& this_value) -> std::string {
-        // RequireObjectCoercible: the receiver, which is what callers hand in
-        if (this_value.is_nullish()) {
-            ctx.throw_type_error("String method called on null or undefined");
-            return "";
-        }
-        if (this_value.is_symbol()) {
-            ctx.throw_type_error("Cannot convert a Symbol value to a string");
-            return "";
-        }
-        if (this_value.is_object() || this_value.is_function()) {
-            bool _ok;
-            return string_this_coerce(ctx, this_value, _ok);
-        }
-        return this_value.to_string();
+        return to_string_this(ctx, this_value);
     };
 
     auto match_fn = ObjectFactory::create_native_function("match",
@@ -594,7 +660,8 @@ void register_string_builtins(Context& ctx) {
             }
 
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             // RegExpCreate(regexp, undefined): build a fresh RegExp, then delegate to its own
@@ -664,7 +731,8 @@ void register_string_builtins(Context& ctx) {
             }
 
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             // RegExpCreate(regexp, "g"): check for any installed RegExp.prototype[Symbol.matchAll]
@@ -714,7 +782,8 @@ void register_string_builtins(Context& ctx) {
             }
 
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             Value regexp_ctor = ctx.get_binding("RegExp");
@@ -755,7 +824,8 @@ void register_string_builtins(Context& ctx) {
             }
 
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             std::string search;
@@ -852,7 +922,8 @@ void register_string_builtins(Context& ctx) {
             }
 
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             std::string search;
@@ -916,7 +987,9 @@ void register_string_builtins(Context& ctx) {
     auto trim_fn = ObjectFactory::create_native_function("trim",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+            bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
             return Value(unicode_trim(str));
         }, 0);
     PropertyDescriptor trim_desc(Value(trim_fn.release()),
@@ -926,7 +999,9 @@ void register_string_builtins(Context& ctx) {
     auto trimStart_fn = ObjectFactory::create_native_function("trimStart",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+            bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
             size_t start = 0;
             while (start < str.size()) { size_t n = is_unicode_whitespace(str, start); if (!n) break; start += n; }
             return Value(str.substr(start));
@@ -939,7 +1014,9 @@ void register_string_builtins(Context& ctx) {
     auto trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
-            bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+            bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
             size_t end = str.size();
             while (end > 0) {
                 size_t p = end - 1;
@@ -958,7 +1035,8 @@ void register_string_builtins(Context& ctx) {
     auto codePointAt_fn = ObjectFactory::create_native_function("codePointAt",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             if (args.size() == 0 || str.empty()) return Value();
@@ -967,11 +1045,26 @@ void register_string_builtins(Context& ctx) {
             double dpos = args[0].to_number();
             if (ctx.has_exception()) return Value();
             size_t pos = char_index_arg(dpos);
-            if (pos >= utf16_length(str)) {
+            if (pos >= bytes_utf16_length(receiver, str)) {
                 return Value();
             }
 
-            int32_t cp = utf16_code_point_at(str, pos);
+            // Assembled from the two units rather than decoded from byte 0:
+            // the cell answers both in O(1), the free function walks the
+            // whole subject for either.
+            int32_t cp;
+            if (receiver.is_string()) {
+                String* cell = receiver.as_string();
+                cp = cell->code_unit_at(pos);
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    int32_t low = cell->code_unit_at(pos + 1);
+                    if (low >= 0xDC00 && low <= 0xDFFF) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                    }
+                }
+            } else {
+                cp = utf16_code_point_at(str, pos);
+            }
             if (cp < 0) return Value();
             return Value(static_cast<double>(cp));
         }, 1);
@@ -982,7 +1075,8 @@ void register_string_builtins(Context& ctx) {
     auto localeCompare_fn = ObjectFactory::create_native_function("localeCompare",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             std::string that = "undefined";
@@ -1041,7 +1135,7 @@ void register_string_builtins(Context& ctx) {
             double d = idx_arg.to_number();
             if (ctx.has_exception()) return Value();
             int64_t index = std::isnan(d) ? 0 : static_cast<int64_t>(d);
-            int64_t len = static_cast<int64_t>(utf16_length(str));
+            int64_t len = static_cast<int64_t>(bytes_utf16_length(receiver, str));
 
             if (index < 0) {
                 index = len + index;
@@ -1051,7 +1145,7 @@ void register_string_builtins(Context& ctx) {
                 return Value();
             }
 
-            int32_t unit = utf16_code_unit_at(str, static_cast<size_t>(index));
+            int32_t unit = bytes_code_unit_at(receiver, str, static_cast<size_t>(index));
             if (unit < 0) return Value();
             return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
         }, 1);
@@ -1100,7 +1194,8 @@ void register_string_builtins(Context& ctx) {
     auto str_indexOf_fn = ObjectFactory::create_native_function("indexOf",
         [toString_helper, obj_to_string](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value this_value = receiver;
-            std::string str = toString_helper(ctx, this_value);
+            std::string str_scratch;
+            const std::string& str = borrow_to_string_this(ctx, this_value, str_scratch);
 
             if (args.empty()) {
                 return Value(-1.0);
@@ -1123,12 +1218,12 @@ void register_string_builtins(Context& ctx) {
             // so both ends need converting -- the two coincide only while the
             // subject is ASCII, which is why that case skips the work rather
             // than being the only case that was ever right.
-            const bool ascii = utf8_is_ascii(str);
-            size_t start_bytes = ascii ? start : utf16_index_to_byte_pos(str, start);
+            const bool ascii = bytes_are_ascii(this_value, str);
+            size_t start_bytes = ascii ? start : bytes_byte_pos(this_value, str, start);
             size_t found_pos = str.find(search, start_bytes);
             if (found_pos == std::string::npos) return Value(-1.0);
             return Value(static_cast<double>(
-                ascii ? found_pos : utf16_index_from_byte_pos(str, found_pos)));
+                ascii ? found_pos : bytes_index_of_byte(this_value, str, found_pos)));
         }, 1);
     PropertyDescriptor string_indexOf_desc(Value(str_indexOf_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1158,7 +1253,8 @@ void register_string_builtins(Context& ctx) {
             }
 
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             // ToUint32(limit) before ToString(separator) per spec.
@@ -1205,8 +1301,9 @@ void register_string_builtins(Context& ctx) {
 
             uint32_t idx = 0;
             if (sep_str.empty()) {
-                for (size_t i = 0; i < utf16_length(str) && idx < lim; i++) {
-                    int32_t unit = utf16_code_unit_at(str, i);
+                const size_t str_units = bytes_utf16_length(receiver, str);
+                for (size_t i = 0; i < str_units && idx < lim; i++) {
+                    int32_t unit = bytes_code_unit_at(receiver, str, i);
                     if (unit < 0) break;
                     result_array->set_element(idx++, Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
                 }
@@ -1364,7 +1461,8 @@ void register_string_builtins(Context& ctx) {
         [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             Value this_value = receiver;
-            std::string str = toString_helper(ctx, this_value);
+            std::string str_scratch;
+            const std::string& str = borrow_to_string_this(ctx, this_value, str_scratch);
             return Value(unicode_case_convert(str, true));
         });
     PropertyDescriptor toLowerCase_desc(Value(toLowerCase_fn.release()),
@@ -1393,7 +1491,8 @@ void register_string_builtins(Context& ctx) {
         [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             Value this_value = receiver;
-            std::string str = toString_helper(ctx, this_value);
+            std::string str_scratch;
+            const std::string& str = borrow_to_string_this(ctx, this_value, str_scratch);
             return Value(unicode_case_convert(str, false));
         });
     PropertyDescriptor toUpperCase_desc(Value(toUpperCase_fn.release()),
@@ -1404,7 +1503,8 @@ void register_string_builtins(Context& ctx) {
         [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             Value this_value = receiver;
-            std::string str = toString_helper(ctx, this_value);
+            std::string str_scratch;
+            const std::string& str = borrow_to_string_this(ctx, this_value, str_scratch);
             return Value(unicode_case_convert(str, true));
         });
     PropertyDescriptor toLocaleLowerCase_desc(Value(toLocaleLowerCase_fn.release()),
@@ -1415,7 +1515,8 @@ void register_string_builtins(Context& ctx) {
         [toString_helper, unicode_case_convert](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             Value this_value = receiver;
-            std::string str = toString_helper(ctx, this_value);
+            std::string str_scratch;
+            const std::string& str = borrow_to_string_this(ctx, this_value, str_scratch);
             return Value(unicode_case_convert(str, false));
         });
     PropertyDescriptor toLocaleUpperCase_desc(Value(toLocaleUpperCase_fn.release()),
@@ -1466,9 +1567,8 @@ void register_string_builtins(Context& ctx) {
                 return Value(self->substring_utf16(static_cast<size_t>(start),
                                                    static_cast<size_t>(end)));
             }
-            size_t byte_start = utf16_index_to_byte_pos(str, static_cast<size_t>(start));
-            size_t byte_end = utf16_index_to_byte_pos(str, static_cast<size_t>(end));
-            return Value(str.substr(byte_start, byte_end - byte_start));
+            return Value(utf16_substring(str, static_cast<size_t>(start),
+                                        static_cast<size_t>(end)));
         }, 2);
     // Reads and computes only: the context is used for the receiver,
     // argument coercion and throwing, never stored.
@@ -1481,7 +1581,8 @@ void register_string_builtins(Context& ctx) {
     auto str_lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
         [toString_helper, obj_to_string](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value this_value = receiver;
-            std::string str = toString_helper(ctx, this_value);
+            std::string str_scratch;
+            const std::string& str = borrow_to_string_this(ctx, this_value, str_scratch);
 
             if (args.empty()) {
                 return Value(-1.0);
@@ -1491,8 +1592,8 @@ void register_string_builtins(Context& ctx) {
             if (ctx.has_exception()) return Value();
             // Same unit-versus-byte split as indexOf: the position argument and
             // the answer are UTF-16 indices, rfind works in bytes.
-            const bool ascii = utf8_is_ascii(str);
-            const size_t units = ascii ? str.length() : utf16_length(str);
+            const bool ascii = bytes_are_ascii(this_value, str);
+            const size_t units = ascii ? str.length() : bytes_utf16_length(this_value, str);
             size_t start = str.length();
 
             if (args.size() > 1 && !args[1].is_undefined()) {
@@ -1504,7 +1605,7 @@ void register_string_builtins(Context& ctx) {
                     start = 0;
                 } else {
                     size_t pos_bytes = ascii ? static_cast<size_t>(pos)
-                                             : utf16_index_to_byte_pos(str, static_cast<size_t>(pos));
+                                             : bytes_byte_pos(this_value, str, static_cast<size_t>(pos));
                     start = pos_bytes + search.length();
                     if (start > str.length()) {
                         start = str.length();
@@ -1516,13 +1617,13 @@ void register_string_builtins(Context& ctx) {
             if (search.empty()) {
                 size_t at = std::min(start, str.length());
                 return Value(static_cast<double>(
-                    ascii ? at : utf16_index_from_byte_pos(str, at)));
+                    ascii ? at : bytes_index_of_byte(this_value, str, at)));
             }
 
             size_t found_pos = str.rfind(search, start);
             if (found_pos == std::string::npos) return Value(-1.0);
             return Value(static_cast<double>(
-                ascii ? found_pos : utf16_index_from_byte_pos(str, found_pos)));
+                ascii ? found_pos : bytes_index_of_byte(this_value, str, found_pos)));
         }, 1);
     PropertyDescriptor str_lastIndexOf_desc(Value(str_lastIndexOf_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1532,9 +1633,18 @@ void register_string_builtins(Context& ctx) {
     auto str_substring_fn = ObjectFactory::create_native_function("substring",
         [toString_helper](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value this_value = receiver;
-            std::string str = toString_helper(ctx, this_value);
+            // Borrowed when the receiver is already a String -- see slice() for
+            // why the copy and the index-to-byte scan both matter here.
+            String* self = this_value.is_string() ? this_value.as_string() : nullptr;
+            std::string owned;
+            if (!self) {
+                owned = toString_helper(ctx, this_value);
+                if (ctx.has_exception()) return Value();
+            }
+            const std::string& str = self ? self->str() : owned;
 
-            size_t len = str.length();
+            // Spec uses UTF-16 code unit positions, not byte positions.
+            size_t len = self ? self->utf16_length() : utf16_length(str);
             size_t start = 0;
             size_t end = len;
 
@@ -1565,11 +1675,12 @@ void register_string_builtins(Context& ctx) {
                 std::swap(start, end);
             }
 
-            if (start >= len) {
+            if (start >= len || start >= end) {
                 return Value(std::string(""));
             }
 
-            return Value(str.substr(start, end - start));
+            if (self) return Value(self->substring_utf16(start, end));
+            return Value(utf16_substring(str, start, end));
         }, 2);
     // Reads and computes only: the context is used for the receiver,
     // argument coercion and throwing, never stored.
@@ -1802,8 +1913,12 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value this_value = receiver;
             if (receiver.is_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
-            int64_t size = static_cast<int64_t>(str.length());
+            String* self = this_value.is_string() ? this_value.as_string() : nullptr;
+            std::string owned;
+            if (!self) owned = this_value.to_string();
+            const std::string& str = self ? self->str() : owned;
+            // Spec uses UTF-16 code unit positions, not byte positions.
+            int64_t size = static_cast<int64_t>(self ? self->utf16_length() : utf16_length(str));
 
             double start_val = 0;
             if (!args.empty()) {
@@ -1855,7 +1970,10 @@ void register_string_builtins(Context& ctx) {
                 return Value(std::string(""));
             }
 
-            return Value(str.substr(static_cast<size_t>(intStart), static_cast<size_t>(intEnd - intStart)));
+            if (self) return Value(self->substring_utf16(static_cast<size_t>(intStart),
+                                                         static_cast<size_t>(intEnd)));
+            return Value(utf16_substring(str, static_cast<size_t>(intStart),
+                                         static_cast<size_t>(intEnd)));
         }, 2);
     PropertyDescriptor substr_desc(Value(substr_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1865,7 +1983,8 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
             return Value(utf16_is_well_formed(str));
         }, 0);
@@ -1877,7 +1996,8 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
             return Value(utf16_to_well_formed(str));
         }, 0);
@@ -1887,7 +2007,9 @@ void register_string_builtins(Context& ctx) {
 
     auto repeat_fn = ObjectFactory::create_native_function("repeat",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+            bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
             if (args.empty()) return Value(std::string(""));
             double count_d = args[0].to_number();
             if (ctx.has_exception()) return Value();
@@ -1911,7 +2033,8 @@ void register_string_builtins(Context& ctx) {
     auto normalize_fn = ObjectFactory::create_native_function("normalize",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
 
             std::string form = "NFC";
@@ -1957,7 +2080,8 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             bool this_ok;
-            std::string str = get_string_this(ctx, receiver, this_ok);
+            std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, this_ok);
             if (!this_ok) return Value();
             auto iterator = ObjectFactory::create_object();
             if (Iterator::s_string_iterator_prototype_) {
@@ -2140,7 +2264,9 @@ void register_string_builtins(Context& ctx) {
 
             auto global_includes_fn = ObjectFactory::create_native_function("includes",
                 [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                    bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+                    bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
                     if (args.empty()) return Value(false);
                     // ES6: throw TypeError if argument is a regexp (has Symbol.match truthy)
                     if (args[0].is_object() || args[0].is_function()) {
@@ -2254,7 +2380,9 @@ void register_string_builtins(Context& ctx) {
             auto string_trim_fn = ObjectFactory::create_native_function("trim",
                 [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)args;
-                    bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+                    bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
                     return Value(unicode_trim(str));
                 });
             global_prototype->set_property("trim", Value(string_trim_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -2262,7 +2390,9 @@ void register_string_builtins(Context& ctx) {
             auto string_trimStart_fn = ObjectFactory::create_native_function("trimStart",
                 [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)args;
-                    bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+                    bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
                     size_t start = 0;
                     while (start < str.size()) { size_t n = is_unicode_whitespace(str, start); if (!n) break; start += n; }
                     return Value(str.substr(start));
@@ -2274,7 +2404,9 @@ void register_string_builtins(Context& ctx) {
             auto string_trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
                 [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     (void)args;
-                    bool _ok; std::string str = get_string_this(ctx, receiver, _ok); if (!_ok) return Value();
+                    bool _ok; std::string str_scratch;
+            const std::string& str = borrow_string_this(ctx, receiver, str_scratch, _ok);
+            if (!_ok) return Value();
                     size_t end = str.size();
                     while (end > 0) {
                         size_t p = end - 1;

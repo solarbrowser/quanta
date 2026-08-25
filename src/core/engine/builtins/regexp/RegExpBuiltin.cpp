@@ -9,6 +9,7 @@
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
+#include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
 #include <sstream>
@@ -151,7 +152,7 @@ static std::string regexp_escape_string(const std::string& s) {
 // RegExpBuiltinExec: the match itself, with lastIndex read and written around
 // it. Shared by RegExp.prototype.exec and by the abstract operation below,
 // which needs it when a user has replaced exec with something uncallable.
-Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str) {
+Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const String* cell = nullptr) {
     RegExpObject* reo = RegExpObject::from(r);
     if (!reo || !reo->impl()) {
         ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
@@ -166,7 +167,7 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str) {
     re->set_last_index(li > static_cast<double>(std::numeric_limits<int>::max())
                            ? std::numeric_limits<int>::max() : static_cast<int>(li));
 
-    Value result = re->exec(str);
+    Value result = re->exec(str, cell);
 
     int new_last = re->get_last_index();
     if (re->get_global() || re->get_sticky()) {
@@ -187,7 +188,7 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str) {
 // descriptors were the whole cost of RegExp.prototype.test. RegExp::test and
 // RegExp::exec move last_index_ identically (both gate on global || sticky),
 // so the two paths cannot disagree about where the next match starts.
-bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& ok) {
+bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& ok, const String* cell = nullptr) {
     ok = false;
     RegExpObject* reo = RegExpObject::from(r);
     if (!reo || !reo->impl()) {
@@ -203,7 +204,7 @@ bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& 
     re->set_last_index(li > static_cast<double>(std::numeric_limits<int>::max())
                            ? std::numeric_limits<int>::max() : static_cast<int>(li));
 
-    bool found = re->test(str);
+    bool found = re->test(str, cell);
 
     if (re->get_global() || re->get_sticky()) {
         bool li_ok = r->set_property("lastIndex", Value(static_cast<double>(re->get_last_index())));
@@ -568,18 +569,23 @@ void register_regexp_builtins(Context& ctx) {
             }
             // ToString(string): spec treats no-arg as exec("undefined"), not early null.
             Value arg0 = args.empty() ? Value() : args[0];
-            std::string str;
+            std::string owned;
+            // Borrowed when the subject is already a string: a global regex is
+            // driven one exec per match, and copying the subject per call costs
+            // its whole length every time.
+            const String* cell = arg0.is_string() ? arg0.as_string() : nullptr;
             if (arg0.is_symbol()) {
                 ctx.throw_type_error("Cannot convert Symbol to string");
                 return Value();
             } else if (arg0.is_object() || arg0.is_function()) {
                 // ToPrimitive(arg, "string"): go through JS-level toString/valueOf.
-                str = arg0.to_property_key();
+                owned = arg0.to_property_key();
                 if (ctx.has_exception()) return Value();
-            } else {
-                str = arg0.to_string();
+            } else if (!cell) {
+                owned = arg0.to_string();
             }
-            return regexp_builtin_exec(ctx, this_obj, str);
+            const std::string& str = cell ? cell->str() : owned;
+            return regexp_builtin_exec(ctx, this_obj, str, cell);
         }, 1);
     // Kept for identity only, never dereferenced: RegExp.prototype.exec is
     // reachable from the prototype for as long as this realm lives, and test
@@ -596,20 +602,22 @@ void register_regexp_builtins(Context& ctx) {
                 return Value();
             }
             Value arg0_t = args.empty() ? Value() : args[0];
-            std::string str;
+            std::string owned_t;
+            const String* cell_t = arg0_t.is_string() ? arg0_t.as_string() : nullptr;
             if (arg0_t.is_symbol()) {
                 ctx.throw_type_error("Cannot convert Symbol to string");
                 return Value();
             }
-            if (arg0_t.is_object() || arg0_t.is_function()) { str = arg0_t.to_property_key(); if (ctx.has_exception()) return Value(); }
-            else { str = arg0_t.to_string(); }
+            if (arg0_t.is_object() || arg0_t.is_function()) { owned_t = arg0_t.to_property_key(); if (ctx.has_exception()) return Value(); }
+            else if (!cell_t) { owned_t = arg0_t.to_string(); }
+            const std::string& str = cell_t ? cell_t->str() : owned_t;
             Value exec_fn = this_obj->get_property("exec");
             // Whitelist: a real RegExp still carrying the built-in exec. A
             // replaced exec has to be CALLED, and its result is observable, so
             // everything else keeps the path it always had.
             if (exec_fn.is_function() && exec_fn.as_function() == builtin_regexp_exec) {
                 bool ok = false;
-                bool found = regexp_builtin_test(ctx, this_obj, str, ok);
+                bool found = regexp_builtin_test(ctx, this_obj, str, ok, cell_t);
                 if (!ok) return Value();
                 return Value(found);
             }

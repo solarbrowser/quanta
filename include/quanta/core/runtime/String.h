@@ -47,6 +47,11 @@ class String {
     mutable bool is_cons_ : 1 = false;
     mutable bool is_tail_ : 1 = false;
     mutable uint8_t ascii_ : 2 = 0;
+    // True while a thread-local side cache (the scan cursor, the decoded
+    // units) names this cell. Not copied: a copy is a different cell and is in
+    // no cache. Lets the destructor skip the cache scan for the strings that
+    // were never in one, which is nearly all of them.
+    mutable bool in_side_cache_ : 1 = false;
     // UTF-16 length, computed once. `.length` is a scan of the whole UTF-8
     // buffer, so reading it in a loop over a growing string is quadratic;
     // strings are immutable, so the answer never changes once known. Fits the
@@ -60,7 +65,19 @@ class String {
     // 1 single-byte, 2 has multi-byte sequences.
 
     void ensure_flat() const;
-    void destroy_payload() noexcept { if (!is_cons_) data_.~basic_string(); }
+    void destroy_payload() noexcept { forget_cursor(); if (!is_cons_) data_.~basic_string(); }
+    // Where the last indexed read of THIS string stopped. See String.cpp: a
+    // scan that walks a non-ASCII string in order would otherwise decode from
+    // byte 0 on every read, and one such character anywhere in a file is
+    // enough to put the whole file on that path.
+    void seek_utf16(const std::string& s, size_t index, size_t& pos, size_t& units) const;
+    void seek_utf16_byte(const std::string& s, size_t byte, size_t& pos, size_t& units) const;
+    void park_utf16(size_t pos, size_t units) const;
+    // Cheap for the overwhelming majority: an ASCII string is never on the
+    // cursor, and ascii_ is already in this cell.
+    void forget_cursor() const noexcept { if (in_side_cache_) drop_cursor(); }
+    void drop_cursor() const noexcept;
+    [[nodiscard]] bool still_cached_elsewhere() const noexcept;
     void copy_bits(const String& o) noexcept {
         hash_ = o.hash_; interned_ = o.interned_; is_cons_ = o.is_cons_;
         is_tail_ = o.is_tail_; ascii_ = o.ascii_; utf16_len_ = o.utf16_len_;
@@ -110,7 +127,7 @@ public:
         is_tail_ = true;
     }
 
-    ~String() { if (!is_cons_) data_.~basic_string(); }
+    ~String() { forget_cursor(); if (!is_cons_) data_.~basic_string(); }
 
     String(const String& o) { copy_from(o); }
     String(String&& o) noexcept { move_from(std::move(o)); }
@@ -164,11 +181,21 @@ public:
     [[nodiscard]] int32_t code_unit_at(size_t index) const;
     // Byte offset of UTF-16 index `index`, clamped to the end.
     [[nodiscard]] size_t byte_pos(size_t index) const;
+    // The inverse. What a builtin that searched in BYTES has to hand back,
+    // since JS answers in units -- and, like byte_pos, resumed from the cursor
+    // rather than counted from the start of the buffer.
+    [[nodiscard]] size_t index_of_byte(size_t byte) const;
     // The bytes for UTF-16 code units [start, end). A boundary may fall
     // BETWEEN the halves of a surrogate pair -- `"\u{1F4A9}".slice(0, 1)` is
     // the leading surrogate alone -- which no byte offset can express, so this
     // emits the lone half rather than mapping to a position and cutting there.
     [[nodiscard]] std::string substring_utf16(size_t start, size_t end) const;
+    // The whole cell decoded to UTF-16, remembered for this cell rather than
+    // recomputed or re-recognised: a regex driven one exec per match hands the
+    // same subject in over and over, and comparing the bytes to notice that is
+    // itself a walk of the subject. `id` (never 0, never reused for different
+    // text) lets a caller key its own derived tables on the same answer.
+    [[nodiscard]] const std::u16string& utf16_units(uint64_t* id = nullptr) const;
 
     bool operator==(const String& other) const noexcept;
     bool operator!=(const String& other) const noexcept { return !(*this == other); }
@@ -189,6 +216,15 @@ int32_t utf16_code_unit_at(const std::string& utf8, size_t utf16_index);
 int32_t utf16_code_point_at(const std::string& utf8, size_t utf16_index);
 std::string encode_utf16_unit(uint32_t unit);
 size_t utf16_index_to_byte_pos(const std::string& utf8, size_t index);
+// The bytes for UTF-16 code units [start, end) of an unowned buffer. Unlike a
+// pair of utf16_index_to_byte_pos calls this can express a boundary that falls
+// between the halves of a surrogate pair, which has no byte offset at all --
+// see String::substring_utf16.
+std::string utf16_substring(const std::string& utf8, size_t start, size_t end);
+// The same walk, resumed from a boundary the caller already knows and leaving
+// the boundary it stopped on behind -- see String::substring_utf16.
+std::string utf16_substring_from(const std::string& utf8, size_t start, size_t end,
+                                 size_t& pos, size_t& units);
 // The inverse: how many UTF-16 units precede a byte position. What a builtin
 // that searched in bytes has to hand back, since JS indices are units.
 size_t utf16_index_from_byte_pos(const std::string& utf8, size_t byte_pos);

@@ -5,6 +5,12 @@
  */
 
 #include "quanta/core/runtime/String.h"
+
+namespace Quanta {
+// Defined in RegExp.cpp; declared here so a string can decode itself without
+// pulling in the regex engine's headers.
+std::u16string wtf8_to_utf16(const std::string& s);
+}
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/gc/Heap.h"
 #include <vector>
@@ -321,54 +327,294 @@ size_t String::utf16_length() const {
     return n;
 }
 
+// Cursors live per thread, not per cell: a per-String field would cost every
+// string cell 16 bytes (48 is a heap size class, 56 rounds up to 64), and the
+// scans that matter walk only a handful of strings. A few ways rather than one,
+// because a lexer alternates between its source and the tokens it cuts out of
+// it, and with a single way each token read evicted the source's position --
+// putting the next read back at byte 0. Dropped by ~String, so a way can never
+// name a freed cell.
+namespace {
+constexpr size_t kCursorWays = 4;
+struct Cursor {
+    const String* owner = nullptr;
+    size_t units = 0;
+    size_t bytes = 0;
+    uint64_t used = 0;
+};
+thread_local Cursor g_cursors[kCursorWays];
+thread_local uint64_t g_cursor_tick = 0;
+
+Cursor* find_cursor(const String* s) {
+    for (Cursor& c : g_cursors) if (c.owner == s) return &c;
+    return nullptr;
+}
+}
+
+// Decoded subjects, kept for the cell they came from and on the same terms as
+// the cursors above. A few ways because a program can drive more than one
+// subject at a time, bounded because the units cost twice the bytes they
+// decode.
+namespace {
+constexpr size_t kUnitWays = 2;
+constexpr size_t kUnitsMinBytes = 1024;
+constexpr size_t kUnitsMaxBytes = 24u << 20;
+struct UnitWay {
+    const String* owner = nullptr;
+    std::u16string units;
+    uint64_t id = 0;
+    uint64_t used = 0;
+};
+thread_local UnitWay g_units[kUnitWays];
+thread_local uint64_t g_units_tick = 0;
+thread_local uint64_t g_units_next_id = 0;
+}
+
+void String::drop_cursor() const noexcept {
+    for (Cursor& c : g_cursors) if (c.owner == this) { c.owner = nullptr; c.used = 0; }
+    for (UnitWay& w : g_units) {
+        if (w.owner != this) continue;
+        w.owner = nullptr;
+        w.used = 0;
+        w.id = 0;
+        w.units.clear();
+        w.units.shrink_to_fit();
+    }
+    in_side_cache_ = false;
+}
+
+const std::u16string& String::utf16_units(uint64_t* id) const {
+    const std::string& s = str();
+    for (UnitWay& w : g_units) {
+        if (w.owner != this) continue;
+        w.used = ++g_units_tick;
+        if (id) *id = w.id;
+        return w.units;
+    }
+    // Short subjects are not worth a way: decoding one is cheap and the
+    // programs that match against many different short strings would evict a
+    // long subject that is being walked.
+    static thread_local std::u16string scratch;
+    if (s.size() < kUnitsMinBytes || s.size() > kUnitsMaxBytes) {
+        scratch = wtf8_to_utf16(s);
+        if (id) *id = 0;
+        return scratch;
+    }
+    UnitWay* victim = &g_units[0];
+    for (UnitWay& w : g_units) if (w.used < victim->used) victim = &w;
+    // Cleared before asking, so the way being taken does not answer for itself.
+    const String* evicted = victim->owner;
+    victim->owner = nullptr;
+    if (evicted) evicted->in_side_cache_ = evicted->still_cached_elsewhere();
+    victim->owner = this;
+    victim->units = wtf8_to_utf16(s);
+    victim->id = ++g_units_next_id;
+    victim->used = ++g_units_tick;
+    in_side_cache_ = true;
+    if (id) *id = victim->id;
+    return victim->units;
+}
+
+bool String::still_cached_elsewhere() const noexcept {
+    for (const Cursor& c : g_cursors) if (c.owner == this) return true;
+    for (const UnitWay& w : g_units) if (w.owner == this) return true;
+    return false;
+}
+
+void String::seek_utf16(const std::string& s, size_t index, size_t& pos, size_t& units) const {
+    units = 0;
+    pos = 0;
+    Cursor* cur = find_cursor(this);
+    if (!cur) return;
+    if (cur->units <= index) {
+        units = cur->units;
+        pos = cur->bytes;
+        return;
+    }
+    // Backwards too, because the two readers of a source string disagree about
+    // direction: a lexer walks forward with charCodeAt and then slices the token
+    // it just read, which starts behind where the walk stopped. Forward-only
+    // left every one of those slices decoding from byte 0.
+    size_t back = cur->units - index;
+    if (back > index) return;  // rewinding would cost more than starting over
+    size_t p = cur->bytes, u = cur->units;
+    while (u > index && p > 0) {
+        // A continuation byte is 10xxxxxx; the character starts at the first
+        // byte that is not one.
+        do { --p; } while (p > 0 && (static_cast<unsigned char>(s[p]) & 0xC0) == 0x80);
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, p, &len);
+        u -= (cp > 0xFFFF) ? 2 : 1;
+    }
+    units = u;
+    pos = p;
+}
+
+// The same rewind, but aimed at a byte offset instead of a unit index.
+void String::seek_utf16_byte(const std::string& s, size_t byte, size_t& pos, size_t& units) const {
+    units = 0;
+    pos = 0;
+    Cursor* cur = find_cursor(this);
+    if (!cur) return;
+    if (cur->bytes <= byte) {
+        units = cur->units;
+        pos = cur->bytes;
+        return;
+    }
+    if (cur->bytes - byte > byte) return;
+    size_t p = cur->bytes, u = cur->units;
+    while (p > byte && p > 0) {
+        do { --p; } while (p > 0 && (static_cast<unsigned char>(s[p]) & 0xC0) == 0x80);
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, p, &len);
+        u -= (cp > 0xFFFF) ? 2 : 1;
+    }
+    units = u;
+    pos = p;
+}
+
+size_t String::index_of_byte(size_t byte) const {
+    const std::string& s = str();
+    if (is_ascii()) return byte < s.size() ? byte : s.size();
+    if (byte >= s.size()) return utf16_length();
+    size_t pos, units;
+    seek_utf16_byte(s, byte, pos, units);
+    while (pos < byte && pos < s.size()) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        units += (cp > 0xFFFF) ? 2 : 1;
+        pos += len;
+    }
+    park_utf16(pos, units);
+    return units;
+}
+
+void String::park_utf16(size_t pos, size_t units) const {
+    Cursor* cur = find_cursor(this);
+    if (!cur) {
+        cur = &g_cursors[0];
+        for (Cursor& c : g_cursors) if (c.used < cur->used) cur = &c;
+        const String* evicted = cur->owner;
+        cur->owner = nullptr;
+        if (evicted) evicted->in_side_cache_ = evicted->still_cached_elsewhere();
+        cur->owner = this;
+        in_side_cache_ = true;
+    }
+    cur->bytes = pos;
+    cur->units = units;
+    cur->used = ++g_cursor_tick;
+}
+
 int32_t String::code_unit_at(size_t index) const {
     const std::string& s = str();
     if (is_ascii()) {
         if (index >= s.size()) return -1;
         return static_cast<int32_t>(static_cast<unsigned char>(s[index]));
     }
-    return utf16_code_unit_at(s, index);
+    size_t pos, units;
+    seek_utf16(s, index, pos, units);
+    while (pos < s.size()) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        if (cp <= 0xFFFF) {
+            if (units == index) { park_utf16(pos, units); return static_cast<int32_t>(cp); }
+            units += 1;
+        } else {
+            uint32_t v = cp - 0x10000;
+            // Parked at the pair's own start, which is the position both of
+            // its units answer from.
+            if (units == index) { park_utf16(pos, units); return static_cast<int32_t>(0xD800 + (v >> 10)); }
+            if (units + 1 == index) { park_utf16(pos, units); return static_cast<int32_t>(0xDC00 + (v & 0x3FF)); }
+            units += 2;
+        }
+        pos += len;
+    }
+    return -1;
 }
 
 size_t String::byte_pos(size_t index) const {
     const std::string& s = str();
     if (is_ascii()) return index < s.size() ? index : s.size();
-    return utf16_index_to_byte_pos(s, index);
+    size_t pos, units;
+    seek_utf16(s, index, pos, units);
+    while (pos < s.size()) {
+        if (units == index) { park_utf16(pos, units); return pos; }
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        units += (cp > 0xFFFF) ? 2 : 1;
+        pos += len;
+    }
+    return s.size();
 }
 
 std::string String::substring_utf16(size_t start, size_t end) const {
     const std::string& s = str();
     if (end <= start) return std::string();
     // Single-byte text has no pairs to split and no multi-byte sequences, so a
-    // UTF-16 range is a byte range.
+    // UTF-16 range is a byte range. Cached here; the free function below has to
+    // discover it.
     if (is_ascii()) {
         size_t b = std::min(start, s.size());
         size_t e = std::min(end, s.size());
         return e > b ? s.substr(b, e - b) : std::string();
     }
+    size_t pos, units;
+    seek_utf16(s, start, pos, units);
+    std::string out = utf16_substring_from(s, start, end, pos, units);
+    if (pos <= s.size()) park_utf16(pos, units);
+    return out;
+}
+
+std::string utf16_substring(const std::string& s, size_t start, size_t end) {
+    size_t pos = 0, units = 0;
+    return utf16_substring_from(s, start, end, pos, units);
+}
+
+// `pos`/`units` come in naming any character boundary at or before `start` and
+// go out naming the boundary the walk stopped on, so a caller holding a cursor
+// can hand its position in and get the advanced one back.
+std::string utf16_substring_from(const std::string& s, size_t start, size_t end,
+                                 size_t& pos, size_t& units) {
+    if (end <= start) return std::string();
     auto append_lone = [](std::string& out, uint32_t unit) {
         out += static_cast<char>(0xE0 | (unit >> 12));
         out += static_cast<char>(0x80 | ((unit >> 6) & 0x3F));
         out += static_cast<char>(0x80 | (unit & 0x3F));
     };
-    std::string out;
-    size_t units = 0, pos = 0;
-    while (pos < s.size() && units < end) {
+    // Find the byte range first and copy it in one piece. Appending character
+    // by character costs an append per character of the RESULT, which for the
+    // `s.slice(i)` that hands back most of a source file is the whole file --
+    // and the two forms differ only when an endpoint falls between the halves
+    // of a surrogate pair, which no byte range can express.
+    size_t byte_start = std::string::npos;
+    size_t split_start = std::string::npos, split_end = std::string::npos;
+    while (pos < s.size() && units < end) {  // stops at `end`, not at the end of s
         size_t len;
         uint32_t cp = decode_utf8_at(s, pos, &len);
-        if (cp <= 0xFFFF) {
-            if (units >= start) out.append(s, pos, len);
-            units += 1;
-        } else {
-            uint32_t v = cp - 0x10000;
-            bool take_hi = units >= start && units < end;
-            bool take_lo = units + 1 >= start && units + 1 < end;
-            if (take_hi && take_lo) out.append(s, pos, len);
-            else if (take_hi) append_lone(out, 0xD800 + (v >> 10));
-            else if (take_lo) append_lone(out, 0xDC00 + (v & 0x3FF));
-            units += 2;
+        size_t width = (cp > 0xFFFF) ? 2u : 1u;
+        if (byte_start == std::string::npos) {
+            if (units == start) byte_start = pos;
+            // `start` names the low half of this pair: the leading half is not
+            // part of the answer, so the copy cannot begin at this character.
+            else if (width == 2 && units + 1 == start) { split_start = pos; byte_start = pos + len; }
         }
+        if (width == 2 && units + 1 == end) split_end = pos;  // `end` splits this pair
+        units += width;
         pos += len;
+    }
+    if (byte_start == std::string::npos) byte_start = pos;
+    size_t byte_end = (split_end == std::string::npos) ? pos : split_end;
+    std::string out;
+    if (split_start != std::string::npos) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, split_start, &len);
+        append_lone(out, 0xDC00 + ((cp - 0x10000) & 0x3FF));
+    }
+    if (byte_end > byte_start) out.append(s, byte_start, byte_end - byte_start);
+    if (split_end != std::string::npos) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, split_end, &len);
+        append_lone(out, 0xD800 + ((cp - 0x10000) >> 10));
     }
     return out;
 }

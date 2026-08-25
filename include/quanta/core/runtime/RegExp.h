@@ -63,8 +63,11 @@ public:
     RegExp(const RegExp&) = delete;
     RegExp& operator=(const RegExp&) = delete;
 
-    bool test(const std::string& str);
-    Value exec(const std::string& str);
+    // `cell` is the subject's string cell when the caller has one. Passing it
+    // lets the decoded units be kept for that cell instead of recognised by
+    // comparing the bytes, which for a long subject costs as much as the match.
+    bool test(const std::string& str, const class String* cell = nullptr);
+    Value exec(const std::string& str, const class String* cell = nullptr);
     // A global replace whose replacement is a literal, done without building
     // anything JS-visible. exec's own matching half is all this needs, and the
     // result array it goes on to build -- one object per match, with index,

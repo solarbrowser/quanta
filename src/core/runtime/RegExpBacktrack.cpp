@@ -707,32 +707,71 @@ RegexBacktrackEngine::~RegexBacktrackEngine() = default;
 
 uint32_t RegexBacktrackEngine::capture_count() const { return impl_->group_count; }
 
-bool RegexBacktrackEngine::exec(const std::u16string& subject, size_t start_at, bool sticky, BacktrackMatch& out) const {
-    // Atoms are code points in /u mode, raw UTF-16 units otherwise.
-    std::vector<uint32_t> atoms;
-    std::vector<size_t> atom_unit_offset;
-    atoms.reserve(subject.size());
-    atom_unit_offset.reserve(subject.size() + 1);
-    if (impl_->unicode) {
-        for (size_t i = 0; i < subject.size();) {
-            atom_unit_offset.push_back(i);
-            char16_t c = subject[i];
-            if (c >= 0xD800 && c <= 0xDBFF && i + 1 < subject.size() && subject[i + 1] >= 0xDC00 && subject[i + 1] <= 0xDFFF) {
-                atoms.push_back(0x10000 + ((static_cast<uint32_t>(c) - 0xD800) << 10) + (static_cast<uint32_t>(subject[i + 1]) - 0xDC00));
-                i += 2;
-            } else {
-                atoms.push_back(c);
-                i += 1;
+// The atom table is a function of the subject alone, so it survives the call
+// that built it. Rebuilding it per exec charged every call the length of the
+// whole subject however little of it the match looked at: a global regex is
+// driven one exec per match, and a parser runs its whitespace pattern once per
+// function body, so both paid for the entire source over and over.
+static constexpr size_t kAtomCacheMinUnits = 1024;
+static constexpr size_t kAtomCacheMaxUnits = 16u << 20;
+
+bool RegexBacktrackEngine::exec(const std::u16string& subject, size_t start_at, bool sticky, BacktrackMatch& out,
+                                uint64_t subject_id) const {
+    // Atoms are code points in /u mode, raw UTF-16 units otherwise. Outside
+    // /u mode an atom IS a unit, so the unit offset of atom i is i and the
+    // second table is the identity -- it is only built where it can differ.
+    static thread_local uint64_t cache_id = 0;
+    static thread_local bool cache_unicode = false;
+    static thread_local std::vector<uint32_t> cache_atoms;
+    static thread_local std::vector<size_t> cache_offsets;
+
+    std::vector<uint32_t> local_atoms;
+    std::vector<size_t> local_offsets;
+    const bool remember = subject_id != 0 && subject.size() >= kAtomCacheMinUnits &&
+                          subject.size() <= kAtomCacheMaxUnits;
+    const bool hit = remember && cache_id == subject_id && cache_unicode == impl_->unicode;
+    std::vector<uint32_t>& atoms = remember ? cache_atoms : local_atoms;
+    std::vector<size_t>& atom_unit_offset = remember ? cache_offsets : local_offsets;
+    if (!hit) {
+        atoms.clear();
+        atom_unit_offset.clear();
+        atoms.reserve(subject.size());
+        if (impl_->unicode) {
+            atom_unit_offset.reserve(subject.size() + 1);
+            for (size_t i = 0; i < subject.size();) {
+                atom_unit_offset.push_back(i);
+                char16_t c = subject[i];
+                if (c >= 0xD800 && c <= 0xDBFF && i + 1 < subject.size() && subject[i + 1] >= 0xDC00 && subject[i + 1] <= 0xDFFF) {
+                    atoms.push_back(0x10000 + ((static_cast<uint32_t>(c) - 0xD800) << 10) + (static_cast<uint32_t>(subject[i + 1]) - 0xDC00));
+                    i += 2;
+                } else {
+                    atoms.push_back(c);
+                    i += 1;
+                }
             }
+            atom_unit_offset.push_back(subject.size());
+        } else {
+            atoms.assign(subject.begin(), subject.end());
         }
-        atom_unit_offset.push_back(subject.size());
-    } else {
-        for (size_t i = 0; i < subject.size(); i++) { atoms.push_back(subject[i]); atom_unit_offset.push_back(i); }
-        atom_unit_offset.push_back(subject.size());
+        if (remember) {
+            cache_id = subject_id;
+            cache_unicode = impl_->unicode;
+        } else {
+            cache_id = 0;
+        }
     }
+    // Outside /u mode the two indices coincide; inside it the table answers.
+    const bool identity_offsets = !impl_->unicode;
+    auto unit_of = [&](size_t atom) -> size_t {
+        return identity_offsets ? atom : atom_unit_offset[atom];
+    };
     // Map the caller's UTF-16 start_at to an atom index.
     size_t start_atom = 0;
-    while (start_atom < atom_unit_offset.size() && atom_unit_offset[start_atom] < start_at) start_atom++;
+    if (identity_offsets) {
+        start_atom = std::min(start_at, atoms.size());
+    } else {
+        while (start_atom < atom_unit_offset.size() && atom_unit_offset[start_atom] < start_at) start_atom++;
+    }
 
     for (size_t s = start_atom; s <= atoms.size(); s++) {
         MatcherContext ctx{atoms, false, false, false, {}};
@@ -741,14 +780,14 @@ bool RegexBacktrackEngine::exec(const std::u16string& subject, size_t start_at, 
         Cont accept = [&end](int64_t p) { end = p; return true; };
         if (impl_->root->match(ctx, static_cast<int64_t>(s), 1, accept)) {
             out.matched = true;
-            out.start = atom_unit_offset[s];
-            out.end = atom_unit_offset[static_cast<size_t>(end)];
+            out.start = unit_of(s);
+            out.end = unit_of(static_cast<size_t>(end));
             out.captures.resize(impl_->group_count + 1);
             for (uint32_t g = 1; g <= impl_->group_count; g++) {
                 auto c = ctx.captures[g];
                 if (c.first < 0) out.captures[g] = {-1, -1};
-                else out.captures[g] = {static_cast<int64_t>(atom_unit_offset[static_cast<size_t>(c.first)]),
-                                         static_cast<int64_t>(atom_unit_offset[static_cast<size_t>(c.second)])};
+                else out.captures[g] = {static_cast<int64_t>(unit_of(static_cast<size_t>(c.first))),
+                                         static_cast<int64_t>(unit_of(static_cast<size_t>(c.second)))};
             }
             return true;
         }
