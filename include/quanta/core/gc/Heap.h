@@ -166,12 +166,23 @@ public:
     static void note_major_done(size_t live_bytes) {
         bytes_since_major_ = 0;
         live_after_major_ = live_bytes;
+        offheap_since_major_ = 0;
     }
     static size_t live_after_major() { return live_after_major_; }
     // Charges `bytes` toward gc_requested()'s budget for memory the cell heap
     // doesn't see directly (survivor Contexts). An ordinary charge: a minor
     // reclaims that pool now, so its growth no longer has to buy a major.
     static void note_extra_bytes(size_t bytes);
+    // Charges bytes a cell owns OUTSIDE the cell heap -- a string's own
+    // characters, which the collector never allocated and so never counted.
+    // Not an ordinary charge: those bytes come back only when the cell that
+    // owns them is swept, and a minor cannot sweep an old cell. Charging them
+    // to the minor cadence therefore only ran more minors, and every extra
+    // minor promoted more of a live, growing structure into the old
+    // generation -- measured, that RAISED peak RSS. This asks for a major
+    // instead, and only once enough of them have piled up to be worth one.
+    static void note_offheap_bytes(size_t bytes);
+
     // Sets the allocation budget from what a collection just cost: the live
     // set it marked and the roots it had to scan, which are budgeted for
     // differently (see the definition).
@@ -216,6 +227,7 @@ private:
     static constinit thread_local bool gc_requested_;
     static constinit thread_local size_t bytes_since_major_;
     static constinit thread_local size_t live_after_major_;
+    static constinit thread_local size_t offheap_since_major_;
 
     BlockAllocator block_allocator_;
     // Current allocation target per (kind, class); full blocks rotate into

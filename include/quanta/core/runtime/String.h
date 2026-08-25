@@ -94,6 +94,9 @@ class String {
         if (is_cons_) copy_link(o); else new (&data_) std::string(std::move(o.data_));
     }
     void calculate_hash() const noexcept;
+    // Charges the bytes this cell holds outside the cell heap to the
+    // collector's pacing -- see the definition.
+    void note_payload_bytes() const;
     static void collect_bytes(const String* node, std::string& out);
     // Bytes of a link's inline tail, empty for every other form.
     std::string_view inline_tail() const noexcept {

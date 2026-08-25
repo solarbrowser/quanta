@@ -13,6 +13,7 @@ std::u16string wtf8_to_utf16(const std::string& s);
 }
 #include "quanta/core/gc/Visitor.h"
 #include "quanta/core/gc/Heap.h"
+#include <cstdlib>
 #include <vector>
 #include <cstring>
 
@@ -143,20 +144,35 @@ void String::operator delete(void* p) noexcept {
 }
 
 
+// A string's bytes live outside the cell heap, so the collector's pacing --
+// which counts what it allocates -- saw a multi-megabyte string as the 48
+// bytes of its cell. Three hundred of them in a row therefore asked for no
+// collection at all and a gigabyte of dead text piled up. Charged only past a
+// threshold: the cadence is tuned around cell sizes and charging every short
+// string would collect far more often than the tuning expects, which is what
+// full accounting did to array storage (see Heap::kMaxTier1Size there).
+void String::note_payload_bytes() const {
+    if (data_.size() > Heap::kMaxTier1Size) Heap::note_offheap_bytes(data_.size());
+}
+
 String::String(const std::string& str) : data_(str) {
     canonicalize_pairs(data_);
+    note_payload_bytes();
 }
 
 String::String(std::string&& str) noexcept : data_(std::move(str)) {
     canonicalize_pairs(data_);
+    note_payload_bytes();
 }
 
 String::String(std::string_view sv) : data_(sv) {
     canonicalize_pairs(data_);
+    note_payload_bytes();
 }
 
 String::String(const char* str) : data_(str ? str : "") {
     canonicalize_pairs(data_);
+    note_payload_bytes();
 }
 
 bool String::operator==(const String& other) const noexcept {
@@ -230,6 +246,8 @@ void String::ensure_flat() const {
     // already been collapsed -- for an append loop that is every node ever
     // built.
     hash_  = std::hash<std::string>{}(data_);
+    // Flattening a rope materialises the bytes for the first time.
+    note_payload_bytes();
 }
 
 static constexpr size_t CONS_THRESHOLD = 32;

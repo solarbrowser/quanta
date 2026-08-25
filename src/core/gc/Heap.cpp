@@ -21,6 +21,7 @@ constinit thread_local Heap* Heap::active_ = nullptr;
 constinit thread_local bool Heap::gc_requested_ = false;
 constinit thread_local size_t Heap::bytes_since_major_ = 0;
 constinit thread_local size_t Heap::live_after_major_ = 0;
+constinit thread_local size_t Heap::offheap_since_major_ = 0;
 
 Heap& Heap::active() {
     assert(active_ && "no active Heap -- Engine init must install a HeapScope "
@@ -53,6 +54,7 @@ std::vector<Heap*>& all_heaps_for_stats() {
 }
 
 void dump_all_heap_stats() {
+
     static const char* kind_names[kNumCellKinds] = {"Object", "String", "Symbol", "BigInt"};
     std::lock_guard<std::mutex> lock(all_heaps_mutex());
     int i = 0;
@@ -176,6 +178,35 @@ void Heap::note_bytes_since_major(size_t bytes) { bytes_since_major_ += bytes; }
 
 void Heap::note_extra_bytes(size_t bytes) {
     account_bytes(bytes);
+}
+
+namespace {
+// How much invisible payload has to pile up before a collection is asked for.
+// Well above the cell budget's cap: this is not a cadence, it is a backstop
+// for the case the cadence cannot see at all -- a few hundred multi-megabyte
+// strings that look to it like a few hundred 48-byte cells.
+constexpr size_t kOffheapMajorTrigger = 32 * 1024 * 1024;
+constexpr size_t kOffheapLiveShareDivisor = 4;
+}
+
+void Heap::note_offheap_bytes(size_t bytes) {
+    note_bytes_since_major(bytes);
+    offheap_since_major_ += bytes;
+    // Proportional above the floor, for the same reason the cell budget is:
+    // a program holding little should pay for a collection almost at once,
+    // and one holding a lot should not be asked to mark all of it every time
+    // another few megabytes of text go by.
+    size_t trigger = live_after_major_ / kOffheapLiveShareDivisor;
+    if (trigger < kOffheapMajorTrigger) trigger = kOffheapMajorTrigger;
+    if (offheap_since_major_ >= trigger) {
+        offheap_since_major_ = 0;
+        // Only asks for a collection; whether it is a minor or a major stays
+        // with the ordinary rule. A string that has just been made is young,
+        // and a minor reclaims it -- forcing a major here marked the whole
+        // live set for garbage a minor could have taken, which on a large heap
+        // cost more than the memory it saved.
+        request_gc();
+    }
 }
 
 void* Heap::allocate(size_t size, CellKind kind, HeapSegment segment) {
