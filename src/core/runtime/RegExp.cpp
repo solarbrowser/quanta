@@ -2434,9 +2434,9 @@ static constexpr size_t kSubjectWays = 4;
 // times this -- kept well under what parsing text of that size already costs.
 static constexpr size_t kSubjectBudget = 24u << 20;
 
-static const std::u16string& decode_subject(const std::string& str, std::u16string& scratch,
-                                            uint64_t* id = nullptr,
-                                            const String* cell = nullptr) {
+static std::u16string_view decode_subject(const std::string& str, std::u16string& scratch,
+                                          uint64_t* id = nullptr,
+                                          const String* cell = nullptr) {
     // A cell knows which units it decoded to; without one the ways below have
     // to recognise the subject by its bytes.
     if (cell) return cell->utf16_units(id);
@@ -2498,7 +2498,7 @@ static const std::u16string& decode_subject(const std::string& str, std::u16stri
 // Sanitizing rewrites those to U+FFFD, and it has to work on a copy so capture
 // text can still report the originals -- but the copy is only worth making
 // when there is something to rewrite, which for ordinary text there is not.
-static bool has_lone_surrogate(const std::u16string& s) {
+static bool has_lone_surrogate(std::u16string_view s) {
     for (size_t i = 0; i < s.size(); i++) {
         char16_t c = s[i];
         if (c < 0xD800 || c > 0xDFFF) continue;
@@ -2514,13 +2514,15 @@ static bool has_lone_surrogate(const std::u16string& s) {
 bool RegExp::test(const std::string& str, const String* cell) {
     std::u16string decode_scratch;
     uint64_t subject_id = 0;
-    const std::u16string& decoded = decode_subject(str, decode_scratch, &subject_id, cell);
+    std::u16string_view decoded = decode_subject(str, decode_scratch, &subject_id, cell);
     std::u16string sanitized;
     if (unicode_ && has_lone_surrogate(decoded)) {
-        sanitized = decoded;
+        sanitized = std::u16string(decoded);
         sanitize_utf16_surrogates(sanitized);
     }
-    const std::u16string& subject = (unicode_ && !sanitized.empty()) ? sanitized : decoded;
+    std::u16string_view subject =
+        (unicode_ && !sanitized.empty()) ? std::u16string_view(sanitized) : decoded;
+    const bool subject_is_sanitized = unicode_ && !sanitized.empty();
 
     size_t start = 0;
     if ((global_ || sticky_) && last_index_ > 0) {
@@ -2537,7 +2539,7 @@ bool RegExp::test(const std::string& str, const String* cell) {
     if (backtrack_engine_) {
         BacktrackMatch bm;
         found = backtrack_engine_->exec(subject, start, sticky_, bm,
-                                        (&subject == &sanitized) ? 0 : subject_id);
+                                        subject_is_sanitized ? 0 : subject_id);
         if (found) match_end = bm.end;
     } else {
         if (!code_) return false;
@@ -2546,7 +2548,7 @@ bool RegExp::test(const std::string& str, const String* cell) {
         if (!md) return false;
 
         int rc = pcre2_match(re,
-            reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
+            reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
             static_cast<PCRE2_SIZE>(start), 0, md, nullptr);
 
         found = (rc >= 0);
@@ -2574,13 +2576,13 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
 
     std::u16string decode_scratch;
     uint64_t subject_id = 0;
-    const std::u16string& orig = decode_subject(str, decode_scratch, &subject_id);
+    std::u16string_view orig = decode_subject(str, decode_scratch, &subject_id);
     std::u16string sanitized;
     if (unicode_ && has_lone_surrogate(orig)) {
-        sanitized = orig;
+        sanitized = std::u16string(orig);
         sanitize_utf16_surrogates(sanitized);
     }
-    const std::u16string& subject = sanitized.empty() ? orig : sanitized;
+    std::u16string_view subject = sanitized.empty() ? orig : std::u16string_view(sanitized);
 
     pcre2_code* re = static_cast<pcre2_code*>(code_);
     pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
@@ -2590,7 +2592,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     size_t copied = 0;   // how much of `orig` is already in `out`
     size_t pos = 0;      // where the next search starts
     while (pos <= subject.size()) {
-        int rc = pcre2_match(re, reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
+        int rc = pcre2_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
                              static_cast<PCRE2_SIZE>(pos), 0, md, nullptr);
         if (rc < 0) break;
         PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
@@ -2623,13 +2625,14 @@ Value RegExp::exec(const std::string& str, const String* cell) {
     // orig holds the unsanitized units so capture text preserves lone surrogates.
     std::u16string decode_scratch;
     uint64_t subject_id = 0;
-    const std::u16string& orig = decode_subject(str, decode_scratch, &subject_id, cell);
+    std::u16string_view orig = decode_subject(str, decode_scratch, &subject_id, cell);
     std::u16string sanitized;
     if (unicode_ && has_lone_surrogate(orig)) {
-        sanitized = orig;
+        sanitized = std::u16string(orig);
         sanitize_utf16_surrogates(sanitized);
     }
-    const std::u16string& subject = sanitized.empty() ? orig : sanitized;
+    std::u16string_view subject = sanitized.empty() ? orig : std::u16string_view(sanitized);
+    const bool subject_is_sanitized = !sanitized.empty();
 
     bool advances = global_ || sticky_;
     size_t start = 0;
@@ -2650,7 +2653,7 @@ Value RegExp::exec(const std::string& str, const String* cell) {
     if (backtrack_engine_) {
         BacktrackMatch bm;
         found = backtrack_engine_->exec(subject, start, sticky_, bm,
-                                        (&subject == &sanitized) ? 0 : subject_id);
+                                        subject_is_sanitized ? 0 : subject_id);
         if (found) {
             capture_count = backtrack_engine_->capture_count();
             match_start = bm.start;
@@ -2671,7 +2674,7 @@ Value RegExp::exec(const std::string& str, const String* cell) {
         if (!md) return Value::null();
 
         int rc = pcre2_match(re,
-            reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
+            reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
             static_cast<PCRE2_SIZE>(start), 0, md, nullptr);
 
         if (rc >= 0) {
@@ -2705,7 +2708,11 @@ Value RegExp::exec(const std::string& str, const String* cell) {
     // RegExpBuiltinExec steps 25-26 are CreateDataProperty, not Set: an own data
     // property outright, with no walk up the prototype chain looking for a setter.
     result->create_own_data_property("index", Value(static_cast<double>(match_start)));
-    result->create_own_data_property("input", Value(str));
+    // The subject cell itself when there is one: building a fresh string from
+    // the bytes would ask a slice for them, which is the copy this whole path
+    // exists to avoid.
+    result->create_own_data_property(
+        "input", cell ? Value(const_cast<String*>(cell)) : Value(str));
 
     for (uint32_t i = 1; i <= capture_count; ++i) {
         if (saved[2 * i] == PCRE2_UNSET)

@@ -438,7 +438,20 @@ void String::drop_cursor() const noexcept {
     in_side_cache_ = false;
 }
 
-const std::u16string& String::utf16_units(uint64_t* id) const {
+std::u16string_view String::utf16_units(uint64_t* id) const {
+    // A slice shares its parent's units instead of materialising its own: the
+    // window IS the answer, so a regex over a slice never copies the slice out
+    // of its parent and never decodes it. Single-byte parents only (see
+    // make_slice), which is what makes the byte window a unit window.
+    if (is_cons_ && is_slice_ && slice_.parent->is_ascii()) {
+        std::u16string_view pv = slice_.parent->utf16_units(nullptr);
+        if (static_cast<size_t>(slice_.offset) + slice_.length <= pv.size()) {
+            // No id: it names the whole parent, and two windows of one parent
+            // are not the same subject -- anything keyed on it would collide.
+            if (id) *id = 0;
+            return pv.substr(slice_.offset, slice_.length);
+        }
+    }
     const std::string& s = str();
     for (UnitWay& w : g_units) {
         if (w.owner != this) continue;

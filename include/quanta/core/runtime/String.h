@@ -228,7 +228,7 @@ public:
     // same subject in over and over, and comparing the bytes to notice that is
     // itself a walk of the subject. `id` (never 0, never reused for different
     // text) lets a caller key its own derived tables on the same answer.
-    [[nodiscard]] const std::u16string& utf16_units(uint64_t* id = nullptr) const;
+    [[nodiscard]] std::u16string_view utf16_units(uint64_t* id = nullptr) const;
 
     bool operator==(const String& other) const noexcept;
     bool operator!=(const String& other) const noexcept { return !(*this == other); }

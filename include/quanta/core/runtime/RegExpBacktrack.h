@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -39,7 +40,7 @@ public:
     // the decode cache and never reused for different text, which is what lets
     // the atom table below be kept across calls without comparing the subject
     // to recognise it. 0 means "unknown", and nothing is kept.
-    bool exec(const std::u16string& subject, size_t start_at, bool sticky, BacktrackMatch& out,
+    bool exec(std::u16string_view subject, size_t start_at, bool sticky, BacktrackMatch& out,
               uint64_t subject_id = 0) const;
 
     static bool pattern_needs_backtrack_engine(const std::string& pattern);

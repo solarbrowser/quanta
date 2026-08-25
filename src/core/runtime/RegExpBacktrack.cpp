@@ -715,7 +715,7 @@ uint32_t RegexBacktrackEngine::capture_count() const { return impl_->group_count
 static constexpr size_t kAtomCacheMinUnits = 1024;
 static constexpr size_t kAtomCacheMaxUnits = 16u << 20;
 
-bool RegexBacktrackEngine::exec(const std::u16string& subject, size_t start_at, bool sticky, BacktrackMatch& out,
+bool RegexBacktrackEngine::exec(std::u16string_view subject, size_t start_at, bool sticky, BacktrackMatch& out,
                                 uint64_t subject_id) const {
     // Atoms are code points in /u mode, raw UTF-16 units otherwise. Outside
     // /u mode an atom IS a unit, so the unit offset of atom i is i and the

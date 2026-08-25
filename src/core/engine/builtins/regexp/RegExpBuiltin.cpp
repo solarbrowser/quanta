@@ -584,8 +584,11 @@ void register_regexp_builtins(Context& ctx) {
             } else if (!cell) {
                 owned = arg0.to_string();
             }
-            const std::string& str = cell ? cell->str() : owned;
-            return regexp_builtin_exec(ctx, this_obj, str, cell);
+            // Not cell->str(): the bytes are only needed when there is no
+            // cell to read the subject from, and asking a slice for them
+            // flattens it -- the copy the cell is here to avoid.
+            static const std::string kNoBytes;
+            return regexp_builtin_exec(ctx, this_obj, cell ? kNoBytes : owned, cell);
         }, 1);
     // Kept for identity only, never dereferenced: RegExp.prototype.exec is
     // reachable from the prototype for as long as this realm lives, and test
@@ -610,17 +613,24 @@ void register_regexp_builtins(Context& ctx) {
             }
             if (arg0_t.is_object() || arg0_t.is_function()) { owned_t = arg0_t.to_property_key(); if (ctx.has_exception()) return Value(); }
             else if (!cell_t) { owned_t = arg0_t.to_string(); }
-            const std::string& str = cell_t ? cell_t->str() : owned_t;
             Value exec_fn = this_obj->get_property("exec");
             // Whitelist: a real RegExp still carrying the built-in exec. A
             // replaced exec has to be CALLED, and its result is observable, so
             // everything else keeps the path it always had.
             if (exec_fn.is_function() && exec_fn.as_function() == builtin_regexp_exec) {
                 bool ok = false;
-                bool found = regexp_builtin_test(ctx, this_obj, str, ok, cell_t);
+                // Not cell_t->str(): the bytes are only needed when there is no
+                // cell to read the subject from, and asking a slice for them
+                // flattens it -- the copy the cell is here to avoid.
+                static const std::string kNoBytes;
+                bool found = regexp_builtin_test(ctx, this_obj,
+                                                 cell_t ? kNoBytes : owned_t, ok, cell_t);
                 if (!ok) return Value();
                 return Value(found);
             }
+            // A replaced exec is CALLED with the subject, so this path does
+            // need the bytes.
+            const std::string& str = cell_t ? cell_t->str() : owned_t;
             // Everything else goes through RegExpExec, which calls a replaced
             // exec and otherwise falls back to RegExpBuiltinExec -- returning
             // false for a non-callable exec skipped the match entirely.
