@@ -7547,7 +7547,16 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
             // Spec: every case shares ONE lexical scope, not one each --
             // entered after the discriminant, before any case test runs.
+            // The names it declares have to be resolvable while the clauses
+            // compile, and stop being resolvable after: without a scope of
+            // its own every `case X: let a = 1;` compiled its reads as
+            // by-name lookups of a name nothing had declared.
             int switch_env_idx = -1;
+            lexical_scopes_.emplace_back();
+            struct SwitchScopePop {
+                BytecodeCompiler* c;
+                ~SwitchScopePop() { c->lexical_scopes_.pop_back(); }
+            } switch_scope_pop{this};
             {
                 std::vector<BytecodeChunk::LoopEnvVar> vars;
                 bool needs_own_env = false;
@@ -7572,6 +7581,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                         }
                         if (!collect_direct_lexical_decls(s.get(), vars, needs_own_env)) return false;
                     }
+                }
+                for (const auto& v : vars) {
+                    lexical_scopes_.back().push_back(v.name);
+                    block_scoped_names_.insert(v.name);
                 }
                 std::vector<BytecodeChunk::LoopEnvVar> env_vars;
                 for (const auto& v : vars) {

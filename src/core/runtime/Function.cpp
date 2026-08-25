@@ -1483,6 +1483,24 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         if (!base_pm_slot.empty()) new_object->add_private_field(base_pm_slot);
     }
 
+    // These flags live on the shared Context, so a `new` evaluated inside a
+    // constructor body clears the ones belonging to the frame that is still
+    // running: `new Map()` after `super()` left the enclosing derived
+    // constructor looking like it had never called super at all. new.target
+    // below is saved for the same reason; these three are its neighbours.
+    struct ConstructFlagsGuard {
+        Context& ctx;
+        bool super_called;
+        bool in_constructor_call;
+        Object* super_override;
+        ~ConstructFlagsGuard() {
+            ctx.set_super_called(super_called);
+            ctx.set_in_constructor_call(in_constructor_call);
+            ctx.set_last_super_override(super_override);
+        }
+    } construct_flags_guard{ctx, ctx.was_super_called(), ctx.is_in_constructor_call(),
+                            ctx.last_super_override()};
+
     ctx.set_in_constructor_call(true);
     ctx.set_super_called(false);
     // Preserve new.target across the whole super-chain instead of stomping it with `this`.

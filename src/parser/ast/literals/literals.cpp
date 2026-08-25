@@ -143,7 +143,9 @@ std::unique_ptr<ASTNode> ObjectLiteral::clone() const {
         cloned_properties.push_back(std::move(cloned_prop));
     }
 
-    return std::make_unique<ObjectLiteral>(std::move(cloned_properties), start_, end_);
+    auto copy = std::make_unique<ObjectLiteral>(std::move(cloned_properties), start_, end_);
+    copy->set_trailing_comma_after_rest(trailing_comma_after_rest_);
+    return copy;
 }
 
 
@@ -169,7 +171,9 @@ std::unique_ptr<ASTNode> ArrayLiteral::clone() const {
         cloned_elements.push_back(element->clone());
     }
 
-    return std::make_unique<ArrayLiteral>(std::move(cloned_elements), start_, end_);
+    auto copy = std::make_unique<ArrayLiteral>(std::move(cloned_elements), start_, end_);
+    copy->set_trailing_comma_after_spread(trailing_comma_after_spread_);
+    return copy;
 }
 
 } // namespace Quanta

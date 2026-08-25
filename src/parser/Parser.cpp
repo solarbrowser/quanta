@@ -3793,6 +3793,10 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
 
 bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
     const auto& elems = arr->get_elements();
+    if (arr->has_trailing_comma_after_spread()) {
+        add_error("SyntaxError: Rest element must be last element");
+        return false;
+    }
     bool saw_spread = false;
     for (size_t ei = 0; ei < elems.size(); ei++) {
         const auto& elem = elems[ei];
@@ -3883,6 +3887,10 @@ bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
 }
 
 bool Parser::validate_object_destructuring(ObjectLiteral* obj) {
+    if (obj->has_trailing_comma_after_rest()) {
+        add_error("SyntaxError: Rest element must be last element");
+        return false;
+    }
     const auto& props = obj->get_properties();
     for (size_t pi = 0; pi < props.size(); pi++) {
         const auto& prop = props[pi];
@@ -6788,7 +6796,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     }
 
     std::unique_ptr<Identifier> id = nullptr;
-    if (current_token().get_type() == TokenType::IDENTIFIER) {
+    if (current_token().get_type() == TokenType::IDENTIFIER ||
+        token_is_unreserved_contextual(current_token().get_type())) {
         std::string_view fe_name = token_text(current_token());
         if (options_.strict_mode && (fe_name == "eval" || fe_name == "arguments")) {
             add_error("SyntaxError: '" + std::string(fe_name) + "' cannot be used as function name in strict mode");
@@ -8341,6 +8350,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
     no_in_mode_ = false;
     
     std::vector<std::unique_ptr<ObjectLiteral::Property>> properties;
+    bool trailing_comma_after_rest = false;
     
     if (match(TokenType::RIGHT_BRACE)) {
         advance();
@@ -8362,6 +8372,9 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             
             if (match(TokenType::COMMA)) {
                 advance();
+                // The literal is fine either way; only a destructuring
+                // pattern rejects it, and that check reads the flag.
+                if (match(TokenType::RIGHT_BRACE)) trailing_comma_after_rest = true;
                 continue;
             } else {
                 break;
@@ -9020,7 +9033,9 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
     no_in_mode_ = saved_no_in_ol;
     Position end = get_current_position();
-    return std::make_unique<ObjectLiteral>(std::move(properties), start, end);
+    auto lit = std::make_unique<ObjectLiteral>(std::move(properties), start, end);
+    lit->set_trailing_comma_after_rest(trailing_comma_after_rest);
+    return lit;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_array_literal() {
@@ -9036,6 +9051,7 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
     no_in_mode_ = false;
 
     std::vector<std::unique_ptr<ASTNode>> elements;
+    bool trailing_comma_after_spread = false;
     
     if (match(TokenType::RIGHT_BRACKET)) {
         advance();
@@ -9073,11 +9089,11 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
         if (match(TokenType::COMMA)) {
             advance();
             if (match(TokenType::RIGHT_BRACKET)) {
-                // trailing comma after spread -> add sentinel for destructuring check
+                // The literal is fine either way; only a destructuring
+                // pattern rejects it, and that check reads the flag.
                 if (!elements.empty() && elements.back() &&
                     elements.back()->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
-                    Position p = get_current_position();
-                    elements.push_back(std::make_unique<UndefinedLiteral>(p, p));
+                    trailing_comma_after_spread = true;
                 }
                 break;
             }
@@ -9095,7 +9111,9 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
 
     no_in_mode_ = saved_no_in_al;
     Position end = get_current_position();
-    return std::make_unique<ArrayLiteral>(std::move(elements), start, end);
+    auto lit = std::make_unique<ArrayLiteral>(std::move(elements), start, end);
+    lit->set_trailing_comma_after_spread(trailing_comma_after_spread);
+    return lit;
 }
 
 
@@ -10064,7 +10082,12 @@ std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
 bool Parser::validate_binding_pattern(ASTNode* pattern) {
     if (!pattern) return true;
     if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
-        const auto& els = static_cast<ArrayLiteral*>(pattern)->get_elements();
+        auto* arr = static_cast<ArrayLiteral*>(pattern);
+        if (arr->has_trailing_comma_after_spread()) {
+            add_error("SyntaxError: Rest element must be last element");
+            return false;
+        }
+        const auto& els = arr->get_elements();
         for (size_t i = 0; i < els.size(); ++i) {
             ASTNode* el = els[i].get();
             if (!el) continue;
@@ -10089,7 +10112,12 @@ bool Parser::validate_binding_pattern(ASTNode* pattern) {
         return true;
     }
     if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
-        const auto& props = static_cast<ObjectLiteral*>(pattern)->get_properties();
+        auto* lit = static_cast<ObjectLiteral*>(pattern);
+        if (lit->has_trailing_comma_after_rest()) {
+            add_error("SyntaxError: Rest element must be last element");
+            return false;
+        }
+        const auto& props = lit->get_properties();
         for (size_t i = 0; i < props.size(); ++i) {
             const auto& prop = props[i];
             if (!prop->key && prop->value &&

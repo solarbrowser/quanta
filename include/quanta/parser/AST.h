@@ -1855,6 +1855,9 @@ public:
 
 private:
     std::vector<std::unique_ptr<Property>> properties_;
+    // `{...r,}` is a valid object literal but never a valid destructuring
+    // pattern -- see ArrayLiteral for why the comma cannot be a property.
+    bool trailing_comma_after_rest_ = false;
 
 public:
     ObjectLiteral(std::vector<std::unique_ptr<Property>> properties,
@@ -1863,6 +1866,8 @@ public:
     
     const std::vector<std::unique_ptr<Property>>& get_properties() const { return properties_; }
     size_t property_count() const { return properties_.size(); }
+    bool has_trailing_comma_after_rest() const { return trailing_comma_after_rest_; }
+    void set_trailing_comma_after_rest(bool v) { trailing_comma_after_rest_ = v; }
     
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -1871,6 +1876,11 @@ public:
 class ArrayLiteral : public ASTNode {
 private:
     std::vector<std::unique_ptr<ASTNode>> elements_;
+    // `[...a,]` is a valid array literal but never a valid destructuring
+    // pattern. The comma adds no element, so it cannot be recorded as one:
+    // a placeholder here would be indistinguishable from the hole in
+    // `[...a,,]` and would show up in the literal's own length.
+    bool trailing_comma_after_spread_ = false;
 
 public:
     ArrayLiteral(std::vector<std::unique_ptr<ASTNode>> elements,
@@ -1879,6 +1889,8 @@ public:
     
     const std::vector<std::unique_ptr<ASTNode>>& get_elements() const { return elements_; }
     size_t element_count() const { return elements_.size(); }
+    bool has_trailing_comma_after_spread() const { return trailing_comma_after_spread_; }
+    void set_trailing_comma_after_spread(bool v) { trailing_comma_after_spread_ = v; }
     
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
