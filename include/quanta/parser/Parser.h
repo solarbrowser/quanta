@@ -228,6 +228,8 @@ public:
     bool match_any(const std::vector<TokenType>& types);
     bool consume(TokenType type);
     bool consume_if_match(TokenType type);
+    // Contextual keywords that are never reserved and so may be binding names.
+    static bool token_is_unreserved_contextual(TokenType type);
     bool is_reserved_word_as_property_name();
     void check_for_use_strict_directive();
     bool is_strict_mode() const { return options_.strict_mode; }

@@ -2926,6 +2926,23 @@ bool Parser::consume_if_match(TokenType type) {
     return false;
 }
 
+// A contextual keyword is a keyword only where the grammar asks for one. As a
+// binding name -- a parameter, a variable -- `from`, `of`, `as`, `async` and
+// `target` are ordinary identifiers and never reserved, in strict mode or out
+// of it. (`let`, `static` and `yield` ARE reserved in strict code, and `await`
+// inside a module, so those stay behind their own conditions.)
+bool Parser::token_is_unreserved_contextual(TokenType type) {
+    switch (type) {
+        case TokenType::FROM:
+        case TokenType::OF:
+        case TokenType::ASYNC:
+        case TokenType::TARGET:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool Parser::is_reserved_word_as_property_name() {
     TokenType type = current_token().get_type();
     return type == TokenType::RETURN ||
@@ -5097,7 +5114,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     
     {
         TokenType ct = current_token().get_type();
-        bool name_ok = ct == TokenType::IDENTIFIER;
+        bool name_ok = ct == TokenType::IDENTIFIER || token_is_unreserved_contextual(ct);
         if (!name_ok && ct == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode)
             name_ok = true;
         if (!name_ok && ct == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block)
@@ -5208,7 +5225,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
-        } else if ((current_token().get_type() == TokenType::AWAIT &&
+        } else if (token_is_unreserved_contextual(current_token().get_type()) ||
+                   (current_token().get_type() == TokenType::AWAIT &&
                     !options_.source_type_module) ||
                    (current_token().get_type() == TokenType::YIELD &&
                     !is_generator && !options_.strict_mode) ||
@@ -6585,7 +6603,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             param_name = std::make_unique<Identifier>(std::string(apname),
                                                       current_token().get_start(), current_token().get_end());
             advance();
-        } else if ((!is_async && !options_.source_type_module &&
+        } else if (token_is_unreserved_contextual(current_token().get_type()) ||
+                   (!is_async && !options_.source_type_module &&
                     current_token().get_type() == TokenType::AWAIT) ||
                    (!is_generator && !options_.strict_mode &&
                     current_token().get_type() == TokenType::YIELD) ||
@@ -6876,7 +6895,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             param_name = std::make_unique<Identifier>(token_string(current_token()),
                                                       current_token().get_start(), current_token().get_end());
             advance();
-        } else if ((current_token().get_type() == TokenType::AWAIT &&
+        } else if (token_is_unreserved_contextual(current_token().get_type()) ||
+                   (current_token().get_type() == TokenType::AWAIT &&
                     !options_.source_type_module) ||
                    (current_token().get_type() == TokenType::YIELD &&
                     !is_generator && !options_.strict_mode) ||
@@ -7244,7 +7264,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
                                                           current_token().get_start(), current_token().get_end());
             }
             advance();
-        } else if ((!is_generator && !options_.strict_mode &&
+        } else if (token_is_unreserved_contextual(current_token().get_type()) ||
+                   (!is_generator && !options_.strict_mode &&
                     current_token().get_type() == TokenType::YIELD) ||
                    ((current_token().get_type() == TokenType::LET ||
                      current_token().get_type() == TokenType::STATIC) &&
@@ -7432,7 +7453,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
 
     {
         TokenType ct = current_token().get_type();
-        bool name_ok = ct == TokenType::IDENTIFIER;
+        bool name_ok = ct == TokenType::IDENTIFIER || token_is_unreserved_contextual(ct);
         if (!name_ok && ct == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode && !is_generator)
             name_ok = true;
         if (!name_ok && ct == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block)
@@ -7544,7 +7565,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                                                           current_token().get_start(), current_token().get_end());
             }
             advance();
-        } else if ((!is_generator && !options_.strict_mode &&
+        } else if (token_is_unreserved_contextual(current_token().get_type()) ||
+                   (!is_generator && !options_.strict_mode &&
                     current_token().get_type() == TokenType::YIELD) ||
                    ((current_token().get_type() == TokenType::LET ||
                      current_token().get_type() == TokenType::STATIC) &&
@@ -7794,6 +7816,13 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                     return nullptr;
                 }
                 // outside async context: await is a valid identifier param
+            } else if (token_is_unreserved_contextual(current_token().get_type()) ||
+                       ((current_token().get_type() == TokenType::LET ||
+                         current_token().get_type() == TokenType::STATIC) &&
+                        !options_.strict_mode)) {
+                // A contextual keyword names a parameter like any identifier.
+                // Without this it fell to the skip below and the parameter
+                // silently disappeared, so the body saw an unbound name.
             } else {
                 advance();
                 continue;

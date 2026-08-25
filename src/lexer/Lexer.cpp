@@ -1236,9 +1236,43 @@ bool Lexer::is_regex_context() const {
         case TokenType::AWAIT:
         case TokenType::CASE:
         case TokenType::ELSE:
+        // `do /re/.test(x);` -- a statement follows, not an operand.
+        case TokenType::DO:
 
         case TokenType::EOF_TOKEN:
             return true;
+
+        case TokenType::RIGHT_PAREN: {
+            // A `)` usually ends an operand, so `/` after it divides. The
+            // exception is the one closing an if/for/while/with header: a
+            // statement follows there, and `for (x of y) /re/.test(x)` is a
+            // regular expression rather than a division of `y`.
+            if (tokens_so_far_ == nullptr) return false;
+            const auto& toks = *tokens_so_far_;
+            int depth = 0;
+            int open_idx = -1;
+            for (int i = (int)toks.size() - 1; i >= 0; i--) {
+                TokenType tt = toks[i].get_type();
+                if (tt == TokenType::NEWLINE) continue;
+                if (tt == TokenType::RIGHT_PAREN) depth++;
+                else if (tt == TokenType::LEFT_PAREN) {
+                    if (--depth == 0) { open_idx = i; break; }
+                }
+            }
+            if (open_idx <= 0) return false;
+            int prev = open_idx - 1;
+            while (prev >= 0 && toks[prev].get_type() == TokenType::NEWLINE) prev--;
+            if (prev < 0) return false;
+            switch (toks[prev].get_type()) {
+                case TokenType::IF:
+                case TokenType::FOR:
+                case TokenType::WHILE:
+                case TokenType::WITH:
+                    return true;
+                default:
+                    return false;
+            }
+        }
 
         case TokenType::RIGHT_BRACE:
             // Scan backward to find the matching { and determine if it's a block body

@@ -294,6 +294,16 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
             // "[object Object]" and made them equal to each other -- and every
             // pair of empty arrays into "", and two identical function
             // literals into the same source text.
+            // null and undefined are loosely equal to each other and to nothing
+            // else. An object compared with either is simply not equal, and
+            // converting it would run its valueOf -- which `x != null`, the
+            // most common null check there is, must never do.
+            if (left_value.is_null() || left_value.is_undefined() ||
+                right_value.is_null() || right_value.is_undefined()) {
+                bool left_nullish = left_value.is_null() || left_value.is_undefined();
+                bool right_nullish = right_value.is_null() || right_value.is_undefined();
+                return Value(left_nullish && right_nullish);
+            }
             if (left_value.is_object_like() && right_value.is_object_like()) {
                 return Value(left_value.strict_equals(right_value));
             }
@@ -305,6 +315,16 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
         }
         case Operator::NOT_EQUAL: {
             // See EQUAL above.
+            // null and undefined are loosely equal to each other and to nothing
+            // else. An object compared with either is simply not equal, and
+            // converting it would run its valueOf -- which `x != null`, the
+            // most common null check there is, must never do.
+            if (left_value.is_null() || left_value.is_undefined() ||
+                right_value.is_null() || right_value.is_undefined()) {
+                bool left_nullish = left_value.is_null() || left_value.is_undefined();
+                bool right_nullish = right_value.is_null() || right_value.is_undefined();
+                return Value(!(left_nullish && right_nullish));
+            }
             if (left_value.is_object_like() && right_value.is_object_like()) {
                 return Value(!left_value.strict_equals(right_value));
             }
