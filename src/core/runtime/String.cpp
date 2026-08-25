@@ -96,6 +96,7 @@ void append_joined(std::string& out, std::string_view add) {
 
 void String::gc_trace(Visitor& v) const {
     if (!is_cons_) return;
+    if (is_slice_) { v.visit_string(slice_.parent); return; }
     if (is_tail_) { v.visit_string(tail_.left); return; }
     v.visit_string(cons_.left);
     v.visit_string(cons_.right);
@@ -220,6 +221,11 @@ void String::collect_bytes(const String* node, std::string& out) {
             append_joined(out, it.node->inline_tail());
         } else if (!it.node->is_cons_) {
             append_joined(out, it.node->data_);
+        } else if (it.node->is_slice_) {
+            // make_slice flattened the parent, so its bytes are there to read.
+            const std::string& p = it.node->slice_.parent->str();
+            append_joined(out, std::string_view(p).substr(it.node->slice_.offset,
+                                                          it.node->slice_.length));
         } else if (it.node->is_tail_) {
             pending.push_back({it.node, true});
             pending.push_back({it.node->tail_.left, false});
@@ -275,6 +281,30 @@ static bool merged_tail(std::string_view head, const std::string& add, TailBuf& 
     return true;
 }
 
+String* String::make_slice(String* parent, size_t byte_offset, size_t byte_len) {
+    // Folded, so a slice never points at another slice and collect_bytes never
+    // has to walk a chain of them.
+    while (parent && parent->is_cons_ && parent->is_slice_) {
+        byte_offset += parent->slice_.offset;
+        parent = parent->slice_.parent;
+    }
+    if (!parent) return new String(std::string());
+    const std::string& src = parent->str();
+    if (byte_offset > src.size()) byte_offset = src.size();
+    if (byte_len > src.size() - byte_offset) byte_len = src.size() - byte_offset;
+    // A view keeps the whole parent alive, so a small window on a large
+    // string would retain far more than it saves -- `huge.slice(0, 200)` held
+    // for the program's life is exactly the growth this is meant to prevent.
+    // Copy unless the view is worth its parent: long enough to matter, and a
+    // large enough share of what it pins.
+    if (byte_len < kMinSliceBytes || byte_len * kMinSliceShare < src.size() ||
+        byte_offset > UINT32_MAX || byte_len > UINT32_MAX) {
+        return new String(src.substr(byte_offset, byte_len));
+    }
+    return new String(parent, static_cast<uint32_t>(byte_offset),
+                      static_cast<uint32_t>(byte_len));
+}
+
 String* String::make_concat(String* a, String* b) {
     if (!a || a->empty()) return b;
     if (!b || b->empty()) return a;
@@ -327,6 +357,13 @@ uint32_t decode_utf8_at(const std::string& s, size_t byte_pos, size_t* out_len) 
 
 bool String::is_ascii() const {
     if (ascii_) return ascii_ == 1;
+    // A range of a single-byte string is single-byte, and answering from the
+    // parent is what keeps a slice from materialising just to be asked.
+    if (is_cons_ && is_slice_ && slice_.parent->is_ascii()) {
+        ascii_ = 1;
+        if (slice_.length < UINT32_MAX) utf16_len_ = slice_.length;
+        return true;
+    }
     const std::string& s = str();
     bool plain = true;
     for (unsigned char c : s) {

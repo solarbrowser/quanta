@@ -34,6 +34,13 @@ class String {
         // so the live link count follows the TEXT rather than the number of
         // appends. Sized to fill the union the flat form already needs.
         struct { String* left; uint8_t len; char bytes[23]; } tail_;
+        // A view of a byte range of another (flat) string. Cutting a token out
+        // of a source, or handing back most of a file with `s.slice(i)`, used
+        // to copy the range: for a parser that does it once per function body
+        // that is the whole file copied once per function. This spends one
+        // cell and no bytes. The parent is kept alive by it, which is why only
+        // ranges long enough to be worth that become one.
+        struct { String* parent; uint32_t offset; uint32_t length; } slice_;
     };
     mutable size_t hash_ = 0;
     // Bit-fields, not plain bools: ascii_ below was added after the comment
@@ -46,6 +53,9 @@ class String {
     // says which of the two link layouts this is.
     mutable bool is_cons_ : 1 = false;
     mutable bool is_tail_ : 1 = false;
+    // Which of the three non-flat layouts this is: is_cons_ says the bytes
+    // have to be collected, is_tail_ and is_slice_ say from where.
+    mutable bool is_slice_ : 1 = false;
     mutable uint8_t ascii_ : 2 = 0;
     // True while a thread-local side cache (the scan cursor, the decoded
     // units) names this cell. Not copied: a copy is a different cell and is in
@@ -80,10 +90,13 @@ class String {
     [[nodiscard]] bool still_cached_elsewhere() const noexcept;
     void copy_bits(const String& o) noexcept {
         hash_ = o.hash_; interned_ = o.interned_; is_cons_ = o.is_cons_;
-        is_tail_ = o.is_tail_; ascii_ = o.ascii_; utf16_len_ = o.utf16_len_;
+        is_tail_ = o.is_tail_; is_slice_ = o.is_slice_;
+        ascii_ = o.ascii_; utf16_len_ = o.utf16_len_;
     }
     void copy_link(const String& o) noexcept {
-        if (is_tail_) tail_ = o.tail_; else cons_ = o.cons_;
+        if (is_slice_) slice_ = o.slice_;
+        else if (is_tail_) tail_ = o.tail_;
+        else cons_ = o.cons_;
     }
     void copy_from(const String& o) {
         copy_bits(o);
@@ -122,6 +135,15 @@ public:
     explicit String(const char* str);
     // Link nodes — created only via make_concat
     String(String* left, String* right) noexcept : cons_{left, right} { is_cons_ = true; }
+    // Slice node -- created only via make_slice, which guarantees a flat
+    // parent and a range inside it.
+    String(String* parent, uint32_t offset, uint32_t length) noexcept {
+        slice_.parent = parent;
+        slice_.offset = offset;
+        slice_.length = length;
+        is_cons_ = true;
+        is_slice_ = true;
+    }
     String(String* left, const char* bytes, size_t len) noexcept {
         tail_.left = left;
         tail_.len = static_cast<uint8_t>(len);
@@ -145,9 +167,17 @@ public:
 
     [[nodiscard]] const std::string& str()   const noexcept { if (is_cons_) ensure_flat(); return data_; }
     [[nodiscard]] const char*        c_str() const noexcept { return str().c_str(); }
-    [[nodiscard]] size_t             length()const noexcept { return str().length(); }
-    [[nodiscard]] size_t             size()  const noexcept { return str().size(); }
-    [[nodiscard]] bool               empty() const noexcept { return !is_cons_ && data_.empty(); }
+    // A slice knows its byte count without materialising anything.
+    [[nodiscard]] size_t             size()  const noexcept {
+        if (!is_cons_) return data_.size();
+        if (is_slice_) return slice_.length;
+        return str().size();
+    }
+    [[nodiscard]] size_t             length()const noexcept { return size(); }
+    [[nodiscard]] bool               empty() const noexcept {
+        if (!is_cons_) return data_.empty();
+        return is_slice_ && slice_.length == 0;
+    }
     // Lazily computed. Hashing is a full pass over the bytes and most strings
     // are never used as a key, so the constructors no longer pay it up front --
     // a regex handing back its subject on every match was hashing the whole
@@ -206,6 +236,18 @@ public:
 
     // O(1) when both sides are large; flattens lazily on first read
     static String* make_concat(String* a, String* b);
+    // A view of `parent`'s bytes [byte_offset, byte_offset + byte_len), or a
+    // plain flat copy when the range is too short to be worth pinning the
+    // parent. `parent` is flattened first, so the view always names real
+    // bytes; a slice of a slice folds into the grandparent.
+    static String* make_slice(String* parent, size_t byte_offset, size_t byte_len);
+    // Shortest range worth a view. Below this the cell plus the parent it
+    // pins costs more than the bytes it avoids copying.
+    static constexpr size_t kMinSliceBytes = 128;
+    // A view must be at least this share (1/N) of the parent it pins, so the
+    // memory a slice holds onto is bounded by a multiple of the memory it
+    // actually represents.
+    static constexpr size_t kMinSliceShare = 16;
 
     // Value-returning helpers kept for backwards compat with non-pointer callers
     [[nodiscard]] String concat(const String& other) const;

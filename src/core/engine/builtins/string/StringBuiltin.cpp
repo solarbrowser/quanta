@@ -220,6 +220,17 @@ static int32_t bytes_code_unit_at(const Value& v, const std::string& s, size_t i
 static size_t bytes_byte_pos(const Value& v, const std::string& s, size_t i) {
     return v.is_string() ? v.as_string()->byte_pos(i) : utf16_index_to_byte_pos(s, i);
 }
+// A long range of a single-byte string can be a view of that string rather
+// than a copy of it -- see String::make_slice. Single-byte only: anywhere else
+// a UTF-16 index is not a byte offset, and an endpoint can fall between the
+// halves of a surrogate pair, which no byte range names.
+static String* try_slice(String* self, size_t start, size_t end) {
+    if (!self || end <= start) return nullptr;
+    if (end - start < String::kMinSliceBytes) return nullptr;
+    if (!self->is_ascii()) return nullptr;
+    return String::make_slice(self, start, end - start);
+}
+
 static size_t bytes_index_of_byte(const Value& v, const std::string& s, size_t b) {
     return v.is_string() ? v.as_string()->index_of_byte(b) : utf16_index_from_byte_pos(s, b);
 }
@@ -1561,6 +1572,8 @@ void register_string_builtins(Context& ctx) {
 
             if (start >= end) return Value(std::string(""));
             if (self) {
+                if (String* sl = try_slice(self, static_cast<size_t>(start),
+                                           static_cast<size_t>(end))) return Value(sl);
                 // Not a byte range: an endpoint may land between the halves of
                 // a surrogate pair, which substring_utf16 answers with the lone
                 // half rather than a position it cannot express.
@@ -1679,7 +1692,10 @@ void register_string_builtins(Context& ctx) {
                 return Value(std::string(""));
             }
 
-            if (self) return Value(self->substring_utf16(start, end));
+            if (self) {
+                if (String* sl = try_slice(self, start, end)) return Value(sl);
+                return Value(self->substring_utf16(start, end));
+            }
             return Value(utf16_substring(str, start, end));
         }, 2);
     // Reads and computes only: the context is used for the receiver,
@@ -1970,8 +1986,12 @@ void register_string_builtins(Context& ctx) {
                 return Value(std::string(""));
             }
 
-            if (self) return Value(self->substring_utf16(static_cast<size_t>(intStart),
-                                                         static_cast<size_t>(intEnd)));
+            if (self) {
+                if (String* sl = try_slice(self, static_cast<size_t>(intStart),
+                                           static_cast<size_t>(intEnd))) return Value(sl);
+                return Value(self->substring_utf16(static_cast<size_t>(intStart),
+                                                   static_cast<size_t>(intEnd)));
+            }
             return Value(utf16_substring(str, static_cast<size_t>(intStart),
                                          static_cast<size_t>(intEnd)));
         }, 2);
