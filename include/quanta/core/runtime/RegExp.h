@@ -43,6 +43,11 @@ private:
     bool multiline_;
     bool unicode_;
     bool sticky_;
+    // Set when a match ran out of what the limits allow. The answer is then
+    // unknown, and "unknown" must not read as "no match" -- PCRE2 reports both
+    // as a negative return code, and treating the two alike answered false for
+    // a pattern that does match. Cleared at the start of every match.
+    bool resource_exhausted_ = false;
     bool dotall_;
     bool unicode_sets_;
     bool has_indices_;
@@ -67,6 +72,10 @@ public:
     // lets the decoded units be kept for that cell instead of recognised by
     // comparing the bytes, which for a long subject costs as much as the match.
     bool test(const std::string& str, const class String* cell = nullptr);
+    // True when the last test/exec could not finish within the limits, so its
+    // answer means nothing. The caller has a Context and turns this into a
+    // RangeError; RegExp itself has no way to throw.
+    [[nodiscard]] bool last_match_exhausted() const { return resource_exhausted_; }
     Value exec(const std::string& str, const class String* cell = nullptr);
     // A global replace whose replacement is a literal, done without building
     // anything JS-visible. exec's own matching half is all this needs, and the

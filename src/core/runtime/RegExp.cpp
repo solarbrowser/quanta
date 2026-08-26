@@ -2494,6 +2494,58 @@ static std::u16string_view decode_subject(const std::string& str, std::u16string
     return victim->units;
 }
 
+// One match context per thread, holding the limits every match runs under.
+//
+// The JIT is the reason this exists at all: it defaults to a 32KB machine
+// stack, and a pattern a few groups deep over a few thousand characters
+// exhausts it. PCRE2 reports that as PCRE2_ERROR_JIT_STACKLIMIT -- a negative
+// return, exactly like "no match", which is how a pattern that does match came
+// back false. A bigger stack covers the ordinary cases; anything past it
+// retries on the interpreter, which allocates its frames on the heap and obeys
+// the depth and heap limits below instead of a fixed stack.
+//
+// The limits themselves are the ceiling on a single match. PCRE2's own
+// defaults are used for the step count (they are what its JIT already
+// enforces); the heap limit is stated explicitly because the default is
+// effectively no limit at all.
+namespace {
+constexpr uint32_t kMatchLimit = 10000000;   // backtracking steps
+constexpr uint32_t kDepthLimit = 10000000;   // interpreter frame depth
+constexpr uint32_t kHeapLimitKb = 64 * 1024; // interpreter frame memory
+constexpr size_t kJitStackStart = 32 * 1024;
+constexpr size_t kJitStackMax = 4 * 1024 * 1024;
+
+pcre2_match_context* match_context() {
+    static thread_local pcre2_match_context* mc = [] {
+        pcre2_match_context* c = pcre2_match_context_create(nullptr);
+        if (!c) return c;
+        pcre2_set_match_limit(c, kMatchLimit);
+        pcre2_set_depth_limit(c, kDepthLimit);
+        pcre2_set_heap_limit(c, kHeapLimitKb);
+        if (pcre2_jit_stack* js = pcre2_jit_stack_create(kJitStackStart, kJitStackMax, nullptr)) {
+            pcre2_jit_stack_assign(c, nullptr, js);
+        }
+        return c;
+    }();
+    return mc;
+}
+
+// pcre2_match under those limits. `exhausted` is set only when the match could
+// not be completed at all -- never for an ordinary failure to match.
+int run_match(pcre2_code* re, PCRE2_SPTR subject, size_t length, size_t start,
+              uint32_t options, pcre2_match_data* md, bool& exhausted) {
+    pcre2_match_context* mc = match_context();
+    int rc = pcre2_match(re, subject, length, static_cast<PCRE2_SIZE>(start), options, md, mc);
+    if (rc == PCRE2_ERROR_JIT_STACKLIMIT) {
+        // The interpreter has no fixed stack to run out of.
+        rc = pcre2_match(re, subject, length, static_cast<PCRE2_SIZE>(start),
+                         options | PCRE2_NO_JIT, md, mc);
+    }
+    if (rc < 0 && rc != PCRE2_ERROR_NOMATCH && rc != PCRE2_ERROR_PARTIAL) exhausted = true;
+    return rc;
+}
+}  // namespace
+
 // True when the units contain a surrogate that is not part of a valid pair.
 // Sanitizing rewrites those to U+FFFD, and it has to work on a copy so capture
 // text can still report the originals -- but the copy is only worth making
@@ -2512,6 +2564,7 @@ static bool has_lone_surrogate(std::u16string_view s) {
 }
 
 bool RegExp::test(const std::string& str, const String* cell) {
+    resource_exhausted_ = false;
     std::u16string decode_scratch;
     uint64_t subject_id = 0;
     std::u16string_view decoded = decode_subject(str, decode_scratch, &subject_id, cell);
@@ -2540,6 +2593,7 @@ bool RegExp::test(const std::string& str, const String* cell) {
         BacktrackMatch bm;
         found = backtrack_engine_->exec(subject, start, sticky_, bm,
                                         subject_is_sanitized ? 0 : subject_id);
+        if (bm.exhausted) resource_exhausted_ = true;
         if (found) match_end = bm.end;
     } else {
         if (!code_) return false;
@@ -2547,9 +2601,8 @@ bool RegExp::test(const std::string& str, const String* cell) {
         pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
         if (!md) return false;
 
-        int rc = pcre2_match(re,
-            reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
-            static_cast<PCRE2_SIZE>(start), 0, md, nullptr);
+        int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
+                           start, 0, md, resource_exhausted_);
 
         found = (rc >= 0);
         if (found) {
@@ -2573,6 +2626,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     if (!global_ || sticky_) return false;
     if (backtrack_engine_) return false;   // PCRE2 path only; the fallback keeps exec's
     if (!code_) return false;
+    resource_exhausted_ = false;
 
     std::u16string decode_scratch;
     uint64_t subject_id = 0;
@@ -2592,8 +2646,8 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     size_t copied = 0;   // how much of `orig` is already in `out`
     size_t pos = 0;      // where the next search starts
     while (pos <= subject.size()) {
-        int rc = pcre2_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
-                             static_cast<PCRE2_SIZE>(pos), 0, md, nullptr);
+        int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
+                           pos, 0, md, resource_exhausted_);
         if (rc < 0) break;
         PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
         const size_t ms = ov[0], me = ov[1];
@@ -2622,6 +2676,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
 }
 
 Value RegExp::exec(const std::string& str, const String* cell) {
+    resource_exhausted_ = false;
     // orig holds the unsanitized units so capture text preserves lone surrogates.
     std::u16string decode_scratch;
     uint64_t subject_id = 0;
@@ -2654,6 +2709,7 @@ Value RegExp::exec(const std::string& str, const String* cell) {
         BacktrackMatch bm;
         found = backtrack_engine_->exec(subject, start, sticky_, bm,
                                         subject_is_sanitized ? 0 : subject_id);
+        if (bm.exhausted) resource_exhausted_ = true;
         if (found) {
             capture_count = backtrack_engine_->capture_count();
             match_start = bm.start;
@@ -2673,9 +2729,8 @@ Value RegExp::exec(const std::string& str, const String* cell) {
         pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
         if (!md) return Value::null();
 
-        int rc = pcre2_match(re,
-            reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
-            static_cast<PCRE2_SIZE>(start), 0, md, nullptr);
+        int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
+                           start, 0, md, resource_exhausted_);
 
         if (rc >= 0) {
             PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);

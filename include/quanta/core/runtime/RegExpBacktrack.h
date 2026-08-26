@@ -20,6 +20,11 @@ struct BacktrackMatch {
     bool matched = false;
     size_t start = 0, end = 0; // UTF-16 unit offsets
     std::vector<std::pair<int64_t, int64_t>> captures; // 1-based groups; (-1,-1) = unset
+    // The walk ran out of the steps it is allowed. `matched` then means
+    // nothing: a pattern whose backtracking explodes has no answer here, and
+    // reporting one as "did not match" would be a wrong answer rather than a
+    // slow one. PCRE2 bounds its own matching the same way.
+    bool exhausted = false;
 };
 
 // Backtracking matcher used as a fallback where PCRE2's lookbehind diverges

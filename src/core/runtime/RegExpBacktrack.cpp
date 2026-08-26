@@ -81,18 +81,31 @@ struct MatcherContext {
     bool multiline;
     bool dot_all;
     std::vector<std::pair<int64_t, int64_t>> captures; // index 0 unused
+    // Steps left before the walk gives up. A catastrophic pattern is one that
+    // keeps taking them, so counting entries into the tree bounds it wherever
+    // the blow-up happens to be.
+    uint64_t steps = 0;
+    bool exhausted = false;
 };
 
 using Cont = std::function<bool(int64_t)>;
 
 struct Node {
     virtual ~Node() = default;
-    virtual bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const = 0;
+    // Non-virtual, so the budget is spent in ONE place rather than repeated in
+    // every node -- and so a node that recurses into its children through
+    // match() cannot bypass it.
+    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const {
+        if (ctx.steps == 0) { ctx.exhausted = true; return false; }
+        --ctx.steps;
+        return match_impl(ctx, pos, dir, k);
+    }
+    virtual bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const = 0;
 };
 
 struct SequenceNode : Node {
     std::vector<std::unique_ptr<Node>> children;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         return match_at(dir == 1 ? 0 : static_cast<int64_t>(children.size()) - 1, ctx, pos, dir, k);
     }
     bool match_at(int64_t idx, MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const {
@@ -107,7 +120,7 @@ struct SequenceNode : Node {
 
 struct AlternationNode : Node {
     std::vector<std::unique_ptr<Node>> branches;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         for (auto& b : branches) {
             auto snapshot = ctx.captures;
             if (b->match(ctx, pos, dir, k)) return true;
@@ -120,7 +133,7 @@ struct AlternationNode : Node {
 struct LiteralNode : Node {
     uint32_t cp;
     bool ignore_case;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         if (dir == 1) { if (pos >= static_cast<int64_t>(ctx.atoms.size())) return false; }
         else { if (pos <= 0) return false; }
         uint32_t atom = ctx.atoms[static_cast<size_t>(dir == 1 ? pos : pos - 1)];
@@ -131,7 +144,7 @@ struct LiteralNode : Node {
 
 struct AnyCharNode : Node {
     bool dot_all;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         if (dir == 1) { if (pos >= static_cast<int64_t>(ctx.atoms.size())) return false; }
         else { if (pos <= 0) return false; }
         uint32_t atom = ctx.atoms[static_cast<size_t>(dir == 1 ? pos : pos - 1)];
@@ -144,7 +157,7 @@ struct CharClassNode : Node {
     bool negated = false;
     bool ignore_case = false;
     std::vector<Range> ranges;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         if (dir == 1) { if (pos >= static_cast<int64_t>(ctx.atoms.size())) return false; }
         else { if (pos <= 0) return false; }
         uint32_t atom = ctx.atoms[static_cast<size_t>(dir == 1 ? pos : pos - 1)];
@@ -166,7 +179,7 @@ struct CharClassNode : Node {
 struct AssertionNode : Node {
     enum Kind { Start, End, WordB, NotWordB } kind;
     bool multiline;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         (void)dir;
         bool ok = false;
         int64_t len = static_cast<int64_t>(ctx.atoms.size());
@@ -194,7 +207,7 @@ struct AssertionNode : Node {
 struct GroupNode : Node {
     int index = 0; // 0 = non-capturing
     std::unique_ptr<Node> child;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         if (index == 0) return child->match(ctx, pos, dir, k);
         int idx = index;
         return child->match(ctx, pos, dir, [idx, pos, &ctx, &k](int64_t p2) -> bool {
@@ -210,7 +223,7 @@ struct GroupNode : Node {
 struct BackrefNode : Node {
     std::vector<int> indices; // usually one; multiple for duplicate-named groups
     bool ignore_case = false;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         std::pair<int64_t, int64_t> cap = {-1, -1};
         for (int idx : indices) {
             auto c = ctx.captures[static_cast<size_t>(idx)];
@@ -265,7 +278,7 @@ struct QuantifierNode : Node {
     int min = 0, max = -1;
     bool greedy = true;
     int paren_index = 0, paren_count = 0;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         return repeat_matcher(child.get(), min, max, greedy, ctx, pos, dir, k, paren_index, paren_count);
     }
 };
@@ -275,7 +288,7 @@ struct LookaroundNode : Node {
     std::unique_ptr<Node> child;
     bool negate = false;
     bool behind = false;
-    bool match(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
+    bool match_impl(MatcherContext& ctx, int64_t pos, int dir, const Cont& k) const override {
         (void)dir;
         int inner_dir = behind ? -1 : 1;
         auto snapshot = ctx.captures;
@@ -712,6 +725,14 @@ uint32_t RegexBacktrackEngine::capture_count() const { return impl_->group_count
 // whole subject however little of it the match looked at: a global regex is
 // driven one exec per match, and a parser runs its whitespace pattern once per
 // function body, so both paid for the entire source over and over.
+// Steps a single match may take before it gives up. Chosen from the gap
+// between the two: the heaviest legitimate use that reaches this engine -- a
+// parser's whitespace-and-comment pattern over a long run of both -- spends
+// about twenty thousand, while a pattern whose backtracking explodes but still
+// terminates spends about two hundred million. A ceiling above the second
+// keeps every answerable pattern answerable and turns an unanswerable one from
+// a hang into an error, which is the only thing a step count can buy.
+static constexpr uint64_t kMatchSteps = 250000000;
 static constexpr size_t kAtomCacheMinUnits = 1024;
 static constexpr size_t kAtomCacheMaxUnits = 16u << 20;
 
@@ -773,12 +794,24 @@ bool RegexBacktrackEngine::exec(std::u16string_view subject, size_t start_at, bo
         while (start_atom < atom_unit_offset.size() && atom_unit_offset[start_atom] < start_at) start_atom++;
     }
 
+    // One budget for the whole call, not one per starting position: a pattern
+    // that is slow at every position is exactly the case worth bounding, and a
+    // per-position budget would let it cost the subject's length times over.
+    uint64_t budget = kMatchSteps;
     for (size_t s = start_atom; s <= atoms.size(); s++) {
         MatcherContext ctx{atoms, false, false, false, {}};
+        ctx.steps = budget;
         ctx.captures.assign(impl_->group_count + 1, {-1, -1});
         int64_t end = -1;
         Cont accept = [&end](int64_t p) { end = p; return true; };
-        if (impl_->root->match(ctx, static_cast<int64_t>(s), 1, accept)) {
+        const bool hit = impl_->root->match(ctx, static_cast<int64_t>(s), 1, accept);
+        budget = ctx.steps;
+        if (ctx.exhausted) {
+            out.matched = false;
+            out.exhausted = true;
+            return false;
+        }
+        if (hit) {
             out.matched = true;
             out.start = unit_of(s);
             out.end = unit_of(static_cast<size_t>(end));

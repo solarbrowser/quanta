@@ -168,6 +168,13 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const
                            ? std::numeric_limits<int>::max() : static_cast<int>(li));
 
     Value result = re->exec(str, cell);
+    // A match that ran out of its budget has no answer, and null would read as
+    // one. Every engine has some ceiling here and the spec names none, so the
+    // choice is only between a wrong answer and an error.
+    if (re->last_match_exhausted()) {
+        ctx.throw_range_error("Regular expression match exceeded the step limit");
+        return Value();
+    }
 
     int new_last = re->get_last_index();
     if (re->get_global() || re->get_sticky()) {
@@ -205,6 +212,10 @@ bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& 
                            ? std::numeric_limits<int>::max() : static_cast<int>(li));
 
     bool found = re->test(str, cell);
+    if (re->last_match_exhausted()) {
+        ctx.throw_range_error("Regular expression match exceeded the step limit");
+        return false;
+    }
 
     if (re->get_global() || re->get_sticky()) {
         bool li_ok = r->set_property("lastIndex", Value(static_cast<double>(re->get_last_index())));
