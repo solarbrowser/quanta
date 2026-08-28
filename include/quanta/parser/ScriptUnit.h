@@ -53,6 +53,8 @@ public:
     // check costs nothing -- must keep its trees.
     bool can_reparse_bodies() const { return source_ && !source_->empty(); }
     void set_source(std::string src) { source_ = std::make_shared<const std::string>(std::move(src)); }
+    // The buffer as it already is, for a caller that holds the same one.
+    void set_source(std::shared_ptr<const std::string> src) { source_ = std::move(src); }
     std::string source_range(uint32_t start, uint32_t end) const {
         const std::string& s = source();
         if (start >= s.size() || end <= start) return std::string();

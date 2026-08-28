@@ -80,7 +80,12 @@ private:
     size_t last_body_tok_last_ = 0;
     ParseOptions options_;
     std::vector<ParseError> errors_;
-    std::string source_;
+    // Shared, not owned: a function body lexed back out of a script points
+    // this at the script's own buffer, and there is one of those per body.
+    // Copying the whole script for each was most of what compiling a large
+    // one spent its time doing.
+    std::shared_ptr<const std::string> source_;
+    static const std::string& no_source() { static const std::string e; return e; }
 
     size_t current_token_index_;
     bool no_in_mode_ = false; // when true, 'in' is not parsed as a relational operator
@@ -261,11 +266,16 @@ public:
     const std::vector<ParseError>& get_errors() const { return errors_; }
     bool has_errors() const { return !errors_.empty(); }
     
-    void set_source(const std::string& src) { source_ = src; }
+    void set_source(const std::string& src) {
+        source_ = std::make_shared<const std::string>(src);
+    }
+    void set_source(std::shared_ptr<const std::string> src) { source_ = std::move(src); }
+    const std::string& source_text() const { return source_ ? *source_ : no_source(); }
     std::string get_source_slice(size_t start_offset, size_t end_offset) const {
-        if (source_.empty() || start_offset >= source_.size()) return "";
-        if (end_offset > source_.size()) end_offset = source_.size();
-        return source_.substr(start_offset, end_offset - start_offset);
+        const std::string& s = source_text();
+        if (s.empty() || start_offset >= s.size()) return "";
+        if (end_offset > s.size()) end_offset = s.size();
+        return s.substr(start_offset, end_offset - start_offset);
     }
     // advance() skips trivia, so previous_token() points at the last skipped NEWLINE/COMMENT, not the real token
     const Token& last_meaningful_token() const {

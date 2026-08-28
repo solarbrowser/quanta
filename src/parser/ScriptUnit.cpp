@@ -31,7 +31,7 @@ std::unique_ptr<ASTNode> ScriptUnit::parse_body_from_source(const Position& star
     TokenSequence toks = lexer.tokenize_range(start, end_offset);
     if (toks.size() <= 1) return nullptr;
     Parser parser(std::move(toks));
-    parser.set_source(*source_);
+    parser.set_source(source_);
     BuildScope scope(this);
     return parser.parse_body_at(0, strict, is_generator, is_async);
 }
