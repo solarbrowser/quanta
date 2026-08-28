@@ -313,6 +313,17 @@ public:
     }
 };
 
+// Mirrors QUANTA_HEAP_STATS for the parse side: what the AST arena is still
+// holding when the process ends, and how much of it is live nodes.
+static struct AstArenaStats {
+    ~AstArenaStats() {
+        if (!std::getenv("QUANTA_AST_ARENA_STATS")) return;
+        auto st = Quanta::AstArena::stats();
+        std::fprintf(stderr, "[ast arena] chunks=%zu live_nodes=%zu reserved=%zuB\n",
+                     st.chunks, st.live_nodes, st.bytes_reserved);
+    }
+} g_ast_arena_stats;
+
 int main(int argc, char* argv[]) {
     try {
         bool execute_code = false;

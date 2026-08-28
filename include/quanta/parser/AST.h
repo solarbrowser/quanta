@@ -14,6 +14,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include "quanta/parser/AstArena.h"
 #include <functional>
 
 namespace Quanta {
@@ -127,6 +128,13 @@ protected:
     Position end_;
 
 public:
+    // Every AST node, of every kind, is allocated here -- see AstArena for why
+    // the general allocator is the wrong home for a few hundred thousand small
+    // objects that die together.
+    static void* operator new(std::size_t n) { return AstArena::take(n); }
+    static void operator delete(void* p) noexcept { AstArena::give(p); }
+    static void operator delete(void* p, std::size_t) noexcept { AstArena::give(p); }
+
     ASTNode(Type type, const Position& start, const Position& end)
         : type_(type), start_(start), end_(end) {}
     
