@@ -39,7 +39,10 @@ private:
     // escapes, template literals, identifiers written with unicode escapes.
     std::vector<std::string> owned_values_;
     TokenType last_token_type_;
-    const std::vector<Token>* tokens_so_far_ = nullptr;
+    // The tokens produced so far, for the two look-backs that decide whether a
+    // `/` opens a regular expression. Reads size() and operator[], which the
+    // sequence answers straight out of its blocks.
+    const TokenSequence* tokens_so_far_ = nullptr;
     bool current_string_has_legacy_octal_ = false;
 
     const std::string& source() const { return *source_ref_; }

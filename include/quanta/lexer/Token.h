@@ -271,7 +271,32 @@ std::string_view token_value_text(const Token& token, const std::string& source,
 // the thing that holds the token holds the text as well.
 class TokenSequence {
 private:
-    std::vector<Token> tokens_;
+    // Blocks, not one growing array. A large script makes hundreds of thousands
+    // of tokens, and a doubling vector holds the old array and the new one at
+    // the same time while it copies between them -- for a three-megabyte
+    // script that is forty megabytes of tokens with another forty alive beside
+    // them at the moment it grows, which is most of what a parse peaks at.
+    // Blocks never move, so nothing is ever copied; each later one is large
+    // enough to be its own mapping and goes back to the system when the
+    // sequence dies, rather than into a heap that cannot shrink past it.
+    //
+    // The first block is small because most sequences are: a REPL line, a
+    // `new Function` body, a body lexed back on demand. The rest are large
+    // because the sequences that get there are the ones worth the syscall.
+    static constexpr size_t kFirstBlock = 128;
+    static constexpr size_t kBlockShift = 12;
+    static constexpr size_t kBlock = size_t{1} << kBlockShift;  // 4096
+    std::vector<std::unique_ptr<Token[]>> blocks_;
+    size_t count_ = 0;
+
+    // Which block holds `index`, and where in it.
+    static void locate(size_t index, size_t& block, size_t& slot) {
+        if (index < kFirstBlock) { block = 0; slot = index; return; }
+        const size_t rest = index - kFirstBlock;
+        block = 1 + (rest >> kBlockShift);
+        slot = rest & (kBlock - 1);
+    }
+    static size_t block_capacity(size_t block) { return block == 0 ? kFirstBlock : kBlock; }
     std::shared_ptr<const std::string> source_;
     std::vector<std::string> owned_values_;
     size_t position_;
@@ -284,6 +309,10 @@ public:
     TokenSequence(std::vector<Token> tokens,
                   std::shared_ptr<const std::string> source,
                   std::vector<std::string> owned_values);
+    // The form the lexer uses: it pushes tokens in as it reads them, so they
+    // are never gathered into an array first only to be moved out of it.
+    TokenSequence(std::shared_ptr<const std::string> source);
+    void set_owned_values(std::vector<std::string> v) { owned_values_ = std::move(v); }
 
     // The text of a token, which is either a slice of the source or, for the
     // handful the lexer had to rewrite, an entry in the side table.
@@ -299,7 +328,7 @@ public:
     
     size_t position() const { return position_; }
     void set_position(size_t pos);
-    size_t size() const { return tokens_.size(); }
+    size_t size() const { return count_; }
     
     const Token& operator[](size_t index) const;
     void push_back(const Token& token);

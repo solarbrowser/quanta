@@ -176,8 +176,7 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
         Parser::ParseOptions parse_opts;
         parse_opts.strict_mode = strict_mode;
         auto tokens = lexer.tokenize();
-        auto tokens_copy = tokens;
-        Parser parser(std::move(tokens_copy), parse_opts);
+        Parser parser(std::move(tokens), parse_opts);
         parser.set_source(expression);
 
         auto program_ast = parser.parse_program();
@@ -231,7 +230,7 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
 
             return Result(result);
         } else {
-            Parser expr_parser(tokens, parse_opts);
+            Parser expr_parser(std::move(tokens), parse_opts);
             auto expr_ast = expr_parser.parse_expression();
             if (!expr_ast) {
                 return Result("Parse error: Failed to parse expression");

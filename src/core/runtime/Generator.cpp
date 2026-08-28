@@ -472,8 +472,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
 
             try {
                 Lexer lexer(func_src);
-                TokenSequence tokens = lexer.tokenize();
-                Parser parser(tokens);
+                Parser parser(lexer.tokenize());
                 parser.set_source(func_src);
                 auto expr = parser.parse_expression();
                 if (parser.has_errors()) {

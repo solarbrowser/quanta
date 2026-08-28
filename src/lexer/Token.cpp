@@ -298,8 +298,12 @@ TokenSequence::TokenSequence() : position_(0) {
 TokenSequence::TokenSequence(std::vector<Token> tokens,
                              std::shared_ptr<const std::string> source,
                              std::vector<std::string> owned_values)
-    : tokens_(std::move(tokens)), source_(std::move(source)),
-      owned_values_(std::move(owned_values)), position_(0) {
+    : source_(std::move(source)), owned_values_(std::move(owned_values)), position_(0) {
+    for (const Token& t : tokens) push_back(t);
+}
+
+TokenSequence::TokenSequence(std::shared_ptr<const std::string> source)
+    : source_(std::move(source)), position_(0) {
 }
 
 const std::string& TokenSequence::source() const {
@@ -326,29 +330,29 @@ std::string_view TokenSequence::text_of(const Token& token) const {
 }
 
 const Token& TokenSequence::current() const {
-    if (position_ < tokens_.size()) {
-        return tokens_[position_];
+    if (position_ < size()) {
+        return (*this)[position_];
     }
     return EOF_TOKEN_INSTANCE;
 }
 
 const Token& TokenSequence::peek(size_t offset) const {
     size_t peek_pos = position_ + offset;
-    if (peek_pos < tokens_.size()) {
-        return tokens_[peek_pos];
+    if (peek_pos < size()) {
+        return (*this)[peek_pos];
     }
     return EOF_TOKEN_INSTANCE;
 }
 
 const Token& TokenSequence::previous() const {
-    if (position_ > 0 && position_ - 1 < tokens_.size()) {
-        return tokens_[position_ - 1];
+    if (position_ > 0 && position_ - 1 < size()) {
+        return (*this)[position_ - 1];
     }
     return EOF_TOKEN_INSTANCE;
 }
 
 void TokenSequence::advance() {
-    if (position_ < tokens_.size()) {
+    if (position_ < size()) {
         position_++;
     }
 }
@@ -360,27 +364,33 @@ void TokenSequence::retreat() {
 }
 
 bool TokenSequence::at_end() const {
-    return position_ >= tokens_.size() || current().is_eof();
+    return position_ >= size() || current().is_eof();
 }
 
 void TokenSequence::set_position(size_t pos) {
-    position_ = std::min(pos, tokens_.size());
+    position_ = std::min(pos, size());
 }
 
 const Token& TokenSequence::operator[](size_t index) const {
-    if (index < tokens_.size()) {
-        return tokens_[index];
-    }
-    return EOF_TOKEN_INSTANCE;
+    if (index >= count_) return EOF_TOKEN_INSTANCE;
+    size_t block, slot;
+    locate(index, block, slot);
+    return blocks_[block][slot];
 }
 
 void TokenSequence::push_back(const Token& token) {
-    tokens_.push_back(token);
+    size_t block, slot;
+    locate(count_, block, slot);
+    if (block == blocks_.size()) {
+        blocks_.push_back(std::make_unique<Token[]>(block_capacity(block)));
+    }
+    blocks_[block][slot] = token;
+    ++count_;
 }
 
 std::string TokenSequence::to_string() const {
     std::ostringstream oss;
-    oss << "TokenSequence[" << tokens_.size() << " tokens, pos=" << position_ << "]";
+    oss << "TokenSequence[" << size() << " tokens, pos=" << position_ << "]";
     return oss.str();
 }
 

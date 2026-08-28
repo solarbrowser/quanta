@@ -853,8 +853,7 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
 
             try {
                 Lexer lexer(func_src);
-                TokenSequence tokens = lexer.tokenize();
-                Parser parser(tokens);
+                Parser parser(lexer.tokenize());
                 parser.set_source(func_src);
                 auto expr = parser.parse_expression();
                 if (parser.has_errors()) {
@@ -1305,7 +1304,7 @@ void setup_async_functions(Context& ctx) {
                 Lexer lexer(func_code);
                 TokenSequence tokens = lexer.tokenize();
                 Parser::ParseOptions opts;
-                Parser parser(tokens, opts);
+                Parser parser(std::move(tokens), opts);
                 parser.set_source(func_code);
                 auto expr = parser.parse_expression();
                 if (parser.has_errors() || !expr) {

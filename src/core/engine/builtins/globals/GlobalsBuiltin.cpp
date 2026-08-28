@@ -471,7 +471,7 @@ void register_global_builtins(Context& ctx) {
                         }
                     }
                 }
-                Parser parser(tokens, parse_opts);
+                Parser parser(std::move(tokens), parse_opts);
                 parser.set_source(code);
                 auto program = parser.parse_program();
 

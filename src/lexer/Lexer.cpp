@@ -127,7 +127,7 @@ void Lexer::reset_to(const Position& at) {
 
 TokenSequence Lexer::tokenize_range(const Position& from, size_t end_offset) {
     reset_to(from);
-    std::vector<Token> tokens;
+    TokenSequence tokens(source_ref_);
     tokens_so_far_ = &tokens;
     // No directive scan and no strict detection: this is a rebuild of a body
     // whose mode was already decided when the script was first parsed, and the
@@ -147,14 +147,15 @@ TokenSequence Lexer::tokenize_range(const Position& from, size_t end_offset) {
         if (token.get_type() == TokenType::EOF_TOKEN) break;
     }
     tokens_so_far_ = nullptr;
-    if (tokens.empty() || tokens.back().get_type() != TokenType::EOF_TOKEN) {
-        tokens.emplace_back(TokenType::EOF_TOKEN, current_position_);
+    if (tokens.size() == 0 || tokens[tokens.size() - 1].get_type() != TokenType::EOF_TOKEN) {
+        tokens.push_back(Token(TokenType::EOF_TOKEN, current_position_));
     }
-    return TokenSequence(std::move(tokens), source_ref_, std::move(owned_values_));
+    tokens.set_owned_values(std::move(owned_values_));
+    return tokens;
 }
 
 TokenSequence Lexer::tokenize() {
-    std::vector<Token> tokens;
+    TokenSequence tokens(source_ref_);
     bool strict_mode_detected = false;
     tokens_so_far_ = &tokens;
 
@@ -167,7 +168,7 @@ TokenSequence Lexer::tokenize() {
             last_token_type_ = token.get_type();
         }
 
-        if (!strict_mode_detected && tokens.empty() &&
+        if (!strict_mode_detected && tokens.size() == 0 &&
             token.get_type() == TokenType::STRING &&
             text_of(token) == "use strict") {
             options_.strict_mode = true;
@@ -186,11 +187,11 @@ TokenSequence Lexer::tokenize() {
         }
     }
     
-    if (tokens.empty() || tokens.back().get_type() != TokenType::EOF_TOKEN) {
-        tokens.emplace_back(TokenType::EOF_TOKEN, current_position_);
+    if (tokens.size() == 0 || tokens[tokens.size() - 1].get_type() != TokenType::EOF_TOKEN) {
+        tokens.push_back(Token(TokenType::EOF_TOKEN, current_position_));
     }
-    
-    return TokenSequence(std::move(tokens), source_ref_, std::move(owned_values_));
+    tokens.set_owned_values(std::move(owned_values_));
+    return tokens;
 }
 
 Token Lexer::next_token() {

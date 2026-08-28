@@ -1185,12 +1185,11 @@ bool ModuleLoader::prepare_module_file(Module* module, const std::string& filena
         Lexer::LexerOptions lex_opts;
         lex_opts.source_type_module = true;
         Lexer lexer(source, lex_opts);
-        auto tokens = lexer.tokenize();
-        TokenSequence token_sequence{tokens};
+        TokenSequence token_sequence = lexer.tokenize();
         Parser::ParseOptions parse_opts;
         parse_opts.source_type_module = true;
         parse_opts.strict_mode = true;
-        Parser parser{token_sequence, parse_opts};
+        Parser parser{std::move(token_sequence), parse_opts};
         auto ast = parser.parse_program();
         if (!ast || parser.has_errors()) {
             const auto& errs = parser.get_errors();

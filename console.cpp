@@ -183,7 +183,7 @@ public:
             Lexer lexer(input);
             TokenSequence tokens = lexer.tokenize();
             
-            Parser parser(tokens);
+            Parser parser(std::move(tokens));
             auto ast = parser.parse_expression();
             
             std::cout << BLUE << "AST Structure:\n" << RESET;
