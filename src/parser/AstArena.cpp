@@ -11,6 +11,10 @@
 #include <new>
 #include <unordered_set>
 
+#ifdef _WIN32
+#include <malloc.h>
+#endif
+
 namespace Quanta {
 
 namespace {
@@ -87,8 +91,28 @@ inline bool has_room(const Chunk* c) {
     return c->free_list != nullptr || c->bump + c->node_size <= kPayload;
 }
 
+// A chunk is found from a node by masking the node's address, so the block
+// has to start on its own size. The two spellings of that request take their
+// arguments in opposite orders, and a block from one may not be handed to the
+// other's free.
+void* alloc_chunk_bytes() {
+#ifdef _WIN32
+    return _aligned_malloc(kChunkSize, kChunkSize);
+#else
+    return std::aligned_alloc(kChunkSize, kChunkSize);
+#endif
+}
+
+void free_chunk_bytes(void* p) {
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
+}
+
 Chunk* new_chunk(size_t class_index, size_t node_size) {
-    void* raw = std::aligned_alloc(kChunkSize, kChunkSize);
+    void* raw = alloc_chunk_bytes();
     if (!raw) return nullptr;
     auto* c = static_cast<Chunk*>(raw);
     c->next_open = nullptr;
@@ -106,7 +130,7 @@ Chunk* new_chunk(size_t class_index, size_t node_size) {
 void release(Chunk* c) {
     unlink_open(c);
     registry().erase(reinterpret_cast<uintptr_t>(c));
-    std::free(c);
+    free_chunk_bytes(c);
 }
 
 }  // namespace
