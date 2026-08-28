@@ -438,6 +438,15 @@ void String::drop_cursor() const noexcept {
     in_side_cache_ = false;
 }
 
+bool String::has_no_lone_surrogate() const {
+    if (well_formed_) return well_formed_ == 1;
+    // A single-byte string has no surrogate halves to be missing a partner,
+    // and the cell already knows whether it is one.
+    bool clean = is_ascii() || utf16_is_well_formed(str());
+    well_formed_ = clean ? 1 : 2;
+    return clean;
+}
+
 std::u16string_view String::utf16_units(uint64_t* id) const {
     // A slice shares its parent's units instead of materialising its own: the
     // window IS the answer, so a regex over a slice never copies the slice out

@@ -57,6 +57,12 @@ class String {
     // have to be collected, is_tail_ and is_slice_ say from where.
     mutable bool is_slice_ : 1 = false;
     mutable uint8_t ascii_ : 2 = 0;
+    // Whether the cell's UTF-16 form contains a surrogate that is not part of
+    // a pair. A /u match has to know, and asking it by scanning the subject
+    // cost the subject's length on EVERY match -- for a pattern run over a
+    // large source that is the whole source, over and over. 0 unknown, 1 no
+    // lone half, 2 has one.
+    mutable uint8_t well_formed_ : 2 = 0;
     // True while a thread-local side cache (the scan cursor, the decoded
     // units) names this cell. Not copied: a copy is a different cell and is in
     // no cache. Lets the destructor skip the cache scan for the strings that
@@ -91,7 +97,7 @@ class String {
     void copy_bits(const String& o) noexcept {
         hash_ = o.hash_; interned_ = o.interned_; is_cons_ = o.is_cons_;
         is_tail_ = o.is_tail_; is_slice_ = o.is_slice_;
-        ascii_ = o.ascii_; utf16_len_ = o.utf16_len_;
+        ascii_ = o.ascii_; well_formed_ = o.well_formed_; utf16_len_ = o.utf16_len_;
     }
     void copy_link(const String& o) noexcept {
         if (is_slice_) slice_ = o.slice_;
@@ -229,6 +235,9 @@ public:
     // itself a walk of the subject. `id` (never 0, never reused for different
     // text) lets a caller key its own derived tables on the same answer.
     [[nodiscard]] std::u16string_view utf16_units(uint64_t* id = nullptr) const;
+    // True when nothing in this cell is half of a surrogate pair. Computed
+    // once; a single-byte string answers without looking at all.
+    [[nodiscard]] bool has_no_lone_surrogate() const;
 
     bool operator==(const String& other) const noexcept;
     bool operator!=(const String& other) const noexcept { return !(*this == other); }

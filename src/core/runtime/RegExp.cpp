@@ -2532,6 +2532,13 @@ pcre2_match_context* match_context() {
 
 // pcre2_match under those limits. `exhausted` is set only when the match could
 // not be completed at all -- never for an ordinary failure to match.
+// In /u mode the pattern is compiled with PCRE2_UTF, and PCRE2 then validates
+// the whole subject on every match unless told not to. Every caller here has
+// already established that the subject is well-formed -- it either asked the
+// cell, which knows, or replaced the offending halves with U+FFFD -- so paying
+// for a second walk of it per match is paying twice for an answer already held.
+constexpr uint32_t kSubjectAlreadyChecked = PCRE2_NO_UTF_CHECK;
+
 int run_match(pcre2_code* re, PCRE2_SPTR subject, size_t length, size_t start,
               uint32_t options, pcre2_match_data* md, bool& exhausted) {
     pcre2_match_context* mc = match_context();
@@ -2541,7 +2548,9 @@ int run_match(pcre2_code* re, PCRE2_SPTR subject, size_t length, size_t start,
         rc = pcre2_match(re, subject, length, static_cast<PCRE2_SIZE>(start),
                          options | PCRE2_NO_JIT, md, mc);
     }
-    if (rc < 0 && rc != PCRE2_ERROR_NOMATCH && rc != PCRE2_ERROR_PARTIAL) exhausted = true;
+    if (rc < 0 && rc != PCRE2_ERROR_NOMATCH && rc != PCRE2_ERROR_PARTIAL) {
+        exhausted = true;
+    }
     return rc;
 }
 }  // namespace
@@ -2550,6 +2559,13 @@ int run_match(pcre2_code* re, PCRE2_SPTR subject, size_t length, size_t start,
 // Sanitizing rewrites those to U+FFFD, and it has to work on a copy so capture
 // text can still report the originals -- but the copy is only worth making
 // when there is something to rewrite, which for ordinary text there is not.
+// Whether a /u match has to run against a sanitized copy. The subject cell
+// answers from a bit it computed once; without a cell there is nothing to ask
+// and the units have to be walked. Walking them per match cost the subject's
+// length every time, which for a pattern run repeatedly over one large source
+// is that source over and over.
+static bool subject_has_lone_surrogate(const String* cell, std::u16string_view units);
+
 static bool has_lone_surrogate(std::u16string_view s) {
     for (size_t i = 0; i < s.size(); i++) {
         char16_t c = s[i];
@@ -2563,13 +2579,18 @@ static bool has_lone_surrogate(std::u16string_view s) {
     return false;
 }
 
+static bool subject_has_lone_surrogate(const String* cell, std::u16string_view units) {
+    if (cell) return !cell->has_no_lone_surrogate();
+    return has_lone_surrogate(units);
+}
+
 bool RegExp::test(const std::string& str, const String* cell) {
     resource_exhausted_ = false;
     std::u16string decode_scratch;
     uint64_t subject_id = 0;
     std::u16string_view decoded = decode_subject(str, decode_scratch, &subject_id, cell);
     std::u16string sanitized;
-    if (unicode_ && has_lone_surrogate(decoded)) {
+    if (unicode_ && subject_has_lone_surrogate(cell, decoded)) {
         sanitized = std::u16string(decoded);
         sanitize_utf16_surrogates(sanitized);
     }
@@ -2584,6 +2605,17 @@ bool RegExp::test(const std::string& str, const String* cell) {
             return false;
         }
         start = static_cast<size_t>(last_index_);
+    }
+    // A /u match runs over code points, so an index landing on the second half
+    // of a pair names the pair: the spec converts the code-unit index into a
+    // code-point one, and that rounds down. It is also what keeps the offset on
+    // a character boundary, which is the other half of what
+    // kSubjectAlreadyChecked promises PCRE2 -- without it PCRE2 rejected the
+    // offset outright, and that rejection used to read as "no match".
+    if (unicode_ && start > 0 && start < subject.size() &&
+        subject[start] >= 0xDC00 && subject[start] <= 0xDFFF &&
+        subject[start - 1] >= 0xD800 && subject[start - 1] <= 0xDBFF) {
+        start--;
     }
 
     bool found = false;
@@ -2602,7 +2634,7 @@ bool RegExp::test(const std::string& str, const String* cell) {
         if (!md) return false;
 
         int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
-                           start, 0, md, resource_exhausted_);
+                           start, kSubjectAlreadyChecked, md, resource_exhausted_);
 
         found = (rc >= 0);
         if (found) {
@@ -2647,7 +2679,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     size_t pos = 0;      // where the next search starts
     while (pos <= subject.size()) {
         int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
-                           pos, 0, md, resource_exhausted_);
+                           pos, kSubjectAlreadyChecked, md, resource_exhausted_);
         if (rc < 0) break;
         PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
         const size_t ms = ov[0], me = ov[1];
@@ -2682,7 +2714,7 @@ Value RegExp::exec(const std::string& str, const String* cell) {
     uint64_t subject_id = 0;
     std::u16string_view orig = decode_subject(str, decode_scratch, &subject_id, cell);
     std::u16string sanitized;
-    if (unicode_ && has_lone_surrogate(orig)) {
+    if (unicode_ && subject_has_lone_surrogate(cell, orig)) {
         sanitized = std::u16string(orig);
         sanitize_utf16_surrogates(sanitized);
     }
@@ -2697,6 +2729,17 @@ Value RegExp::exec(const std::string& str, const String* cell) {
             return Value::null();
         }
         start = static_cast<size_t>(last_index_);
+    }
+    // A /u match runs over code points, so an index landing on the second half
+    // of a pair names the pair: the spec converts the code-unit index into a
+    // code-point one, and that rounds down. It is also what keeps the offset on
+    // a character boundary, which is the other half of what
+    // kSubjectAlreadyChecked promises PCRE2 -- without it PCRE2 rejected the
+    // offset outright, and that rejection used to read as "no match".
+    if (unicode_ && start > 0 && start < subject.size() &&
+        subject[start] >= 0xDC00 && subject[start] <= 0xDFFF &&
+        subject[start - 1] >= 0xD800 && subject[start - 1] <= 0xDBFF) {
+        start--;
     }
 
     uint32_t capture_count = 0;
@@ -2730,7 +2773,7 @@ Value RegExp::exec(const std::string& str, const String* cell) {
         if (!md) return Value::null();
 
         int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
-                           start, 0, md, resource_exhausted_);
+                           start, kSubjectAlreadyChecked, md, resource_exhausted_);
 
         if (rc >= 0) {
             PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
