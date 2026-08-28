@@ -69,16 +69,15 @@ void FunctionExecutable::adopt_body(std::unique_ptr<ASTNode> node) {
     owned_body_ = std::move(node);
     unit_ = ExecutableRef<ScriptUnit>();
     body_ = owned_body_.get();
-    if (body_) body_start_ = body_->get_start();
+    if (body_) { body_start_ = body_->get_start(); body_end_offset_ = body_->get_end().offset; }
     body_has_use_strict = opens_with_use_strict(body_);
 }
 
-void FunctionExecutable::defer_body(const ExecutableRef<ScriptUnit>& unit, uint32_t tok_first,
+void FunctionExecutable::defer_body(const ExecutableRef<ScriptUnit>& unit,
                                    bool strict, bool is_generator, bool is_async) {
     owned_body_.reset();
     unit_ = unit;
     body_ = nullptr;
-    body_tok_first_ = tok_first;
     body_deferred_ = true;
     deferred_strict_ = strict;
     deferred_generator_ = is_generator;
@@ -92,8 +91,12 @@ ASTNode* FunctionExecutable::ensure_body() const {
     // Deliberately not adopt_body: that clears unit_, and the unit still backs
     // the source text this executable reports. The tree is owned outright from
     // here on -- the token range has done its job.
-    auto parsed = unit_->parse_body_at(body_tok_first_, deferred_strict_,
-                                       deferred_generator_, deferred_async_);
+    // Lexed back out of the source it came from, using the range recorded when
+    // the body was attached. The token stream that produced it does not have to
+    // still exist -- which is the point: for a multi-megabyte script it ran to
+    // tens of megabytes and was kept for the life of the program.
+    auto parsed = unit_->parse_body_from_source(body_start_, body_end_offset_, deferred_strict_,
+                                                deferred_generator_, deferred_async_);
     if (!parsed) {
         // Left deferred on purpose. A rebuild that did not finish is not the
         // same thing as a function without a body, and whoever asked has to be
@@ -106,9 +109,8 @@ ASTNode* FunctionExecutable::ensure_body() const {
     }
     owned_body_ = std::move(parsed);
     body_ = owned_body_.get();
-    if (body_) body_start_ = body_->get_start();
+    if (body_) { body_start_ = body_->get_start(); body_end_offset_ = body_->get_end().offset; }
     body_deferred_ = false;
-    body_tok_first_ = 0;
     return body_;
 }
 
@@ -116,7 +118,7 @@ void FunctionExecutable::borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTN
     owned_body_.reset();
     unit_ = unit;
     body_ = node;
-    if (node) body_start_ = node->get_start();
+    if (node) { body_start_ = node->get_start(); body_end_offset_ = node->get_end().offset; }
     body_has_use_strict = opens_with_use_strict(body_);
 }
 

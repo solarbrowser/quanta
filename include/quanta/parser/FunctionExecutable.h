@@ -101,10 +101,13 @@ private:
     mutable std::unique_ptr<ASTNode> owned_body_;  // set only by adopt_body/ensure_body
     ExecutableRef<ScriptUnit> unit_;           // set only by borrow_body
     mutable ASTNode* body_ = nullptr;
-    // Where the body starts in unit_'s token stream, when it was deferred.
-    // Only the opening index is kept: parse_body_at reads to the matching
-    // brace itself, so an end index would be a second copy of the same fact.
-    mutable uint32_t body_tok_first_ = 0;
+    // Where the body ENDS in unit_'s source. Its start is body_start_ below,
+    // recorded for its own reasons; the two together are what a deferred body
+    // is rebuilt from. This used to be an index into the unit's token stream,
+    // which meant that stream had to be kept for the life of the program --
+    // tens of megabytes for a large script, against the few bytes the source
+    // range costs.
+    mutable uint32_t body_end_offset_ = 0;
     // Where the body begins in the source. Recorded when the body is attached
     // rather than read back off it, so a stack frame can say where a function
     // is without the tree still being there to ask -- which is the one thing
@@ -129,12 +132,15 @@ public:
     // dangling body behind.
     void adopt_body(std::unique_ptr<ASTNode> node);
     void borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTNode* node);
-    // Third form: keep the unit and the token range the body occupies in it,
+    // Third form: keep the unit and the source range the body occupies in it,
     // but not the body. Only ever used for a LEAF body -- one holding no
     // nested literal -- because materializing rebuilds the subtree, and a
     // rebuilt inner literal would be a different node from the one its
     // executable is cached on.
-    void defer_body(const ExecutableRef<ScriptUnit>& unit, uint32_t tok_first,
+    // The range comes from the body that is being dropped: adopt_body and
+    // borrow_body both record it, so it is already known by the time anyone
+    // decides to let the tree go.
+    void defer_body(const ExecutableRef<ScriptUnit>& unit,
                     bool strict, bool is_generator, bool is_async);
     // Reads the body, parsing it back from the unit's tokens if it was
     // deferred. Every consumer that needs a tree must come through here;

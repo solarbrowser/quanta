@@ -341,8 +341,7 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
     if (!exe || !lit->body_is_leaf() || !lit->has_body_token_range()) return;
     ScriptUnit* unit = lit->owning_unit();
     if (!unit || !unit->can_reparse_bodies() || !lit->get_body()) return;
-    exe->defer_body(ExecutableRef<ScriptUnit>(unit), lit->body_token_first(),
-                    strict, is_generator, is_async);
+    exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async);
     const_cast<Literal*>(lit)->release_body();
 }
 

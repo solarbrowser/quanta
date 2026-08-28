@@ -107,9 +107,10 @@ ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
     // The literals inside recorded ranges into this text, so the unit keeps it.
     unit->set_source(source_);
     unit->set_root(std::move(program));
-    // Handed over last: nothing reads the sequence through the parser after
-    // the parse, and the tree's own token ranges index into it.
-    unit->set_tokens(std::move(tokens_));
+    // The token stream is NOT handed over. A deferred body is lexed back out
+    // of the source above, so keeping the stream would be keeping a second,
+    // far larger copy of the same text: for a three-megabyte script it runs to
+    // tens of megabytes, and it was being kept for the life of the program.
     return unit;
 }
 

@@ -43,24 +43,21 @@ public:
     // it rather than each carrying its own copy of their own source: a nested
     // function's text is contained in every ancestor's, so copying meant the
     // same bytes stored once per nesting level.
-    const std::string& source() const { return source_; }
+    const std::string& source() const { return source_ ? *source_ : empty_source(); }
+    // The buffer itself, for a re-lex that must not copy it.
+    const std::shared_ptr<const std::string>& source_ref() const { return source_; }
 
-    // The token stream the tree was parsed from, kept so a function body can
-    // be parsed later from the tokens it already occupies instead of being
-    // held as a tree the whole time. Cheap next to what it replaces: for a
-    // 3MB script the tokens come to single-digit megabytes.
-    const TokenSequence& tokens() const { return tokens_; }
-    // Whether a body can be rebuilt out of this unit. Not every unit keeps its
-    // tokens -- `new Function` moves them into its parser and hands the unit
-    // only the tree -- and a deferred body there would re-parse an empty
-    // stream and come back as an empty function.
-    bool can_reparse_bodies() const { return tokens_.size() > 0 || body_parser_ != nullptr; }
-    void set_tokens(TokenSequence t) { tokens_ = std::move(t); }
-    void set_source(std::string src) { source_ = std::move(src); }
+    // Whether a body can be rebuilt out of this unit. The source is what it is
+    // rebuilt from, so a unit without one -- there is no path that makes a
+    // deferred body without also recording the text it came from, but the
+    // check costs nothing -- must keep its trees.
+    bool can_reparse_bodies() const { return source_ && !source_->empty(); }
+    void set_source(std::string src) { source_ = std::make_shared<const std::string>(std::move(src)); }
     std::string source_range(uint32_t start, uint32_t end) const {
-        if (start >= source_.size() || end <= start) return std::string();
-        if (end > source_.size()) end = static_cast<uint32_t>(source_.size());
-        return source_.substr(start, end - start);
+        const std::string& s = source();
+        if (start >= s.size() || end <= start) return std::string();
+        if (end > s.size()) end = static_cast<uint32_t>(s.size());
+        return s.substr(start, end - start);
     }
     // Only used to hand the tree over once the parse that BuildScope wrapped
     // has finished -- the unit must already exist for the stamping to work.
@@ -87,14 +84,14 @@ public:
     // keeps taking its own clone.
     static ScriptUnit* building() { return building_; }
 
-    // Re-parses one function body out of this unit's own tokens. Backs
+    // Re-parses one function body out of this unit's own SOURCE. Backs
     // FunctionExecutable's deferred bodies: a leaf body is dropped once its
-    // analyses are cached and rebuilt here the first time anything needs the
-    // tree. The parser is built once per unit and reused -- Parser takes its
-    // TokenSequence by value, so constructing one per body would copy the
-    // whole stream every time.
-    std::unique_ptr<ASTNode> parse_body_at(uint32_t tok_first, bool strict,
-                                           bool is_generator, bool is_async);
+    // analyses are cached and lexed back here the first time anything needs
+    // the tree. Positions stay absolute -- the lexer is pointed at the same
+    // buffer the whole script was parsed from and told where to stop -- so the
+    // rebuilt tree reports the same lines the original did.
+    std::unique_ptr<ASTNode> parse_body_from_source(const Position& start, uint32_t end_offset,
+                                                    bool strict, bool is_generator, bool is_async);
 
     // Where a function literal's executable is remembered. It used to live on
     // the literal's own node, which made the node's ADDRESS the key -- and a
@@ -127,10 +124,9 @@ private:
     ~ScriptUnit();
 
     std::unique_ptr<ASTNode> root_;
-    std::string source_;
-    TokenSequence tokens_;
+    std::shared_ptr<const std::string> source_;
+    static const std::string& empty_source() { static const std::string e; return e; }
     // Built on the first deferred body this unit is asked for, then reused.
-    std::unique_ptr<Parser> body_parser_;
     // See executable_at.
     std::unordered_map<uint32_t, ExecutableRef<FunctionExecutable>> executables_;
     std::unordered_map<uint32_t, ExecutableRef<FunctionExecutable>> ctor_executables_;

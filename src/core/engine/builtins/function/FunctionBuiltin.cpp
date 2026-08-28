@@ -135,11 +135,6 @@ void register_function_builtins(Context& ctx) {
                     func->borrow_body_from(unit, func_expr->get_body());
                     unit->set_source(func_code);
                     unit->set_root(std::move(expr));
-                    // Same handover parse_program_unit does: without it the
-                    // literals in this body record ranges into a stream the
-                    // unit does not have, and a deferred body would re-parse
-                    // nothing at all.
-                    unit->set_tokens(parser.take_tokens());
                     func->set_source_text(toString_src);
 
                     // Detect "use strict" directive via body string

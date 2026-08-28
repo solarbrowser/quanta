@@ -1,5 +1,6 @@
 #include "quanta/parser/ScriptUnit.h"
 #include "quanta/parser/Parser.h"
+#include "quanta/lexer/Lexer.h"
 
 #include "quanta/parser/AST.h"
 
@@ -20,19 +21,20 @@ void ScriptUnit::set_root(std::unique_ptr<ASTNode> root) {
     root_ = std::move(root);
 }
 
-std::unique_ptr<ASTNode> ScriptUnit::parse_body_at(uint32_t tok_first, bool strict,
-                                                   bool is_generator, bool is_async) {
-    // Parser takes its TokenSequence by value, so one per body would copy the
-    // whole stream every time -- built once here and reused.
-    // MOVED, not copied: Parser takes its TokenSequence by value, and for a
-    // bundle the stream runs to tens of megabytes -- a second copy costs more
-    // than every body it would let us drop. The unit reads the stream back
-    // through the parser from here on, which is why can_reparse_bodies() also
-    // accepts a parser that already holds it.
-    if (!body_parser_) body_parser_ = std::make_unique<Parser>(std::move(tokens_));
-    // Stamped with this unit, exactly as the original parse was.
+std::unique_ptr<ASTNode> ScriptUnit::parse_body_from_source(const Position& start,
+                                                            uint32_t end_offset, bool strict,
+                                                            bool is_generator, bool is_async) {
+    if (!source_ || end_offset <= start.offset || end_offset > source_->size()) return nullptr;
+    Lexer::LexerOptions opts;
+    opts.strict_mode = strict;
+    Lexer lexer(source_, opts);
+    TokenSequence toks = lexer.tokenize_range(start, end_offset);
+    if (toks.size() <= 1) return nullptr;
+    Parser parser(std::move(toks));
+    parser.set_source(*source_);
     BuildScope scope(this);
-    return body_parser_->parse_body_at(tok_first, strict, is_generator, is_async);
+    return parser.parse_body_at(0, strict, is_generator, is_async);
 }
+
 
 }  // namespace Quanta

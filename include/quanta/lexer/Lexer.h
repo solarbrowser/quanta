@@ -8,6 +8,7 @@
 #define QUANTA_LEXER_H
 
 #include "quanta/lexer/Token.h"
+#include <memory>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -50,12 +51,25 @@ private:
 public:
     explicit Lexer(const std::string& source);
     Lexer(const std::string& source, const LexerOptions& options);
+    // Shares the caller's buffer rather than copying it. Re-lexing one function
+    // body out of a script must not copy the script to do it.
+    Lexer(std::shared_ptr<const std::string> source, const LexerOptions& options);
     
     TokenSequence tokenize();
+    // Tokenizes only [from.offset, end_offset) of the source. Offsets and
+    // line/column stay absolute -- the tokens address the same buffer the
+    // whole script does -- which is what lets one function body be lexed back
+    // on demand instead of the token stream for the whole script being kept
+    // for the life of the program.
+    TokenSequence tokenize_range(const Position& from, size_t end_offset);
     Token next_token();
     
     Position get_position() const { return current_position_; }
     void reset(size_t position = 0);
+    // reset() walks the source from the start to work out the line and column
+    // of `position`. A caller that already knows them -- a deferred body
+    // recorded its own start -- must not pay that walk once per body.
+    void reset_to(const Position& at);
     
     const std::vector<std::string>& get_errors() const { return errors_; }
     bool has_errors() const { return !errors_.empty(); }
