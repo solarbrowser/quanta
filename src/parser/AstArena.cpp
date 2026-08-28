@@ -27,8 +27,12 @@ constexpr size_t kGranularity = 16;
 constexpr size_t kNumClasses = AstArena::kMaxNodeSize / kGranularity;  // 1..192
 
 struct Chunk {
-    Chunk* next_in_class;
-    Chunk** prev_link;      // where the pointer to this chunk lives, so unlinking is O(1)
+    // Linked only while it has room. A chunk that fills up leaves the list, so
+    // allocation never walks past chunks it cannot use -- with the chunks kept
+    // in one list that walk grew with the parse and became the single largest
+    // cost of compiling a large script.
+    Chunk* next_open;
+    Chunk** prev_link;      // where the pointer to this chunk lives; null when not listed
     void* free_list;        // freed nodes, threaded through their own first word
     uint32_t bump;          // bytes of payload handed out and never reclaimed
     uint32_t live;          // nodes currently allocated out of this chunk
@@ -62,26 +66,45 @@ inline uint8_t* payload_of(Chunk* c) {
     return reinterpret_cast<uint8_t*>(c) + kHeaderSize;
 }
 
+void link_open(Chunk* c) {
+    const size_t ci = c->class_index;
+    c->next_open = g_open[ci];
+    c->prev_link = &g_open[ci];
+    if (c->next_open) c->next_open->prev_link = &c->next_open;
+    g_open[ci] = c;
+}
+
+void unlink_open(Chunk* c) {
+    if (!c->prev_link) return;
+    *c->prev_link = c->next_open;
+    if (c->next_open) c->next_open->prev_link = c->prev_link;
+    c->prev_link = nullptr;
+    c->next_open = nullptr;
+}
+
+// Room left, either reclaimed or never handed out.
+inline bool has_room(const Chunk* c) {
+    return c->free_list != nullptr || c->bump + c->node_size <= kPayload;
+}
+
 Chunk* new_chunk(size_t class_index, size_t node_size) {
     void* raw = std::aligned_alloc(kChunkSize, kChunkSize);
     if (!raw) return nullptr;
     auto* c = static_cast<Chunk*>(raw);
-    c->next_in_class = g_open[class_index];
-    c->prev_link = &g_open[class_index];
-    if (c->next_in_class) c->next_in_class->prev_link = &c->next_in_class;
-    g_open[class_index] = c;
-    registry().insert(reinterpret_cast<uintptr_t>(c));
+    c->next_open = nullptr;
+    c->prev_link = nullptr;
     c->free_list = nullptr;
     c->bump = 0;
     c->live = 0;
     c->node_size = static_cast<uint32_t>(node_size);
     c->class_index = static_cast<uint32_t>(class_index);
+    registry().insert(reinterpret_cast<uintptr_t>(c));
+    link_open(c);
     return c;
 }
 
 void release(Chunk* c) {
-    *c->prev_link = c->next_in_class;
-    if (c->next_in_class) c->next_in_class->prev_link = c->prev_link;
+    unlink_open(c);
     registry().erase(reinterpret_cast<uintptr_t>(c));
     std::free(c);
 }
@@ -93,23 +116,21 @@ void* AstArena::take(size_t bytes) {
     const size_t node_size = (bytes + kGranularity - 1) & ~(kGranularity - 1);
     const size_t ci = node_size / kGranularity - 1;
 
-    for (Chunk* c = g_open[ci]; c; c = c->next_in_class) {
+    // The head is the only chunk ever looked at: it has room by construction,
+    // and it leaves the list the moment it stops having any.
+    if (Chunk* c = g_open[ci]) {
+        void* p;
         if (c->free_list) {
-            void* p = c->free_list;
+            p = c->free_list;
             c->free_list = *reinterpret_cast<void**>(p);
-            ++c->live;
-            ++g_live_nodes;
-            return p;
-        }
-        if (c->bump + node_size <= kPayload) {
-            void* p = payload_of(c) + c->bump;
+        } else {
+            p = payload_of(c) + c->bump;
             c->bump += static_cast<uint32_t>(node_size);
-            ++c->live;
-            ++g_live_nodes;
-            return p;
         }
-        // Full and with nothing freed yet: it will come back when something is
-        // freed out of it, so leave it linked and try the next one.
+        ++c->live;
+        ++g_live_nodes;
+        if (!has_room(c)) unlink_open(c);
+        return p;
     }
     Chunk* c = new_chunk(ci, node_size);
     // Out of memory is out of memory: falling back to the general allocator
@@ -133,11 +154,14 @@ void AstArena::give(void* p) noexcept {
         return;
     }
     Chunk* c = reinterpret_cast<Chunk*>(base);
+    const bool was_full = !has_room(c);
     *reinterpret_cast<void**>(p) = c->free_list;
     c->free_list = p;
     --c->live;
     --g_live_nodes;
-    if (c->live == 0) release(c);
+    if (c->live == 0) { release(c); return; }
+    // It has room again, so it can be allocated from again.
+    if (was_full) link_open(c);
 }
 
 AstArena::Stats AstArena::stats() {
