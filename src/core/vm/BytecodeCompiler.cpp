@@ -4232,7 +4232,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             if (!compiler.pattern_is_emittable(lit, true)) return nullptr;
             if (!compiler.emit_pattern_bind(lit, true, false)) return nullptr;
         } else {
-            compiler.emit_write_local(rest_name, false);
+            // Declaring, not assigning: the rest parameter's binding is created
+            // here, like every other parameter's. Assigning instead reached for
+            // a binding nothing had made, which only surfaced once some other
+            // parameter had a default -- that is what puts the list in an
+            // Environment, where the difference between creating a slot and
+            // writing one is observable.
+            compiler.emit_write_local(rest_name, /*is_declaration=*/true);
         }
     }
     if (params_tdz) {
