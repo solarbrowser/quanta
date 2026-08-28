@@ -77,6 +77,7 @@ private:
     // immediately after that body's parse returns, before any nested parse
     // can overwrite it.
     size_t last_body_tok_first_ = 0;
+    uint32_t last_body_src_first_ = 0;
     size_t last_body_tok_last_ = 0;
     ParseOptions options_;
     std::vector<ParseError> errors_;

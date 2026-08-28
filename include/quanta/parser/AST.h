@@ -1055,11 +1055,16 @@ private:
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
+    // Where the body opens in the source. The executable cache is keyed on
+    // this rather than on the token index: a body parsed back from the
+    // source is lexed into its own sequence, so its token indices are not
+    // the ones the first parse handed out, but its offsets are.
+    uint32_t body_src_first_ = 0;
     uint32_t body_tok_last_ = 0;
     // Whether this body holds no nested function literal. Only a leaf is
     // released: releasing an outer body means re-parsing every body inside it
-    // on the next call, and that was measured at ~5% of cycles for the last
-    // 17MB -- a trade this engine does not want.
+    // on the next call, and that was measured to cost more time than the
+    // memory it returns is worth -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1101,8 +1106,9 @@ public:
     bool has_source_range() const { return src_end_ > src_start_; }
     // Where this literal's body sits in the owning unit's token stream, so the
     // body can be parsed from there later instead of being kept as a tree.
-    void set_body_token_range(size_t first, size_t last) {
+    void set_body_token_range(size_t first, size_t last, uint32_t src_first) {
         body_tok_first_ = static_cast<uint32_t>(first);
+        body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
@@ -1110,9 +1116,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the token range to rebuild it from.
-    // Only valid for a leaf: an inner literal's node is where its executable
-    // is cached, and a rebuilt one would not be the same node.
+    // Drops the body subtree, leaving the range to rebuild it from. Bodies
+    // holding inner literals rebuild correctly too, since an executable is
+    // found by source offset rather than by node, but only a leaf is dropped:
+    // see body_is_leaf_ for the trade.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
@@ -1135,20 +1142,20 @@ public:
     ScriptUnit* source_unit() const { return owning_unit_; }
     uint32_t source_start() const { return src_start_; }
     uint32_t source_end() const { return src_end_; }
-    // Keyed on the token the body opens at, not on this node's address: a body
-    // parsed back from the tokens is a different node for the same
+    // Keyed on where the body opens in the source, not on this node's address:
+    // a body parsed back from the source is a different node for the same
     // declaration, and the executable has to be the same one either way. A
-    // literal with no token range of its own keeps the node-local copy.
+    // literal with no body range of its own keeps the node-local copy.
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const {
         if (owning_unit_ && has_body_token_range()) {
-            return owning_unit_->executable_at(body_tok_first_);
+            return owning_unit_->executable_at(body_src_first_);
         }
         return cached_executable_;
     }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
         if (owning_unit_ && has_body_token_range()) {
-            owning_unit_->set_executable_at(body_tok_first_, std::move(exe));
+            owning_unit_->set_executable_at(body_src_first_, std::move(exe));
             return;
         }
         cached_executable_ = std::move(exe);
@@ -1169,11 +1176,16 @@ private:
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
+    // Where the body opens in the source. The executable cache is keyed on
+    // this rather than on the token index: a body parsed back from the
+    // source is lexed into its own sequence, so its token indices are not
+    // the ones the first parse handed out, but its offsets are.
+    uint32_t body_src_first_ = 0;
     uint32_t body_tok_last_ = 0;
     // Whether this body holds no nested function literal. Only a leaf is
     // released: releasing an outer body means re-parsing every body inside it
-    // on the next call, and that was measured at ~5% of cycles for the last
-    // 17MB -- a trade this engine does not want.
+    // on the next call, and that was measured to cost more time than the
+    // memory it returns is worth -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1218,13 +1230,13 @@ public:
     // Same key, its own table -- a class site has both.
     const ExecutableRef<FunctionExecutable>& get_cached_ctor_exe() const {
         if (owning_unit_ && has_body_token_range()) {
-            return owning_unit_->ctor_executable_at(body_tok_first_);
+            return owning_unit_->ctor_executable_at(body_src_first_);
         }
         return cached_ctor_exe_;
     }
     void set_cached_ctor_exe(ExecutableRef<FunctionExecutable> e) const {
         if (owning_unit_ && has_body_token_range()) {
-            owning_unit_->set_ctor_executable_at(body_tok_first_, std::move(e));
+            owning_unit_->set_ctor_executable_at(body_src_first_, std::move(e));
             return;
         }
         cached_ctor_exe_ = std::move(e);
@@ -1242,8 +1254,9 @@ public:
     bool has_source_range() const { return src_end_ > src_start_; }
     // Where this literal's body sits in the owning unit's token stream, so the
     // body can be parsed from there later instead of being kept as a tree.
-    void set_body_token_range(size_t first, size_t last) {
+    void set_body_token_range(size_t first, size_t last, uint32_t src_first) {
         body_tok_first_ = static_cast<uint32_t>(first);
+        body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
@@ -1251,9 +1264,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the token range to rebuild it from.
-    // Only valid for a leaf: an inner literal's node is where its executable
-    // is cached, and a rebuilt one would not be the same node.
+    // Drops the body subtree, leaving the range to rebuild it from. Bodies
+    // holding inner literals rebuild correctly too, since an executable is
+    // found by source offset rather than by node, but only a leaf is dropped:
+    // see body_is_leaf_ for the trade.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
@@ -1307,11 +1321,16 @@ private:
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
+    // Where the body opens in the source. The executable cache is keyed on
+    // this rather than on the token index: a body parsed back from the
+    // source is lexed into its own sequence, so its token indices are not
+    // the ones the first parse handed out, but its offsets are.
+    uint32_t body_src_first_ = 0;
     uint32_t body_tok_last_ = 0;
     // Whether this body holds no nested function literal. Only a leaf is
     // released: releasing an outer body means re-parsing every body inside it
-    // on the next call, and that was measured at ~5% of cycles for the last
-    // 17MB -- a trade this engine does not want.
+    // on the next call, and that was measured to cost more time than the
+    // memory it returns is worth -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1345,8 +1364,9 @@ public:
     bool has_source_range() const { return src_end_ > src_start_; }
     // Where this literal's body sits in the owning unit's token stream, so the
     // body can be parsed from there later instead of being kept as a tree.
-    void set_body_token_range(size_t first, size_t last) {
+    void set_body_token_range(size_t first, size_t last, uint32_t src_first) {
         body_tok_first_ = static_cast<uint32_t>(first);
+        body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
@@ -1424,11 +1444,16 @@ private:
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
+    // Where the body opens in the source. The executable cache is keyed on
+    // this rather than on the token index: a body parsed back from the
+    // source is lexed into its own sequence, so its token indices are not
+    // the ones the first parse handed out, but its offsets are.
+    uint32_t body_src_first_ = 0;
     uint32_t body_tok_last_ = 0;
     // Whether this body holds no nested function literal. Only a leaf is
     // released: releasing an outer body means re-parsing every body inside it
-    // on the next call, and that was measured at ~5% of cycles for the last
-    // 17MB -- a trade this engine does not want.
+    // on the next call, and that was measured to cost more time than the
+    // memory it returns is worth -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1490,8 +1515,9 @@ public:
     bool has_source_range() const { return src_end_ > src_start_; }
     // Where this literal's body sits in the owning unit's token stream, so the
     // body can be parsed from there later instead of being kept as a tree.
-    void set_body_token_range(size_t first, size_t last) {
+    void set_body_token_range(size_t first, size_t last, uint32_t src_first) {
         body_tok_first_ = static_cast<uint32_t>(first);
+        body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
@@ -1499,9 +1525,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the token range to rebuild it from.
-    // Only valid for a leaf: an inner literal's node is where its executable
-    // is cached, and a rebuilt one would not be the same node.
+    // Drops the body subtree, leaving the range to rebuild it from. Bodies
+    // holding inner literals rebuild correctly too, since an executable is
+    // found by source offset rather than by node, but only a leaf is dropped:
+    // see body_is_leaf_ for the trade.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
@@ -1548,20 +1575,20 @@ public:
     // Built lazily by FunctionExpression::evaluate on first evaluation of
     // this node; every later evaluation reuses the same shared_ptr instead
     // of cloning body_/params_ again.
-    // Keyed on the token the body opens at, not on this node's address: a body
-    // parsed back from the tokens is a different node for the same
+    // Keyed on where the body opens in the source, not on this node's address:
+    // a body parsed back from the source is a different node for the same
     // declaration, and the executable has to be the same one either way. A
-    // literal with no token range of its own keeps the node-local copy.
+    // literal with no body range of its own keeps the node-local copy.
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const {
         if (owning_unit_ && has_body_token_range()) {
-            return owning_unit_->executable_at(body_tok_first_);
+            return owning_unit_->executable_at(body_src_first_);
         }
         return cached_executable_;
     }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
         if (owning_unit_ && has_body_token_range()) {
-            owning_unit_->set_executable_at(body_tok_first_, std::move(exe));
+            owning_unit_->set_executable_at(body_src_first_, std::move(exe));
             return;
         }
         cached_executable_ = std::move(exe);
@@ -1592,11 +1619,16 @@ private:
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
+    // Where the body opens in the source. The executable cache is keyed on
+    // this rather than on the token index: a body parsed back from the
+    // source is lexed into its own sequence, so its token indices are not
+    // the ones the first parse handed out, but its offsets are.
+    uint32_t body_src_first_ = 0;
     uint32_t body_tok_last_ = 0;
     // Whether this body holds no nested function literal. Only a leaf is
     // released: releasing an outer body means re-parsing every body inside it
-    // on the next call, and that was measured at ~5% of cycles for the last
-    // 17MB -- a trade this engine does not want.
+    // on the next call, and that was measured to cost more time than the
+    // memory it returns is worth -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1636,8 +1668,9 @@ public:
     bool has_source_range() const { return src_end_ > src_start_; }
     // Where this literal's body sits in the owning unit's token stream, so the
     // body can be parsed from there later instead of being kept as a tree.
-    void set_body_token_range(size_t first, size_t last) {
+    void set_body_token_range(size_t first, size_t last, uint32_t src_first) {
         body_tok_first_ = static_cast<uint32_t>(first);
+        body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
@@ -1645,9 +1678,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the token range to rebuild it from.
-    // Only valid for a leaf: an inner literal's node is where its executable
-    // is cached, and a rebuilt one would not be the same node.
+    // Drops the body subtree, leaving the range to rebuild it from. Bodies
+    // holding inner literals rebuild correctly too, since an executable is
+    // found by source offset rather than by node, but only a leaf is dropped:
+    // see body_is_leaf_ for the trade.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
@@ -1670,20 +1704,20 @@ public:
     ScriptUnit* source_unit() const { return owning_unit_; }
     uint32_t source_start() const { return src_start_; }
     uint32_t source_end() const { return src_end_; }
-    // Keyed on the token the body opens at, not on this node's address: a body
-    // parsed back from the tokens is a different node for the same
+    // Keyed on where the body opens in the source, not on this node's address:
+    // a body parsed back from the source is a different node for the same
     // declaration, and the executable has to be the same one either way. A
-    // literal with no token range of its own keeps the node-local copy.
+    // literal with no body range of its own keeps the node-local copy.
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const {
         if (owning_unit_ && has_body_token_range()) {
-            return owning_unit_->executable_at(body_tok_first_);
+            return owning_unit_->executable_at(body_src_first_);
         }
         return cached_executable_;
     }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
         if (owning_unit_ && has_body_token_range()) {
-            owning_unit_->set_executable_at(body_tok_first_, std::move(exe));
+            owning_unit_->set_executable_at(body_src_first_, std::move(exe));
             return;
         }
         cached_executable_ = std::move(exe);
@@ -1734,11 +1768,16 @@ private:
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
+    // Where the body opens in the source. The executable cache is keyed on
+    // this rather than on the token index: a body parsed back from the
+    // source is lexed into its own sequence, so its token indices are not
+    // the ones the first parse handed out, but its offsets are.
+    uint32_t body_src_first_ = 0;
     uint32_t body_tok_last_ = 0;
     // Whether this body holds no nested function literal. Only a leaf is
     // released: releasing an outer body means re-parsing every body inside it
-    // on the next call, and that was measured at ~5% of cycles for the last
-    // 17MB -- a trade this engine does not want.
+    // on the next call, and that was measured to cost more time than the
+    // memory it returns is worth -- a trade this engine does not want.
     bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
@@ -1752,20 +1791,20 @@ private:
     ScriptUnit* owning_unit_ = ScriptUnit::building();
 
 public:
-    // Keyed on the token the body opens at, not on this node's address: a body
-    // parsed back from the tokens is a different node for the same
+    // Keyed on where the body opens in the source, not on this node's address:
+    // a body parsed back from the source is a different node for the same
     // declaration, and the executable has to be the same one either way. A
-    // literal with no token range of its own keeps the node-local copy.
+    // literal with no body range of its own keeps the node-local copy.
     const ExecutableRef<FunctionExecutable>& get_cached_executable() const {
         if (owning_unit_ && has_body_token_range()) {
-            return owning_unit_->executable_at(body_tok_first_);
+            return owning_unit_->executable_at(body_src_first_);
         }
         return cached_executable_;
     }
     ScriptUnit* owning_unit() const { return owning_unit_; }
     void set_cached_executable(ExecutableRef<FunctionExecutable> exe) const {
         if (owning_unit_ && has_body_token_range()) {
-            owning_unit_->set_executable_at(body_tok_first_, std::move(exe));
+            owning_unit_->set_executable_at(body_src_first_, std::move(exe));
             return;
         }
         cached_executable_ = std::move(exe);
@@ -1797,8 +1836,9 @@ public:
     bool has_source_range() const { return src_end_ > src_start_; }
     // Where this literal's body sits in the owning unit's token stream, so the
     // body can be parsed from there later instead of being kept as a tree.
-    void set_body_token_range(size_t first, size_t last) {
+    void set_body_token_range(size_t first, size_t last, uint32_t src_first) {
         body_tok_first_ = static_cast<uint32_t>(first);
+        body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
@@ -1806,9 +1846,10 @@ public:
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the token range to rebuild it from.
-    // Only valid for a leaf: an inner literal's node is where its executable
-    // is cached, and a rebuilt one would not be the same node.
+    // Drops the body subtree, leaving the range to rebuild it from. Bodies
+    // holding inner literals rebuild correctly too, since an executable is
+    // found by source offset rather than by node, but only a leaf is dropped:
+    // see body_is_leaf_ for the trade.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets

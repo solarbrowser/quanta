@@ -3788,6 +3788,7 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
     if (is_function_body) {
         last_body_tok_first_ = body_tok_first;
         last_body_tok_last_ = current_token_index_;
+        last_body_src_first_ = static_cast<uint32_t>(start.offset);
     }
     return std::make_unique<BlockStatement>(std::move(statements), start, end);
 }
@@ -5452,7 +5453,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         start, end, false, is_generator
     );
     fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
-    if (!detached_tokens_) fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+    if (!detached_tokens_) fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     return fn_decl;
 }
 
@@ -6770,7 +6771,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         start, get_current_position(), is_generator, is_async
     );
     function_expr->set_source_range(method_src_start, method_src_end);
-    if (!detached_tokens_) function_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+    if (!detached_tokens_) function_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
 
     Position end = get_current_position();
     auto method = std::make_unique<MethodDefinition>(
@@ -7122,7 +7123,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         start, end, is_generator
     );
     fn_expr->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
-    if (!detached_tokens_) fn_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+    if (!detached_tokens_) fn_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     return fn_expr;
 }
 
@@ -7420,7 +7421,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             start, end, true, true
         );
         gen_expr->set_source_range(src_text_start, src_text_end);
-        if (!detached_tokens_) gen_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+        if (!detached_tokens_) gen_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
         return gen_expr;
     }
     auto async_expr = std::make_unique<AsyncFunctionExpression>(
@@ -7429,7 +7430,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         start, end
     );
     async_expr->set_source_range(src_text_start, src_text_end);
-    if (!detached_tokens_) async_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+    if (!detached_tokens_) async_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     return async_expr;
 }
 
@@ -7716,7 +7717,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         start, end, true, is_generator
     );
     async_fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
-    if (!detached_tokens_) async_fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+    if (!detached_tokens_) async_fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     return async_fn_decl;
 }
 
@@ -7967,7 +7968,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             : last.get_end().offset;
         arrow_expr->set_source_range(start.offset, src_end);
         if (has_block_body) {
-            if (!detached_tokens_) arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_);
+            if (!detached_tokens_) arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
         } else {
             // No range to record, but it still joins the innermost-first chain
             // the leaf test walks -- otherwise a body holding only a concise
