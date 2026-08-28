@@ -247,7 +247,13 @@ static bool regexp_has_shortcut_override(Object* r) {
     return false;
 }
 
-static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str, Value& out) {
+// `cell` is the subject's own string cell when the caller has one. It matters
+// twice over: a cell rebuilt from the bytes copies the whole subject on every
+// call, and the decoded units are remembered per cell -- so rebuilding one
+// turned a loop of matches over one subject into a fresh decode of that
+// subject for every match.
+static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str, Value& out,
+                                 const String* cell = nullptr) {
     Value exec_fn = r->get_property("exec");
     if (ctx.has_exception()) return false;
     if (!exec_fn.is_function()) {
@@ -255,11 +261,12 @@ static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str
             ctx.throw_type_error("RegExpExec requires a RegExp or an object with a callable exec");
             return false;
         }
-        out = regexp_builtin_exec(ctx, r, str);
+        out = regexp_builtin_exec(ctx, r, str, cell);
         if (ctx.has_exception()) return false;
         return true;
     }
-    out = exec_fn.as_function()->call(ctx, {Value(str)}, Value(r));
+    out = exec_fn.as_function()->call(
+        ctx, {cell ? Value(const_cast<String*>(cell)) : Value(str)}, Value(r));
     if (ctx.has_exception()) return false;
     if (!out.is_null() && !out.is_object() && !out.is_function()) {
         ctx.throw_type_error("RegExpExec: exec must return Object or null");
@@ -646,7 +653,7 @@ void register_regexp_builtins(Context& ctx) {
             // exec and otherwise falls back to RegExpBuiltinExec -- returning
             // false for a non-callable exec skipped the match entirely.
             Value result;
-            if (!regexp_exec_abstract(ctx, this_obj, str, result)) return Value();
+            if (!regexp_exec_abstract(ctx, this_obj, str, result, cell_t)) return Value();
             return Value(!result.is_null() && !result.is_undefined());
         }, 1);
     regexp_prototype->set_property("test", Value(regexp_test_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -662,6 +669,9 @@ void register_regexp_builtins(Context& ctx) {
             Object* this_obj = receiver.as_object_or_null();
             if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.match] requires an object this value"); return Value(); }
             Value arg0_m = args.empty() ? Value() : args[0];
+            // Borrowed so the matching below runs against the subject's own
+            // cell rather than a copy rebuilt from its bytes.
+            const String* subject_cell = arg0_m.is_string() ? arg0_m.as_string() : nullptr;
             std::string str;
             if (arg0_m.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
             else if (arg0_m.is_object() || arg0_m.is_function()) { str = arg0_m.to_property_key(); if (ctx.has_exception()) return Value(); }
@@ -712,7 +722,7 @@ void register_regexp_builtins(Context& ctx) {
             size_t match_count = 0;
             while (true) {
                 Value match;
-                if (!regexp_exec_abstract(ctx, this_obj, str, match)) return Value();
+                if (!regexp_exec_abstract(ctx, this_obj, str, match, subject_cell)) return Value();
                 if (match.is_null() || match.is_undefined()) break;
                 Object* m_obj = match.is_function() ? static_cast<Object*>(match.as_function()) : match.as_object();
                 Value matched_v = m_obj->get_element(0);
@@ -765,6 +775,9 @@ void register_regexp_builtins(Context& ctx) {
             if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.replace] requires an object this value"); return Value(); }
             // Step 3: ToString(string)
             Value arg0_r = args.size() > 0 ? args[0] : Value();
+            // Borrowed so the matching below runs against the subject's own
+            // cell rather than a copy rebuilt from its bytes.
+            const String* subject_cell = arg0_r.is_string() ? arg0_r.as_string() : nullptr;
             std::string str;
             if (arg0_r.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
             else if (arg0_r.is_object() || arg0_r.is_function()) { str = arg0_r.to_property_key(); if (ctx.has_exception()) return Value(); }
@@ -824,7 +837,7 @@ void register_regexp_builtins(Context& ctx) {
             if (!is_global) {
                 // Non-global: RegExpExec once
                 Value match;
-                if (!regexp_exec_abstract(ctx, this_obj, str, match)) return Value();
+                if (!regexp_exec_abstract(ctx, this_obj, str, match, subject_cell)) return Value();
                 if (match.is_null() || match.is_undefined()) return Value(str);
                 if (!match.is_object()) return Value(str);
                 Object* m = match.as_object();
@@ -908,7 +921,7 @@ void register_regexp_builtins(Context& ctx) {
             const size_t max_iter = str.length() + 2;
             while (safety++ < max_iter) {
                 Value match;
-                if (!regexp_exec_abstract(ctx, this_obj, str, match)) return Value();
+                if (!regexp_exec_abstract(ctx, this_obj, str, match, subject_cell)) return Value();
                 if (match.is_null()) break;
                 Object* m = match.is_function() ? static_cast<Object*>(match.as_function()) : match.as_object();
                 Value idx_v = m->get_property("index");
@@ -1015,6 +1028,9 @@ void register_regexp_builtins(Context& ctx) {
             Object* this_obj = receiver.as_object_or_null();
             if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.search] requires an object this value"); return Value(); }
             Value arg0_s = args.empty() ? Value() : args[0];
+            // Borrowed so the matching below runs against the subject's own
+            // cell rather than a copy rebuilt from its bytes.
+            const String* subject_cell = arg0_s.is_string() ? arg0_s.as_string() : nullptr;
             std::string str;
             if (arg0_s.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
             else if (arg0_s.is_object() || arg0_s.is_function()) { str = arg0_s.to_property_key(); if (ctx.has_exception()) return Value(); }
@@ -1075,6 +1091,9 @@ void register_regexp_builtins(Context& ctx) {
             Object* this_obj = receiver.as_object_or_null();
             if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.split] requires an object this value"); return Value(); }
             Value arg0_sp = args.size() > 0 ? args[0] : Value();
+            // Borrowed so the matching below runs against the subject's own
+            // cell rather than a copy rebuilt from its bytes.
+            const String* subject_cell = arg0_sp.is_string() ? arg0_sp.as_string() : nullptr;
             std::string str;
             if (arg0_sp.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
             else if (arg0_sp.is_object() || arg0_sp.is_function()) { str = arg0_sp.to_property_key(); if (ctx.has_exception()) return Value(); }
@@ -1158,7 +1177,7 @@ void register_regexp_builtins(Context& ctx) {
             // Step 16: empty string: single exec decides between [] and [""]
             if (size == 0) {
                 Value z;
-                if (!regexp_exec_abstract(ctx, splitter, str, z)) return Value();
+                if (!regexp_exec_abstract(ctx, splitter, str, z, subject_cell)) return Value();
                 if (!z.is_null()) { result->set_length(0); return Value(result.release()); }
                 result->set_element(0, Value(std::string("")));
                 result->set_length(1);
@@ -1181,7 +1200,7 @@ void register_regexp_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
                 Value z;
-                if (!regexp_exec_abstract(ctx, splitter, str, z)) return Value();
+                if (!regexp_exec_abstract(ctx, splitter, str, z, subject_cell)) return Value();
                 if (z.is_null()) {
                     q = advance_index(q);
                     continue;
