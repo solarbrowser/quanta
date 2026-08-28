@@ -5426,12 +5426,13 @@ void BytecodeCompiler::emit_u32(uint32_t v) {
 }
 
 uint16_t BytecodeCompiler::add_name(const std::string& name) {
-    for (size_t i = 0; i < names_.size(); i++) {
-        if (names_[i] == name) return static_cast<uint16_t>(i);
-    }
+    auto it = name_index_.find(name);
+    if (it != name_index_.end()) return it->second;
     if (names_.size() >= 0xFFFF) { failed_ = true; return 0; }
+    const uint16_t index = static_cast<uint16_t>(names_.size());
     names_.push_back(name);
-    return static_cast<uint16_t>(names_.size() - 1);
+    name_index_.emplace(name, index);
+    return index;
 }
 
 uint16_t BytecodeCompiler::alloc_feedback_slot() {

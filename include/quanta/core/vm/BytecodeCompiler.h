@@ -324,6 +324,10 @@ private:
     std::vector<uint8_t> code_;
     std::vector<Value> constants_;
     std::vector<std::string> names_;
+    // Where each name already sits, so add_name does not compare against every
+    // name already in the table. The table itself stays a vector because the
+    // chunk indexes into it; this only exists while the chunk is being built.
+    std::unordered_map<std::string, uint16_t> name_index_;
     std::vector<FeedbackSlot> feedback_;
     std::unordered_map<std::string, int> locals_;
     // Names declared `const` in this chunk. declare_local() only takes a name,
