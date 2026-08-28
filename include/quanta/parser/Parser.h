@@ -79,6 +79,31 @@ private:
     size_t last_body_tok_first_ = 0;
     uint32_t last_body_src_first_ = 0;
     size_t last_body_tok_last_ = 0;
+
+    // Subtree facts gathered on the way up (see SubtreeFlags). A bit is set
+    // where the parser recognises the construct; whoever closes a subtree
+    // reads what accumulated inside it, hands it to the node, and passes on
+    // only the bits that cross that boundary.
+    uint32_t subtree_acc_ = 0;
+
+    // Opens a fresh accumulator for one subtree and, however that parse
+    // leaves, folds back into the enclosing one only the bits that cross this
+    // boundary. The default crosses everything, which is what a statement or a
+    // block does; a nested function passes a narrower mask.
+    struct SubtreeScope {
+        Parser& p;
+        uint32_t saved;
+        uint32_t crossing;
+        explicit SubtreeScope(Parser& parser, uint32_t crossing_mask = ~0u)
+            : p(parser), saved(parser.subtree_acc_), crossing(crossing_mask) {
+            p.subtree_acc_ = 0;
+        }
+        SubtreeScope(const SubtreeScope&) = delete;
+        SubtreeScope& operator=(const SubtreeScope&) = delete;
+        uint32_t flags() const { return p.subtree_acc_ | kSubtreeComputed; }
+        ~SubtreeScope() { p.subtree_acc_ = saved | (p.subtree_acc_ & crossing); }
+    };
+
     ParseOptions options_;
     std::vector<ParseError> errors_;
     // Shared, not owned: a function body lexed back out of a script points
@@ -141,6 +166,9 @@ public:
     // parse_program() keep the copying behaviour.
     ExecutableRef<ScriptUnit> parse_program_unit();
     std::unique_ptr<ASTNode> parse_statement();
+    // parse_statement wraps this one so that every statement, whichever form
+    // it turns out to be, leaves with its subtree facts filled in.
+    std::unique_ptr<ASTNode> parse_statement_inner();
     std::unique_ptr<ASTNode> parse_expression();
     
     std::unique_ptr<ASTNode> parse_variable_declaration();

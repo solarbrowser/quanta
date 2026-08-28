@@ -42,6 +42,23 @@ class Object;
 class FunctionExpression;
 
 
+// Facts about a subtree that the compiler used to learn by walking it. The
+// parser knows each of them by the time it finishes the subtree, so they are
+// accumulated on the way up instead of rediscovered on the way down. Each is
+// monotone: a subtree has the property if any part of it does, minus the
+// boundaries that stop it (a nested function owns its own `arguments`, and
+// does not pass a `yield` out to its enclosing generator).
+//
+// kSubtreeComputed says the rest of the word means anything at all. A tree
+// that did not come from the parser -- a clone, or a form not migrated yet --
+// leaves it clear, and every reader falls back to walking. Trusting a zero
+// word would turn "nobody filled this in" into "the answer is no".
+enum SubtreeFlags : uint32_t {
+    kSubtreeComputed   = 1u << 0,
+    kSubtreeSuspend    = 1u << 1,   // await or yield the enclosing body owns
+    kSubtreeClosure    = 1u << 2,   // a nested function or class captures the scope
+};
+
 class ASTNode {
 public:
 
@@ -124,6 +141,9 @@ public:
 
 protected:
     Type type_;
+    // Sits in the padding type_ already leaves before the positions, so the
+    // node does not grow by carrying it.
+    uint32_t subtree_flags_ = 0;
     Position start_;
     Position end_;
 
@@ -141,6 +161,9 @@ public:
     virtual ~ASTNode() = default;
     
     Type get_type() const { return type_; }
+    // See SubtreeFlags. Zero means "not computed", never "no".
+    uint32_t subtree_flags() const { return subtree_flags_; }
+    void set_subtree_flags(uint32_t f) { subtree_flags_ = f; }
     const Position& get_start() const { return start_; }
     const Position& get_end() const { return end_; }
     

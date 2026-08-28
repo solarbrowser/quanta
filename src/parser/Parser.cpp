@@ -355,6 +355,15 @@ std::unique_ptr<Program> Parser::parse_program() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_statement() {
+    // A statement stops nothing on its own: everything inside it is also
+    // inside whatever encloses it.
+    SubtreeScope scope(*this);
+    std::unique_ptr<ASTNode> node = parse_statement_inner();
+    if (node) node->set_subtree_flags(scope.flags());
+    return node;
+}
+
+std::unique_ptr<ASTNode> Parser::parse_statement_inner() {
     // Decorators before class declarations
     if (current_token().get_type() == TokenType::AT) {
         skip_decorator_list();
@@ -1074,6 +1083,7 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
             }
 
             Position end = get_current_position();
+            subtree_acc_ |= kSubtreeSuspend;
             return std::make_unique<AwaitExpression>(std::move(argument), start, end);
         }
         // else: await is a valid identifier outside async context -- fall through
@@ -2092,6 +2102,10 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
                 add_error("Invalid expression in template literal: " + expr_str);
                 return nullptr;
             }
+            // A substitution is parsed on its own, so what it found stays in
+            // its own accumulator. Whatever it holds is held by the template
+            // and by everything the template sits in.
+            subtree_acc_ |= expr_parser.subtree_acc_;
             expressions.push_back(std::move(expression));
             pos = expr_end + 1;
         }
@@ -3695,6 +3709,7 @@ static std::string check_params_body_lex_conflict(
 }
 
 std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
+    SubtreeScope scope(*this);
     Position start = get_current_position();
     const size_t body_tok_first = current_token_index_;
 
@@ -3790,7 +3805,9 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         last_body_tok_last_ = current_token_index_;
         last_body_src_first_ = static_cast<uint32_t>(start.offset);
     }
-    return std::make_unique<BlockStatement>(std::move(statements), start, end);
+    auto block = std::make_unique<BlockStatement>(std::move(statements), start, end);
+    block->set_subtree_flags(scope.flags());
+    return block;
 }
 
 bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
@@ -5109,6 +5126,9 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
+    // A nested function owns its own suspensions: an await or a yield in
+    // here does not make what encloses it suspendable.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
     Position start = get_current_position();
     
     if (!consume(TokenType::FUNCTION)) {
@@ -5447,6 +5467,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     }
 
     Position end = get_current_position();
+    subtree_acc_ |= kSubtreeClosure;
     auto fn_decl = std::make_unique<FunctionDeclaration>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
@@ -5458,6 +5479,9 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
+    // A nested function owns its own suspensions: an await or a yield in
+    // here does not make what encloses it suspendable.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
     Position start = get_current_position();
     
     if (!consume(TokenType::CLASS)) {
@@ -5843,6 +5867,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     size_t class_src_start = start.offset;
     std::unique_ptr<ClassDeclaration> cls_decl;
     if (superclass) {
+        subtree_acc_ |= kSubtreeClosure;
         cls_decl = std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
             std::move(superclass),
@@ -5850,6 +5875,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             start, end
         );
     } else {
+        subtree_acc_ |= kSubtreeClosure;
         cls_decl = std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
@@ -5861,6 +5887,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_class_expression() {
+    // A nested function owns its own suspensions: an await or a yield in
+    // here does not make what encloses it suspendable.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
     Position start = get_current_position();
 
     if (!consume(TokenType::CLASS)) {
@@ -6198,6 +6227,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     std::unique_ptr<ClassDeclaration> cls_expr;
     if (id) {
         if (superclass) {
+            subtree_acc_ |= kSubtreeClosure;
             cls_expr = std::make_unique<ClassDeclaration>(
                 std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
                 std::move(superclass),
@@ -6205,6 +6235,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
                 start, end
             );
         } else {
+            subtree_acc_ |= kSubtreeClosure;
             cls_expr = std::make_unique<ClassDeclaration>(
                 std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
                 std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
@@ -6214,6 +6245,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     } else {
         auto anonymous_id = std::make_unique<Identifier>("", start, start);
         if (superclass) {
+            subtree_acc_ |= kSubtreeClosure;
             cls_expr = std::make_unique<ClassDeclaration>(
                 std::move(anonymous_id),
                 std::move(superclass),
@@ -6221,6 +6253,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
                 start, end
             );
         } else {
+            subtree_acc_ |= kSubtreeClosure;
             cls_expr = std::make_unique<ClassDeclaration>(
                 std::move(anonymous_id),
                 std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
@@ -6234,6 +6267,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_method_definition() {
+    // A nested function owns its own suspensions: an await or a yield in
+    // here does not make what encloses it suspendable.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
     Position start = get_current_position();
     // toString's source text must exclude the `static` modifier (NativeFunction syntax
     // starts at the method name) -- src_start tracks where the name actually begins.
@@ -6764,6 +6800,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     size_t method_src_start = src_start.offset;
     size_t method_src_end = last_meaningful_token().get_start().offset + 1;
 
+    subtree_acc_ |= kSubtreeClosure;
     auto function_expr = std::make_unique<FunctionExpression>(
         nullptr,
         std::move(params),
@@ -6784,6 +6821,9 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_expression() {
+    // A nested function owns its own suspensions: an await or a yield in
+    // here does not make what encloses it suspendable.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
     Position start = get_current_position();
 
     if (!consume(TokenType::FUNCTION)) {
@@ -7117,6 +7157,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     }
 
     Position end = get_current_position();
+    subtree_acc_ |= kSubtreeClosure;
     auto fn_expr = std::make_unique<FunctionExpression>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
@@ -7128,6 +7169,9 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
+    // A nested function owns its own suspensions: an await or a yield in
+    // here does not make what encloses it suspendable.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
     Position start = get_current_position();
 
     // Save async token end-line and end pos BEFORE consuming it (advance() skips newlines)
@@ -7415,6 +7459,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     size_t src_text_start = start.offset;
     size_t src_text_end = last_meaningful_token().get_start().offset + 1;
     if (is_generator) {
+        subtree_acc_ |= kSubtreeClosure;
         auto gen_expr = std::make_unique<FunctionExpression>(
             std::move(id), std::move(params),
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
@@ -7424,6 +7469,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         if (!detached_tokens_) gen_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
         return gen_expr;
     }
+    subtree_acc_ |= kSubtreeClosure;
     auto async_expr = std::make_unique<AsyncFunctionExpression>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
@@ -7435,6 +7481,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
+    // A nested function owns its own suspensions: an await or a yield in
+    // here does not make what encloses it suspendable.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
     Position start = get_current_position();
 
     // Save async token end-line BEFORE consuming it
@@ -7711,6 +7760,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     }
 
     Position end = get_current_position();
+    subtree_acc_ |= kSubtreeClosure;
     auto async_fn_decl = std::make_unique<FunctionDeclaration>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
@@ -7925,7 +7975,11 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         body = parse_block_statement(true);
         options_.function_depth--;
     } else {
+        // A concise body is asked the same questions a block body is, so it
+        // leaves with the same facts recorded on it.
+        SubtreeScope concise(*this);
         body = parse_assignment_expression();
+        if (body) body->set_subtree_flags(concise.flags());
     }
     options_.in_class_static_block = saved_sb_arrow;
 
@@ -7958,6 +8012,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     // still opens with `{` and closes with `}`, so no structural check would
     // catch it. Only a block body has a range to record.
     const bool has_block_body = body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT;
+    subtree_acc_ |= kSubtreeClosure;
     auto arrow_expr = std::make_unique<ArrowFunctionExpression>(
         std::move(params), std::move(body), false, start, end
     );
@@ -8058,6 +8113,7 @@ std::unique_ptr<ASTNode> Parser::parse_yield_expression() {
     }
     
     Position end = get_current_position();
+    subtree_acc_ |= kSubtreeSuspend;
     return std::make_unique<YieldExpression>(std::move(argument), is_delegate, start, end);
 }
 
@@ -8754,7 +8810,13 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             options_.in_constructor = false;
             options_.function_depth++;
             options_.non_arrow_function_depth++;
-            auto body = parse_block_statement(true);
+            std::unique_ptr<ASTNode> body;
+            {
+                // A shorthand method owns its own suspensions, like any other
+                // nested function.
+                SubtreeScope method_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+                body = parse_block_statement(true);
+            }
             options_.function_depth--;
             options_.non_arrow_function_depth--;
             options_.in_async_body = saved_ab;
@@ -8813,6 +8875,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             std::unique_ptr<ASTNode> method_value;
             if (is_async && is_generator) {
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
+                subtree_acc_ |= kSubtreeClosure;
                 method_value = std::make_unique<FunctionExpression>(
                     nullptr,
                     std::move(params),
@@ -8824,6 +8887,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 );
             } else if (is_async) {
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
+                subtree_acc_ |= kSubtreeClosure;
                 method_value = std::make_unique<AsyncFunctionExpression>(
                     nullptr,
                     std::move(params),
@@ -8833,6 +8897,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 );
             } else if (is_generator) {
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
+                subtree_acc_ |= kSubtreeClosure;
                 method_value = std::make_unique<FunctionExpression>(
                     nullptr,
                     std::move(params),
@@ -8843,6 +8908,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 );
             } else {
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
+                subtree_acc_ |= kSubtreeClosure;
                 auto fe = std::make_unique<FunctionExpression>(
                     nullptr,
                     std::move(params),
@@ -10593,6 +10659,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 
     Position end = get_current_position();
 
+    subtree_acc_ |= kSubtreeClosure;
     return std::make_unique<AsyncFunctionExpression>(
         nullptr,
         std::move(params),
@@ -10657,6 +10724,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
 
     Position end = get_current_position();
 
+    subtree_acc_ |= kSubtreeClosure;
     return std::make_unique<AsyncFunctionExpression>(
         nullptr,
         std::move(params),
