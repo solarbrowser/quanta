@@ -280,23 +280,41 @@ private:
     // enough to be its own mapping and goes back to the system when the
     // sequence dies, rather than into a heap that cannot shrink past it.
     //
-    // The first block is small because most sequences are: a REPL line, a
-    // `new Function` body, a body lexed back on demand. The rest are large
-    // because the sequences that get there are the ones worth the syscall.
-    static constexpr size_t kFirstBlock = 128;
-    static constexpr size_t kBlockShift = 12;
-    static constexpr size_t kBlock = size_t{1} << kBlockShift;  // 4096
+    // Block sizes double. A fixed size cannot serve both ends: most sequences
+    // are tiny -- a REPL line, a `new Function` body, one function body lexed
+    // back on demand, and there are thousands of that last kind -- while the
+    // ones that matter for memory run to hundreds of thousands of tokens.
+    // Doubling gives the small ones a small first block and the large ones a
+    // handful of allocations, and because blocks never move it costs none of
+    // the copying that doubling an array would.
+    static constexpr size_t kFirstShift = 5;
+    static constexpr size_t kFirstBlock = size_t{1} << kFirstShift;   // 32
+    static constexpr size_t kMaxShift = 12;
+    static constexpr size_t kMaxBlock = size_t{1} << kMaxShift;       // 4096
+    static constexpr size_t kRamp = kMaxShift - kFirstShift;          // blocks 0..kRamp double
+    static constexpr size_t kRampTotal = kFirstBlock * ((size_t{1} << (kRamp + 1)) - 1);
     std::vector<std::unique_ptr<Token[]>> blocks_;
     size_t count_ = 0;
 
-    // Which block holds `index`, and where in it.
+    // Doubling while the blocks are small, then a fixed size. Doubling alone
+    // over-allocates a large sequence to the next power of two -- megabytes of
+    // it -- and a fixed size alone makes every one of the thousands of tiny
+    // sequences pay a large block. Neither end pays for the other this way.
     static void locate(size_t index, size_t& block, size_t& slot) {
-        if (index < kFirstBlock) { block = 0; slot = index; return; }
-        const size_t rest = index - kFirstBlock;
-        block = 1 + (rest >> kBlockShift);
-        slot = rest & (kBlock - 1);
+        if (index < kRampTotal) {
+            const size_t nth = (index >> kFirstShift) + 1;
+            const size_t k = 63 - static_cast<size_t>(__builtin_clzll(nth));
+            block = k;
+            slot = index - (kFirstBlock << k) + kFirstBlock;
+            return;
+        }
+        const size_t rest = index - kRampTotal;
+        block = kRamp + 1 + (rest >> kMaxShift);
+        slot = rest & (kMaxBlock - 1);
     }
-    static size_t block_capacity(size_t block) { return block == 0 ? kFirstBlock : kBlock; }
+    static size_t block_capacity(size_t block) {
+        return block <= kRamp ? (kFirstBlock << block) : kMaxBlock;
+    }
     std::shared_ptr<const std::string> source_;
     std::vector<std::string> owned_values_;
     size_t position_;
