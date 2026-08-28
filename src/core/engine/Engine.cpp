@@ -503,7 +503,11 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             return Result(error_msg);
         }
         
-        Parser parser(tokens);
+        // Moved, not copied: Parser takes the sequence by value, and for a
+        // multi-megabyte script it runs to tens of megabytes -- copying it
+        // meant two of them alive at once, which is most of what the parse
+        // peaked at. Nothing reads `tokens` after this.
+        Parser parser(std::move(tokens));
         parser.set_source(source);
         // The tree is owned by a unit, so the function literals inside it lend
         // their bodies to their executables instead of each taking a copy. The
