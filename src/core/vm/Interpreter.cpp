@@ -119,12 +119,15 @@ bool key_is_canonical_index(const std::string& s, size_t& out_index) {
 // Forward decl: defined below, needed here since get_primitive_named's new
 // prototype-property cache reuses the same (shape, slot_index) learn helper
 // GetNamed's own receiver-shape cache uses.
-void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index,
+void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index,
                      bool is_accessor = false);
 
 // Mirrors MemberExpression::evaluate's primitive-receiver branch.
 Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name,
-                           FeedbackSlot* fb, Function* owner, bool rooted) {
+                           FeedbackSlot* fb_slot, Function* owner, bool rooted) {
+    // A miss and a site that has never learned are the same answer, so the
+    // reads below work off whatever body there is, if any.
+    FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (prim.is_string()) {
         // Straight off the String, not through to_string(): that returns by
         // value, so every `.length` read used to copy the whole buffer before
@@ -179,9 +182,10 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     // `"str".method` in the program. Same consolidation get_named already made.
     PropertyDescriptor* override_desc = proto_obj->find_descriptor_override(name);
     Shape* proto_shape = proto_obj->get_shape();
-    bool cacheable = fb && !fb->mega && proto_obj->get_type() == Object::ObjectType::Ordinary &&
-                      !override_desc &&
-                      !(proto_shape && proto_shape->is_accessor_slot(name));
+    const bool ordinary_proto = proto_obj->get_type() == Object::ObjectType::Ordinary &&
+                                !override_desc &&
+                                !(proto_shape && proto_shape->is_accessor_slot(name));
+    bool cacheable = fb && !fb->mega && ordinary_proto;
     if (cacheable) {
         Shape* shape = proto_obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
@@ -197,7 +201,8 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     PropertyDescriptor desc = proto_obj->get_property_descriptor(name);
     // Learn from what that call produced, rather than from the descriptor it
     // read: only this value has been through whatever the call does on the way.
-    if (fb && rooted && (desc.is_accessor_descriptor() || desc.has_value())) {
+    if (fb_slot && rooted && (desc.is_accessor_descriptor() || desc.has_value())) {
+        fb = &fb_slot->ensure();
         Collector::write_barrier(owner);
         fb->prim_proto = proto_obj;
         fb->prim_is_getter = desc.is_accessor_descriptor();
@@ -210,10 +215,10 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
         Function* getter = as_function(desc.get_getter());
         return getter ? getter->call_register_args(ctx, {}, prim) : Value();
     }
-    if (cacheable && desc.has_value()) {
+    if (fb_slot && !(fb && fb->mega) && ordinary_proto && desc.has_value()) {
         Shape* s = proto_shape;
         int32_t idx = s ? s->find_slot(name) : -1;
-        if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+        if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx));
     }
     return desc.has_value() ? desc.get_value() : proto_obj->get_property(name);
 }
@@ -261,26 +266,29 @@ void set_primitive_named(Context& ctx, const Value& prim, const std::string& nam
 // converging on one shape after their last field is added), and inserting a
 // duplicate would burn through the fixed budget without ever caching an
 // actually-distinct shape, tripping mega early for no benefit.
-void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, bool is_accessor) {
+void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index, bool is_accessor) {
+    // Reaching here is the site learning something, so the body exists
+    // from this point on.
+    FeedbackBody& fb = fb_slot->ensure();
     // A site that gave up stays given up, which is what lets going mega empty
     // the table below.
-    if (fb->mega) return;
-    for (uint8_t i = 0; i < fb->count; i++) {
-        if (fb->entries[i].shape == shape) {
-            fb->entries[i].is_accessor = is_accessor;
+    if (fb.mega) return;
+    for (uint8_t i = 0; i < fb.count; i++) {
+        if (fb.entries[i].shape == shape) {
+            fb.entries[i].is_accessor = is_accessor;
             return;
         }
     }
-    if (fb->count < FeedbackSlot::kMaxEntries) {
-        fb->entries[fb->count++] = {shape, slot_index, is_accessor};
+    if (fb.count < FeedbackSlot::kMaxEntries) {
+        fb.entries[fb.count++] = {shape, slot_index, is_accessor};
     } else {
         // Emptied as well as marked, so a live first entry is by itself proof
         // that the site is still caching: the read path then asks one question
         // where it asked three. Every other reader already tests mega before
         // it looks at the table.
-        fb->mega = true;
-        fb->count = 0;
-        fb->entries[0].shape = nullptr;
+        fb.mega = true;
+        fb.count = 0;
+        fb.entries[0].shape = nullptr;
     }
 }
 
@@ -292,23 +300,26 @@ void learn_feedback(FeedbackSlot* fb, Shape* shape, uint32_t slot_index, bool is
 // blocker on the chain") depends on which chain the receiver has. It is a real
 // GC cell, so recording one needs an owner to barrier against and to keep the
 // entry traced -- the gate learn_proto already uses.
-void learn_transition(FeedbackSlot* fb, Shape* from_shape, Shape* to_shape,
+void learn_transition(FeedbackSlot* fb_slot, Shape* from_shape, Shape* to_shape,
                        Object* prototype, uint32_t slot_index, uint64_t epoch,
                        Function* owner) {
+    // Reaching here is the site learning something, so the body exists
+    // from this point on.
+    FeedbackBody& fb = fb_slot->ensure();
     if (prototype) {
         if (!owner) return;
         Collector::write_barrier(owner);
     }
-    for (uint8_t i = 0; i < fb->transition_count; i++) {
-        if (fb->transitions[i].from_shape == from_shape) {
-            fb->transitions[i] = {from_shape, to_shape, prototype, slot_index, epoch};
+    for (uint8_t i = 0; i < fb.transition_count; i++) {
+        if (fb.transitions[i].from_shape == from_shape) {
+            fb.transitions[i] = {from_shape, to_shape, prototype, slot_index, epoch};
             return;
         }
     }
-    if (fb->transition_count < FeedbackSlot::kMaxEntries) {
-        fb->transitions[fb->transition_count++] = {from_shape, to_shape, prototype, slot_index, epoch};
+    if (fb.transition_count < FeedbackSlot::kMaxEntries) {
+        fb.transitions[fb.transition_count++] = {from_shape, to_shape, prototype, slot_index, epoch};
     } else {
-        fb->transition_mega = true;
+        fb.transition_mega = true;
     }
 }
 
@@ -317,10 +328,13 @@ void learn_transition(FeedbackSlot* fb, Shape* from_shape, Shape* to_shape,
 // refreshes epoch/holder/slot in place, same reasoning as learn_transition.
 // write_barrier(owner) covers holder/prototype being real GC cells stored
 // into owner's (possibly already-old) BytecodeChunk.
-void learn_proto(FeedbackSlot* fb, Shape* receiver_shape, Object* prototype,
+void learn_proto(FeedbackSlot* fb_slot, Shape* receiver_shape, Object* prototype,
                   Object* holder, uint32_t slot_index, uint64_t epoch, Function* owner,
                   bool from_descriptor = false, const Value& cached = Value(),
                   uint64_t desc_epoch = 0, bool absent = false, bool is_getter = false) {
+    // Reaching here is the site learning something, so the body exists
+    // from this point on.
+    FeedbackBody& fb = fb_slot->ensure();
     FeedbackSlot::ProtoEntry fresh;
     fresh.receiver_shape = receiver_shape;
     fresh.prototype = prototype;
@@ -332,19 +346,19 @@ void learn_proto(FeedbackSlot* fb, Shape* receiver_shape, Object* prototype,
     fresh.is_getter = is_getter;
     fresh.desc_epoch = desc_epoch;
     fresh.cached_value = cached;
-    for (uint8_t i = 0; i < fb->proto_count; i++) {
-        auto& pe = fb->proto_entries[i];
+    for (uint8_t i = 0; i < fb.proto_count; i++) {
+        auto& pe = fb.proto_entries[i];
         if (pe.receiver_shape == receiver_shape && pe.prototype == prototype) {
             Collector::write_barrier(owner);
             pe = fresh;
             return;
         }
     }
-    if (fb->proto_count < FeedbackSlot::kMaxEntries) {
+    if (fb.proto_count < FeedbackSlot::kMaxEntries) {
         Collector::write_barrier(owner);
-        fb->proto_entries[fb->proto_count++] = fresh;
+        fb.proto_entries[fb.proto_count++] = fresh;
     } else {
-        fb->proto_mega = true;
+        fb.proto_mega = true;
     }
 }
 
@@ -366,13 +380,17 @@ inline void write_barrier_for(Object* obj, const Value& value) {
 // entry matches, so it's checked once per call (in `cacheable`) rather than
 // once per scanned entry.
 Value get_named(Context& ctx, const Value& receiver, const std::string& name,
-                 FeedbackSlot* fb, Function* owner, bool rooted) {
+                 FeedbackSlot* fb_slot, Function* owner, bool rooted) {
+    // A site that has learned nothing has no body, and every read below
+    // already reads a missing cache as a miss. Learning is gated on the slot
+    // instead, since that is what brings a body into being.
+    FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (receiver.is_null() || receiver.is_undefined()) {
         ctx.throw_type_error("Cannot read property of null or undefined");
         return Value();
     }
     Object* obj = as_object_like(receiver);
-    if (!obj) return get_primitive_named(ctx, receiver, name, fb, owner, rooted);
+    if (!obj) return get_primitive_named(ctx, receiver, name, fb_slot, owner, rooted);
 
     // Array.length is always live-computed from elements_ (never reliably
     // mirrored in a shape slot -- push/index-growth never syncs one, only
@@ -387,7 +405,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // moved away from the storage fails the check and takes the path below.
     if (obj->get_type() == Object::ObjectType::Array && name == "length" &&
         obj->has_only_dense_elements()) {
-        if (fb) fb->array_length = true;
+        if (fb_slot) fb_slot->ensure().array_length = true;
         return Value(static_cast<double>(obj->element_count()));
     }
 
@@ -507,8 +525,8 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // same map for the same key with no mutation in between.
     PropertyDescriptor* override_desc = obj->find_descriptor_override(name);
     const bool own_descriptor = override_desc != nullptr;
-    bool cacheable = fb && !fb->mega && ordinary && !override_desc;
-    if (cacheable) {
+    bool cacheable = fb_slot && !(fb && fb->mega) && ordinary && !override_desc;
+    if (cacheable && fb) {
         Shape* shape = obj_shape;
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == shape) {
@@ -532,7 +550,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             if (cacheable && obj_shape && obj_shape->is_accessor_slot(name)) {
                 int32_t idx = obj_shape->find_slot(name);
                 if (idx >= 0) {
-                    learn_feedback(fb, obj_shape, static_cast<uint32_t>(idx),
+                    learn_feedback(fb_slot, obj_shape, static_cast<uint32_t>(idx),
                                    /*is_accessor=*/true);
                 }
             }
@@ -553,16 +571,17 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             if (cacheable) {
                 Shape* s = obj->get_shape();
                 int32_t idx = s ? s->find_slot(name) : -1;
-                if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+                if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx));
             }
             // Learn only what the descriptor map itself answered. A shape-slot
             // value belongs to the entries above, which track it through shape
             // changes this entry knows nothing about.
-            else if (override_desc && fb && rooted) {
+            else if (override_desc && fb_slot && rooted) {
                 Collector::write_barrier(owner);
-                fb->own_desc_receiver = obj;
-                fb->own_desc_value = desc.get_value();
-                fb->own_desc_epoch = cur_epoch;
+                FeedbackBody& learned = fb_slot->ensure();
+                learned.own_desc_receiver = obj;
+                learned.own_desc_value = desc.get_value();
+                learned.own_desc_epoch = cur_epoch;
             }
             return desc.get_value();
         }
@@ -604,11 +623,11 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                     // no own override for the key (established above), and
                     // desc_epoch retires the entry if the accessor is
                     // redefined.
-                    if (rooted && fb && !fb->proto_mega && getter_fn && obj->get_shape() &&
+                    if (rooted && fb_slot && !(fb && fb->proto_mega) && getter_fn && obj->get_shape() &&
                         obj->get_type() == Object::ObjectType::Ordinary &&
                         proto->get_type() == Object::ObjectType::Ordinary &&
                         !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
-                        learn_proto(fb, obj->get_shape(), obj->get_prototype(), proto, 0,
+                        learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), proto, 0,
                                     Object::proto_epoch(), owner, /*from_descriptor=*/false,
                                     Value(getter_fn), Object::descriptor_epoch(),
                                     /*absent=*/false, /*is_getter=*/true);
@@ -631,7 +650,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                         (proto->get_type() == Object::ObjectType::Array &&
                          name != "length" &&
                          !(!name.empty() && name[0] >= '0' && name[0] <= '9'));
-                    if (rooted && fb && !fb->proto_mega &&
+                    if (rooted && fb_slot && !(fb && fb->proto_mega) &&
                         (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
                         holder_ok) {
                         Shape* hs = proto->get_shape();
@@ -639,13 +658,13 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                                            ? -1
                                            : (hs ? hs->find_slot(name) : -1);
                         if (hidx >= 0) {
-                            learn_proto(fb, obj->get_shape(), obj->get_prototype(), proto,
+                            learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), proto,
                                         static_cast<uint32_t>(hidx), Object::proto_epoch(), owner);
                         } else if (!proto_desc.is_accessor_descriptor() && proto_desc.has_value()) {
                             // The holder keeps it in its descriptor map, which is
                             // where every builtin prototype method lives. Cache
                             // the value and let the descriptor epoch invalidate.
-                            learn_proto(fb, obj->get_shape(), obj->get_prototype(), proto,
+                            learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), proto,
                                         0, Object::proto_epoch(), owner,
                                         /*from_descriptor=*/true, proto_desc.get_value(),
                                         Object::descriptor_epoch());
@@ -685,9 +704,9 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 //  - a digit-leading key is refused, because an exotic object
                 //    on the chain can answer one out of its elements, and an
                 //    element write does not move proto_epoch.
-                if (rooted && fb && !fb->proto_mega && obj->get_shape() &&
+                if (rooted && fb_slot && !(fb && fb->proto_mega) && obj->get_shape() &&
                     !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
-                    learn_proto(fb, obj->get_shape(), obj->get_prototype(), nullptr, 0,
+                    learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), nullptr, 0,
                                 Object::proto_epoch(), owner, /*from_descriptor=*/false,
                                 Value(), /*desc_epoch=*/0, /*absent=*/true);
                 }
@@ -700,7 +719,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     if (cacheable) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
-        if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+        if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx));
     }
     // A function object holding the key in its own descriptor map: every
     // constructor-namespace builtin is one -- Number.isInteger, Object.keys,
@@ -711,19 +730,21 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // else first, and there are exactly two it does: `name`, which it takes
     // from the function's own name field, and `length`, which falls back to
     // the arity. Those two are refused rather than tracked.
-    if (own_descriptor && fb && rooted &&
+    if (own_descriptor && fb_slot && rooted &&
         obj->get_type() == Object::ObjectType::Function &&
         name != "name" && name != "length") {
         Collector::write_barrier(owner);
-        fb->own_desc_receiver = obj;
-        fb->own_desc_value = result;
-        fb->own_desc_epoch = cur_epoch;
+        FeedbackBody& learned = fb_slot->ensure();
+        learned.own_desc_receiver = obj;
+        learned.own_desc_value = result;
+        learned.own_desc_epoch = cur_epoch;
     }
     return result;
 }
 
 void set_named(Context& ctx, const Value& receiver, const std::string& name,
-               const Value& value, FeedbackSlot* fb, Function* owner) {
+               const Value& value, FeedbackSlot* fb_slot, Function* owner) {
+    FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (receiver.is_null() || receiver.is_undefined()) {
         ctx.throw_type_error(std::string("Cannot set properties of ") +
             (receiver.is_null() ? "null" : "undefined"));
@@ -785,7 +806,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     }
 
     Shape* shape_before = obj->get_shape();
-    bool was_new = fb && obj->get_type() == Object::ObjectType::Ordinary &&
+    bool was_new = fb_slot && obj->get_type() == Object::ObjectType::Ordinary &&
                     !obj->has_descriptor_override(name) &&
                     shape_before && shape_before->find_slot(name) < 0;
 
@@ -800,22 +821,22 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     // Re-checked fresh, not reusing a pre-call flag: ordinary_set can migrate
     // obj to dictionary mode (shape transition cap hit while adding a new
     // property), which changes has_descriptor_override's answer for `name`.
-    if (fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+    if (fb_slot && !(fb && fb->mega) && obj->get_type() == Object::ObjectType::Ordinary &&
         !obj->has_descriptor_override(name)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
-        if (idx >= 0) learn_feedback(fb, s, static_cast<uint32_t>(idx));
+        if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx));
     }
     // Transition learn: has_descriptor_override re-checked post-call (not the
     // pre-call value) so a no-trap Proxy's set forward -- which can transition
     // obj's shape via set_property_descriptor, always leaving a descriptors_
     // entry behind -- is naturally excluded from being learned here.
-    if (was_new && ok && fb && !fb->transition_mega &&
+    if (was_new && ok && fb_slot && !(fb && fb->transition_mega) &&
         obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(name)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
         if (idx >= 0) {
-            learn_transition(fb, shape_before, s, obj->get_prototype_raw(),
+            learn_transition(fb_slot, shape_before, s, obj->get_prototype_raw(),
                               static_cast<uint32_t>(idx), Object::proto_epoch(), owner);
         }
     }
@@ -828,7 +849,8 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
 // is deliberately NOT covered -- its key varies per execution of the same
 // site, which the key-less TransitionEntry cannot safely validate (same
 // hazard KeyedFeedback solves for GetKeyed/SetKeyed).
-void define_own_cached(Object* obj, const std::string& key, const Value& value, FeedbackSlot* fb) {
+void define_own_cached(Object* obj, const std::string& key, const Value& value, FeedbackSlot* fb_slot) {
+    FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (!obj) return;
     write_barrier_for(obj, value);
     bool plain = obj->get_type() == Object::ObjectType::Ordinary && obj->is_extensible();
@@ -863,13 +885,13 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
         return;
     }
     Shape* shape_before = obj->get_shape();
-    bool was_new = fb && shape_before && shape_before->find_slot(key) < 0;
+    bool was_new = fb_slot && shape_before && shape_before->find_slot(key) < 0;
     obj->create_own_data_property(key, value);
-    if (was_new && fb && !fb->transition_mega && !obj->has_descriptor_override(key)) {
+    if (was_new && fb_slot && !(fb && fb->transition_mega) && !obj->has_descriptor_override(key)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(key) : -1;
         if (idx >= 0) {
-            learn_transition(fb, shape_before, s, nullptr, static_cast<uint32_t>(idx), 0, nullptr);
+            learn_transition(fb_slot, shape_before, s, nullptr, static_cast<uint32_t>(idx), 0, nullptr);
         }
     }
 }
@@ -886,7 +908,8 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
 // hit skips transition_accessor's own hash lookup; a cache miss still
 // calls it directly (not the general/slow path) since it's the same O(1)
 // memoized operation transition() already is for plain data properties.
-void define_accessor_cached(Object* obj, const std::string& key, Function* fn, bool is_getter, FeedbackSlot* fb) {
+void define_accessor_cached(Object* obj, const std::string& key, Function* fn, bool is_getter, FeedbackSlot* fb_slot) {
+    FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (!obj) return;
     Collector::write_barrier(obj);
     size_t unused_idx;
@@ -911,8 +934,8 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
         Shape* to_shape = shape_before ? shape_before->transition_accessor(key) : nullptr;
         if (to_shape) {
             obj->add_accessor_shape_property_cached(key, getter_v, setter_v, to_shape);
-            if (fb && !fb->transition_mega) {
-                learn_transition(fb, shape_before, to_shape, nullptr, 0, 0, nullptr);
+            if (fb_slot && !(fb && fb->transition_mega)) {
+                learn_transition(fb_slot, shape_before, to_shape, nullptr, 0, 0, nullptr);
             }
             return;
         }
@@ -3987,7 +4010,7 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
         if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
-            const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+            const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             const FeedbackSlot::Entry& e = fb.entries[0];
             // A non-null shape here means the site is neither empty nor
             // megamorphic: going mega clears it (see learn_feedback).
@@ -4016,7 +4039,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
     // It sits ahead of the is_object() gate because a constructor namespace
     // is a function object, and those never reach that gate at all.
     {
-        const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
         if (fb.own_desc_receiver != nullptr &&
             fb.own_desc_epoch == Object::descriptor_epoch() &&
             as_object_like(receiver) == fb.own_desc_receiver) {
@@ -4031,13 +4054,13 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             // never become an accessor on one, so the count answers the read
             // exactly. A length moved into a descriptor fails the dense check
             // and takes the general path.
-            const FeedbackSlot& afb = f.chunk.feedback[read_u16(code, pc + 4)];
+            const FeedbackBody& afb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             if (LIKELY(afb.array_length && obj->has_only_dense_elements())) {
                 acc = Value(static_cast<double>(obj->element_count()));
                 FUSED_TAIL(6);
             }
         } else if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
-            const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+            const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             // Every learned entry, not just the first. The handler above tries
             // that one and hands the rest here, so a site that has seen more
             // than one shape -- three objects taking turns is enough -- reached
@@ -4115,7 +4138,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
         // returns before the cache is ever written, so a site whose name is one
         // of them can only carry a prim entry learned from a DIFFERENT kind --
         // whose prototype then fails the identity check below.
-        const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
         if (LIKELY(fb.prim_valid && !fb.prim_is_getter &&
                    fb.prim_desc_epoch == Object::descriptor_epoch())) {
             using PK = Context::PrimitiveKind;
@@ -4170,7 +4193,7 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
         if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
-            const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+            const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             const FeedbackSlot::Entry& e = fb.entries[0];
             // Same pair of facts as the read side: the stamp is global and
             // never revived, the receiver's own map answers for itself.
@@ -4202,7 +4225,7 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
         if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
-            const FeedbackSlot& fb = f.chunk.feedback[read_u16(code, pc + 4)];
+            const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             Shape* own_shape = obj->get_shape();
             for (uint8_t k = 1; k < fb.count; k++) {
                 const FeedbackSlot::Entry& e = fb.entries[k];

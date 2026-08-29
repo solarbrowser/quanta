@@ -345,7 +345,13 @@ enum class Op : uint8_t {
 // exactly like the old monomorphic-only cache (a length-1 scan), count>1 is
 // the polymorphic case -- all three share the same scan/learn code path.
 // Once `mega` is set the site is permanently uncached (same as fb==nullptr).
-struct FeedbackSlot {
+// What one GetNamed/SetNamed site has actually learned. Held behind a pointer
+// by FeedbackSlot rather than inline, because a site that has never run, or
+// that always took the slow path, learns nothing and most never do: on a real
+// script fewer than one site in eight ever caches a single entry, while this
+// is large enough that carrying one per site cost more memory than everything
+// else the compiler emitted put together.
+struct FeedbackBody {
     // is_accessor: slot_index names an accessor-kind shape slot, so the slot
     // holds the getter rather than the property's value and a hit has to call
     // it. Lives in the padding slot_index's alignment already leaves. Every
@@ -463,6 +469,32 @@ struct FeedbackSlot {
     Object* own_desc_receiver = nullptr;
     Value own_desc_value;
     uint64_t own_desc_epoch = 0;
+};
+
+// One cache site. Empty until the site learns something; see FeedbackBody.
+struct FeedbackSlot {
+    // Kept here as well so the many `FeedbackSlot::kMaxEntries` readers, and
+    // the nested entry types they name, do not all have to be rewritten.
+    static constexpr uint8_t kMaxEntries = FeedbackBody::kMaxEntries;
+    using Entry = FeedbackBody::Entry;
+    using TransitionEntry = FeedbackBody::TransitionEntry;
+    using ProtoEntry = FeedbackBody::ProtoEntry;
+
+    std::unique_ptr<FeedbackBody> body;
+
+    // Null while the site has learned nothing, which every reader already
+    // treats as a miss -- the same answer an all-zero body would give.
+    FeedbackBody* peek() const { return body.get(); }
+    // For readers that would rather not carry the null: an untouched body
+    // answers every question with the miss the absent one means. A namespace
+    // static, not a function-local one, so reading it costs no guard on a
+    // path the interpreter takes for every property access.
+    static const FeedbackBody kEmpty;
+    const FeedbackBody& read() const { return body ? *body : kEmpty; }
+    FeedbackBody& ensure() {
+        if (!body) body = std::make_unique<FeedbackBody>();
+        return *body;
+    }
 };
 
 // Inline cache for one GetPrivate/SetPrivate site: the resolved qualified

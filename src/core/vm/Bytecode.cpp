@@ -31,13 +31,20 @@ std::vector<ClosureTemplate>& BytecodeChunk::ensure_closures() {
     return *closures;
 }
 
+const FeedbackBody FeedbackSlot::kEmpty;
+
 void BytecodeChunk::trace(Visitor& v) const {
     for (const auto& c : constants) {
         v.visit(c);
     }
     // feedback's Shape* fields need no tracing (immortal, not a GC cell), but
     // every Object* in a cache entry is a real cell.
-    for (const auto& fb : feedback) {
+    for (const auto& slot : feedback) {
+        // A site that never learned holds nothing to trace, which on a real
+        // script is most of them.
+        const FeedbackBody* body = slot.peek();
+        if (!body) continue;
+        const FeedbackBody& fb = *body;
         for (uint8_t i = 0; i < fb.proto_count; i++) {
             v.visit_object(fb.proto_entries[i].holder);
             v.visit_object(fb.proto_entries[i].prototype);
