@@ -105,7 +105,17 @@ Lexer::Lexer(const std::string& source)
 
 Lexer::Lexer(std::shared_ptr<const std::string> source, const LexerOptions& options)
     : source_ref_(std::move(source)), position_(0),
-      current_position_(1, 1, 0), options_(options), last_token_type_(TokenType::EOF_TOKEN) {}
+      current_position_(1, 1, 0), options_(options), last_token_type_(TokenType::EOF_TOKEN) {
+    if (source_ref_ && source_ref_->size() >= 3) {
+        const std::string& text = *source_ref_;
+        if (static_cast<unsigned char>(text[0]) == 0xEF &&
+            static_cast<unsigned char>(text[1]) == 0xBB &&
+            static_cast<unsigned char>(text[2]) == 0xBF) {
+            position_ = 3;
+            current_position_.offset = 3;
+        }
+    }
+}
 
 Lexer::Lexer(const std::string& source, const LexerOptions& options)
     : source_ref_(std::make_shared<const std::string>(source)), position_(0),
@@ -154,8 +164,9 @@ TokenSequence Lexer::tokenize_range(const Position& from, size_t end_offset) {
     return tokens;
 }
 
-TokenSequence Lexer::stream(const std::string& source, const LexerOptions& options) {
-    auto lexer = std::make_shared<Lexer>(source, options);
+TokenSequence Lexer::stream(std::shared_ptr<const std::string> source,
+                            const LexerOptions& options) {
+    auto lexer = std::make_shared<Lexer>(std::move(source), options);
     TokenSequence tokens(lexer->source_ref());
     tokens.stream_from(std::move(lexer));
     return tokens;

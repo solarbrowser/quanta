@@ -142,11 +142,16 @@ Engine::Result Engine::execute(const std::string& source) {
 }
 
 Engine::Result Engine::execute(const std::string& source, const std::string& filename) {
+    return execute(std::make_shared<const std::string>(source), filename);
+}
+
+Engine::Result Engine::execute(std::shared_ptr<const std::string> source,
+                               const std::string& filename) {
     if (!initialized_) {
         return Result("Engine not initialized");
     }
-    
-    return execute_internal(source, filename);
+
+    return execute_internal(std::move(source), filename);
 }
 
 Engine::Result Engine::execute_file(const std::string& filename) {
@@ -484,7 +489,9 @@ void Engine::setup_built_in_functions() {
 void Engine::setup_error_types() {
 }
 
-Engine::Result Engine::execute_internal(const std::string& source, const std::string& filename) {
+Engine::Result Engine::execute_internal(std::shared_ptr<const std::string> shared_source,
+                                        const std::string& filename) {
+    const std::string& source = *shared_source;
     HeapScope heap_scope(heap_);
     try {
         execution_count_++;
@@ -493,8 +500,11 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         // thing a parse holds and the parser only ever looks a little way
         // around where it is, so they are pulled in as it asks for them and
         // the ones it has passed are handed back.
+        // One buffer, shared: the lexer addresses tokens into it by offset
+        // and the parser hands it to the unit for re-reading a body later, and
+        // for a multi-megabyte script each copy of it is that much again.
         Lexer::LexerOptions lex_opts;
-        auto tokens = Lexer::stream(source, lex_opts);
+        auto tokens = Lexer::stream(shared_source, lex_opts);
         const std::vector<std::string>* lex_errors = tokens.lex_errors();
         
         // Moved, not copied: Parser takes the sequence by value, and for a
@@ -502,7 +512,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         // meant two of them alive at once, which is most of what the parse
         // peaked at. Nothing reads `tokens` after this.
         Parser parser(std::move(tokens));
-        parser.set_source(source);
+        parser.set_source(shared_source);
         // The tree is owned by a unit, so the function literals inside it lend
         // their bodies to their executables instead of each taking a copy. The
         // unit outlives this call whenever a closure escaped it.

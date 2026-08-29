@@ -83,7 +83,8 @@ public:
     const Position& current_position() const { return current_position_; }
     // Builds a sequence that lexes `source` on demand and owns the lexer
     // doing it. The sequence keeps the text alive, so both outlive the call.
-    static TokenSequence stream(const std::string& source, const LexerOptions& options);
+    static TokenSequence stream(std::shared_ptr<const std::string> source,
+                                const LexerOptions& options);
     
     Position get_position() const { return current_position_; }
     void reset(size_t position = 0);

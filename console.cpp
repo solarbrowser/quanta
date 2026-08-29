@@ -194,10 +194,18 @@ public:
     }
     
     bool evaluate_expression(const std::string& input, bool show_prompt = true, bool show_result = true, const std::string& filename = "<console>") {
+        return evaluate_expression(std::make_shared<const std::string>(input),
+                                   show_prompt, show_result, filename);
+    }
+
+    // Hands the buffer over rather than lending it: a script read from disk is
+    // held for as long as the tree parsed out of it, and the caller keeping a
+    // second copy of a multi-megabyte file is that much again.
+    bool evaluate_expression(std::shared_ptr<const std::string> input, bool show_prompt = true, bool show_result = true, const std::string& filename = "<console>") {
         try {
             auto start = std::chrono::high_resolution_clock::now();
 
-            auto result = engine_->execute(input, filename);
+            auto result = engine_->execute(std::move(input), filename);
 
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -402,9 +410,18 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
 
-            std::stringstream buffer;
-            buffer << file.rdbuf();
-            std::string content = buffer.str();
+            // Read straight into the buffer that is handed on, so the text
+            // exists once rather than in a stream, a string and a copy.
+            std::string text;
+            file.seekg(0, std::ios::end);
+            const std::streamoff size = file.tellg();
+            if (size > 0) {
+                text.resize(static_cast<size_t>(size));
+                file.seekg(0, std::ios::beg);
+                file.read(&text[0], size);
+                text.resize(static_cast<size_t>(file.gcount()));
+            }
+            auto content = std::make_shared<const std::string>(std::move(text));
 
             bool success = false;
             bool run_as_module = force_module;

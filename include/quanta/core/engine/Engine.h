@@ -99,6 +99,10 @@ public:
 
     Result execute(const std::string& source);
     Result execute(const std::string& source, const std::string& filename);
+    // Takes the caller's buffer rather than copying it. A script's text is
+    // held for as long as the parse tree that addresses it, so the caller
+    // that read it from disk can hand it over instead of keeping one each.
+    Result execute(std::shared_ptr<const std::string> source, const std::string& filename);
     Result execute_file(const std::string& filename);
     
     Result evaluate(const std::string& expression, bool strict_mode = false);
@@ -173,7 +177,7 @@ private:
     void setup_error_types();
     void setup_minimal_globals();
     
-    Result execute_internal(const std::string& source, const std::string& filename);
+    Result execute_internal(std::shared_ptr<const std::string> source, const std::string& filename);
     
     void handle_exception(const Value& exception);
 };
