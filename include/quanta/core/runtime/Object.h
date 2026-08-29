@@ -1517,7 +1517,7 @@ public:
     const std::string& get_source_text() const {
         if (auto* d = instance_data()) { if (d->overrides && d->overrides->has_source_text) return d->overrides->source_text; }
         static const std::string empty;
-        return executable_ ? executable_->source_text : empty;
+        return executable_ ? executable_->source_text() : empty;
     }
     // Decl-site-invariant source text populates the shared executable's own
     // copy directly (safe: every instance from the same site sets the exact
@@ -1531,8 +1531,10 @@ public:
     // through instance_data_ as the wrong pointee type.
     void set_source_text(const std::string& s) {
         if (executable_) {
-            if (executable_->source_text.empty()) { executable_->source_text = s; return; }
-            if (executable_->source_text == s) return;
+            // Asking materializes the declaration site's own text, which is
+            // exactly what this has to compare against.
+            if (executable_->source_text().empty()) { executable_->set_source_text(s); return; }
+            if (executable_->source_text() == s) return;
         } else if (is_native_) {
             return;
         }

@@ -192,7 +192,23 @@ public:
     // still populate them once. Native functions have no executable at all,
     // so their own per-instance equivalents live in NativeFunctionData
     // instead (see Function::native_data()).
-    mutable std::string source_text;
+    // Cut from the unit's source the first time anything asks, not when the
+    // declaration is compiled. Every function carries the text of itself for
+    // a toString() almost none of them receives, and on a real script that
+    // came to more than the bytecode did.
+    mutable std::string source_text_cut_;
+    mutable uint32_t source_start_ = 0;
+    mutable uint32_t source_end_ = 0;
+
+    void set_source_range(uint32_t start, uint32_t end) {
+        source_start_ = start;
+        source_end_ = end;
+    }
+    const std::string& source_text() const;
+    void set_source_text(std::string s) const {
+        source_text_cut_ = std::move(s);
+        source_end_ = source_start_;  // no longer wants cutting
+    }
 
     // Decl-site default name -- almost always identical for every instance
     // sharing this executable (the constructor parameter or the static

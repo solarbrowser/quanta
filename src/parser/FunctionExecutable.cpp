@@ -23,10 +23,12 @@ namespace Quanta {
 // holding. See defer_body. The body's start position is here for the same
 // trade in the same direction: eight more bytes per executable, so that
 // nothing has to keep a whole tree alive just to say what line a function is
-// on.
-static_assert(sizeof(FunctionExecutable) == 216);
+// on. And by where the literal's own text sits, for the same trade again:
+// four bytes each against the copy of that text every declaration used to
+// carry for a toString() almost none of them receives.
+static_assert(sizeof(FunctionExecutable) == 224);
 #else
-static_assert(sizeof(FunctionExecutable) <= 232);
+static_assert(sizeof(FunctionExecutable) <= 240);
 #endif
 
 constinit thread_local FunctionExecutable* FunctionExecutable::live_head_ = nullptr;
@@ -120,6 +122,17 @@ void FunctionExecutable::borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTN
     body_ = node;
     if (node) { body_start_ = node->get_start(); body_end_offset_ = node->get_end().offset; }
     body_has_use_strict = opens_with_use_strict(body_);
+}
+
+// Cut on demand: a declaration site knows where its own text is, and asking
+// for it is rare enough that keeping a copy of every function's source cost
+// more than the bytecode compiled out of it.
+const std::string& FunctionExecutable::source_text() const {
+    if (source_end_ > source_start_ && unit_) {
+        source_text_cut_ = unit_->source_range(source_start_, source_end_);
+        source_end_ = source_start_;
+    }
+    return source_text_cut_;
 }
 
 }  // namespace Quanta

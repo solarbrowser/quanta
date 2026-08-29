@@ -269,7 +269,7 @@ static ExecutableRef<FunctionExecutable> ensure_shared_executable(
     // once per declaration site, while the call site runs on every closure
     // instantiation and would materialize the same bytes each time.
     if (owning_unit && src_end > src_start) {
-        exe->source_text = owning_unit->source_range(src_start, src_end);
+        exe->set_source_range(src_start, src_end);
     }
     return exe;
 }
