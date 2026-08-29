@@ -355,15 +355,6 @@ std::unique_ptr<Program> Parser::parse_program() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_statement() {
-    // A statement stops nothing on its own: everything inside it is also
-    // inside whatever encloses it.
-    SubtreeScope scope(*this);
-    std::unique_ptr<ASTNode> node = parse_statement_inner();
-    if (node) node->set_subtree_flags(scope.flags());
-    return node;
-}
-
-std::unique_ptr<ASTNode> Parser::parse_statement_inner() {
     // Decorators before class declarations
     if (current_token().get_type() == TokenType::AT) {
         skip_decorator_list();
@@ -1880,7 +1871,13 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
                 advance();
                 return id;
             }
-            break;
+            // In strict code `let` is reserved, so it is not an identifier
+            // here. Leaving the switch left the function with no return at
+            // all, which is why `export default let x` trapped instead of
+            // being rejected.
+            add_error("SyntaxError: Unexpected token 'let'", current_token().get_start());
+            advance();
+            return nullptr;
         case TokenType::OF:
         {   // 'of' is always a contextual keyword -- valid as identifier in expressions
             auto id = std::make_unique<Identifier>("of",
@@ -2745,6 +2742,17 @@ std::unique_ptr<ASTNode> Parser::parse_undefined_literal() {
 std::unique_ptr<ASTNode> Parser::parse_identifier() {
     const Token& token = current_token();
     std::string name = token_string(token);
+    // Every reference to `arguments` is an identifier, and this is where one
+    // is turned into a node with its text already in hand. Noticing it a
+    // token at a time instead put a read of the token stream on every token
+    // in the file, which is the parser's hottest loop.
+    //
+    // A property name is not a use of the binding, but counting one costs at
+    // most an arguments object the spec says the function has anyway, while
+    // missing a use would be wrong.
+    if (name.size() == 9 && name == "arguments" && !previous_token_is_dot()) {
+        subtree_acc_ |= kSubtreeArguments;
+    }
     bool escaped_kw = token.has_escaped_keyword();
     Position start = token.get_start();
     Position end = token.get_end();
@@ -2898,6 +2906,21 @@ const Token& Parser::previous_token() const {
         return tokens_[current_token_index_ - 1];
     }
     return tokens_[0];
+}
+
+// An identifier straight after a dot is a property name, never a reference to
+// a binding, so `x.arguments` is not a use of the function's own.
+bool Parser::previous_token_is_dot() const {
+    size_t i = current_token_index_;
+    while (i > 0) {
+        const TokenType t = tokens_[--i].get_type();
+        if (t == TokenType::NEWLINE || t == TokenType::WHITESPACE ||
+            t == TokenType::COMMENT) {
+            continue;
+        }
+        return t == TokenType::DOT || t == TokenType::OPTIONAL_CHAINING;
+    }
+    return false;
 }
 
 void Parser::advance() {
@@ -4919,6 +4942,7 @@ std::unique_ptr<ASTNode> Parser::parse_with_statement() {
     }
 
     Position end = get_current_position();
+    subtree_acc_ |= kSubtreeWith;
     return std::make_unique<WithStatement>(std::move(object), std::move(body), start, end);
 }
 
@@ -5126,9 +5150,10 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
-    // A nested function owns its own suspensions: an await or a yield in
-    // here does not make what encloses it suspendable.
-    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+    // A nested function owns its own suspensions and its own `arguments`,
+    // and a `with` inside it opaques only its own names.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
     Position start = get_current_position();
     
     if (!consume(TokenType::FUNCTION)) {
@@ -5479,9 +5504,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
-    // A nested function owns its own suspensions: an await or a yield in
-    // here does not make what encloses it suspendable.
-    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+    // A class stops a suspension and a `with`, but its heritage and its
+    // computed keys run in the scope around it, so `arguments` crosses.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
+        kSubtreeSuspend | kSubtreeWith));
     Position start = get_current_position();
     
     if (!consume(TokenType::CLASS)) {
@@ -5887,9 +5913,10 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_class_expression() {
-    // A nested function owns its own suspensions: an await or a yield in
-    // here does not make what encloses it suspendable.
-    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+    // A class stops a suspension and a `with`, but its heritage and its
+    // computed keys run in the scope around it, so `arguments` crosses.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
+        kSubtreeSuspend | kSubtreeWith));
     Position start = get_current_position();
 
     if (!consume(TokenType::CLASS)) {
@@ -6267,9 +6294,10 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_method_definition() {
-    // A nested function owns its own suspensions: an await or a yield in
-    // here does not make what encloses it suspendable.
-    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+    // A nested function owns its own suspensions and its own `arguments`,
+    // and a `with` inside it opaques only its own names.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
     Position start = get_current_position();
     // toString's source text must exclude the `static` modifier (NativeFunction syntax
     // starts at the method name) -- src_start tracks where the name actually begins.
@@ -6486,7 +6514,12 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             bool saved_cm_fi = options_.in_class_method;
             options_.in_class_field_init = true;
             options_.in_class_method = true;
-            init = parse_assignment_expression();
+            {
+                // A field initializer runs as its own function body, so the
+                // `arguments` in it is not the enclosing scope's.
+                SubtreeScope field_scope(*this, ~static_cast<uint32_t>(kSubtreeArguments));
+                init = parse_assignment_expression();
+            }
             options_.in_class_field_init = saved_cfi;
             options_.in_class_method = saved_cm_fi;
             if (!init) {
@@ -6821,9 +6854,10 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_expression() {
-    // A nested function owns its own suspensions: an await or a yield in
-    // here does not make what encloses it suspendable.
-    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+    // A nested function owns its own suspensions and its own `arguments`,
+    // and a `with` inside it opaques only its own names.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
     Position start = get_current_position();
 
     if (!consume(TokenType::FUNCTION)) {
@@ -7169,9 +7203,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
-    // A nested function owns its own suspensions: an await or a yield in
-    // here does not make what encloses it suspendable.
-    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+    // A nested function owns its own suspensions and its own `arguments`,
+    // and a `with` inside it opaques only its own names.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
     Position start = get_current_position();
 
     // Save async token end-line and end pos BEFORE consuming it (advance() skips newlines)
@@ -7481,9 +7516,10 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
-    // A nested function owns its own suspensions: an await or a yield in
-    // here does not make what encloses it suspendable.
-    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+    // A nested function owns its own suspensions and its own `arguments`,
+    // and a `with` inside it opaques only its own names.
+    SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
     Position start = get_current_position();
 
     // Save async token end-line BEFORE consuming it
@@ -8592,7 +8628,13 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 advance();
                 key = std::make_unique<Identifier>(kname, ks, ke);
             } else {
+                // A key names a property; it does not read a binding, so
+                // `{ arguments: x }` is not a use of the function's own. The
+                // shorthand form is, and puts the bit back below.
+                const uint32_t before = subtree_acc_;
                 key = parse_identifier();
+                subtree_acc_ = (subtree_acc_ & ~static_cast<uint32_t>(kSubtreeArguments)) |
+                               (before & kSubtreeArguments);
             }
         } else if (match(TokenType::STRING)) {
             key = parse_string_literal();
@@ -8812,9 +8854,9 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             options_.non_arrow_function_depth++;
             std::unique_ptr<ASTNode> body;
             {
-                // A shorthand method owns its own suspensions, like any other
-                // nested function.
-                SubtreeScope method_scope(*this, ~static_cast<uint32_t>(kSubtreeSuspend));
+                // A shorthand method is a nested function like any other.
+                SubtreeScope method_scope(*this, ~static_cast<uint32_t>(
+                    kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
                 body = parse_block_statement(true);
             }
             options_.function_depth--;
@@ -8961,6 +9003,11 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
                 if (auto* identifier_key = dynamic_cast<Identifier*>(key.get())) {
                     const std::string& shn = identifier_key->get_name();
+                    // Shorthand reads the binding the key names, unlike every
+                    // other key.
+                    if (shn.size() == 9 && shn == "arguments") {
+                        subtree_acc_ |= kSubtreeArguments;
+                    }
                     // Reserved words are never valid as shorthand identifier references
                     static const NameSet always_reserved = {
                         "false","true","null","this","super","enum",

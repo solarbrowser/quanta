@@ -85,6 +85,7 @@ private:
     // reads what accumulated inside it, hands it to the node, and passes on
     // only the bits that cross that boundary.
     uint32_t subtree_acc_ = 0;
+    bool previous_token_is_dot() const;
 
     // Opens a fresh accumulator for one subtree and, however that parse
     // leaves, folds back into the enclosing one only the bits that cross this
@@ -166,9 +167,6 @@ public:
     // parse_program() keep the copying behaviour.
     ExecutableRef<ScriptUnit> parse_program_unit();
     std::unique_ptr<ASTNode> parse_statement();
-    // parse_statement wraps this one so that every statement, whichever form
-    // it turns out to be, leaves with its subtree facts filled in.
-    std::unique_ptr<ASTNode> parse_statement_inner();
     std::unique_ptr<ASTNode> parse_expression();
     
     std::unique_ptr<ASTNode> parse_variable_declaration();

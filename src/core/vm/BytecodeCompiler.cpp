@@ -1111,7 +1111,9 @@ bool contains_delegated_expr(const ASTNode* node) {
 // True if `node` references the enclosing function's `arguments`: descends
 // into arrow bodies (arrows share it) but not into nested regular functions
 // (they get their own).
-bool uses_arguments(const ASTNode* node) {
+// The oracle the parser-computed bit is checked against, and the answer
+// for any tree the parser did not fill in.
+bool uses_arguments_by_walk(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
         case ASTNode::Type::IDENTIFIER:
@@ -1120,135 +1122,135 @@ bool uses_arguments(const ASTNode* node) {
         case ASTNode::Type::FUNCTION_DECLARATION:
             return false;
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
-            return uses_arguments(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+            return uses_arguments_by_walk(static_cast<const ArrowFunctionExpression*>(node)->get_body());
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             // Async arrows share the enclosing arguments; async functions own theirs.
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
-            return n->is_arrow() && uses_arguments(n->get_body());
+            return n->is_arrow() && uses_arguments_by_walk(n->get_body());
         }
         case ASTNode::Type::CLASS_DECLARATION: {
             // Superclass expressions and computed keys evaluate in the
             // enclosing scope; method bodies get their own arguments.
             const auto* n = static_cast<const ClassDeclaration*>(node);
-            return uses_arguments(n->get_superclass()) || uses_arguments(n->get_body());
+            return uses_arguments_by_walk(n->get_superclass()) || uses_arguments_by_walk(n->get_body());
         }
         case ASTNode::Type::METHOD_DEFINITION: {
             const auto* n = static_cast<const MethodDefinition*>(node);
-            return n->is_computed() && uses_arguments(n->get_key());
+            return n->is_computed() && uses_arguments_by_walk(n->get_key());
         }
         case ASTNode::Type::CLASS_FIELD: {
             const auto* n = static_cast<const ClassField*>(node);
-            return n->is_computed() && uses_arguments(n->get_key());
+            return n->is_computed() && uses_arguments_by_walk(n->get_key());
         }
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
             for (const auto& stmt : n->get_statements()) {
-                if (uses_arguments(stmt.get())) return true;
+                if (uses_arguments_by_walk(stmt.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::IF_STATEMENT: {
             const auto* n = static_cast<const IfStatement*>(node);
-            return uses_arguments(n->get_test()) || uses_arguments(n->get_consequent()) ||
-                   uses_arguments(n->get_alternate());
+            return uses_arguments_by_walk(n->get_test()) || uses_arguments_by_walk(n->get_consequent()) ||
+                   uses_arguments_by_walk(n->get_alternate());
         }
         case ASTNode::Type::WHILE_STATEMENT: {
             const auto* n = static_cast<const WhileStatement*>(node);
-            return uses_arguments(n->get_test()) || uses_arguments(n->get_body());
+            return uses_arguments_by_walk(n->get_test()) || uses_arguments_by_walk(n->get_body());
         }
         case ASTNode::Type::DO_WHILE_STATEMENT: {
             const auto* n = static_cast<const DoWhileStatement*>(node);
-            return uses_arguments(n->get_body()) || uses_arguments(n->get_test());
+            return uses_arguments_by_walk(n->get_body()) || uses_arguments_by_walk(n->get_test());
         }
         case ASTNode::Type::FOR_STATEMENT: {
             const auto* n = static_cast<const ForStatement*>(node);
-            return uses_arguments(n->get_init()) || uses_arguments(n->get_test()) ||
-                   uses_arguments(n->get_update()) || uses_arguments(n->get_body());
+            return uses_arguments_by_walk(n->get_init()) || uses_arguments_by_walk(n->get_test()) ||
+                   uses_arguments_by_walk(n->get_update()) || uses_arguments_by_walk(n->get_body());
         }
         case ASTNode::Type::FOR_OF_STATEMENT: {
             const auto* n = static_cast<const ForOfStatement*>(node);
-            return uses_arguments(n->get_right()) || uses_arguments(n->get_body());
+            return uses_arguments_by_walk(n->get_right()) || uses_arguments_by_walk(n->get_body());
         }
         case ASTNode::Type::FOR_IN_STATEMENT: {
             const auto* n = static_cast<const ForInStatement*>(node);
-            return uses_arguments(n->get_right()) || uses_arguments(n->get_body());
+            return uses_arguments_by_walk(n->get_right()) || uses_arguments_by_walk(n->get_body());
         }
         case ASTNode::Type::TRY_STATEMENT: {
             const auto* n = static_cast<const TryStatement*>(node);
-            if (uses_arguments(n->get_try_block())) return true;
+            if (uses_arguments_by_walk(n->get_try_block())) return true;
             if (const ASTNode* cc = n->get_catch_clause()) {
-                if (uses_arguments(static_cast<const CatchClause*>(cc)->get_body())) return true;
+                if (uses_arguments_by_walk(static_cast<const CatchClause*>(cc)->get_body())) return true;
             }
-            return uses_arguments(n->get_finally_block());
+            return uses_arguments_by_walk(n->get_finally_block());
         }
         case ASTNode::Type::SWITCH_STATEMENT: {
             const auto* n = static_cast<const SwitchStatement*>(node);
-            if (uses_arguments(n->get_discriminant())) return true;
+            if (uses_arguments_by_walk(n->get_discriminant())) return true;
             for (const auto& c : n->get_cases()) {
                 const auto* cc = static_cast<const CaseClause*>(c.get());
-                if (cc->get_test() && uses_arguments(cc->get_test())) return true;
+                if (cc->get_test() && uses_arguments_by_walk(cc->get_test())) return true;
                 for (const auto& s : cc->get_consequent()) {
-                    if (uses_arguments(s.get())) return true;
+                    if (uses_arguments_by_walk(s.get())) return true;
                 }
             }
             return false;
         }
         case ASTNode::Type::LABELED_STATEMENT:
-            return uses_arguments(static_cast<const LabeledStatement*>(node)->get_statement());
+            return uses_arguments_by_walk(static_cast<const LabeledStatement*>(node)->get_statement());
         case ASTNode::Type::EXPRESSION_STATEMENT:
-            return uses_arguments(static_cast<const ExpressionStatement*>(node)->get_expression());
+            return uses_arguments_by_walk(static_cast<const ExpressionStatement*>(node)->get_expression());
         case ASTNode::Type::RETURN_STATEMENT: {
             const auto* n = static_cast<const ReturnStatement*>(node);
-            return n->get_argument() && uses_arguments(n->get_argument());
+            return n->get_argument() && uses_arguments_by_walk(n->get_argument());
         }
         case ASTNode::Type::THROW_STATEMENT:
-            return uses_arguments(static_cast<const ThrowStatement*>(node)->get_expression());
+            return uses_arguments_by_walk(static_cast<const ThrowStatement*>(node)->get_expression());
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations()) {
-                if (d->get_init() && uses_arguments(d->get_init())) return true;
+                if (d->get_init() && uses_arguments_by_walk(d->get_init())) return true;
             }
             return false;
         }
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
             const auto* n = static_cast<const DestructuringAssignment*>(node);
-            if (n->get_source() && uses_arguments(n->get_source())) return true;
+            if (n->get_source() && uses_arguments_by_walk(n->get_source())) return true;
             bool found = false;
-            n->for_each_expression([&](const ASTNode* e) { if (!found && uses_arguments(e)) found = true; });
+            n->for_each_expression([&](const ASTNode* e) { if (!found && uses_arguments_by_walk(e)) found = true; });
             return found;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
-            return uses_arguments(n->get_left()) || uses_arguments(n->get_right());
+            return uses_arguments_by_walk(n->get_left()) || uses_arguments_by_walk(n->get_right());
         }
         case ASTNode::Type::UNARY_EXPRESSION:
-            return uses_arguments(static_cast<const UnaryExpression*>(node)->get_operand());
+            return uses_arguments_by_walk(static_cast<const UnaryExpression*>(node)->get_operand());
         case ASTNode::Type::BINARY_EXPRESSION: {
             const auto* n = static_cast<const BinaryExpression*>(node);
-            return uses_arguments(n->get_left()) || uses_arguments(n->get_right());
+            return uses_arguments_by_walk(n->get_left()) || uses_arguments_by_walk(n->get_right());
         }
         case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
             const auto* n = static_cast<const NullishCoalescingExpression*>(node);
-            return uses_arguments(n->get_left()) || uses_arguments(n->get_right());
+            return uses_arguments_by_walk(n->get_left()) || uses_arguments_by_walk(n->get_right());
         }
         case ASTNode::Type::CONDITIONAL_EXPRESSION: {
             const auto* n = static_cast<const ConditionalExpression*>(node);
-            return uses_arguments(n->get_test()) || uses_arguments(n->get_consequent()) ||
-                   uses_arguments(n->get_alternate());
+            return uses_arguments_by_walk(n->get_test()) || uses_arguments_by_walk(n->get_consequent()) ||
+                   uses_arguments_by_walk(n->get_alternate());
         }
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* n = static_cast<const CallExpression*>(node);
-            if (uses_arguments(n->get_callee())) return true;
+            if (uses_arguments_by_walk(n->get_callee())) return true;
             for (const auto& arg : n->get_arguments()) {
-                if (uses_arguments(arg.get())) return true;
+                if (uses_arguments_by_walk(arg.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            if (uses_arguments(n->get_constructor())) return true;
+            if (uses_arguments_by_walk(n->get_constructor())) return true;
             for (const auto& arg : n->get_arguments()) {
-                if (uses_arguments(arg.get())) return true;
+                if (uses_arguments_by_walk(arg.get())) return true;
             }
             return false;
         }
@@ -1256,57 +1258,57 @@ bool uses_arguments(const ASTNode* node) {
             // `x.arguments` is a property NAME, not a use -- only the object
             // side (and a computed key) counts.
             const auto* n = static_cast<const MemberExpression*>(node);
-            return uses_arguments(n->get_object()) ||
-                   (n->is_computed() && uses_arguments(n->get_property()));
+            return uses_arguments_by_walk(n->get_object()) ||
+                   (n->is_computed() && uses_arguments_by_walk(n->get_property()));
         }
         case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
             const auto* n = static_cast<const OptionalChainingExpression*>(node);
-            return uses_arguments(n->get_object()) ||
-                   (n->is_computed() && uses_arguments(n->get_property()));
+            return uses_arguments_by_walk(n->get_object()) ||
+                   (n->is_computed() && uses_arguments_by_walk(n->get_property()));
         }
         case ASTNode::Type::SPREAD_ELEMENT:
-            return uses_arguments(static_cast<const SpreadElement*>(node)->get_argument());
+            return uses_arguments_by_walk(static_cast<const SpreadElement*>(node)->get_argument());
         case ASTNode::Type::TEMPLATE_LITERAL: {
             const auto* n = static_cast<const TemplateLiteral*>(node);
             for (const auto& el : n->get_elements()) {
                 if (el.type == TemplateLiteral::Element::Type::EXPRESSION &&
-                    uses_arguments(el.expression.get())) return true;
+                    uses_arguments_by_walk(el.expression.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::OBJECT_LITERAL: {
             const auto* n = static_cast<const ObjectLiteral*>(node);
             for (const auto& prop : n->get_properties()) {
-                if (prop->value && uses_arguments(prop->value.get())) return true;
+                if (prop->value && uses_arguments_by_walk(prop->value.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
             for (const auto& el : n->get_elements()) {
-                if (el && uses_arguments(el.get())) return true;
+                if (el && uses_arguments_by_walk(el.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::YIELD_EXPRESSION: {
             const auto* n = static_cast<const YieldExpression*>(node);
-            return n->get_argument() && uses_arguments(n->get_argument());
+            return n->get_argument() && uses_arguments_by_walk(n->get_argument());
         }
         case ASTNode::Type::AWAIT_EXPRESSION: {
             const auto* n = static_cast<const AwaitExpression*>(node);
-            return n->get_argument() && uses_arguments(n->get_argument());
+            return n->get_argument() && uses_arguments_by_walk(n->get_argument());
         }
         case ASTNode::Type::WITH_STATEMENT: {
             // The body has to be walked even though `with` can shadow the name:
             // whether the object supplies `arguments` is only knowable at run
             // time, so the binding must exist either way.
             const auto* n = static_cast<const WithStatement*>(node);
-            return uses_arguments(n->get_object()) || uses_arguments(n->get_body());
+            return uses_arguments_by_walk(n->get_object()) || uses_arguments_by_walk(n->get_body());
         }
         case ASTNode::Type::USING_DECLARATION: {
             const auto* n = static_cast<const UsingDeclaration*>(node);
             for (const auto& b : n->get_bindings()) {
-                if (uses_arguments(b.initializer.get())) return true;
+                if (uses_arguments_by_walk(b.initializer.get())) return true;
             }
             return false;
         }
@@ -1353,6 +1355,23 @@ bool uses_arguments(const ASTNode* node) {
         default:
             return true;
     }
+}
+
+bool uses_arguments(const ASTNode* node) {
+    if (!node) return false;
+    const uint32_t flags = node->subtree_flags();
+    if (!(flags & kSubtreeComputed)) return uses_arguments_by_walk(node);
+    const bool bit = (flags & kSubtreeArguments) != 0;
+#ifdef QUANTA_VALIDATE_BYTECODE
+    if (std::getenv("QUANTA_SUBTREE_CHECK")) {
+        const bool walked = uses_arguments_by_walk(node);
+        if (bit != walked) {
+            std::fprintf(stderr, "[subtree] uses_arguments bit=%d walk=%d satir=%u\n",
+                         bit ? 1 : 0, walked ? 1 : 0, node->get_start().line);
+        }
+    }
+#endif
+    return bit;
 }
 
 }
@@ -2629,7 +2648,9 @@ bool uses_super_or_private(const ASTNode* node) {
 // theirs is their own body's problem. A shape this walk does not know answers
 // no, which only costs the function its compilation: the `with` case refuses
 // without full env_mode rather than emitting something wrong.
-bool contains_with(const ASTNode* node) {
+// The oracle the parser-computed bit is checked against, and the answer
+// for any tree the parser did not fill in.
+bool contains_with_by_walk(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
         case ASTNode::Type::WITH_STATEMENT:
@@ -2640,152 +2661,169 @@ bool contains_with(const ASTNode* node) {
             return false;
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
-            return n->is_arrow() && contains_with(n->get_body());
+            return n->is_arrow() && contains_with_by_walk(n->get_body());
         }
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
-            return contains_with(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+            return contains_with_by_walk(static_cast<const ArrowFunctionExpression*>(node)->get_body());
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
-            for (const auto& s : n->get_statements()) if (contains_with(s.get())) return true;
+            for (const auto& s : n->get_statements()) if (contains_with_by_walk(s.get())) return true;
             return false;
         }
         case ASTNode::Type::IF_STATEMENT: {
             const auto* n = static_cast<const IfStatement*>(node);
-            return contains_with(n->get_test()) || contains_with(n->get_consequent()) ||
-                   contains_with(n->get_alternate());
+            return contains_with_by_walk(n->get_test()) || contains_with_by_walk(n->get_consequent()) ||
+                   contains_with_by_walk(n->get_alternate());
         }
         case ASTNode::Type::WHILE_STATEMENT: {
             const auto* n = static_cast<const WhileStatement*>(node);
-            return contains_with(n->get_test()) || contains_with(n->get_body());
+            return contains_with_by_walk(n->get_test()) || contains_with_by_walk(n->get_body());
         }
         case ASTNode::Type::DO_WHILE_STATEMENT: {
             const auto* n = static_cast<const DoWhileStatement*>(node);
-            return contains_with(n->get_body()) || contains_with(n->get_test());
+            return contains_with_by_walk(n->get_body()) || contains_with_by_walk(n->get_test());
         }
         case ASTNode::Type::FOR_STATEMENT: {
             const auto* n = static_cast<const ForStatement*>(node);
-            return contains_with(n->get_init()) || contains_with(n->get_test()) ||
-                   contains_with(n->get_update()) || contains_with(n->get_body());
+            return contains_with_by_walk(n->get_init()) || contains_with_by_walk(n->get_test()) ||
+                   contains_with_by_walk(n->get_update()) || contains_with_by_walk(n->get_body());
         }
         case ASTNode::Type::FOR_OF_STATEMENT: {
             const auto* n = static_cast<const ForOfStatement*>(node);
-            return contains_with(n->get_right()) || contains_with(n->get_body());
+            return contains_with_by_walk(n->get_right()) || contains_with_by_walk(n->get_body());
         }
         case ASTNode::Type::FOR_IN_STATEMENT: {
             const auto* n = static_cast<const ForInStatement*>(node);
-            return contains_with(n->get_right()) || contains_with(n->get_body());
+            return contains_with_by_walk(n->get_right()) || contains_with_by_walk(n->get_body());
         }
         case ASTNode::Type::TRY_STATEMENT: {
             const auto* n = static_cast<const TryStatement*>(node);
-            if (contains_with(n->get_try_block())) return true;
+            if (contains_with_by_walk(n->get_try_block())) return true;
             if (const ASTNode* cc = n->get_catch_clause()) {
-                if (contains_with(static_cast<const CatchClause*>(cc)->get_body())) return true;
+                if (contains_with_by_walk(static_cast<const CatchClause*>(cc)->get_body())) return true;
             }
-            return contains_with(n->get_finally_block());
+            return contains_with_by_walk(n->get_finally_block());
         }
         case ASTNode::Type::SWITCH_STATEMENT: {
             const auto* n = static_cast<const SwitchStatement*>(node);
-            if (contains_with(n->get_discriminant())) return true;
+            if (contains_with_by_walk(n->get_discriminant())) return true;
             for (const auto& c : n->get_cases()) {
                 const auto* cc = static_cast<const CaseClause*>(c.get());
-                if (cc->get_test() && contains_with(cc->get_test())) return true;
-                for (const auto& s : cc->get_consequent()) if (contains_with(s.get())) return true;
+                if (cc->get_test() && contains_with_by_walk(cc->get_test())) return true;
+                for (const auto& s : cc->get_consequent()) if (contains_with_by_walk(s.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::LABELED_STATEMENT:
-            return contains_with(static_cast<const LabeledStatement*>(node)->get_statement());
+            return contains_with_by_walk(static_cast<const LabeledStatement*>(node)->get_statement());
         case ASTNode::Type::EXPRESSION_STATEMENT:
-            return contains_with(static_cast<const ExpressionStatement*>(node)->get_expression());
+            return contains_with_by_walk(static_cast<const ExpressionStatement*>(node)->get_expression());
         case ASTNode::Type::RETURN_STATEMENT: {
             const auto* n = static_cast<const ReturnStatement*>(node);
-            return n->get_argument() && contains_with(n->get_argument());
+            return n->get_argument() && contains_with_by_walk(n->get_argument());
         }
         case ASTNode::Type::THROW_STATEMENT:
-            return contains_with(static_cast<const ThrowStatement*>(node)->get_expression());
+            return contains_with_by_walk(static_cast<const ThrowStatement*>(node)->get_expression());
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations()) {
-                if (d->get_init() && contains_with(d->get_init())) return true;
+                if (d->get_init() && contains_with_by_walk(d->get_init())) return true;
             }
             return false;
         }
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
             const auto* n = static_cast<const DestructuringAssignment*>(node);
-            if (n->get_source() && contains_with(n->get_source())) return true;
+            if (n->get_source() && contains_with_by_walk(n->get_source())) return true;
             bool found = false;
-            n->for_each_expression([&](const ASTNode* e) { if (!found && contains_with(e)) found = true; });
+            n->for_each_expression([&](const ASTNode* e) { if (!found && contains_with_by_walk(e)) found = true; });
             return found;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
-            return contains_with(n->get_left()) || contains_with(n->get_right());
+            return contains_with_by_walk(n->get_left()) || contains_with_by_walk(n->get_right());
         }
         case ASTNode::Type::UNARY_EXPRESSION:
-            return contains_with(static_cast<const UnaryExpression*>(node)->get_operand());
+            return contains_with_by_walk(static_cast<const UnaryExpression*>(node)->get_operand());
         case ASTNode::Type::BINARY_EXPRESSION: {
             const auto* n = static_cast<const BinaryExpression*>(node);
-            return contains_with(n->get_left()) || contains_with(n->get_right());
+            return contains_with_by_walk(n->get_left()) || contains_with_by_walk(n->get_right());
         }
         case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
             const auto* n = static_cast<const NullishCoalescingExpression*>(node);
-            return contains_with(n->get_left()) || contains_with(n->get_right());
+            return contains_with_by_walk(n->get_left()) || contains_with_by_walk(n->get_right());
         }
         case ASTNode::Type::CONDITIONAL_EXPRESSION: {
             const auto* n = static_cast<const ConditionalExpression*>(node);
-            return contains_with(n->get_test()) || contains_with(n->get_consequent()) ||
-                   contains_with(n->get_alternate());
+            return contains_with_by_walk(n->get_test()) || contains_with_by_walk(n->get_consequent()) ||
+                   contains_with_by_walk(n->get_alternate());
         }
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* n = static_cast<const CallExpression*>(node);
-            if (contains_with(n->get_callee())) return true;
-            for (const auto& a : n->get_arguments()) if (contains_with(a.get())) return true;
+            if (contains_with_by_walk(n->get_callee())) return true;
+            for (const auto& a : n->get_arguments()) if (contains_with_by_walk(a.get())) return true;
             return false;
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            if (contains_with(n->get_constructor())) return true;
-            for (const auto& a : n->get_arguments()) if (contains_with(a.get())) return true;
+            if (contains_with_by_walk(n->get_constructor())) return true;
+            for (const auto& a : n->get_arguments()) if (contains_with_by_walk(a.get())) return true;
             return false;
         }
         case ASTNode::Type::MEMBER_EXPRESSION: {
             const auto* n = static_cast<const MemberExpression*>(node);
-            return contains_with(n->get_object()) ||
-                   (n->is_computed() && contains_with(n->get_property()));
+            return contains_with_by_walk(n->get_object()) ||
+                   (n->is_computed() && contains_with_by_walk(n->get_property()));
         }
         case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
             const auto* n = static_cast<const OptionalChainingExpression*>(node);
-            return contains_with(n->get_object()) ||
-                   (n->is_computed() && contains_with(n->get_property()));
+            return contains_with_by_walk(n->get_object()) ||
+                   (n->is_computed() && contains_with_by_walk(n->get_property()));
         }
         case ASTNode::Type::SPREAD_ELEMENT:
-            return contains_with(static_cast<const SpreadElement*>(node)->get_argument());
+            return contains_with_by_walk(static_cast<const SpreadElement*>(node)->get_argument());
         case ASTNode::Type::TEMPLATE_LITERAL: {
             const auto* n = static_cast<const TemplateLiteral*>(node);
             for (const auto& el : n->get_elements()) {
                 if (el.type == TemplateLiteral::Element::Type::EXPRESSION &&
-                    contains_with(el.expression.get())) return true;
+                    contains_with_by_walk(el.expression.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::OBJECT_LITERAL: {
             const auto* n = static_cast<const ObjectLiteral*>(node);
             for (const auto& p : n->get_properties()) {
-                if (p->value && contains_with(p->value.get())) return true;
-                if (p->computed && p->key && contains_with(p->key.get())) return true;
+                if (p->value && contains_with_by_walk(p->value.get())) return true;
+                if (p->computed && p->key && contains_with_by_walk(p->key.get())) return true;
             }
             return false;
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
             for (const auto& el : n->get_elements()) {
-                if (el && contains_with(el.get())) return true;
+                if (el && contains_with_by_walk(el.get())) return true;
             }
             return false;
         }
         default:
             return false;
     }
+}
+
+bool contains_with(const ASTNode* node) {
+    if (!node) return false;
+    const uint32_t flags = node->subtree_flags();
+    if (!(flags & kSubtreeComputed)) return contains_with_by_walk(node);
+    const bool bit = (flags & kSubtreeWith) != 0;
+#ifdef QUANTA_VALIDATE_BYTECODE
+    if (std::getenv("QUANTA_SUBTREE_CHECK")) {
+        const bool walked = contains_with_by_walk(node);
+        if (bit != walked) {
+            std::fprintf(stderr, "[subtree] contains_with bit=%d walk=%d node_type=%d\n",
+                         bit ? 1 : 0, walked ? 1 : 0, static_cast<int>(node->get_type()));
+        }
+    }
+#endif
+    return bit;
 }
 
 // The oracle the parser-computed bit is checked against, and the answer for

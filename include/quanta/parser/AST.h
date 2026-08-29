@@ -57,6 +57,8 @@ enum SubtreeFlags : uint32_t {
     kSubtreeComputed   = 1u << 0,
     kSubtreeSuspend    = 1u << 1,   // await or yield the enclosing body owns
     kSubtreeClosure    = 1u << 2,   // a nested function or class captures the scope
+    kSubtreeWith       = 1u << 3,   // a `with` block, which opaques every name in it
+    kSubtreeArguments  = 1u << 4,   // the name `arguments`, in the body that owns it
 };
 
 class ASTNode {
