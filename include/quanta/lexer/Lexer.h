@@ -24,6 +24,12 @@ public:
         bool allow_reserved_words = false;
         bool strict_mode = false;
         bool source_type_module = false;
+        // Set when re-reading text that has already been parsed once. The
+        // words ES5 reserves for strict mode are only errors where a name is
+        // bound or read, which the first parse has already decided; refusing
+        // them again here would reject an object literal that is legal in
+        // strict code and was accepted the first time round.
+        bool reparsing_accepted_source = false;
     };
 
 private:

@@ -27,6 +27,7 @@ std::unique_ptr<ASTNode> ScriptUnit::parse_body_from_source(const Position& star
     if (!source_ || end_offset <= start.offset || end_offset > source_->size()) return nullptr;
     Lexer::LexerOptions opts;
     opts.strict_mode = strict;
+    opts.reparsing_accepted_source = true;
     Lexer lexer(source_, opts);
     TokenSequence toks = lexer.tokenize_range(start, end_offset);
     if (toks.size() <= 1) return nullptr;
