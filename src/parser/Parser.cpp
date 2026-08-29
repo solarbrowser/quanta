@@ -3009,6 +3009,11 @@ bool Parser::token_is_unreserved_contextual(TokenType type) {
     }
 }
 
+bool Parser::is_strict_reserved_name(std::string_view name) {
+    return name == "implements" || name == "interface" || name == "package" ||
+           name == "private" || name == "protected" || name == "public";
+}
+
 bool Parser::is_reserved_word_as_property_name() {
     TokenType type = current_token().get_type();
     return type == TokenType::RETURN ||
@@ -4435,7 +4440,8 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 return nullptr;
             }
 
-            if (options_.strict_mode && (var_name == "eval" || var_name == "arguments")) {
+            if (options_.strict_mode && (var_name == "eval" || var_name == "arguments" ||
+                                 is_strict_reserved_name(var_name))) {
                 add_error("SyntaxError: '" + var_name + "' cannot be used as variable name in strict mode");
                 return nullptr;
             }
@@ -5245,7 +5251,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                                          current_token().get_start(), current_token().get_end());
     advance();
 
-    if (options_.strict_mode && (fn_name == "eval" || fn_name == "arguments")) {
+    if (options_.strict_mode && (fn_name == "eval" || fn_name == "arguments" ||
+                                 is_strict_reserved_name(fn_name))) {
         add_error("'" + fn_name + "' cannot be used as function name in strict mode");
         return nullptr;
     }
@@ -5329,7 +5336,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             // ES5: eval and arguments cannot be used as parameter names in strict mode
             if (options_.strict_mode) {
                 std::string_view pname = token_text(current_token());
-                if (pname == "eval" || pname == "arguments") {
+                if (pname == "eval" || pname == "arguments" || is_strict_reserved_name(pname)) {
                     add_error("'" + std::string(pname) + "' cannot be used as a parameter name in strict mode");
                     options_.in_generator_body = saved_gen_for_params_fd;
                     return nullptr;
@@ -5508,7 +5515,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                         }
                         if (id) {
                             const std::string& fname = static_cast<Identifier*>(id.get())->get_name();
-                            if (fname == "eval" || fname == "arguments") {
+                            if (is_strict_reserved_name(fname) || fname == "eval" || fname == "arguments") {
                                 add_error("SyntaxError: '" + fname + "' cannot be used as function name in strict mode");
                                 return nullptr;
                             }
@@ -5517,7 +5524,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                         for (const auto& p : params) {
                             if (!p->get_name()) continue;
                             const std::string& pn = p->get_name()->get_name();
-                            if (pn == "eval" || pn == "arguments") {
+                            if (pn == "eval" || pn == "arguments" || is_strict_reserved_name(pn)) {
                                 add_error("SyntaxError: '" + pn + "' cannot be a parameter name in strict mode");
                                 return nullptr;
                             }
@@ -5617,6 +5624,14 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     } else {
         id = parse_identifier();
         if (!id) return nullptr;
+        // A class name is bound in strict code whatever the code around it is,
+        // so the words strict mode reserves are refused here even in sloppy
+        // source.
+        if (is_strict_reserved_name(static_cast<Identifier*>(id.get())->get_name())) {
+            add_error("SyntaxError: '" + static_cast<Identifier*>(id.get())->get_name() +
+                      "' cannot be used as a class name");
+            return nullptr;
+        }
     }
 
     bool saved_strict_pre = options_.strict_mode;
@@ -6026,6 +6041,13 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             } else {
                 id = parse_identifier();
                 if (!id) return nullptr;
+            }
+            // A class name is bound in strict code whatever the code around
+            // it is.
+            if (id && is_strict_reserved_name(static_cast<Identifier*>(id.get())->get_name())) {
+                add_error("SyntaxError: '" + static_cast<Identifier*>(id.get())->get_name() +
+                          "' cannot be used as a class name");
+                return nullptr;
             }
         }
     }
@@ -6749,7 +6771,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             std::string_view apname = token_text(current_token());
-            if (options_.strict_mode && (apname == "eval" || apname == "arguments")) {
+            if (options_.strict_mode && (is_strict_reserved_name(apname) ||
+                                         apname == "eval" || apname == "arguments")) {
                 add_error("SyntaxError: '" + std::string(apname) + "' cannot be a parameter name in strict mode");
                 return nullptr;
             }
@@ -6951,7 +6974,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     if (current_token().get_type() == TokenType::IDENTIFIER ||
         token_is_unreserved_contextual(current_token().get_type())) {
         std::string_view fe_name = token_text(current_token());
-        if (options_.strict_mode && (fe_name == "eval" || fe_name == "arguments")) {
+        if (options_.strict_mode && (is_strict_reserved_name(fe_name) || fe_name == "eval" || fe_name == "arguments")) {
             add_error("SyntaxError: '" + std::string(fe_name) + "' cannot be used as function name in strict mode");
             return nullptr;
         }
@@ -7049,7 +7072,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             // ES5: eval and arguments cannot be used as parameter names in strict mode
             if (options_.strict_mode) {
                 std::string_view pname = token_text(current_token());
-                if (pname == "eval" || pname == "arguments") {
+                if (pname == "eval" || pname == "arguments" || is_strict_reserved_name(pname)) {
                     add_error("'" + std::string(pname) + "' cannot be used as a parameter name in strict mode");
                     options_.in_generator_body = saved_gen_for_params_fe;
                     return nullptr;
@@ -7228,7 +7251,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                         }
                         if (id) {
                             const std::string& fname = static_cast<Identifier*>(id.get())->get_name();
-                            if (fname == "eval" || fname == "arguments") {
+                            if (is_strict_reserved_name(fname) || fname == "eval" || fname == "arguments") {
                                 add_error("SyntaxError: '" + fname + "' cannot be used as function name in strict mode");
                                 return nullptr;
                             }
@@ -7236,7 +7259,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                         for (const auto& p : params) {
                             if (!p->get_name()) continue;
                             const std::string& pn = p->get_name()->get_name();
-                            if (pn == "eval" || pn == "arguments") {
+                            if (pn == "eval" || pn == "arguments" || is_strict_reserved_name(pn)) {
                                 add_error("SyntaxError: '" + pn + "' cannot be a parameter name in strict mode");
                                 return nullptr;
                             }
@@ -7335,7 +7358,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     std::unique_ptr<Identifier> id = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
         std::string_view aname = token_text(current_token());
-        if (options_.strict_mode && (aname == "eval" || aname == "arguments")) {
+        if (options_.strict_mode && (is_strict_reserved_name(aname) || aname == "eval" || aname == "arguments")) {
             add_error("SyntaxError: '" + std::string(aname) + "' cannot be used as function name in strict mode");
             return nullptr;
         }
@@ -7652,7 +7675,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                                         current_token().get_start(), current_token().get_end());
     advance();
 
-    if (options_.strict_mode && (af_name == "eval" || af_name == "arguments")) {
+    if (options_.strict_mode && (af_name == "eval" || af_name == "arguments" ||
+                                 is_strict_reserved_name(af_name))) {
         add_error("SyntaxError: '" + af_name + "' cannot be used as function name in strict mode");
         return nullptr;
     }
@@ -7825,7 +7849,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                     add_error("SyntaxError: Duplicate parameter name '" + pn + "' not allowed");
                     return nullptr;
                 }
-                if (options_.strict_mode && (pn == "eval" || pn == "arguments")) {
+                if (options_.strict_mode && (is_strict_reserved_name(pn) || pn == "eval" || pn == "arguments")) {
                     add_error("SyntaxError: '" + pn + "' cannot be parameter name in strict mode");
                     return nullptr;
                 }
@@ -7909,7 +7933,8 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         Position param_start = get_current_position();
         std::string pname = (current_token().get_type() == TokenType::YIELD)
                             ? std::string("yield") : token_string(current_token());
-        if (options_.strict_mode && (pname == "eval" || pname == "arguments")) {
+        if (options_.strict_mode && (is_strict_reserved_name(pname) ||
+                                     pname == "eval" || pname == "arguments")) {
             add_error("SyntaxError: '" + pname + "' cannot be a parameter name in strict mode");
             return nullptr;
         }
@@ -7986,7 +8011,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             } else if (current_token().get_type() == TokenType::IDENTIFIER) {
                 if (options_.strict_mode) {
                     std::string_view pn = token_text(current_token());
-                    if (pn == "eval" || pn == "arguments") {
+                    if (pn == "eval" || pn == "arguments" || is_strict_reserved_name(pn)) {
                         add_error("SyntaxError: '" + std::string(pn) + "' cannot be used as parameter name in strict mode");
                         return nullptr;
                     }
@@ -8927,7 +8952,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 if (pn.empty() || pn[0] == '_') continue;
                 // eval/arguments forbidden in strict mode only (non-strict allows them as param names)
                 if (options_.strict_mode) {
-                    if (pn == "eval" || pn == "arguments") {
+                    if (pn == "eval" || pn == "arguments" || is_strict_reserved_name(pn)) {
                         add_error("SyntaxError: '" + pn + "' cannot be a parameter name in strict mode");
                         return nullptr;
                     }
@@ -9005,7 +9030,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     for (const auto& p : params) {
                         if (!p->get_name()) continue;
                         const std::string& pn = p->get_name()->get_name();
-                        if (pn == "eval" || pn == "arguments") {
+                        if (pn == "eval" || pn == "arguments" || is_strict_reserved_name(pn)) {
                             add_error("SyntaxError: '" + pn + "' cannot be a parameter name in strict mode");
                             return nullptr;
                         }
@@ -9423,7 +9448,7 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
             parameter_name = token_text(current_token());
 
             // ES5: eval and arguments cannot be used as catch parameter in strict mode
-            if (options_.strict_mode && (parameter_name == "eval" || parameter_name == "arguments")) {
+            if (options_.strict_mode && (is_strict_reserved_name(parameter_name) || parameter_name == "eval" || parameter_name == "arguments")) {
                 add_error("'" + parameter_name + "' cannot be used as a catch parameter in strict mode");
                 return nullptr;
             }
@@ -10684,7 +10709,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             std::string_view pn = token_text(current_token());
-            if (options_.strict_mode && (pn == "eval" || pn == "arguments")) {
+            if (options_.strict_mode && (is_strict_reserved_name(pn) || pn == "eval" || pn == "arguments")) {
                 add_error("SyntaxError: '" + std::string(pn) + "' cannot be used as parameter name in strict mode");
                 return nullptr;
             }
@@ -10845,7 +10870,13 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
         return nullptr;
     }
 
-    auto param_name = std::make_unique<Identifier>(token_string(current_token()),
+    std::string apname = token_string(current_token());
+    if (options_.strict_mode && (is_strict_reserved_name(apname) ||
+                                 apname == "eval" || apname == "arguments")) {
+        add_error("SyntaxError: '" + apname + "' cannot be a parameter name in strict mode");
+        return nullptr;
+    }
+    auto param_name = std::make_unique<Identifier>(apname,
                                                    current_token().get_start(), current_token().get_end());
     Position param_end = current_token().get_end();
     advance();

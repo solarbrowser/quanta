@@ -361,6 +361,11 @@ public:
     // Contextual keywords that are never reserved and so may be binding names.
     static bool token_is_unreserved_contextual(TokenType type);
     bool is_reserved_word_as_property_name();
+    // The six words ES5 reserves for strict mode. They are only reserved where
+    // a name is bound or read -- `{ public: 1 }` and `x.private` are ordinary
+    // strict code -- so the answer belongs to whoever knows the position, not
+    // to the lexer.
+    static bool is_strict_reserved_name(std::string_view name);
     void check_for_use_strict_directive();
     bool is_strict_mode() const { return options_.strict_mode; }
     // Parses one function body starting at `tok_index`, which must be the

@@ -662,21 +662,11 @@ Token Lexer::read_identifier() {
         return create_token(TokenType::INVALID, value, start);
     }
 
-    // ES5 7.6.1.2: Future reserved words in strict mode. Skipped when re-reading
-    // text that was accepted once already: these are reserved where a name is
-    // bound or read, not where an identifier merely spells something, so
-    // `{ public: 1 }` is legal strict code -- and a body whose own "use strict"
-    // puts this lexer in strict mode could not otherwise be read back at all.
-    if (options_.strict_mode && !options_.reparsing_accepted_source &&
-        type == TokenType::IDENTIFIER) {
-        static const std::unordered_set<std::string> strict_reserved = {
-            "implements", "interface", "package", "private", "protected", "public"
-        };
-        if (strict_reserved.count(value)) {
-            add_error("SyntaxError: '" + value + "' is a reserved word in strict mode");
-            return create_token(TokenType::INVALID, value, start);
-        }
-    }
+    // ES5 7.6.1.2's future reserved words are deliberately not refused here.
+    // They are reserved where a name is bound or read, not where an identifier
+    // merely spells something: `{ public: 1 }` and `x.private` are ordinary
+    // strict code. Only the parser knows which position it is in, and it
+    // refuses them at every one that binds -- see is_strict_reserved_name.
 
     return create_token(type, value, start);
 }
