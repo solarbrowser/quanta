@@ -155,6 +155,12 @@ public:
     const BodyScopeInfo* body_scope_info() const;
     bool has_body() const { return body_ != nullptr; }
     bool body_is_deferred() const { return body_deferred_ && body_ == nullptr; }
+    // Lets go of a body that was read back, once it has become bytecode. A
+    // body is deferred to save the tree, then read for the one thing that
+    // needed it, and keeping it after that pays the read AND the memory.
+    // Reading it again costs the same as the first time, and after compiling
+    // almost nothing asks.
+    bool release_rebuilt_body() const;
 
     std::vector<std::unique_ptr<Parameter>> parameter_objects;
     std::vector<std::string> parameters;

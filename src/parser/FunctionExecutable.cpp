@@ -87,6 +87,14 @@ void FunctionExecutable::defer_body(const ExecutableRef<ScriptUnit>& unit,
     body_has_use_strict = strict;
 }
 
+bool FunctionExecutable::release_rebuilt_body() const {
+    if (!owned_body_ || !unit_ || body_end_offset_ <= body_start_.offset) return false;
+    owned_body_.reset();
+    body_ = nullptr;
+    body_deferred_ = true;
+    return true;
+}
+
 ASTNode* FunctionExecutable::ensure_body() const {
     if (body_) return body_;
     if (!body_is_deferred() || !unit_) return nullptr;

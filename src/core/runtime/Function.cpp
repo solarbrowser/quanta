@@ -986,6 +986,17 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                 // leaving the constants permanently unmarked -- a real
                 // dangling-pointer bug once sweep runs, not just a diagnostic.
                 Collector::write_barrier(this);
+                // The tree it was read back for has become bytecode. A chunk
+                // that kept AST nodes of its own -- a class body, a module
+                // declaration -- still points into it; one that did not can
+                // let it go and read it again if anything ever asks.
+                // Two things can still point into it: AST nodes the chunk kept
+                // for itself, and the executables of any function written
+                // inside it, which borrow their bodies out of the same tree.
+                if (!executable_->bytecode_chunk->ast_nodes &&
+                    !executable_->bytecode_chunk->closures) {
+                    executable_->release_rebuilt_body();
+                }
                 static const bool disasm = [] {
                     const char* env = std::getenv("QUANTA_VM_DISASM");
                     return env && env[0] == '1';
