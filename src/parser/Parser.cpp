@@ -8108,9 +8108,21 @@ bool Parser::try_parse_arrow_function_params() {
         return false;
     }
     
+    // A parameter list opens with a binding: a name, an object or array
+    // pattern, a rest, or nothing at all. It can never open with another
+    // parenthesis, so `((...))` is a parenthesized expression, and answering
+    // that here costs one token instead of a walk to the matching bracket --
+    // which for a script wrapped in one of these is the whole file.
+    // Only an impossible opening is refused, never a merely unlikely one: a
+    // wrong yes is paid for by the walk below, which then answers correctly,
+    // while a wrong no would parse an arrow as something else.
+    if (peek_token(1).get_type() == TokenType::LEFT_PAREN) {
+        return false;
+    }
+
     size_t paren_count = 1;
     size_t lookahead = 1;
-    
+
     while (lookahead < tokens_.size() && paren_count > 0) {
         TokenType type = peek_token(lookahead).get_type();
         if (type == TokenType::LEFT_PAREN) {
