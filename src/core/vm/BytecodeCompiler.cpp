@@ -3152,12 +3152,30 @@ bool contains_lexical_decl(const ASTNode* node) {
 
 // True if a let/const sits outside the function's own flat top-level
 // statements -- register mode has no runtime scope to pop there.
-bool contains_nested_lexical_decl(const BlockStatement* top_level_body) {
+// The oracle the parser-computed bit is checked against, and the answer
+// for any tree the parser did not fill in.
+bool contains_nested_lexical_decl_by_walk(const BlockStatement* top_level_body) {
     for (const auto& stmt : top_level_body->get_statements()) {
         if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) continue;
         if (contains_lexical_decl(stmt.get())) return true;
     }
     return false;
+}
+
+bool contains_nested_lexical_decl(const BlockStatement* top_level_body) {
+    const uint32_t flags = top_level_body->subtree_flags();
+    if (!(flags & kSubtreeComputed)) return contains_nested_lexical_decl_by_walk(top_level_body);
+    const bool bit = (flags & kSubtreeNestedLexical) != 0;
+#ifdef QUANTA_VALIDATE_BYTECODE
+    if (std::getenv("QUANTA_SUBTREE_CHECK")) {
+        const bool walked = contains_nested_lexical_decl_by_walk(top_level_body);
+        if (bit != walked) {
+            std::fprintf(stderr, "[subtree] nested_lexical bit=%d walk=%d satir=%u\n",
+                         bit ? 1 : 0, walked ? 1 : 0, top_level_body->get_start().line);
+        }
+    }
+#endif
+    return bit;
 }
 
 // Direct (non-recursive) let/const declarations of `node`'s own top-level

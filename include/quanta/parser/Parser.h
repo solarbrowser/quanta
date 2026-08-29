@@ -102,6 +102,10 @@ private:
         SubtreeScope(const SubtreeScope&) = delete;
         SubtreeScope& operator=(const SubtreeScope&) = delete;
         uint32_t flags() const { return p.subtree_acc_ | kSubtreeComputed; }
+        // What the construct contributes to whatever encloses it, whether or
+        // not it lets the same bit travel out from inside: a class stops the
+        // lexical bindings in its body and is one itself.
+        void contribute(uint32_t bits) { saved |= bits; }
         ~SubtreeScope() { p.subtree_acc_ = saved | (p.subtree_acc_ & crossing); }
     };
 

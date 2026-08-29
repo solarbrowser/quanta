@@ -3366,6 +3366,7 @@ std::unique_ptr<ASTNode> Parser::parse_using_declaration(bool is_await, bool con
         advance();
     }
 
+    subtree_acc_ |= kSubtreeLexicalDecl;  // `using` binds like a const
     return std::make_unique<UsingDeclaration>(std::move(bindings), is_await, start, end);
 }
 
@@ -3553,6 +3554,7 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
     }
 
     Position end = get_current_position();
+    if (kind != VariableDeclarator::Kind::VAR) subtree_acc_ |= kSubtreeLexicalDecl;
     return std::make_unique<VariableDeclaration>(std::move(declarations), kind, start, end);
 }
 
@@ -3786,8 +3788,23 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
 
     std::vector<std::unique_ptr<ASTNode>> statements;
 
+    // A body's own top-level bindings live in the scope it already has; only
+    // ones further in need a scope of their own, so each top-level statement
+    // is weighed by itself and the declarations among them are passed over.
+    bool nested_lexical = false;
     while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
-        auto stmt = parse_statement();
+        std::unique_ptr<ASTNode> stmt;
+        if (is_function_body) {
+            SubtreeScope one(*this);
+            stmt = parse_statement();
+            const uint32_t mine = one.flags();
+            if (stmt && stmt->get_type() != ASTNode::Type::VARIABLE_DECLARATION &&
+                (mine & kSubtreeLexicalDecl)) {
+                nested_lexical = true;
+            }
+        } else {
+            stmt = parse_statement();
+        }
         if (stmt) {
             statements.push_back(std::move(stmt));
         } else {
@@ -3829,7 +3846,8 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         last_body_src_first_ = static_cast<uint32_t>(start.offset);
     }
     auto block = std::make_unique<BlockStatement>(std::move(statements), start, end);
-    block->set_subtree_flags(scope.flags());
+    block->set_subtree_flags(scope.flags() |
+                             (nested_lexical ? kSubtreeNestedLexical : 0u));
     return block;
 }
 
@@ -4215,6 +4233,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     advance(); // consume id
                     std::vector<UsingBinding> bindings;
                     bindings.push_back(UsingBinding(binding_name, nullptr));
+                    subtree_acc_ |= kSubtreeLexicalDecl;
                     init = std::make_unique<UsingDeclaration>(std::move(bindings), true,
                                                               binding_pos, get_current_position());
                     goto check_for_of;
@@ -4256,6 +4275,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     advance(); // consume ID
                     std::vector<UsingBinding> bindings;
                     bindings.push_back(UsingBinding(binding_name, nullptr));
+                    subtree_acc_ |= kSubtreeLexicalDecl;
                     init = std::make_unique<UsingDeclaration>(std::move(bindings), false,
                                                               binding_pos, get_current_position());
                     goto check_for_of;
@@ -4333,6 +4353,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     declarations.push_back(std::make_unique<VariableDeclarator>(
                         std::make_unique<Identifier>("", pat_start, pat_start),
                         std::move(destructuring), kind, pat_start, get_current_position()));
+                    if (kind != VariableDeclarator::Kind::VAR) subtree_acc_ |= kSubtreeLexicalDecl;
                     init = std::make_unique<VariableDeclaration>(
                         std::move(declarations), kind, decl_start, get_current_position());
                 } else {
@@ -4442,6 +4463,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             }
             
             Position decl_end = get_current_position();
+            if (kind != VariableDeclarator::Kind::VAR) subtree_acc_ |= kSubtreeLexicalDecl;
             init = std::make_unique<VariableDeclaration>(std::move(declarations), kind, decl_start, decl_end);
             
         } else {
@@ -5150,10 +5172,10 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
-    // A nested function owns its own suspensions and its own `arguments`,
-    // and a `with` inside it opaques only its own names.
+    // A nested function owns its own suspensions, its own `arguments` and its
+    // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
-        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
     Position start = get_current_position();
     
     if (!consume(TokenType::FUNCTION)) {
@@ -5505,9 +5527,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
 
 std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     // A class stops a suspension and a `with`, but its heritage and its
-    // computed keys run in the scope around it, so `arguments` crosses.
+    // computed keys run in the scope around it, so `arguments` crosses. What
+    // its body binds is its own; the class name is a binding of the scope the
+    // declaration sits in, so the declaration form contributes that itself.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
-        kSubtreeSuspend | kSubtreeWith));
+        kSubtreeSuspend | kSubtreeWith | kSubtreeLexicalDecl));
+    fn_scope.contribute(kSubtreeLexicalDecl);
     Position start = get_current_position();
     
     if (!consume(TokenType::CLASS)) {
@@ -5914,9 +5939,11 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 
 std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     // A class stops a suspension and a `with`, but its heritage and its
-    // computed keys run in the scope around it, so `arguments` crosses.
+    // computed keys run in the scope around it, so `arguments` crosses. What
+    // its body binds is its own; the class name is a binding of the scope the
+    // declaration sits in, which the declaration form contributes below.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
-        kSubtreeSuspend | kSubtreeWith));
+        kSubtreeSuspend | kSubtreeWith | kSubtreeLexicalDecl));
     Position start = get_current_position();
 
     if (!consume(TokenType::CLASS)) {
@@ -6294,10 +6321,10 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_method_definition() {
-    // A nested function owns its own suspensions and its own `arguments`,
-    // and a `with` inside it opaques only its own names.
+    // A nested function owns its own suspensions, its own `arguments` and its
+    // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
-        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
     Position start = get_current_position();
     // toString's source text must exclude the `static` modifier (NativeFunction syntax
     // starts at the method name) -- src_start tracks where the name actually begins.
@@ -6854,10 +6881,10 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_expression() {
-    // A nested function owns its own suspensions and its own `arguments`,
-    // and a `with` inside it opaques only its own names.
+    // A nested function owns its own suspensions, its own `arguments` and its
+    // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
-        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
     Position start = get_current_position();
 
     if (!consume(TokenType::FUNCTION)) {
@@ -7203,10 +7230,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
-    // A nested function owns its own suspensions and its own `arguments`,
-    // and a `with` inside it opaques only its own names.
+    // A nested function owns its own suspensions, its own `arguments` and its
+    // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
-        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
     Position start = get_current_position();
 
     // Save async token end-line and end pos BEFORE consuming it (advance() skips newlines)
@@ -7516,10 +7543,10 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
-    // A nested function owns its own suspensions and its own `arguments`,
-    // and a `with` inside it opaques only its own names.
+    // A nested function owns its own suspensions, its own `arguments` and its
+    // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
-        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
+        kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
     Position start = get_current_position();
 
     // Save async token end-line BEFORE consuming it
@@ -7808,6 +7835,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
+    // An arrow is transparent to a suspension and to `arguments`, which
+    // belong to the body around it, but what it binds is its own.
+    SubtreeScope arrow_scope(*this, ~static_cast<uint32_t>(kSubtreeLexicalDecl));
     Position start = get_current_position();
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
@@ -8856,7 +8886,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             {
                 // A shorthand method is a nested function like any other.
                 SubtreeScope method_scope(*this, ~static_cast<uint32_t>(
-                    kSubtreeSuspend | kSubtreeWith | kSubtreeArguments));
+                    kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
                 body = parse_block_statement(true);
             }
             options_.function_depth--;
@@ -9366,6 +9396,8 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
     }
 
     Position end = get_current_position();
+    // A catch parameter is a binding of the block it opens.
+    if (!parameter_name.empty()) subtree_acc_ |= kSubtreeLexicalDecl;
     auto catch_node = std::make_unique<CatchClause>(parameter_name, std::move(body), start, end);
     if (catch_destr_pattern) {
         catch_node->set_destructuring_pattern(std::move(catch_destr_pattern));
@@ -10510,6 +10542,9 @@ void Parser::check_for_use_strict_directive() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
+    // An arrow is transparent to a suspension and to `arguments`, which
+    // belong to the body around it, but what it binds is its own.
+    SubtreeScope arrow_scope(*this, ~static_cast<uint32_t>(kSubtreeLexicalDecl));
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
 
@@ -10716,6 +10751,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Position start) {
+    // An arrow is transparent to a suspension and to `arguments`, which
+    // belong to the body around it, but what it binds is its own.
+    SubtreeScope arrow_scope(*this, ~static_cast<uint32_t>(kSubtreeLexicalDecl));
     std::vector<std::unique_ptr<Parameter>> params;
 
     if (current_token().get_type() != TokenType::IDENTIFIER &&

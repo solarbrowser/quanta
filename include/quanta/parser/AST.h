@@ -59,6 +59,12 @@ enum SubtreeFlags : uint32_t {
     kSubtreeClosure    = 1u << 2,   // a nested function or class captures the scope
     kSubtreeWith       = 1u << 3,   // a `with` block, which opaques every name in it
     kSubtreeArguments  = 1u << 4,   // the name `arguments`, in the body that owns it
+    kSubtreeLexicalDecl = 1u << 5,  // a let/const/class/using/catch binding
+    // Set on a function body whose lexical bindings are not all at its top
+    // level. Unlike the rest this is not a plain subtree property: the top
+    // level of the body itself is deliberately not counted, because those
+    // bindings live in the scope the body already has.
+    kSubtreeNestedLexical = 1u << 6,
 };
 
 class ASTNode {
