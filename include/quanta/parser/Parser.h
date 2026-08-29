@@ -85,6 +85,100 @@ private:
     // reads what accumulated inside it, hands it to the node, and passes on
     // only the bits that cross that boundary.
     uint32_t subtree_acc_ = 0;
+
+    // One per function being read, innermost last. `all` gathers every name
+    // the function mentions, `captured` only the ones something nested in it
+    // mentions -- which is the set that has to stay in the environment. A
+    // function closing folds its whole `all` into its parent's `captured`,
+    // because from the parent's side every one of those names is inside a
+    // closure.
+    struct NameScope {
+        std::unordered_set<std::string> all;
+        std::unordered_set<std::string> captured;
+        bool eval_in_nested = false;
+        bool class_expression = false;
+    };
+    std::vector<NameScope> name_scopes_;
+
+    // Turns name recording off for a stretch that reads a property name
+    // rather than a binding.
+    struct NameRecording {
+        Parser& p;
+        bool saved;
+        explicit NameRecording(Parser& parser) : p(parser), saved(parser.recording_names_) {
+            p.recording_names_ = false;
+        }
+        NameRecording(const NameRecording&) = delete;
+        NameRecording& operator=(const NameRecording&) = delete;
+        ~NameRecording() { p.recording_names_ = saved; }
+    };
+    bool recording_names_ = true;
+    // A destructuring form is handed whole to the tree-walker, which reads its
+    // names out of the environment, so every name one touches has to be there
+    // whether or not a closure could otherwise see it.
+    int forcing_capture_ = 0;
+    struct ForceCapture {
+        Parser& p;
+        explicit ForceCapture(Parser& parser) : p(parser) { p.forcing_capture_++; }
+        ForceCapture(const ForceCapture&) = delete;
+        ForceCapture& operator=(const ForceCapture&) = delete;
+        ~ForceCapture() { p.forcing_capture_--; }
+    };
+
+    void note_class_expression() {
+        if (!name_scopes_.empty()) name_scopes_.back().class_expression = true;
+    }
+
+    void note_name(const std::string& n) {
+        if (!recording_names_) return;
+        if (name_scopes_.empty()) return;
+        name_scopes_.back().all.insert(n);
+        if (forcing_capture_ > 0) name_scopes_.back().captured.insert(n);
+    }
+    // Opens the scope of a function literal; closing it hands what the
+    // function mentioned to whatever encloses it.
+    struct FunctionNames {
+        Parser& p;
+        explicit FunctionNames(Parser& parser) : p(parser) {
+            p.name_scopes_.emplace_back();
+        }
+        FunctionNames(const FunctionNames&) = delete;
+        FunctionNames& operator=(const FunctionNames&) = delete;
+        // Where the body this function owns opens, learned once the body has
+        // been read; the info is filed under it so a body parsed back later
+        // finds the same entry.
+        uint32_t body_src = 0;
+        bool has_body = false;
+        void record_body(uint32_t src) { body_src = src; has_body = true; }
+        BodyScopeInfo take() const {
+            BodyScopeInfo info;
+            const NameScope& mine = p.name_scopes_.back();
+            info.captured = mine.captured;
+            info.eval_anywhere = mine.all.count("eval") != 0;
+            info.super_anywhere = mine.all.count("super") != 0;
+            info.eval_in_nested = mine.eval_in_nested;
+            info.class_expression = mine.class_expression;
+            return info;
+        }
+        ~FunctionNames() {
+            if (has_body) {
+                if (ScriptUnit* unit = ScriptUnit::building()) {
+                    unit->set_scope_info_at(body_src, take());
+                }
+            }
+            NameScope mine = std::move(p.name_scopes_.back());
+            p.name_scopes_.pop_back();
+            if (p.name_scopes_.empty()) return;
+            NameScope& parent = p.name_scopes_.back();
+            const bool eval_here = mine.all.count("eval") != 0 || mine.eval_in_nested;
+            for (auto& n : mine.all) {
+                parent.captured.insert(n);
+                parent.all.insert(std::move(n));
+            }
+            parent.eval_in_nested = parent.eval_in_nested || eval_here;
+            parent.class_expression = parent.class_expression || mine.class_expression;
+        }
+    };
     bool previous_token_is_dot() const;
 
     // Opens a fresh accumulator for one subtree and, however that parse

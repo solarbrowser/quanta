@@ -3651,7 +3651,8 @@ void drop_shadowed_annexb_fn_vars(std::vector<DeclInfo>& declared,
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
     bool suspendable, bool is_arrow, bool is_strict,
-    const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments) {
+    const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
+    const BodyScopeInfo* scope_info) {
     if (!body) return nullptr;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
@@ -3828,8 +3829,40 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     if (!full_env && (has_closures || has_nested_lex || suspendable || has_delegated_expr ||
                       has_destructuring)) {
         ScanOpacity op;
-        collect_closure_names(body, /*inside_closure=*/false, env_resident,
-                              op, suspendable);
+        // Still being brought up: the parse works the same set out while it
+        // reads the body, and QUANTA_SCOPE_CHECK reports where the two
+        // disagree. Without QUANTA_SCOPE_USE the walk is still the answer.
+        const bool use_parse = scope_info && std::getenv("QUANTA_SCOPE_USE");
+        if (use_parse) {
+            env_resident = scope_info->captured;
+            if (scope_info->eval_in_nested) op.saw_eval = true;
+            if (scope_info->class_expression) op.saw_class = true;
+        } else {
+            collect_closure_names(body, /*inside_closure=*/false, env_resident,
+                                  op, suspendable);
+        }
+        if (scope_info) {
+#ifdef QUANTA_VALIDATE_BYTECODE
+            if (std::getenv("QUANTA_SCOPE_CHECK")) {
+                std::unordered_set<std::string> walked;
+                ScanOpacity walked_op;
+                collect_closure_names(body, /*inside_closure=*/false, walked,
+                                      walked_op, suspendable);
+                for (const auto& n : walked) {
+                    if (!scope_info->captured.count(n)) {
+                        std::fprintf(stderr, "[scope] eksik isim '%s' satir=%u\n",
+                                     n.c_str(), body->get_start().line);
+                    }
+                }
+                for (const auto& n : scope_info->captured) {
+                    if (!walked.count(n)) {
+                        std::fprintf(stderr, "[scope] fazla isim '%s' satir=%u\n",
+                                     n.c_str(), body->get_start().line);
+                    }
+                }
+            }
+#endif
+        }
         if (op.opaque()) {
             full_env = true;
         } else {

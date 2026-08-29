@@ -135,4 +135,9 @@ const std::string& FunctionExecutable::source_text() const {
     return source_text_cut_;
 }
 
+const BodyScopeInfo* FunctionExecutable::body_scope_info() const {
+    if (!unit_) return nullptr;
+    return unit_->scope_info_at(body_start_.offset);
+}
+
 }  // namespace Quanta

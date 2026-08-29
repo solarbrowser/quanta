@@ -8,6 +8,7 @@
 #define QUANTA_VM_BYTECODE_COMPILER_H
 
 #include "quanta/core/vm/Bytecode.h"
+#include "quanta/parser/ScriptUnit.h"
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -42,7 +43,8 @@ public:
                                                  bool is_strict = false,
                                                  const std::vector<std::string>* env_bound = nullptr,
                                                  bool outer_with = false,
-                                                 bool allow_arguments = false);
+                                                 bool allow_arguments = false,
+                                                 const BodyScopeInfo* scope_info = nullptr);
 
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,

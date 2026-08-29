@@ -15,6 +15,8 @@
 
 namespace Quanta {
 
+struct BodyScopeInfo;
+
 class ASTNode;
 class ScriptUnit;
 class Parameter;
@@ -148,6 +150,9 @@ public:
     ASTNode* ensure_body() const;
     ASTNode* body() const { return body_; }
     const Position& body_start() const { return body_start_; }
+    // What the parse worked out about the names in this body, if the tree it
+    // came from is still around to have recorded it.
+    const BodyScopeInfo* body_scope_info() const;
     bool has_body() const { return body_ != nullptr; }
     bool body_is_deferred() const { return body_deferred_ && body_ == nullptr; }
 

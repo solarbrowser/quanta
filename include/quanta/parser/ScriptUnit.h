@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "quanta/lexer/Token.h"
 
@@ -30,6 +31,29 @@ class Parser;
 // see that template's comment) rather than shared_ptr: instantiating a closure
 // copies the executable's refs on a hot path, and this build is -pthread, so a
 // shared_ptr there would be two atomic read-modify-writes per closure.
+// What one function body's parse learned about the names inside it.
+struct BodyScopeInfo {
+    // Every identifier that appears inside a function nested in this body, at
+    // any depth. Such a name is reachable from a closure, so it has to stay in
+    // the environment rather than take a register. Collecting a name that no
+    // closure actually reads only costs it a register; missing one that a
+    // closure does read would be wrong.
+    std::unordered_set<std::string> captured;
+    // `eval` named anywhere in the body, nested or not: its text can reach any
+    // binding here, so nothing may take a register.
+    bool eval_anywhere = false;
+    // `super` named anywhere in the body, which needs the environment bindings
+    // that carry it.
+    bool super_anywhere = false;
+    // `eval` named inside something nested, which is the narrower question the
+    // selective scan asks.
+    bool eval_in_nested = false;
+    // A class expression anywhere in the body. Its own body is a scope this
+    // analysis does not enter, so the whole function falls back to keeping
+    // every local in the environment rather than guessing.
+    bool class_expression = false;
+};
+
 class ScriptUnit {
 public:
     static ExecutableRef<ScriptUnit> create(std::unique_ptr<ASTNode> root);
@@ -103,6 +127,19 @@ public:
     // so that is the key. A literal with no token range of its own (an arrow
     // with an expression body, a synthesized constructor) keeps its node-local
     // copy; there are a handful of those against thousands of these.
+    // What the parser worked out about one function body while it was reading
+    // it: the names anything nested inside it can see, which is what decides
+    // whether a local may live in a register. Keyed the same way an executable
+    // is, on where the body opens in the source, so a body parsed back later
+    // finds the same entry.
+    const BodyScopeInfo* scope_info_at(uint32_t body_src) const {
+        auto it = body_scopes_.find(body_src);
+        return it == body_scopes_.end() ? nullptr : &it->second;
+    }
+    void set_scope_info_at(uint32_t body_src, BodyScopeInfo info) {
+        body_scopes_[body_src] = std::move(info);
+    }
+
     const ExecutableRef<FunctionExecutable>& executable_at(uint32_t body_tok) const {
         static const ExecutableRef<FunctionExecutable> kNone;
         auto it = executables_.find(body_tok);
@@ -131,6 +168,8 @@ private:
     // Built on the first deferred body this unit is asked for, then reused.
     // See executable_at.
     std::unordered_map<uint32_t, ExecutableRef<FunctionExecutable>> executables_;
+    // See scope_info_at.
+    std::unordered_map<uint32_t, BodyScopeInfo> body_scopes_;
     std::unordered_map<uint32_t, ExecutableRef<FunctionExecutable>> ctor_executables_;
     mutable uint32_t ref_count_ = 0;
 

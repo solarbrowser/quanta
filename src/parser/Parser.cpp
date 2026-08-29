@@ -1806,6 +1806,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
                 Position start = current_token().get_start();
                 Position end = current_token().get_end();
                 advance();
+                note_name("undefined");
                 return std::make_unique<Identifier>("undefined", start, end);
             }
         case TokenType::IDENTIFIER:
@@ -1845,6 +1846,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::YIELD:
             // Outside generator bodies (non-strict), yield is a valid identifier
             if (!options_.in_generator_body && !options_.strict_mode) {
+                note_name("yield");
                 auto id = std::make_unique<Identifier>("yield",
                     current_token().get_start(), current_token().get_end());
                 advance();
@@ -1866,6 +1868,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::LET:
             // Non-strict: let is a valid identifier
             if (!options_.strict_mode) {
+                note_name("let");
                 auto id = std::make_unique<Identifier>("let",
                     current_token().get_start(), current_token().get_end());
                 advance();
@@ -1880,6 +1883,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return nullptr;
         case TokenType::OF:
         {   // 'of' is always a contextual keyword -- valid as identifier in expressions
+            note_name("of");
             auto id = std::make_unique<Identifier>("of",
                 current_token().get_start(), current_token().get_end());
             advance();
@@ -1887,6 +1891,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         }
         case TokenType::FROM:
         {   // 'from' is always a contextual keyword -- valid as identifier in expressions
+            note_name("from");
             auto id = std::make_unique<Identifier>("from",
                 current_token().get_start(), current_token().get_end());
             advance();
@@ -1923,6 +1928,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::AWAIT:
             // Outside async context: await is a valid identifier
             if (!options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) {
+                note_name("await");
                 auto id = std::make_unique<Identifier>("await",
                     token.get_start(), token.get_end());
                 advance();
@@ -1970,7 +1976,8 @@ std::unique_ptr<ASTNode> Parser::parse_this_expression() {
     Position start = token.get_start();
     Position end = token.get_end();
     advance();
-    
+
+    note_name("this");
     return std::make_unique<Identifier>("this", start, end);
 }
 
@@ -1992,6 +1999,7 @@ std::unique_ptr<ASTNode> Parser::parse_super_expression() {
     advance();
     // Peek: if super() call, check it's in derived constructor
     // (actual call check happens in parse_call_expression via in_constructor/class_has_heritage)
+    note_name("super");
     return std::make_unique<Identifier>("super", start, end);
 }
 
@@ -2094,6 +2102,9 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
             // Inherit outer parser context so `yield`/`await` inside a `${...}` substitution resolve correctly.
             Parser expr_parser(std::move(expr_tokens), options_);
             expr_parser.set_detached_tokens(true);
+            // Gives the substitution somewhere to record what it mentions;
+            // merged back below.
+            expr_parser.name_scopes_.emplace_back();
             auto expression = expr_parser.parse_expression();
             if (!expression) {
                 add_error("Invalid expression in template literal: " + expr_str);
@@ -2103,6 +2114,17 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
             // its own accumulator. Whatever it holds is held by the template
             // and by everything the template sits in.
             subtree_acc_ |= expr_parser.subtree_acc_;
+            // Same for the names it mentions: a substitution runs in the scope
+            // the template sits in, so a closure written inside one is a
+            // closure of that scope.
+            if (!name_scopes_.empty() && !expr_parser.name_scopes_.empty()) {
+                NameScope& mine = name_scopes_.back();
+                NameScope& theirs = expr_parser.name_scopes_.back();
+                mine.class_expression = mine.class_expression || theirs.class_expression;
+                for (auto& n : theirs.captured) mine.captured.insert(n);
+                for (auto& n : theirs.all) mine.all.insert(std::move(n));
+                mine.eval_in_nested = mine.eval_in_nested || theirs.eval_in_nested;
+            }
             expressions.push_back(std::move(expression));
             pos = expr_end + 1;
         }
@@ -2750,8 +2772,11 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
     // A property name is not a use of the binding, but counting one costs at
     // most an arguments object the spec says the function has anyway, while
     // missing a use would be wrong.
-    if (name.size() == 9 && name == "arguments" && !previous_token_is_dot()) {
-        subtree_acc_ |= kSubtreeArguments;
+    if (!previous_token_is_dot()) {
+        // A property name is not a reference to a binding, and the two
+        // questions below are both about bindings.
+        if (name.size() == 9 && name == "arguments") subtree_acc_ |= kSubtreeArguments;
+        note_name(name);
     }
     bool escaped_kw = token.has_escaped_keyword();
     Position start = token.get_start();
@@ -3397,6 +3422,9 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
     do {
         if (current_token().get_type() == TokenType::LEFT_BRACKET || 
             current_token().get_type() == TokenType::LEFT_BRACE) {
+            // Pattern and initializer both: the form goes to the tree-walker
+            // whole, so neither side's names can take a register.
+            const ForceCapture force(*this);
             auto destructuring = parse_destructuring_pattern();
             if (!destructuring) {
                 add_error("Invalid destructuring pattern");
@@ -4314,6 +4342,10 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             if (current_token().get_type() == TokenType::LEFT_BRACKET ||
                 current_token().get_type() == TokenType::LEFT_BRACE) {
 
+                // Same as a plain destructuring declaration: the form is
+                // handed to the tree-walker whole, so its names have to be in
+                // the environment.
+                const ForceCapture force(*this);
                 auto destructuring = parse_destructuring_pattern();
                 if (!destructuring) {
                     add_error("Failed to parse destructuring pattern");
@@ -5179,6 +5211,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
         kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
+    FunctionNames fn_names(*this);
     Position start = get_current_position();
     
     if (!consume(TokenType::FUNCTION)) {
@@ -5525,6 +5558,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     );
     fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
+    fn_names.record_body(last_body_src_first_);
     return fn_decl;
 }
 
@@ -5536,6 +5570,10 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
         kSubtreeSuspend | kSubtreeWith | kSubtreeLexicalDecl));
     fn_scope.contribute(kSubtreeLexicalDecl);
+    // Everything a class holds -- its heritage, its computed keys, its method
+    // bodies and field initializers -- closes over the scope around it, so
+    // for what a closure can see it counts as one.
+    FunctionNames class_names(*this);
     Position start = get_current_position();
     
     if (!consume(TokenType::CLASS)) {
@@ -5941,6 +5979,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_class_expression() {
+    // The analysis does not read a class body, so a function holding one keeps
+    // every local in the environment -- the same answer the walk gives.
+    note_class_expression();
     // A class stops a suspension and a `with`, but its heritage and its
     // computed keys run in the scope around it, so `arguments` crosses. What
     // its body binds is its own; the class name is a binding of the scope the
@@ -6328,6 +6369,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
         kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
+    FunctionNames fn_names(*this);
     Position start = get_current_position();
     // toString's source text must exclude the `static` modifier (NativeFunction syntax
     // starts at the method name) -- src_start tracks where the name actually begins.
@@ -6455,6 +6497,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             advance();
             key = std::make_unique<Identifier>(name, s, e);
         } else {
+            // A member's name names a property, not a binding.
+            const NameRecording hold(*this);
             key = parse_identifier();
         }
     } else if (is_reserved_word_as_property_name()) {
@@ -6872,6 +6916,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     );
     function_expr->set_source_range(method_src_start, method_src_end);
     if (!detached_tokens_) function_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
+    fn_names.record_body(last_body_src_first_);
 
     Position end = get_current_position();
     auto method = std::make_unique<MethodDefinition>(
@@ -6888,6 +6933,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
         kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
+    FunctionNames fn_names(*this);
     Position start = get_current_position();
 
     if (!consume(TokenType::FUNCTION)) {
@@ -6914,10 +6960,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         advance();
     } else if (current_token().get_type() == TokenType::YIELD && !options_.strict_mode && !is_generator) {
         // yield is a valid function expression name in sloppy non-generator context
+        note_name("yield");
         id = std::make_unique<Identifier>("yield", current_token().get_start(), current_token().get_end());
         advance();
     } else if (current_token().get_type() == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module) {
         // await is a valid function expression name outside async context
+        note_name("await");
         id = std::make_unique<Identifier>("await", current_token().get_start(), current_token().get_end());
         advance();
     }
@@ -7229,6 +7277,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     );
     fn_expr->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) fn_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
+    fn_names.record_body(last_body_src_first_);
     return fn_expr;
 }
 
@@ -7237,6 +7286,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
         kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
+    FunctionNames fn_names(*this);
     Position start = get_current_position();
 
     // Save async token end-line and end pos BEFORE consuming it (advance() skips newlines)
@@ -7251,6 +7301,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     // No line terminator allowed between 'async' and 'function' (ES2017)
     // If there IS a line terminator, 'async' is just an identifier expression, not async function
     if (match(TokenType::FUNCTION) && current_token().get_start().line != async_end_line) {
+        note_name("async");
         return std::make_unique<Identifier>("async", start, async_end);
     }
 
@@ -7271,6 +7322,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         return parse_async_arrow_function_single_param(start);
     } else {
         // Not an async function/arrow — `async` is being used as an identifier
+        note_name("async");
         return std::make_unique<Identifier>("async", start, async_end);
     }
 
@@ -7532,6 +7584,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         );
         gen_expr->set_source_range(src_text_start, src_text_end);
         if (!detached_tokens_) gen_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
+        fn_names.record_body(last_body_src_first_);
         return gen_expr;
     }
     subtree_acc_ |= kSubtreeClosure;
@@ -7542,6 +7595,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     );
     async_expr->set_source_range(src_text_start, src_text_end);
     if (!detached_tokens_) async_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
+    fn_names.record_body(last_body_src_first_);
     return async_expr;
 }
 
@@ -7550,6 +7604,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
         kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
+    FunctionNames fn_names(*this);
     Position start = get_current_position();
 
     // Save async token end-line BEFORE consuming it
@@ -7834,13 +7889,16 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     );
     async_fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) async_fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
+    fn_names.record_body(last_body_src_first_);
     return async_fn_decl;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     // An arrow is transparent to a suspension and to `arguments`, which
-    // belong to the body around it, but what it binds is its own.
+    // belong to the body around it, but what it binds is its own, and it is a
+    // closure like any other for what it can see.
     SubtreeScope arrow_scope(*this, ~static_cast<uint32_t>(kSubtreeLexicalDecl));
+    FunctionNames fn_names(*this);
     Position start = get_current_position();
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
@@ -8093,6 +8151,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         arrow_expr->set_source_range(start.offset, src_end);
         if (has_block_body) {
             if (!detached_tokens_) arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
+    fn_names.record_body(last_body_src_first_);
         } else {
             // No range to record, but it still joins the innermost-first chain
             // the leaf test walks -- otherwise a body holding only a concise
@@ -8674,9 +8733,11 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 key = std::make_unique<Identifier>(kname, ks, ke);
             } else {
                 // A key names a property; it does not read a binding, so
-                // `{ arguments: x }` is not a use of the function's own. The
-                // shorthand form is, and puts the bit back below.
+                // `{ arguments: x }` is not a use of the function's own and
+                // the name is not one a closure can see. The shorthand form is
+                // both, and puts them back below.
                 const uint32_t before = subtree_acc_;
+                const NameRecording hold(*this);
                 key = parse_identifier();
                 subtree_acc_ = (subtree_acc_ & ~static_cast<uint32_t>(kSubtreeArguments)) |
                                (before & kSubtreeArguments);
@@ -8902,6 +8963,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 // A shorthand method is a nested function like any other.
                 SubtreeScope method_scope(*this, ~static_cast<uint32_t>(
                     kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
+                FunctionNames method_names(*this);
                 body = parse_block_statement(true);
             }
             options_.function_depth--;
@@ -9053,6 +9115,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     if (shn.size() == 9 && shn == "arguments") {
                         subtree_acc_ |= kSubtreeArguments;
                     }
+                    note_name(shn);
                     // Reserved words are never valid as shorthand identifier references
                     static const NameSet always_reserved = {
                         "false","true","null","this","super","enum",
@@ -10558,8 +10621,10 @@ void Parser::check_for_use_strict_directive() {
 
 std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
     // An arrow is transparent to a suspension and to `arguments`, which
-    // belong to the body around it, but what it binds is its own.
+    // belong to the body around it, but what it binds is its own, and it is a
+    // closure like any other for what it can see.
     SubtreeScope arrow_scope(*this, ~static_cast<uint32_t>(kSubtreeLexicalDecl));
+    FunctionNames fn_names(*this);
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
 
@@ -10767,8 +10832,10 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 
 std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Position start) {
     // An arrow is transparent to a suspension and to `arguments`, which
-    // belong to the body around it, but what it binds is its own.
+    // belong to the body around it, but what it binds is its own, and it is a
+    // closure like any other for what it can see.
     SubtreeScope arrow_scope(*this, ~static_cast<uint32_t>(kSubtreeLexicalDecl));
+    FunctionNames fn_names(*this);
     std::vector<std::unique_ptr<Parameter>> params;
 
     if (current_token().get_type() != TokenType::IDENTIFIER &&
