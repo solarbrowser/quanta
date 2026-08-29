@@ -489,18 +489,13 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
     try {
         execution_count_++;
         
-        Lexer lexer(source);
-        auto tokens = lexer.tokenize();
-        
-        if (lexer.has_errors()) {
-            const auto& errors = lexer.get_errors();
-            std::string error_msg = errors.empty() ? "SyntaxError" : errors[0];
-            if (error_msg.find("SyntaxError") == std::string::npos)
-                error_msg = "SyntaxError: " + error_msg;
-            size_t at_pos = error_msg.find(" at line ");
-            if (at_pos == std::string::npos) at_pos = error_msg.find("error at ");
-            return Result(error_msg);
-        }
+        // Streamed, not tokenized in full: a script's tokens are the largest
+        // thing a parse holds and the parser only ever looks a little way
+        // around where it is, so they are pulled in as it asks for them and
+        // the ones it has passed are handed back.
+        Lexer::LexerOptions lex_opts;
+        auto tokens = Lexer::stream(source, lex_opts);
+        const std::vector<std::string>* lex_errors = tokens.lex_errors();
         
         // Moved, not copied: Parser takes the sequence by value, and for a
         // multi-megabyte script it runs to tens of megabytes -- copying it
@@ -513,6 +508,15 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         // unit outlives this call whenever a closure escaped it.
         auto program_unit = parser.parse_program_unit();
         auto* program = static_cast<Program*>(program_unit->root());
+
+        // Asked after the parse, not before it: streaming means the lexer has
+        // only reached as far as the parser asked it to.
+        if (lex_errors && !lex_errors->empty()) {
+            std::string error_msg = (*lex_errors)[0];
+            if (error_msg.find("SyntaxError") == std::string::npos)
+                error_msg = "SyntaxError: " + error_msg;
+            return Result(error_msg);
+        }
 
         if (parser.has_errors()) {
             const auto& errors = parser.get_errors();

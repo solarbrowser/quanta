@@ -269,6 +269,8 @@ std::string_view token_value_text(const Token& token, const std::string& source,
 // Holding the source here rather than beside the sequence is what makes an
 // offset safe to store in a token -- a token cannot outlive its text, because
 // the thing that holds the token holds the text as well.
+class Lexer;
+
 class TokenSequence {
 private:
     // Blocks, not one growing array. A large script makes hundreds of thousands
@@ -295,6 +297,32 @@ private:
     static constexpr size_t kRampTotal = kFirstBlock * ((size_t{1} << (kRamp + 1)) - 1);
     std::vector<std::unique_ptr<Token[]>> blocks_;
     size_t count_ = 0;
+
+    // Streaming: the tokens are pulled from here as they are asked for, and
+    // the blocks the parser has moved past are handed back. A script's tokens
+    // outweigh everything else a parse holds, and a parser only ever looks a
+    // little way around where it is -- measured, a few hundred forward and a
+    // few dozen back -- so keeping the whole file's worth of them was paying
+    // for a window that never moves.
+    //
+    // Null on a sequence that was tokenized in full, which is every sequence
+    // small enough not to matter: a template substitution, a body lexed back
+    // on demand, a `new Function` source.
+    std::shared_ptr<Lexer> lexer_;
+    bool eof_seen_ = false;
+    bool strict_directive_seen_ = false;
+    size_t cursor_ = 0;
+    // How far behind the parser's position tokens are kept. The measured
+    // reach backwards is under forty; this is orders above that, and still
+    // bounded, which is the whole point.
+    static constexpr size_t kKeepBehind = 8192;
+    // The next cursor position worth checking at, so the common step past a
+    // token costs one compare.
+    size_t release_check_at_ = kKeepBehind * 2;
+    size_t released_blocks_ = 0;
+
+    void pump_to(size_t index);
+    void release_behind();
 
     // Doubling while the blocks are small, then a fixed size. Doubling alone
     // over-allocates a large sequence to the next power of two -- megabytes of
@@ -346,9 +374,29 @@ public:
     
     size_t position() const { return position_; }
     void set_position(size_t pos);
-    size_t size() const { return count_; }
+    // While streaming, the end is not known until it is reached, and every
+    // reader of this is asking "is there more" before an index. Answering
+    // with what has been lexed so far would end a scan early; answering
+    // beyond the end makes the scan ask for the next token, which lexes it
+    // and, at the end of the file, settles this to the truth.
+    size_t size() const {
+        return (lexer_ && !eof_seen_) ? SIZE_MAX : count_;
+    }
+    size_t lexed_count() const { return count_; }
+    // Whatever the lexer has run into so far. While streaming that is only
+    // what has been reached, so it is asked after the parse rather than
+    // before it.
+    const std::vector<std::string>* lex_errors() const;
     
     const Token& operator[](size_t index) const;
+    // Streaming only: takes ownership of the lexer that produces the rest.
+    void stream_from(std::shared_ptr<Lexer> lexer);
+    // Where the parser is, so what it has passed can be handed back.
+    void advance_cursor(size_t index) {
+        if (!lexer_) return;
+        cursor_ = index;
+        if (index >= release_check_at_) release_behind();
+    }
     void push_back(const Token& token);
     
     std::string to_string() const;

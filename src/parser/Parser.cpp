@@ -2926,6 +2926,9 @@ bool Parser::previous_token_is_dot() const {
 void Parser::advance() {
     if (current_token_index_ < tokens_.size() - 1) {
         current_token_index_++;
+        // Says how far the parse has got, so a streamed sequence can hand
+        // back what is behind it.
+        tokens_.advance_cursor(current_token_index_);
         while (current_token_index_ < tokens_.size() && 
                (current_token().get_type() == TokenType::NEWLINE || 
                 current_token().get_type() == TokenType::WHITESPACE ||

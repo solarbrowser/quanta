@@ -154,6 +154,13 @@ TokenSequence Lexer::tokenize_range(const Position& from, size_t end_offset) {
     return tokens;
 }
 
+TokenSequence Lexer::stream(const std::string& source, const LexerOptions& options) {
+    auto lexer = std::make_shared<Lexer>(source, options);
+    TokenSequence tokens(lexer->source_ref());
+    tokens.stream_from(std::move(lexer));
+    return tokens;
+}
+
 TokenSequence Lexer::tokenize() {
     TokenSequence tokens(source_ref_);
     bool strict_mode_detected = false;
@@ -1290,7 +1297,7 @@ bool Lexer::is_regex_context() const {
             const auto& toks = *tokens_so_far_;
             int depth = 0;
             int open_idx = -1;
-            for (int i = (int)toks.size() - 1; i >= 0; i--) {
+            for (int i = (int)toks.lexed_count() - 1; i >= 0; i--) {
                 TokenType tt = toks[i].get_type();
                 if (tt == TokenType::NEWLINE) continue;
                 if (tt == TokenType::RIGHT_PAREN) depth++;
@@ -1320,7 +1327,7 @@ bool Lexer::is_regex_context() const {
                 const auto& toks = *tokens_so_far_;
                 int depth = 0;
                 int match_idx = -1;
-                for (int i = (int)toks.size() - 1; i >= 0; i--) {
+                for (int i = (int)toks.lexed_count() - 1; i >= 0; i--) {
                     TokenType tt = toks[i].get_type();
                     if (tt == TokenType::NEWLINE) continue;
                     if (tt == TokenType::RIGHT_BRACE) { depth++; }

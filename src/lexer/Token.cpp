@@ -5,6 +5,9 @@
  */
 
 #include "quanta/lexer/Token.h"
+#include "quanta/lexer/Lexer.h"
+#include <cstdio>
+#include <cstdlib>
 #include <sstream>
 #include <unordered_map>
 
@@ -371,10 +374,90 @@ void TokenSequence::set_position(size_t pos) {
     position_ = std::min(pos, size());
 }
 
+const std::vector<std::string>* TokenSequence::lex_errors() const {
+    return lexer_ ? &lexer_->get_errors() : nullptr;
+}
+
+void TokenSequence::stream_from(std::shared_ptr<Lexer> lexer) {
+    lexer_ = std::move(lexer);
+    eof_seen_ = false;
+}
+
+// Pulls tokens until `index` is one of them, or the file runs out. The
+// filtering matches what a full tokenize does, so the two produce the same
+// sequence for the same source.
+void TokenSequence::pump_to(size_t index) {
+    while (count_ <= index && !eof_seen_) {
+        // A sequence is moved on its way into the parser, so the lexer is
+        // pointed back at the live one here rather than once at the start.
+        lexer_->set_tokens_so_far(this);
+        Token token = lexer_->next_token();
+        // A rewritten value (an escape in a string or a name) lives beside the
+        // tokens rather than in the source, and the lexer only ever appends.
+        const std::vector<std::string>& owned = lexer_->owned_values();
+        for (size_t i = owned_values_.size(); i < owned.size(); i++) {
+            owned_values_.push_back(owned[i]);
+        }
+        const TokenType type = token.get_type();
+        if (type != TokenType::WHITESPACE && type != TokenType::COMMENT &&
+            type != TokenType::NEWLINE) {
+            lexer_->set_last_token_type(type);
+        }
+        if ((lexer_->options().skip_whitespace && type == TokenType::WHITESPACE) ||
+            (lexer_->options().skip_comments && type == TokenType::COMMENT)) {
+            if (lexer_->at_end()) break;
+            continue;
+        }
+        // The directive prologue is read as it goes past: a leading
+        // "use strict" decides how everything after it is lexed, and a full
+        // tokenize finds it the same way.
+        const bool is_first = (count_ == 0);
+        push_back(token);
+        if (is_first && !strict_directive_seen_ && type == TokenType::STRING) {
+            strict_directive_seen_ = true;
+            if (lexer_->token_text(token) == "use strict") lexer_->enter_strict_mode();
+        }
+        if (type == TokenType::EOF_TOKEN) { eof_seen_ = true; break; }
+        if (lexer_->at_end()) {
+            push_back(Token(TokenType::EOF_TOKEN, lexer_->current_position()));
+            eof_seen_ = true;
+            break;
+        }
+    }
+}
+
+// Hands back the blocks the parser can no longer reach.
+void TokenSequence::release_behind() {
+    release_check_at_ = cursor_ + kKeepBehind;
+    if (cursor_ < kKeepBehind) return;
+    const size_t keep_from = cursor_ - kKeepBehind;
+    size_t block, slot;
+    locate(keep_from, block, slot);
+    for (size_t b = released_blocks_; b < block && b < blocks_.size(); b++) {
+        blocks_[b].reset();
+    }
+    released_blocks_ = block;
+}
+
 const Token& TokenSequence::operator[](size_t index) const {
+    if (lexer_ && index >= count_ && !eof_seen_) {
+        const_cast<TokenSequence*>(this)->pump_to(index);
+    }
     if (index >= count_) return EOF_TOKEN_INSTANCE;
     size_t block, slot;
     locate(index, block, slot);
+    // A block handed back is one the parser had already moved well past.
+    // Reading one would be reading freed memory, so the answer is that the
+    // file ended -- but it means the window was too small, which is a bug in
+    // the sizing rather than in the source, so a checking build says so.
+    if (!blocks_[block]) {
+#ifdef QUANTA_VALIDATE_BYTECODE
+        std::fprintf(stderr, "[token] released block reached: index=%zu cursor=%zu\n",
+                     index, cursor_);
+        std::abort();
+#endif
+        return EOF_TOKEN_INSTANCE;
+    }
     return blocks_[block][slot];
 }
 

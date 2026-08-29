@@ -66,6 +66,24 @@ public:
     // for the life of the program.
     TokenSequence tokenize_range(const Position& from, size_t end_offset);
     Token next_token();
+    // For a sequence that pulls its tokens as they are asked for rather than
+    // taking them all at once (see TokenSequence's streaming mode).
+    const LexerOptions& options() const { return options_; }
+    const std::vector<std::string>& owned_values() const { return owned_values_; }
+    void set_last_token_type(TokenType t) { last_token_type_ = t; }
+    // A leading "use strict" changes how the rest is lexed, and a streamed
+    // sequence finds it as it pulls rather than in one pass up front.
+    void enter_strict_mode() { options_.strict_mode = true; }
+    std::string_view token_text(const Token& t) const { return text_of(t); }
+    // The sequence being filled, which the regex/division decision looks back
+    // into. Re-pointed on every pull, because a sequence is moved twice on its
+    // way from here into the parser and only the live one may be read.
+    void set_tokens_so_far(const TokenSequence* t) { tokens_so_far_ = t; }
+    const std::shared_ptr<const std::string>& source_ref() const { return source_ref_; }
+    const Position& current_position() const { return current_position_; }
+    // Builds a sequence that lexes `source` on demand and owns the lexer
+    // doing it. The sequence keeps the text alive, so both outlive the call.
+    static TokenSequence stream(const std::string& source, const LexerOptions& options);
     
     Position get_position() const { return current_position_; }
     void reset(size_t position = 0);
