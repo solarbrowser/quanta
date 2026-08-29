@@ -267,11 +267,11 @@ std::unique_ptr<ASTNode> Parameter::clone() const {
 
 
 std::string Identifier::to_string() const {
-    return name_;
+    return get_name();
 }
 
 std::unique_ptr<ASTNode> Identifier::clone() const {
-    return std::make_unique<Identifier>(name_, start_, end_);
+    return std::make_unique<Identifier>(get_name(), start_, end_);
 }
 
 const char* EngineHelper::slot_name(Kind kind) {

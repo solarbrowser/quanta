@@ -15,6 +15,7 @@
 #include <vector>
 #include <string>
 #include "quanta/parser/AstArena.h"
+#include "quanta/parser/NamePool.h"
 #include <functional>
 
 namespace Quanta {
@@ -331,14 +332,19 @@ public:
 
 class Identifier : public ASTNode {
 private:
-    std::string name_;
+    // The name lives in the pool, once, and this is which one. Nearly half of
+    // every tree is identifier nodes, and holding the text in each of them was
+    // both the largest thing the tree carried and what kept the node a size
+    // class larger than it needed to be.
+    uint32_t name_id_ = 0;
     bool has_escaped_keyword_ = false;
 
 public:
     Identifier(const std::string& name, const Position& start, const Position& end)
-        : ASTNode(Type::IDENTIFIER, start, end), name_(name) {}
+        : ASTNode(Type::IDENTIFIER, start, end), name_id_(NamePool::intern(name)) {}
 
-    const std::string& get_name() const { return name_; }
+    const std::string& get_name() const { return NamePool::text(name_id_); }
+    uint32_t get_name_id() const { return name_id_; }
     bool has_escaped_keyword() const { return has_escaped_keyword_; }
     void set_escaped_keyword(bool v) { has_escaped_keyword_ = v; }
 
