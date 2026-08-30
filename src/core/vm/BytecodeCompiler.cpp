@@ -7885,7 +7885,6 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 // node. Anything outside that answers false and takes Op::DefineClass instead.
 bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool bind_name) {
     if (!env_mode_) return false;
-    if (cls->has_superclass()) return false;
     const BlockStatement* body = cls->get_body();
     if (!body) return false;
     const Identifier* class_id = cls->get_id();
@@ -7896,9 +7895,12 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     const std::string class_name = inner_name.empty() ? cls->get_inferred_name() : inner_name;
     if (bind_name && class_name.empty()) return false;
 
-    // Whether any member reads the class's own name. Only then is the scope
-    // holding that name worth building.
-    bool reads_own_name = false;
+    // Whether anything inside the class reads its own name. Only then is the
+    // scope holding that name worth building. The heritage expression counts:
+    // it runs with that name still uninitialized.
+    const ASTNode* superclass = cls->get_superclass();
+    bool reads_own_name = !inner_name.empty() && superclass &&
+                          references_identifier(superclass, inner_name);
     const MethodDefinition* ctor = nullptr;
     struct Member { std::string key; const MethodDefinition* m; uint8_t kind; bool is_static; };
     std::vector<Member> methods;
@@ -7958,8 +7960,21 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     }
     if (chunk_->ensure_closures().size() + methods.size() + 1 >= 0xFFFF) return false;
 
+    // From here on instructions go out. Only the heritage expression can still
+    // refuse -- it is arbitrary code, and whether the compiler takes it is not
+    // answerable without trying. So the emission point is remembered: a
+    // refusal winds back to it and the class goes through Op::DefineClass,
+    // which reads the heritage off the node instead. Everything else the
+    // compiler adds along the way (names, feedback slots, closure templates)
+    // is only ever reached from code, so unreferenced leftovers are inert.
+    const size_t emit_mark = code_.size();
+    const size_t env_mark = chunk_->ensure_env().loop_envs.size();
+    const int env_depth_mark = env_depth_;
+    const int register_mark = next_register_;
+
     int proto_reg = alloc_temp();
     int ctor_reg = alloc_temp();
+    int super_reg = superclass ? alloc_temp() : -1;
     if (proto_reg < 0 || ctor_reg < 0) return false;
 
     // classScope (15.7.14 steps 2-4): the class's own name is an inner
@@ -7980,6 +7995,23 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         emit(Op::EnterLoopEnv);
         emit_u16(static_cast<uint16_t>(class_env_idx));
         env_depth_++;
+    }
+
+    // ClassHeritage is class code: strict, and evaluated with the class's own
+    // name in scope but not yet initialized.
+    if (superclass) {
+        const bool failed_before = failed_;
+        if (!compile_expression(superclass)) {
+            code_.resize(emit_mark);
+            chunk_->ensure_env().loop_envs.resize(env_mark);
+            loop_env_needs_fresh_.resize(env_mark);
+            env_depth_ = env_depth_mark;
+            next_register_ = register_mark;
+            failed_ = failed_before;
+            return false;
+        }
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(super_reg));
     }
 
     emit(Op::CreateObject);
@@ -8023,6 +8055,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     emit(Op::BuildClass);
     emit_u8(static_cast<uint8_t>(ctor_reg));
     emit_u8(static_cast<uint8_t>(proto_reg));
+    emit_u8(ctor ? 0 : 0x1);
 
     // The inner name is settled before the members are built, so a member's
     // body sees the class the moment it can run.
@@ -8062,6 +8095,16 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                                       : m.key));
         emit_u8(static_cast<uint8_t>(m.kind | kClassElementFlag));
         emit_u16(alloc_feedback_slot());
+    }
+
+    // After the members, so each of them is handed the superclass its `super`
+    // resolves against.
+    if (superclass) {
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(super_reg));
+        emit(Op::LinkClassHeritage);
+        emit_u8(static_cast<uint8_t>(ctor_reg));
+        emit_u8(static_cast<uint8_t>(proto_reg));
     }
 
     if (class_env_idx >= 0) {

@@ -324,12 +324,18 @@ enum class Op : uint8_t {
     // construct still described by its own node rather than by something
     // built at compile time.
     DefineClass,               // k
-    // r_ctor r_proto -- ties a constructor to its prototype and stamps the two
-    // facts that make it a class rather than a function: the prototype is
-    // fixed in place (non-writable, non-enumerable, non-configurable), the
+    // r_ctor r_proto u8flags -- ties a constructor to its prototype and stamps
+    // the two facts that make it a class rather than a function: the prototype
+    // is fixed in place (non-writable, non-enumerable, non-configurable), the
     // prototype names it back, and calling it without `new` is an error. What
     // the class holds is emitted around this rather than read off a node.
+    // flags bit 0: no constructor was written, so construction supplies one.
     BuildClass,
+    // r_ctor r_proto -- acc holds what the class extends. Puts the two
+    // prototype links in place, marks the constructor derived (or, for
+    // `extends null`, derived with no reachable super), and hands every member
+    // already installed the constructor its `super` resolves against.
+    LinkClassHeritage,
     // n -- binds the class's own name in the running scope, to the class in
     // the accumulator. A class declaration's name is created where the
     // declaration stands rather than reserved with the scope's other lexicals,

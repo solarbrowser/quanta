@@ -141,8 +141,14 @@ std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
     // recoverable from a token index either. A body that could not legally say
     // `super` never got here, since the first parse is what let it through.
     const bool saved_in_class_method = options_.in_class_method;
+    const bool saved_in_constructor = options_.in_constructor;
+    const bool saved_class_has_heritage = options_.class_has_heritage;
     options_.in_class_method = true;
+    options_.in_constructor = true;
+    options_.class_has_heritage = true;
     auto body = parse_block_statement(true);
+    options_.class_has_heritage = saved_class_has_heritage;
+    options_.in_constructor = saved_in_constructor;
     options_.in_class_method = saved_in_class_method;
     options_.class_depth = saved_class_depth;
     options_.function_depth--;

@@ -141,7 +141,8 @@ const OpInfo& op_info(Op op) {
         {"LdaResolvedEnv", 3, 'i'}, {"StaResolvedEnv", 3, 'i'},
         {"EnterParamEval", 1, 'i'}, {"SetDirectEval", 1, 'i'},
         {"DefineClass", 2, 'z'},
-        {"BuildClass", 2, 'r'},
+        {"BuildClass", 3, 'B'},
+        {"LinkClassHeritage", 2, 'r'},
         {"BindClassName", 2, 'n'},
         {"SuperCallSpread", 1, 'r'},
         {"ThrowSuperDelete", 0, '-'},
@@ -197,6 +198,8 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
 
         switch (info.kind) {
             case 'r': for (int i = 0; i < info.operand_bytes; i++) check(i, "reads"); break;
+            // Two registers and a flags byte.
+            case 'B': check(0, "reads"); check(1, "reads"); break;
             case 'S': check_run(0, 1); break;
             case 'c': check(0, "calls"); check_run(1, 2); break;
             case 'v': check(0, "calls"); check(1, "receiver"); check_run(2, 3); break;
@@ -254,6 +257,11 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 for (int i = 0; i < info.operand_bytes; i++) {
                     out << " r" << static_cast<int>(chunk.code[operand_pc + i]);
                 }
+                break;
+            case 'B':
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " flags=" << static_cast<int>(chunk.code[operand_pc + 2]);
                 break;
             case 'k': {
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |

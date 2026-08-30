@@ -64,6 +64,7 @@ Value build_rest_object(Context& ctx, const Value& source_value, Object* source_
                         const std::vector<std::string>& assigned_keys);
 // And from language.cpp, backing Op::CreateClosure / Op::DeclareFunction.
 Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl);
+Function* resolve_construct_target(Object* obj);
 Value declare_function(Context& ctx, const ClosureTemplate& tpl);
 // And from call.cpp, backing Op::SuperCall.
 Value perform_super_call(Context& ctx, std::span<const Value> arg_values, bool super_already_called);
@@ -3389,7 +3390,8 @@ Value h_gen_BuildClass(Frame& f, uint32_t pc, Value acc) {
     do {
         Object* ctor = regs[code[pc]].as_object();
         Object* proto = regs[code[pc + 1]].as_object();
-        pc += 2;
+        const uint8_t flags = code[pc + 2];
+        pc += 3;
         // Spec 15.7.14: the prototype is fixed in place, and it names the
         // constructor back. The constructor is written first so that it comes
         // first in the prototype's own-key order.
@@ -3405,6 +3407,10 @@ Value h_gen_BuildClass(Frame& f, uint32_t pc, Value acc) {
         // The constructor is a method definition too: `super.x` inside it (or
         // inside an arrow closing over it) homes on the prototype.
         fn->set_home_object(proto);
+        // A constructor the class did not write is the one construction fills
+        // in: for a derived class that means forwarding its arguments to the
+        // superclass before the (empty) body runs.
+        if (flags & 0x1) fn->set_default_ctor();
         fn->set_internal_slot("__private_class_brand__", Value(proto));
     } while (0);
     CHECK_EXC_TAIL();
@@ -3426,6 +3432,86 @@ Value h_gen_BindClassName(Frame& f, uint32_t pc, Value acc) {
         // the forced form is what settles it then.
         if (!ctx.create_lexical_binding(cname, acc, true)) {
             ctx.create_lexical_binding_force(cname, acc);
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
+        Object* proto = regs[code[pc + 1]].as_object();
+        pc += 2;
+        if (acc.is_null()) {
+            // `extends null`: still a derived class, but super() can never
+            // succeed, so the constructor is marked rather than linked.
+            if (proto) proto->set_prototype(nullptr);
+            ctor->set_super_is_null();
+            break;
+        }
+        if (!acc.is_object_like() || !acc.as_object()) {
+            ctx.throw_type_error("Class extends value " + acc.to_string() +
+                                 " is not a constructor or null");
+            CHECK_EXC();
+            break;
+        }
+        Object* super_obj = acc.as_object();
+        // A Proxy standing in front of a constructor is one too; it answers
+        // is_function() for itself, not for what it wraps.
+        Function* super_fn = resolve_construct_target(super_obj);
+        if (!super_fn) {
+            ctx.throw_type_error("Class extends value is not a constructor or null");
+            CHECK_EXC();
+            break;
+        }
+        // Read once: the superclass can be a Proxy, and this Get is observable.
+        Value super_proto = super_obj->get_property("prototype");
+        CHECK_EXC();
+        if (!super_proto.is_null() && !super_proto.is_object() && !super_proto.is_function()) {
+            ctx.throw_type_error("Class extends value has invalid prototype property");
+            CHECK_EXC();
+            break;
+        }
+        ctor->set_prototype(super_fn);
+        ctor->set_super_constructor(super_fn);
+        // `super.x` in a member resolves against the class's own superclass, so
+        // every member installed above is told which one that is. Descriptors
+        // are read rather than the properties themselves: asking for an
+        // accessor's value would run it.
+        auto stamp = [&](Object* holder, bool skip_class_keys) {
+            if (!holder) return;
+            for (const auto& key : holder->get_own_property_keys_unfiltered()) {
+                if (skip_class_keys) {
+                    if (key == "prototype" || key == "name" || key == "length") continue;
+                } else if (key == "constructor") {
+                    continue;
+                }
+                PropertyDescriptor d = holder->get_property_descriptor(key);
+                if (d.is_accessor_descriptor()) {
+                    if (d.has_getter() && d.get_getter())
+                        static_cast<Function*>(d.get_getter())->set_super_constructor(super_fn);
+                    if (d.has_setter() && d.get_setter())
+                        static_cast<Function*>(d.get_setter())->set_super_constructor(super_fn);
+                } else if (d.has_value() && d.get_value().is_function()) {
+                    d.get_value().as_function()->set_super_constructor(super_fn);
+                }
+            }
+        };
+        stamp(proto, /*skip_class_keys=*/false);
+        stamp(ctor, /*skip_class_keys=*/true);
+        if (proto) {
+            Object* super_proto_obj = super_proto.is_object()   ? super_proto.as_object()
+                                    : super_proto.is_function() ? super_proto.as_function()
+                                                                : nullptr;
+            if (super_proto_obj) proto->set_prototype(super_proto_obj);
         }
     } while (0);
     CHECK_EXC_TAIL();
@@ -5428,6 +5514,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::DefineClass)] = &h_gen_DefineClass;
     t[static_cast<uint8_t>(Op::BuildClass)] = &h_gen_BuildClass;
     t[static_cast<uint8_t>(Op::BindClassName)] = &h_gen_BindClassName;
+    t[static_cast<uint8_t>(Op::LinkClassHeritage)] = &h_gen_LinkClassHeritage;
     t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
     t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
     t[static_cast<uint8_t>(Op::LinkModule)] = &h_gen_LinkModule;

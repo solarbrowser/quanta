@@ -747,6 +747,17 @@ static Value eval_class_expr(const ASTNode* expr, Context& ctx) {
 
 
 
+// What a value would construct: itself when it is a constructor, and what it
+// stands in front of when it is a Proxy over one.
+Function* resolve_construct_target(Object* obj) {
+    while (obj && obj->get_type() == Object::ObjectType::Proxy) {
+        obj = static_cast<Proxy*>(obj)->get_proxy_target();
+    }
+    if (!obj || !obj->is_function()) return nullptr;
+    Function* fn = static_cast<Function*>(obj);
+    return fn->is_constructor() ? fn : nullptr;
+}
+
 Value ClassDeclaration::define_class(Context& ctx) {
     std::string class_name = id_->get_name();
 
@@ -1473,13 +1484,11 @@ Value ClassDeclaration::define_class(Context& ctx) {
             return Value();
         } else if (super_constructor.is_object_like() && super_constructor.as_object()) {
             Object* super_obj = super_constructor.as_object();
-            // Must be a constructor
-            if (!super_obj->is_function()) {
-                ctx.throw_type_error("Class extends value is not a constructor or null");
-                return Value();
-            }
-            Function* super_fn_check = static_cast<Function*>(super_obj);
-            if (!super_fn_check->is_constructor()) {
+            // Must be a constructor. A Proxy standing in front of one answers
+            // is_function() for itself, not for what it wraps, so it is
+            // followed to its target rather than turned away.
+            Function* super_fn_check = resolve_construct_target(super_obj);
+            if (!super_fn_check) {
                 ctx.throw_type_error("Class extends value is not a constructor or null");
                 return Value();
             }
@@ -1491,16 +1500,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                 ctx.throw_type_error("Class extends value has invalid prototype property");
                 return Value();
             }
-            Function* super_fn = nullptr;
-            if (super_obj->is_function()) {
-                super_fn = static_cast<Function*>(super_obj);
-            } else if (super_obj->get_type() == Object::ObjectType::Proxy) {
-                Proxy* proxy_super = static_cast<Proxy*>(super_obj);
-                Object* target = proxy_super->get_proxy_target();
-                if (target && target->is_function()) {
-                    super_fn = static_cast<Function*>(target);
-                }
-            }
+            Function* super_fn = super_fn_check;
             if (super_fn && constructor_fn.get()) {
                 constructor_fn->set_prototype(super_fn);
                 constructor_fn->set_super_constructor(super_fn);
