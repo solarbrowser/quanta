@@ -834,7 +834,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     // Field-initializer arrows re-arm the direct-eval `arguments` ban (see
     // ArrowFunctionExpression::evaluate); nested arrows re-mark themselves
     // from this flag at their own creation.
-    if (is_arrow_ && this->has_own_property("__in_cfi__")) {
+    if ((is_arrow_ && this->has_own_property("__in_cfi__")) || is_field_initializer()) {
         function_context.set_in_class_field_init(true);
     }
 
@@ -1494,6 +1494,10 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     if (!is_derived_ctor()) {
         const std::string& base_pm_slot = pm_brand_slot();
         if (!base_pm_slot.empty()) new_object->add_private_field(base_pm_slot);
+        if (field_initializers()) {
+            initialize_instance_fields(ctx, new_object.get());
+            if (ctx.has_exception()) return Value();
+        }
     }
 
     // These flags live on the shared Context, so a `new` evaluated inside a
@@ -1544,9 +1548,15 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         }
         // InitializeInstanceElements after auto-super: add per-instance private method brand slot.
         const std::string& pm_slot = pm_brand_slot();
-        if (!pm_slot.empty()) {
-            Object* pm_this = this_value.is_object() ? this_value.as_object() : nullptr;
-            if (pm_this) pm_this->add_private_field(pm_slot);
+        Object* pm_this = this_value.is_object() ? this_value.as_object() : nullptr;
+        if (!pm_slot.empty() && pm_this) pm_this->add_private_field(pm_slot);
+        if (field_initializers() && pm_this) {
+            initialize_instance_fields(ctx, pm_this);
+            if (ctx.has_exception()) {
+                ctx.set_in_constructor_call(false);
+                ctx.set_new_target(old_new_target);
+                return Value();
+            }
         }
         // Nested super construct() clears/overwrites these shared flags -- restore them.
         ctx.set_in_constructor_call(true);

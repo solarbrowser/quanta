@@ -3518,6 +3518,32 @@ Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_AddFieldInitializer(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
+        uint16_t name_idx = read_u16(code, pc + 1);
+        pc += 3;
+        if (acc.is_function()) {
+            Function* init = acc.as_function();
+            // The initializer is method code: `super.x` in it resolves against
+            // the class prototype, and a direct eval written in it inherits
+            // both that and the `arguments` ban.
+            init->set_home_object(ctor->home_object());
+            init->set_is_field_initializer();
+        }
+        ctor->add_field_initializer(chunk.name_at(name_idx), acc);
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_CopyRestProperties(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5515,6 +5541,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::BuildClass)] = &h_gen_BuildClass;
     t[static_cast<uint8_t>(Op::BindClassName)] = &h_gen_BindClassName;
     t[static_cast<uint8_t>(Op::LinkClassHeritage)] = &h_gen_LinkClassHeritage;
+    t[static_cast<uint8_t>(Op::AddFieldInitializer)] = &h_gen_AddFieldInitializer;
     t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
     t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
     t[static_cast<uint8_t>(Op::LinkModule)] = &h_gen_LinkModule;

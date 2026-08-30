@@ -7904,7 +7904,34 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     const MethodDefinition* ctor = nullptr;
     struct Member { std::string key; const MethodDefinition* m; uint8_t kind; bool is_static; };
     std::vector<Member> methods;
+    // An instance field: its key, and the expression computing its value, which
+    // runs against each new instance rather than here.
+    struct Field { std::string key; const ASTNode* init; };
+    std::vector<Field> fields;
     for (const auto& st : body->get_statements()) {
+        if (st->get_type() == ASTNode::Type::CLASS_FIELD) {
+            const auto* cf = static_cast<const ClassField*>(st.get());
+            // A static field's value is computed where the class is built, and
+            // a computed key is resolved there too: neither is what the
+            // per-instance list below carries.
+            if (cf->is_static() || cf->is_computed()) return false;
+            const ASTNode* kn = cf->get_key();
+            std::string key;
+            if (kn->get_type() == ASTNode::Type::IDENTIFIER) {
+                key = static_cast<const Identifier*>(kn)->get_name();
+            } else if (kn->get_type() == ASTNode::Type::STRING_LITERAL) {
+                key = static_cast<const StringLiteral*>(kn)->get_value();
+            } else {
+                return false;
+            }
+            if (key.empty() || key[0] == '#') return false;
+            if (!inner_name.empty() && cf->get_value() &&
+                references_identifier(cf->get_value(), inner_name)) {
+                reads_own_name = true;
+            }
+            fields.push_back({std::move(key), cf->get_value()});
+            continue;
+        }
         if (st->get_type() != ASTNode::Type::METHOD_DEFINITION) return false;
         const auto* m = static_cast<const MethodDefinition*>(st.get());
         if (m->is_computed()) return false;
@@ -8001,6 +8028,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     // name in scope but not yet initialized.
     if (superclass) {
         const bool failed_before = failed_;
+        const size_t closures_before = chunk_->ensure_closures().size();
         if (!compile_expression(superclass)) {
             code_.resize(emit_mark);
             chunk_->ensure_env().loop_envs.resize(env_mark);
@@ -8009,6 +8037,12 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             next_register_ = register_mark;
             failed_ = failed_before;
             return false;
+        }
+        // ClassHeritage is class code, so a function literal written in it is
+        // strict however sloppy the code around the class is.
+        auto& closures = chunk_->ensure_closures();
+        for (size_t i = closures_before; i < closures.size(); i++) {
+            closures[i].body_is_strict = true;
         }
         emit(Op::Star);
         emit_u8(static_cast<uint8_t>(super_reg));
@@ -8056,6 +8090,31 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     emit_u8(static_cast<uint8_t>(ctor_reg));
     emit_u8(static_cast<uint8_t>(proto_reg));
     emit_u8(ctor ? 0 : 0x1);
+
+    for (const auto& fld : fields) {
+        if (fld.init) {
+            // The initializer is a function of its own: it runs with `this`
+            // bound to the instance being built, which is why it cannot be
+            // emitted here alongside the class.
+            ClosureTemplate tmpl;
+            auto exe = make_executable_ref();
+            exe->borrow_body(ExecutableRef<ScriptUnit>(cls->source_unit()),
+                             const_cast<ASTNode*>(fld.init));
+            tmpl.executable = std::move(exe);
+            tmpl.form = ClosureTemplate::Form::FunctionExpr;
+            tmpl.body_is_strict = true;
+            tmpl.is_method_shorthand = true;  // no .prototype, not a constructor
+            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+            chunk_->ensure_closures().push_back(std::move(tmpl));
+            emit(Op::CreateClosure);
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+        } else {
+            emit(Op::LdaUndefined);
+        }
+        emit(Op::AddFieldInitializer);
+        emit_u8(static_cast<uint8_t>(ctor_reg));
+        emit_u16(add_name(fld.key));
+    }
 
     // The inner name is settled before the members are built, so a member's
     // body sees the class the moment it can run.

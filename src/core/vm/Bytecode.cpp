@@ -143,6 +143,7 @@ const OpInfo& op_info(Op op) {
         {"DefineClass", 2, 'z'},
         {"BuildClass", 3, 'B'},
         {"LinkClassHeritage", 2, 'r'},
+        {"AddFieldInitializer", 3, 'Y'},
         {"BindClassName", 2, 'n'},
         {"SuperCallSpread", 1, 'r'},
         {"ThrowSuperDelete", 0, '-'},
@@ -206,6 +207,8 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'w': check(0, "calls"); check(1, "receiver"); check(2, "spread array"); break;
             case 'W': check(0, "constructs"); check(1, "spread array"); break;
             case 'g': case 'f': case 'l': case 'm': case 's': check(0, "receiver"); break;
+            // A register and a name.
+            case 'Y': check(0, "reads"); break;
             case 'C': check(0, "closes the iterator in"); break;
             case 'x': case 'j': check(0, "reads"); check(1, "reads"); break;
             case 'J': check(0, "reads"); check(1, "reads"); check(2, "reads"); break;
@@ -431,6 +434,13 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
                                (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
                 out << " [" << idx << "]";
+                break;
+            }
+            case 'Y': {
+                uint16_t key_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.name_at(key_idx) << "'";
                 break;
             }
             case 'm': {

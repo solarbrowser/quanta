@@ -554,6 +554,55 @@ void Function::set_private_brands(Object* brands) {
     mutable_class_slots().private_brands = brands;
 }
 
+void Function::add_field_initializer(const std::string& key, const Value& initializer) {
+    Collector::write_barrier(this);
+    ClassSlots& slots = mutable_class_slots();
+    if (!slots.field_inits) {
+        slots.field_inits = ObjectFactory::create_array().release();
+    }
+    uint32_t n = static_cast<uint32_t>(slots.field_inits->get_length());
+    slots.field_inits->set_element(n, Value(key));
+    slots.field_inits->set_element(n + 1, initializer);
+    // What the instance is about to grow, so its storage is sized once.
+    set_construct_slot_hint((n + 2) / 2);
+}
+
+void Function::initialize_instance_fields(Context& ctx, Object* instance) const {
+    Object* fields = class_slots().field_inits;
+    if (!fields || !instance) return;
+    uint32_t n = static_cast<uint32_t>(fields->get_length());
+    for (uint32_t i = 0; i + 1 < n; i += 2) {
+        std::string key = fields->get_element(i).to_string();
+        Value init = fields->get_element(i + 1);
+        Value value;
+        if (init.is_function()) {
+            value = init.as_function()->call(ctx, {}, Value(instance));
+            if (ctx.has_exception()) return;
+            // NamedEvaluation: a function the initializer built without a name
+            // of its own takes the field's.
+            if (value.is_function()) {
+                Function* fn = value.as_function();
+                if (fn->get_name().empty() || fn->get_name() == "<arrow>") fn->set_name(key);
+            }
+        }
+        PropertyDescriptor d(value, static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Enumerable |
+            PropertyAttributes::Configurable));
+        // CreateDataPropertyOrThrow: an earlier field's initializer can have
+        // frozen the very object being built, and a derived class's parent can
+        // have handed back a Proxy, whose trap has to see each field.
+        bool ok = (instance->get_type() == Object::ObjectType::Proxy)
+                      ? static_cast<Proxy*>(instance)->define_property_trap(Value(key), d)
+                      : instance->set_property_descriptor(key, d);
+        if (ctx.has_exception()) return;
+        if (!ok) {
+            ctx.throw_type_error("Cannot define property " + key +
+                                 ", object is not extensible");
+            return;
+        }
+    }
+}
+
 void Function::trace_default(Visitor& v) {
     Object::trace_default(v);
     v.visit_context(closure_context_);
@@ -568,6 +617,7 @@ void Function::trace_default(Visitor& v) {
         v.visit_object(d->class_slots->home_object);
         v.visit_object(d->class_slots->super_ctor);
         v.visit_object(d->class_slots->private_brands);
+        v.visit_object(d->class_slots->field_inits);
     }
 }
 

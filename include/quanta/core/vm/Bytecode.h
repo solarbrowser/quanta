@@ -336,6 +336,12 @@ enum class Op : uint8_t {
     // `extends null`, derived with no reachable super), and hands every member
     // already installed the constructor its `super` resolves against.
     LinkClassHeritage,
+    // r_ctor n -- adds one instance field to the class in that register: the
+    // key is the name operand, and the accumulator holds the function that
+    // computes its value, or undefined for a field written without one. The
+    // fields are recorded on the constructor and run against each instance as
+    // it is built, rather than folded into the constructor's own body.
+    AddFieldInitializer,
     // n -- binds the class's own name in the running scope, to the class in
     // the accumulator. A class declaration's name is created where the
     // declaration stands rather than reserved with the scope's other lexicals,

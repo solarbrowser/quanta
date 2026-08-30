@@ -1319,10 +1319,21 @@ public:
         Object* home_object = nullptr;      // [[HomeObject]]
         Function* super_ctor = nullptr;     // the parent constructor super() calls
         Object* private_brands = nullptr;
+        // The class's instance fields, as key/initializer pairs: the key at an
+        // even index, the function computing its value (or undefined for a
+        // field written without one) at the odd index after it. Held here
+        // rather than folded into the constructor's body, which is what used
+        // to make a class inside a called function rewrite that body on every
+        // evaluation.
+        Object* field_inits = nullptr;
         std::string pm_brand_slot;
         bool is_default_ctor = false;
         bool super_is_null = false;         // `extends null`: derived, but super() cannot succeed
         bool is_static_method = false;
+        // A class field's initializer. Its own frame is field-initializer
+        // code, which a direct eval written inside it has to know: `arguments`
+        // is an early error there.
+        bool is_field_init = false;
     };
 private:
     // Only `feedback` is held inline. The other two are for rare events (a
@@ -1577,12 +1588,21 @@ public:
     void set_home_object(Object* home);
     void set_super_constructor(Function* super_ctor);
     void set_private_brands(Object* brands);
+    // Appends one field to what construction gives each instance, in the order
+    // the class writes them.
+    void add_field_initializer(const std::string& key, const Value& initializer);
+    Object* field_initializers() const { return class_slots().field_inits; }
+    // Runs them against a freshly built instance: spec 7.3.32 DefineField, so
+    // an own property each time, never a set through the prototype.
+    void initialize_instance_fields(Context& ctx, Object* instance) const;
     void set_super_is_null() { mutable_class_slots().super_is_null = true; }
     void set_default_ctor() { mutable_class_slots().is_default_ctor = true; }
     void set_static_method() { mutable_class_slots().is_static_method = true; }
     void set_pm_brand_slot(const std::string& slot) { mutable_class_slots().pm_brand_slot = slot; }
 
     Object* home_object() const { return class_slots().home_object; }
+    bool is_field_initializer() const { return class_slots().is_field_init; }
+    void set_is_field_initializer() { mutable_class_slots().is_field_init = true; }
     Function* super_constructor() const { return class_slots().super_ctor; }
     Object* private_brands() const { return class_slots().private_brands; }
     const std::string& pm_brand_slot() const { return class_slots().pm_brand_slot; }

@@ -259,10 +259,17 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
             {
                 CallStack& pm_cs = CallStack::instance();
                 if (!pm_cs.is_empty() && pm_cs.top().function_ptr) {
-                    const std::string& pm_slot = pm_cs.top().function_ptr->pm_brand_slot();
+                    Function* running = pm_cs.top().function_ptr;
+                    const std::string& pm_slot = running->pm_brand_slot();
+                    Object* pm_this = final_this_obj ? final_this_obj : ctx.get_this_binding();
                     if (!pm_slot.empty()) {
-                        Object* pm_this = final_this_obj ? final_this_obj : ctx.get_this_binding();
                         if (pm_this) pm_this->add_private_field(pm_slot);
+                        if (ctx.has_exception()) return Value();
+                    }
+                    // The class's own fields go on here too, where `this` first
+                    // exists: after super() returned it.
+                    if (running->field_initializers() && pm_this) {
+                        running->initialize_instance_fields(ctx, pm_this);
                         if (ctx.has_exception()) return Value();
                     }
                 }
