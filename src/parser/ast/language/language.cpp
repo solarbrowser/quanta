@@ -376,10 +376,17 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
         exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async, concise);
         return;
     }
-    // A concise arrow body is an expression: there is no `{` to read back to,
-    // so one that still has its body keeps it.
-    if (lit->get_body() && lit->get_body()->get_type() != ASTNode::Type::BLOCK_STATEMENT) return;
-
+    if (concise) {
+        // A block body opens at its `{`, which is where the node starts too.
+        // An expression's node starts wherever its own shape says -- a binary
+        // one at its operator -- so the range comes from what the parse wrote
+        // down rather than from the node.
+        const BodyScopeInfo* info = unit->scope_info_at(lit->body_source_first());
+        if (!info || info->body_end <= lit->body_source_first()) return;
+        Position body_start = lit->get_body()->get_start();
+        body_start.offset = lit->body_source_first();
+        exe->set_body_range(body_start, info->body_end);
+    }
     exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async, concise);
     const_cast<Literal*>(lit)->release_body();
 }
