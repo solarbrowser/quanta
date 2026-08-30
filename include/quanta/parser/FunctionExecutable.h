@@ -138,6 +138,9 @@ public:
         body_start_ = start;
         body_end_offset_ = end_offset;
     }
+    // Whether this executable is reading a body out of a tree it does not
+    // own, and so needs that tree kept.
+    bool borrows_body() const { return body_ && !owned_body_; }
     void adopt_body(std::unique_ptr<ASTNode> node);
     // Owns the body and keeps the unit it was copied out of alive, so a
     // literal inside it can still report its own source text.

@@ -63,7 +63,7 @@ Value run_suspendable_chunk(const BytecodeChunk& chunk, Context& ctx, Function* 
 
 // Script tier: compile+run a Program's top-level statements (hoisting must
 // already be done by Program::evaluate). used_vm=false -> caller tree-walks.
-Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
+Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,
                  Context& ctx, bool& used_vm, bool track_completion = false);
 
 

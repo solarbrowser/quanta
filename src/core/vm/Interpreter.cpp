@@ -6078,7 +6078,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     }
 }
 
-Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
+Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,
                  Context& ctx, bool& used_vm, bool track_completion) {
     used_vm = false;
     bool outer_with = false;
@@ -6095,6 +6095,20 @@ Value run_script(const std::vector<std::unique_ptr<ASTNode>>& statements,
     if (disasm) {
         std::fprintf(stderr, "%s", disassemble_chunk(*chunk, "<script>").c_str());
     }
+    // The tree has said everything it had to say: the run reads the chunk, not
+    // the statements. Letting them go here rather than when the script ends is
+    // the whole point -- a top level is where most of a file's nodes are, and
+    // they would otherwise stand for the length of the program.
+    if (!chunk->keeps_ast_nodes()) {
+        bool borrowed = false;
+        if (chunk->closures) {
+            for (const auto& t : *chunk->closures) {
+                if (t.executable && t.executable->borrows_body()) { borrowed = true; break; }
+            }
+        }
+        if (!borrowed) statements.clear();
+    }
+
     ValueArrayRoot const_root(&chunk->constants);
     // The caches this chunk learns hold real cells and nothing else keeps them
     // alive: no function owns this chunk. Rooted for the run, they work here
