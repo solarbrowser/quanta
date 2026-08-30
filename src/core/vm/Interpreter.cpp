@@ -3378,6 +3378,60 @@ Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_BuildClass(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        Object* ctor = regs[code[pc]].as_object();
+        Object* proto = regs[code[pc + 1]].as_object();
+        pc += 2;
+        // Spec 15.7.14: the prototype is fixed in place, and it names the
+        // constructor back. The constructor is written first so that it comes
+        // first in the prototype's own-key order.
+        PropertyDescriptor proto_desc(Value(proto), static_cast<PropertyAttributes>(0));
+        ctor->set_property_descriptor("prototype", proto_desc);
+        PropertyDescriptor ctor_desc(Value(ctor),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                                            PropertyAttributes::Configurable));
+        proto->set_property_descriptor("constructor", ctor_desc);
+        auto* fn = static_cast<Function*>(ctor);
+        fn->set_is_class_constructor(true);
+        fn->set_is_strict(true);
+        // The constructor is a method definition too: `super.x` inside it (or
+        // inside an arrow closing over it) homes on the prototype.
+        fn->set_home_object(proto);
+        fn->set_internal_slot("__private_class_brand__", Value(proto));
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_BindClassName(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        uint16_t name_idx = read_u16(code, pc);
+        pc += 2;
+        const std::string& cname = chunk.name_at(name_idx);
+        // The scope may already hold the name, reserved and uninitialized;
+        // the forced form is what settles it then.
+        if (!ctx.create_lexical_binding(cname, acc, true)) {
+            ctx.create_lexical_binding_force(cname, acc);
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_CopyRestProperties(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -4653,6 +4707,11 @@ Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
                 // method_references_super. Getter/Setter never set this bit.
                 uint8_t kind = raw_kind & 0x3;
                 bool super_free = (raw_kind & 0x4) != 0;
+                // Bit 0x8: a class element, not an object-literal property. A
+                // class method is non-enumerable and strict, so it is written
+                // as a descriptor rather than through the create-data-property
+                // cache, which only ever produces the enumerable form.
+                bool class_element = (raw_kind & 0x8) != 0;
                 uint16_t fb_idx = read_u16(code, pc + 6);
                 pc += 8;
                 Object* obj = as_object_like(regs[obj_reg]);
@@ -4674,7 +4733,18 @@ Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
                             fn->set_is_constructor(false);
                             fn->set_function_prototype(nullptr);
                         }
-                        if (obj) define_own_cached(obj, key, acc, &chunk.feedback[fb_idx]);
+                        if (class_element) {
+                            fn->set_is_strict(true);
+                            if (obj) {
+                                PropertyDescriptor d(acc,
+                                    static_cast<PropertyAttributes>(
+                                        PropertyAttributes::Writable |
+                                        PropertyAttributes::Configurable));
+                                obj->set_property_descriptor(key, d);
+                            }
+                        } else if (obj) {
+                            define_own_cached(obj, key, acc, &chunk.feedback[fb_idx]);
+                        }
                     } else {
                         // Getter (1) / Setter (2): spec 14.4.13/14.4.14 --
                         // GetterMethod/SetterMethod never had a .prototype to
@@ -4689,7 +4759,26 @@ Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
                         // getter+setter pair sharing a key still installs
                         // correctly regardless of what else runs between them.
                         if (fn->is_constructor()) fn->set_function_prototype(nullptr);
-                        if (obj) define_accessor_cached(obj, key, fn, kind == 1, &chunk.feedback[fb_idx]);
+                        if (class_element) {
+                            fn->set_is_strict(true);
+                            if (obj) fn->set_home_object(obj);
+                            if (obj) {
+                                // A getter and a setter written under one key
+                                // are two instructions over one descriptor, so
+                                // the second reads back what the first left.
+                                PropertyDescriptor d;
+                                if (obj->has_own_property(key)) {
+                                    PropertyDescriptor existing = obj->get_property_descriptor(key);
+                                    if (existing.is_accessor_descriptor()) d = existing;
+                                }
+                                if (kind == 1) d.set_getter(fn); else d.set_setter(fn);
+                                d.set_enumerable(false);
+                                d.set_configurable(true);
+                                obj->set_property_descriptor(key, d);
+                            }
+                        } else if (obj) {
+                            define_accessor_cached(obj, key, fn, kind == 1, &chunk.feedback[fb_idx]);
+                        }
                     }
                 }
                 CHECK_EXC();
@@ -5337,6 +5426,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CreateClosure)] = &h_gen_CreateClosure;
     t[static_cast<uint8_t>(Op::DeclareFunction)] = &h_gen_DeclareFunction;
     t[static_cast<uint8_t>(Op::DefineClass)] = &h_gen_DefineClass;
+    t[static_cast<uint8_t>(Op::BuildClass)] = &h_gen_BuildClass;
+    t[static_cast<uint8_t>(Op::BindClassName)] = &h_gen_BindClassName;
     t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
     t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
     t[static_cast<uint8_t>(Op::LinkModule)] = &h_gen_LinkModule;

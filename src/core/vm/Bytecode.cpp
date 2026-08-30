@@ -141,6 +141,8 @@ const OpInfo& op_info(Op op) {
         {"LdaResolvedEnv", 3, 'i'}, {"StaResolvedEnv", 3, 'i'},
         {"EnterParamEval", 1, 'i'}, {"SetDirectEval", 1, 'i'},
         {"DefineClass", 2, 'z'},
+        {"BuildClass", 2, 'r'},
+        {"BindClassName", 2, 'n'},
         {"SuperCallSpread", 1, 'r'},
         {"ThrowSuperDelete", 0, '-'},
         {"LinkModule", 3, 'z'}

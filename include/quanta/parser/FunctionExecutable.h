@@ -323,6 +323,9 @@ private:
     mutable uint32_t ref_count_ = 0;
 };
 
+// The `constructor() {}` a class without a written one runs.
+ExecutableRef<FunctionExecutable> make_default_class_constructor_executable();
+
 inline ExecutableRef<FunctionExecutable> make_executable_ref() {
     return ExecutableRef<FunctionExecutable>(new FunctionExecutable());
 }

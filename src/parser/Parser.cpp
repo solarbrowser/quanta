@@ -136,7 +136,14 @@ std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
     // once fail the second time and come back empty.
     const int saved_class_depth = options_.class_depth;
     if (options_.class_depth == 0) options_.class_depth = 1;
+    // Same reasoning for `super`: a method body reads it against the home
+    // object it was defined with, and which method this body belongs to is not
+    // recoverable from a token index either. A body that could not legally say
+    // `super` never got here, since the first parse is what let it through.
+    const bool saved_in_class_method = options_.in_class_method;
+    options_.in_class_method = true;
     auto body = parse_block_statement(true);
+    options_.in_class_method = saved_in_class_method;
     options_.class_depth = saved_class_depth;
     options_.function_depth--;
     if (!is_generator && !is_async) options_.non_arrow_function_depth--;

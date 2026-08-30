@@ -148,4 +148,15 @@ const BodyScopeInfo* FunctionExecutable::body_scope_info() const {
     return unit_->scope_info_at(body_start_.offset);
 }
 
+
+// The body a class without a written constructor gets: `constructor() {}`.
+// Built per class rather than shared, so the class's own text -- which is what
+// its constructor reports -- has somewhere to live.
+ExecutableRef<FunctionExecutable> make_default_class_constructor_executable() {
+    auto exe = make_executable_ref();
+    exe->adopt_body(std::make_unique<BlockStatement>(
+        std::vector<std::unique_ptr<ASTNode>>{}, Position{0, 0}, Position{0, 0}));
+    return exe;
+}
+
 }  // namespace Quanta

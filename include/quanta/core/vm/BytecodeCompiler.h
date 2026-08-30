@@ -20,6 +20,7 @@ namespace Quanta {
 
 class ASTNode;
 class Parameter;
+class ClassDeclaration;
 
 // Single-pass AST -> bytecode compiler. Returns nullptr for any function it
 // cannot fully compile -- that function then permanently runs on the
@@ -143,6 +144,11 @@ private:
 
     void emit_read_local(const std::string& name);
     void emit_write_local(const std::string& name, bool is_declaration);
+    // Emits a class whose whole description the compiler can carry: the
+    // prototype, the constructor and the methods become instructions, so the
+    // node itself is not kept. Answers false for anything outside what it
+    // handles, which then goes through Op::DefineClass as before.
+    bool try_compile_plain_class(const ClassDeclaration* cls, bool bind_name);
 
     // Op::LdaEnvSlot/StaEnvSlot/StaEnvSlotInit eligibility: recorded only for
     // a name declared EXACTLY ONCE in the whole function (global_decl_count_

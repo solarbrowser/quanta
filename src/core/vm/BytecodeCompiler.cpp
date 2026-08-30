@@ -7853,6 +7853,8 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             // ctx.create_lexical_binding() on the environment directly, so a
             // register-resident name is never written -- force it here.
             if (!env_mode_) return false;
+            if (try_compile_plain_class(static_cast<const ClassDeclaration*>(node),
+                                        /*bind_name=*/true)) return true;
             if (chunk_->ensure_ast_nodes().size() >= 0xFFFF) return false;
             chunk_->ensure_ast_nodes().push_back(node);
             emit(Op::DefineClass);
@@ -7873,6 +7875,217 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         default:
             return false;
     }
+}
+
+// A class the compiler can describe in full: no heritage, no fields, no static
+// block, no private names, no computed keys, no accessors and no static
+// members, an explicit constructor, and a name no member reads back. What is
+// left is a prototype, a constructor and a run of methods -- all of which the
+// instructions below build, so nothing about the class has to survive as a
+// node. Anything outside that answers false and takes Op::DefineClass instead.
+bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool bind_name) {
+    if (!env_mode_) return false;
+    if (cls->has_superclass()) return false;
+    const BlockStatement* body = cls->get_body();
+    if (!body) return false;
+    const Identifier* class_id = cls->get_id();
+    // Only a class written with a name of its own has the inner immutable
+    // binding; one named from its binding site carries the name and nothing
+    // else, so there is no scope for a member to read it out of.
+    const std::string inner_name = class_id ? class_id->get_name() : std::string();
+    const std::string class_name = inner_name.empty() ? cls->get_inferred_name() : inner_name;
+    if (bind_name && class_name.empty()) return false;
+
+    // Whether any member reads the class's own name. Only then is the scope
+    // holding that name worth building.
+    bool reads_own_name = false;
+    const MethodDefinition* ctor = nullptr;
+    struct Member { std::string key; const MethodDefinition* m; uint8_t kind; bool is_static; };
+    std::vector<Member> methods;
+    for (const auto& st : body->get_statements()) {
+        if (st->get_type() != ASTNode::Type::METHOD_DEFINITION) return false;
+        const auto* m = static_cast<const MethodDefinition*>(st.get());
+        if (m->is_computed()) return false;
+        const FunctionExpression* fe = m->get_value();
+        if (!fe) return false;
+        // The class name is an inner immutable binding of its own scope. No
+        // member here reads it, so that scope would hold nothing observable
+        // and is not built at all; a member that does read it falls back.
+        if (!inner_name.empty() && !reads_own_name) {
+            if (references_identifier(fe->get_body(), inner_name)) {
+                reads_own_name = true;
+            } else {
+                for (const auto& prm : fe->get_params()) {
+                    if ((prm->has_default() &&
+                         references_identifier(prm->get_default_value(), inner_name)) ||
+                        (prm->has_destructuring() &&
+                         references_identifier(prm->get_destructuring_pattern(), inner_name))) {
+                        reads_own_name = true;
+                        break;
+                    }
+                }
+            }
+        }
+        std::string key;
+        const ASTNode* kn = m->get_key();
+        if (kn->get_type() == ASTNode::Type::IDENTIFIER) {
+            key = static_cast<const Identifier*>(kn)->get_name();
+        } else if (kn->get_type() == ASTNode::Type::STRING_LITERAL) {
+            key = static_cast<const StringLiteral*>(kn)->get_value();
+        } else {
+            return false;
+        }
+        // A private name is not a property key at all: it lives in a brand,
+        // which nothing emitted here sets up.
+        if (!key.empty() && key[0] == '#') return false;
+        switch (m->get_kind()) {
+            case MethodDefinition::CONSTRUCTOR:
+                if (ctor) return false;
+                ctor = m;
+                break;
+            case MethodDefinition::METHOD:
+                methods.push_back({std::move(key), m, 0, m->is_static()});
+                break;
+            case MethodDefinition::GETTER:
+                methods.push_back({std::move(key), m, 1, m->is_static()});
+                break;
+            case MethodDefinition::SETTER:
+                methods.push_back({std::move(key), m, 2, m->is_static()});
+                break;
+            default:
+                return false;
+        }
+    }
+    if (chunk_->ensure_closures().size() + methods.size() + 1 >= 0xFFFF) return false;
+
+    int proto_reg = alloc_temp();
+    int ctor_reg = alloc_temp();
+    if (proto_reg < 0 || ctor_reg < 0) return false;
+
+    // classScope (15.7.14 steps 2-4): the class's own name is an inner
+    // immutable binding, separate from any outer one, that the members close
+    // over. Nothing else goes in it, and it is left before the outer binding
+    // is made -- a named class expression binds its name only inside itself.
+    int class_env_idx = -1;
+    if (reads_own_name) {
+        std::vector<BytecodeChunk::LoopEnvVar> env_vars;
+        env_vars.push_back({inner_name, /*is_lexical=*/true, /*is_const=*/true,
+                            /*copy_forward=*/false});
+        chunk_->ensure_env().loop_envs.push_back(std::move(env_vars));
+        // Entered and left once, never refreshed; the entry keeps
+        // loop_env_needs_fresh_ the same length as loop_envs so other indices
+        // into it stay valid.
+        loop_env_needs_fresh_.push_back(true);
+        class_env_idx = static_cast<int>(chunk_->ensure_env().loop_envs.size() - 1);
+        emit(Op::EnterLoopEnv);
+        emit_u16(static_cast<uint16_t>(class_env_idx));
+        env_depth_++;
+    }
+
+    emit(Op::CreateObject);
+    emit_u16(static_cast<uint16_t>(methods.size() + 1));
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(proto_reg));
+
+    {
+        ClosureTemplate tmpl;
+        if (ctor) {
+            tmpl = closure_template_for(ctor->get_value());
+            // What a class reports for itself is its whole text, not its
+            // constructor's. The executable belongs to this one class site, so
+            // pointing it at the class's range costs nothing and keeps the
+            // text uncut until something asks.
+            if (cls->has_source_range()) {
+                tmpl.executable->set_source_range(cls->source_start(), cls->source_end());
+            }
+        } else {
+            // No constructor written: an empty one, carrying the class's own
+            // name and text like any other.
+            tmpl.executable = make_default_class_constructor_executable();
+            tmpl.form = ClosureTemplate::Form::FunctionExpr;
+            tmpl.body_is_strict = true;
+            // Nothing to cut from here: this body was made, not parsed.
+            tmpl.executable->set_source_text(cls->get_source_text());
+        }
+        chunk_->ensure_closures().push_back(std::move(tmpl));
+    }
+    emit(Op::CreateClosure);
+    emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+    // The constructor carries the class's name, not the key it was written
+    // under.
+    if (!class_name.empty()) {
+        emit(Op::SetFunctionNameIfUnnamed);
+        emit_u16(add_name(class_name));
+    }
+    emit(Op::Star);
+    emit_u8(static_cast<uint8_t>(ctor_reg));
+
+    emit(Op::BuildClass);
+    emit_u8(static_cast<uint8_t>(ctor_reg));
+    emit_u8(static_cast<uint8_t>(proto_reg));
+
+    // The inner name is settled before the members are built, so a member's
+    // body sees the class the moment it can run.
+    if (class_env_idx >= 0) {
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(ctor_reg));
+        emit(Op::StaEnvInit);
+        emit_u16(add_name(inner_name));
+    }
+
+    constexpr uint8_t kClassElementFlag = 0x8;
+    for (const auto& m : methods) {
+        {
+            ClosureTemplate tmpl = closure_template_for(m.m->get_value());
+            // A class writes `async m()` as an ordinary function literal
+            // carrying the async flag, whereas everywhere else an async
+            // function arrives as its own node. instantiate_closure reads the
+            // form, so say which one this is, or the method is built as a
+            // plain function that returns its body's value instead of a
+            // promise.
+            if (tmpl.is_async && !tmpl.is_generator) {
+                tmpl.form = ClosureTemplate::Form::AsyncFunctionExpr;
+            }
+            chunk_->ensure_closures().push_back(std::move(tmpl));
+        }
+        emit(Op::CreateClosure);
+        emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+        emit(Op::FinalizeStaticProperty);
+        // An instance member belongs to the prototype, a static one to the
+        // constructor -- which is also what each homes on for `super`.
+        emit_u8(static_cast<uint8_t>(m.is_static ? ctor_reg : proto_reg));
+        emit_u16(add_name(m.key));
+        // An accessor's function is named for how it is reached, not for the
+        // key alone.
+        emit_u16(add_name(m.kind == 1 ? "get " + m.key
+                        : m.kind == 2 ? "set " + m.key
+                                      : m.key));
+        emit_u8(static_cast<uint8_t>(m.kind | kClassElementFlag));
+        emit_u16(alloc_feedback_slot());
+    }
+
+    if (class_env_idx >= 0) {
+        emit(Op::ExitLoopEnv);
+        env_depth_--;
+    }
+
+    emit(Op::Ldar);
+    emit_u8(static_cast<uint8_t>(ctor_reg));
+    if (bind_name) {
+        // Same two steps Op::DefineClass took: the scope-chain binding, which
+        // is where a reader of the name looks, and then the register when the
+        // name has one.
+        emit(Op::BindClassName);
+        emit_u16(add_name(class_name));
+        if (!env_names_.count(class_name) && lookup_local(class_name) >= 0) {
+            emit_write_local(class_name, /*is_declaration=*/true);
+        }
+    }
+    // The class is in the accumulator by now; both temps go back, LIFO, so a
+    // call compiling this as one of its arguments keeps its argument run
+    // contiguous.
+    free_temp(proto_reg);
+    return true;
 }
 
 // Whether evaluating `node` provably cannot store to any of this frame's
@@ -9471,6 +9684,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         // tree-walk escape, not CreateClosure.
         case ASTNode::Type::CLASS_DECLARATION: {
             if (!env_mode_) return false;
+            if (try_compile_plain_class(static_cast<const ClassDeclaration*>(node),
+                                        /*bind_name=*/false)) return true;
             if (chunk_->ensure_ast_nodes().size() >= 0xFFFF) return false;
             chunk_->ensure_ast_nodes().push_back(node);
             emit(Op::DefineClass);

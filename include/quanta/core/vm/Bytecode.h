@@ -324,6 +324,17 @@ enum class Op : uint8_t {
     // construct still described by its own node rather than by something
     // built at compile time.
     DefineClass,               // k
+    // r_ctor r_proto -- ties a constructor to its prototype and stamps the two
+    // facts that make it a class rather than a function: the prototype is
+    // fixed in place (non-writable, non-enumerable, non-configurable), the
+    // prototype names it back, and calling it without `new` is an error. What
+    // the class holds is emitted around this rather than read off a node.
+    BuildClass,
+    // n -- binds the class's own name in the running scope, to the class in
+    // the accumulator. A class declaration's name is created where the
+    // declaration stands rather than reserved with the scope's other lexicals,
+    // so a reader of the name finds it through the scope chain.
+    BindClassName,
     // r -- super(...spread): the arguments are already gathered into the array
     // in that register, so the ceremony reads them from there rather than from
     // a run of registers the way SuperCall does.
