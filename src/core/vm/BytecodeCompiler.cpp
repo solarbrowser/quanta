@@ -1121,12 +1121,17 @@ bool uses_arguments_by_walk(const ASTNode* node) {
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::FUNCTION_DECLARATION:
             return false;
-        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
-            return uses_arguments_by_walk(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
+            // An arrow has no `arguments` of its own, so one written here reads
+            // this function's -- and a body stepped over is one this cannot be
+            // asked about, which is not the same as one that does not.
+            const auto* n = static_cast<const ArrowFunctionExpression*>(node);
+            return !n->get_body() || uses_arguments_by_walk(n->get_body());
+        }
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             // Async arrows share the enclosing arguments; async functions own theirs.
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
-            return n->is_arrow() && uses_arguments_by_walk(n->get_body());
+            return n->is_arrow() && (!n->get_body() || uses_arguments_by_walk(n->get_body()));
         }
         case ASTNode::Type::CLASS_DECLARATION: {
             // Superclass expressions and computed keys evaluate in the
@@ -2840,8 +2845,12 @@ bool contains_suspend_by_walk(const ASTNode* node) {
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
             return n->is_arrow() && contains_suspend_by_walk(n->get_body());
         }
-        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
-            return contains_suspend_by_walk(static_cast<const ArrowFunctionExpression*>(node)->get_body());
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
+            // A `yield` or `await` written in an arrow belongs to the function
+            // around it, so a body stepped over has to be assumed to hold one.
+            const auto* n = static_cast<const ArrowFunctionExpression*>(node);
+            return !n->get_body() || contains_suspend_by_walk(n->get_body());
+        }
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
             for (const auto& s : n->get_statements()) if (contains_suspend_by_walk(s.get())) return true;
@@ -8058,7 +8067,9 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         // member here reads it, so that scope would hold nothing observable
         // and is not built at all; a member that does read it falls back.
         if (!inner_name.empty() && !reads_own_name) {
-            if (references_identifier(fe->get_body(), inner_name)) {
+            // A member whose body was stepped over cannot be asked whether it
+            // names the class; the scope holding that name is built anyway.
+            if (!fe->get_body() || references_identifier(fe->get_body(), inner_name)) {
                 reads_own_name = true;
             } else {
                 for (const auto& prm : fe->get_params()) {

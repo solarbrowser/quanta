@@ -3815,7 +3815,6 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         last_body_skipped_ = true;
         return nullptr;
     }
-    last_body_skipped_ = false;
     SubtreeScope scope(*this);
     Position start = get_current_position();
     const size_t body_tok_first = current_token_index_;
@@ -3939,6 +3938,10 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
     auto block = std::make_unique<BlockStatement>(std::move(statements), start, end);
     block->set_subtree_flags(scope.flags() |
                              (nested_lexical ? kSubtreeNestedLexical : 0u));
+    // Answers for this call, not for whatever was stepped over while reading
+    // it: a body that was read is a body that was read, however many bodies
+    // inside it were not.
+    last_body_skipped_ = false;
     return block;
 }
 
@@ -8179,13 +8182,15 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     std::unique_ptr<ASTNode> body;
     bool saved_sb_arrow = options_.in_class_static_block;
     options_.in_class_static_block = false;
+    bool took_block_body = false;
     if (match(TokenType::LEFT_BRACE)) {
+        took_block_body = true;
         options_.function_depth++;
         body = parse_block_statement(true);
         options_.function_depth--;
     } else {
-        // A concise body is asked the same questions a block body is, so it
-        // leaves with the same facts recorded on it.
+        // A concise body is an expression, not a range that can be read back.
+        last_body_skipped_ = false;
         SubtreeScope concise(*this);
         body = parse_assignment_expression();
         if (body) body->set_subtree_flags(concise.flags());
@@ -8220,10 +8225,9 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     // would hand this arrow a span pointing at a different body -- one that
     // still opens with `{` and closes with `}`, so no structural check would
     // catch it. Only a block body has a range to record.
-    // A body stepped over was a block: that is the only shape a step over can
-    // find, since only a block has a range recorded to step to.
-    const bool has_block_body =
-        last_body_skipped_ || (body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT);
+    // Which path was taken, not what the body turned out to be: a block that
+    // was stepped over leaves no node behind but is still a block body.
+    const bool has_block_body = took_block_body;
     subtree_acc_ |= kSubtreeClosure;
     auto arrow_expr = std::make_unique<ArrowFunctionExpression>(
         std::move(params), std::move(body), false, start, end

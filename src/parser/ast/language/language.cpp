@@ -449,7 +449,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.is_arrow = true;
             // Only the sync branch ever pinned the environment.
             tpl.needs_outer_env = !ar->is_async();
-            load_body_facts(ar, tpl.body_is_strict, tpl.has_direct_eval);
+            { bool unused_strict = false; load_body_facts(ar, unused_strict, tpl.has_direct_eval); }
             tpl.executable = ensure_shared_executable(ar->get_cached_executable(), ar->get_body(),
                                                       ar->get_params(), ar->source_start(), ar->source_end(),
                                                       ar->owning_unit());
@@ -459,7 +459,9 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             // while its enclosing body was read back has no subtree to begin
             // with, and only that case needs telling where to find itself.
             if (!ar->get_body()) {
-                defer_leaf_body(ar, tpl.executable.get(), ar_fresh, tpl.body_is_strict,
+                bool ar_strict = false, ar_eval = false;
+                load_body_facts(ar, ar_strict, ar_eval);
+                defer_leaf_body(ar, tpl.executable.get(), ar_fresh, ar_strict,
                                 /*is_generator=*/false, ar->is_async());
             }
             tpl.declared_length = spec_length_of(*tpl.executable);
@@ -684,7 +686,7 @@ std::string FunctionDeclaration::to_string() const {
         if (i > 0) oss << ", ";
         oss << params_[i]->get_name();
     }
-    oss << ") " << body_->to_string();
+    oss << ") " << (body_ ? body_->to_string() : std::string("{ }"));
     return oss.str();
 }
 
@@ -1870,7 +1872,7 @@ std::string ClassDeclaration::to_string() const {
         oss << " extends " << superclass_->to_string();
     }
 
-    oss << " " << body_->to_string();
+    oss << " " << (body_ ? body_->to_string() : std::string("{ }"));
     return oss.str();
 }
 
@@ -2006,7 +2008,7 @@ std::string FunctionExpression::to_string() const {
         oss << ") { [body] }";
         return oss.str();
     }
-    oss << ") " << body_->to_string();
+    oss << ") " << (body_ ? body_->to_string() : std::string("{ }"));
     return oss.str();
 }
 
@@ -2072,7 +2074,7 @@ std::string ArrowFunctionExpression::to_string() const {
     }
 
     oss << " => ";
-    oss << body_->to_string();
+    oss << (body_ ? body_->to_string() : std::string("{ }"));
 
     return oss.str();
 }
@@ -2087,7 +2089,7 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
 
     auto cloned = std::make_unique<ArrowFunctionExpression>(
         std::move(cloned_params),
-        body_->clone(),
+        body_ ? body_->clone() : nullptr,
         is_async_,
         start_, end_
     );
@@ -3419,7 +3421,7 @@ std::string AsyncFunctionExpression::to_string() const {
     }
     oss << ") ";
 
-    oss << body_->to_string();
+    oss << (body_ ? body_->to_string() : std::string("{ }"));
 
     return oss.str();
 }
