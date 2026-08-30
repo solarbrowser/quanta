@@ -8239,17 +8239,14 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             : last.get_end().offset;
         arrow_expr->set_source_range(start.offset, src_end);
         if (has_block_body) {
-            if (!detached_tokens_) arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
-    if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
-    fn_names.record_body_span(last_body_src_last_, last_body_strict_);
-        } else {
-            // No range to record, but it still joins the innermost-first chain
-            // the leaf test walks -- otherwise a body holding only a concise
-            // arrow would be mistaken for a leaf and released with the arrow
-            // node inside it. Token indices, not source offsets: that is the
-            // unit the chain compares in, and the current index sits strictly
-            // inside any body enclosing this arrow.
-            ast_detail::note_span_and_is_leaf(current_token_index_, current_token_index_);
+            if (!detached_tokens_) {
+                arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_,
+                                                 last_body_src_first_);
+            }
+            if (!last_body_skipped_) {
+                fn_names.record_body(last_body_src_first_);
+                fn_names.record_body_span(last_body_src_last_, last_body_strict_);
+            }
         }
     }
     return arrow_expr;

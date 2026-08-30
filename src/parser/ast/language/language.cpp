@@ -375,11 +375,6 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
         exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async);
         return;
     }
-    // Stepping over a body inside one being read back is still being brought
-    // up: with it off, only a leaf body is let go of, which is what the engine
-    // has always done.
-    static const bool lazy_inner = std::getenv("QUANTA_LAZY_INNER") != nullptr;
-    if (!lazy_inner && !lit->body_is_leaf()) return;
     // A concise arrow body is an expression: there is no `{` to read back to,
     // so one that still has its body keeps it.
     if (lit->get_body() && lit->get_body()->get_type() != ASTNode::Type::BLOCK_STATEMENT) return;
@@ -717,7 +712,6 @@ std::unique_ptr<ASTNode> FunctionDeclaration::clone() const {
         cloned->body_tok_first_ = body_tok_first_;
         cloned->body_tok_last_ = body_tok_last_;
         cloned->body_src_first_ = body_src_first_;
-        cloned->body_is_leaf_ = body_is_leaf_;
         // And the source it refers into: with no body of its own, that is the
         // whole of what this literal is. Whatever turns the copy into an
         // executable holds the unit alive from there on.
@@ -1909,7 +1903,6 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
         cloned->body_tok_first_ = body_tok_first_;
         cloned->body_tok_last_ = body_tok_last_;
         cloned->body_src_first_ = body_src_first_;
-        cloned->body_is_leaf_ = body_is_leaf_;
         // And the source it refers into: with no body of its own, that is the
         // whole of what this literal is. Whatever turns the copy into an
         // executable holds the unit alive from there on.
@@ -2044,7 +2037,6 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
         cloned->body_tok_first_ = body_tok_first_;
         cloned->body_tok_last_ = body_tok_last_;
         cloned->body_src_first_ = body_src_first_;
-        cloned->body_is_leaf_ = body_is_leaf_;
         // And the source it refers into: with no body of its own, that is the
         // whole of what this literal is. Whatever turns the copy into an
         // executable holds the unit alive from there on.
@@ -2105,7 +2097,6 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
         cloned->body_tok_first_ = body_tok_first_;
         cloned->body_tok_last_ = body_tok_last_;
         cloned->body_src_first_ = body_src_first_;
-        cloned->body_is_leaf_ = body_is_leaf_;
         // And the source it refers into: with no body of its own, that is the
         // whole of what this literal is. Whatever turns the copy into an
         // executable holds the unit alive from there on.

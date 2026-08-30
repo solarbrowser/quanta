@@ -39,17 +39,6 @@ struct CloneSourceScope {
     ~CloneSourceScope() { clone_keeps_source_flag() = saved; }
 };
 
-// A literal records its body span exactly once, and literals are constructed
-// innermost-first, so the span recorded immediately before this one belongs to
-// this body's last inner literal if it has any. One pair of counters answers
-// "does this body contain a nested literal" for the whole parse.
-inline bool note_span_and_is_leaf(size_t first, size_t last) {
-    static thread_local size_t prev_first = 0, prev_last = 0;
-    const bool leaf = !(prev_first > first && prev_last < last);
-    prev_first = first;
-    prev_last = last;
-    return leaf;
-}
 }
 
 
@@ -1118,7 +1107,6 @@ private:
     // released: releasing an outer body means re-parsing every body inside it
     // on the next call, and that was measured to cost more time than the
     // memory it returns is worth -- a trade this engine does not want.
-    bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
     // Built once on first evaluate(), reused by every instantiation -- same
@@ -1163,17 +1151,15 @@ public:
         body_tok_first_ = static_cast<uint32_t>(first);
         body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
-        body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
     uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
-    bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the range to rebuild it from. Bodies
-    // holding inner literals rebuild correctly too, since an executable is
-    // found by source offset rather than by node, but only a leaf is dropped:
-    // see body_is_leaf_ for the trade.
+    // Drops the body subtree, leaving the range to read it back from. A body
+    // holding inner literals reads back correctly too: an executable is found
+    // by source offset rather than by node, and the literals inside are
+    // stepped over rather than read again.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
@@ -1240,7 +1226,6 @@ private:
     // released: releasing an outer body means re-parsing every body inside it
     // on the next call, and that was measured to cost more time than the
     // memory it returns is worth -- a trade this engine does not want.
-    bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
     std::string inferred_name_;
@@ -1312,17 +1297,15 @@ public:
         body_tok_first_ = static_cast<uint32_t>(first);
         body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
-        body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
     uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
-    bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the range to rebuild it from. Bodies
-    // holding inner literals rebuild correctly too, since an executable is
-    // found by source offset rather than by node, but only a leaf is dropped:
-    // see body_is_leaf_ for the trade.
+    // Drops the body subtree, leaving the range to read it back from. A body
+    // holding inner literals reads back correctly too: an executable is found
+    // by source offset rather than by node, and the literals inside are
+    // stepped over rather than read again.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
@@ -1386,7 +1369,6 @@ private:
     // released: releasing an outer body means re-parsing every body inside it
     // on the next call, and that was measured to cost more time than the
     // memory it returns is worth -- a trade this engine does not want.
-    bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
 
@@ -1423,13 +1405,11 @@ public:
         body_tok_first_ = static_cast<uint32_t>(first);
         body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
-        body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
     uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
-    bool body_is_leaf() const { return body_is_leaf_; }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
     // dropped, and asking the body again is exactly what is being avoided.
@@ -1510,7 +1490,6 @@ private:
     // released: releasing an outer body means re-parsing every body inside it
     // on the next call, and that was measured to cost more time than the
     // memory it returns is worth -- a trade this engine does not want.
-    bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
     bool is_decl_form_ = false; // `export default function fn(){}`: HoistableDeclaration, not NamedEvaluation
@@ -1575,17 +1554,15 @@ public:
         body_tok_first_ = static_cast<uint32_t>(first);
         body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
-        body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
     uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
-    bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the range to rebuild it from. Bodies
-    // holding inner literals rebuild correctly too, since an executable is
-    // found by source offset rather than by node, but only a leaf is dropped:
-    // see body_is_leaf_ for the trade.
+    // Drops the body subtree, leaving the range to read it back from. A body
+    // holding inner literals reads back correctly too: an executable is found
+    // by source offset rather than by node, and the literals inside are
+    // stepped over rather than read again.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
@@ -1686,7 +1663,6 @@ private:
     // released: releasing an outer body means re-parsing every body inside it
     // on the next call, and that was measured to cost more time than the
     // memory it returns is worth -- a trade this engine does not want.
-    bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
     // Built once on first evaluate(), reused by every instantiation -- same
@@ -1729,17 +1705,15 @@ public:
         body_tok_first_ = static_cast<uint32_t>(first);
         body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
-        body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
     uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
-    bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the range to rebuild it from. Bodies
-    // holding inner literals rebuild correctly too, since an executable is
-    // found by source offset rather than by node, but only a leaf is dropped:
-    // see body_is_leaf_ for the trade.
+    // Drops the body subtree, leaving the range to read it back from. A body
+    // holding inner literals reads back correctly too: an executable is found
+    // by source offset rather than by node, and the literals inside are
+    // stepped over rather than read again.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
@@ -1836,7 +1810,6 @@ private:
     // released: releasing an outer body means re-parsing every body inside it
     // on the next call, and that was measured to cost more time than the
     // memory it returns is worth -- a trade this engine does not want.
-    bool body_is_leaf_ = false;
     mutable int8_t body_strict_state_ = -1;
     mutable int8_t body_direct_eval_state_ = -1;
     bool is_decl_form_ = false; // `export default async function fn(){}`: HoistableDeclaration, not NamedEvaluation
@@ -1898,17 +1871,15 @@ public:
         body_tok_first_ = static_cast<uint32_t>(first);
         body_src_first_ = src_first;
         body_tok_last_ = static_cast<uint32_t>(last);
-        body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
     uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
-    bool body_is_leaf() const { return body_is_leaf_; }
-    // Drops the body subtree, leaving the range to rebuild it from. Bodies
-    // holding inner literals rebuild correctly too, since an executable is
-    // found by source offset rather than by node, but only a leaf is dropped:
-    // see body_is_leaf_ for the trade.
+    // Drops the body subtree, leaving the range to read it back from. A body
+    // holding inner literals reads back correctly too: an executable is found
+    // by source offset rather than by node, and the literals inside are
+    // stepped over rather than read again.
     void release_body() { body_.reset(); }
     // Facts about the body that instantiation needs. Cached on the literal
     // because they have to outlive the body itself: the tree is what gets
