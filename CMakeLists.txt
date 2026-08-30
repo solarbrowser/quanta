@@ -9,7 +9,7 @@ if(NOT DEFINED CMAKE_CXX_COMPILER)
     set(CMAKE_CXX_COMPILER clang++)
 endif()
 
-project(Quanta VERSION 0.9.2 LANGUAGES C CXX)
+project(Quanta VERSION 0.9.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,7 +45,7 @@ if(MSVC)
         /EHsc          
         /std:c++20        
         /D_CRT_SECURE_NO_WARNINGS
-        /DQUANTA_VERSION=\"0.9.2\"
+        /DQUANTA_VERSION=\"0.9.3\"
         /DPROMISE_STABILITY_FIXED
         /DNATIVE_BUILD
     )
@@ -70,7 +70,7 @@ else()
         -pthread
     )
     add_compile_definitions(
-        QUANTA_VERSION="0.9.2"
+        QUANTA_VERSION="0.9.3"
         PROMISE_STABILITY_FIXED
         NATIVE_BUILD
         UTF8PROC_STATIC
