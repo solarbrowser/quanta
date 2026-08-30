@@ -3890,6 +3890,7 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         last_body_tok_first_ = body_tok_first;
         last_body_tok_last_ = current_token_index_;
         last_body_src_first_ = static_cast<uint32_t>(start.offset);
+        last_body_src_last_ = static_cast<uint32_t>(end.offset);
     }
     auto block = std::make_unique<BlockStatement>(std::move(statements), start, end);
     block->set_subtree_flags(scope.flags() |
@@ -5572,6 +5573,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_end(last_body_src_last_);
     return fn_decl;
 }
 
@@ -6946,6 +6948,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     function_expr->set_source_range(method_src_start, method_src_end);
     if (!detached_tokens_) function_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_end(last_body_src_last_);
 
     Position end = get_current_position();
     auto method = std::make_unique<MethodDefinition>(
@@ -7307,6 +7310,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     fn_expr->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) fn_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_end(last_body_src_last_);
     return fn_expr;
 }
 
@@ -7614,6 +7618,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         gen_expr->set_source_range(src_text_start, src_text_end);
         if (!detached_tokens_) gen_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
         fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_end(last_body_src_last_);
         return gen_expr;
     }
     subtree_acc_ |= kSubtreeClosure;
@@ -7625,6 +7630,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     async_expr->set_source_range(src_text_start, src_text_end);
     if (!detached_tokens_) async_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_end(last_body_src_last_);
     return async_expr;
 }
 
@@ -7920,6 +7926,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     async_fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) async_fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_end(last_body_src_last_);
     return async_fn_decl;
 }
 
@@ -8183,6 +8190,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         if (has_block_body) {
             if (!detached_tokens_) arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_end(last_body_src_last_);
         } else {
             // No range to record, but it still joins the innermost-first chain
             // the leaf test walks -- otherwise a body holding only a concise
@@ -8997,6 +9005,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 FunctionNames method_names(*this);
                 body = parse_block_statement(true);
                 method_names.record_body(last_body_src_first_);
+                method_names.record_body_end(last_body_src_last_);
             }
             options_.function_depth--;
             options_.non_arrow_function_depth--;

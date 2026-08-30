@@ -172,6 +172,17 @@ TokenSequence Lexer::stream(std::shared_ptr<const std::string> source,
     return tokens;
 }
 
+TokenSequence Lexer::stream_range(std::shared_ptr<const std::string> source,
+                                  const Position& from, size_t end_offset,
+                                  const LexerOptions& options) {
+    auto lexer = std::make_shared<Lexer>(std::move(source), options);
+    lexer->reset_to(from);
+    lexer->set_stop_offset(end_offset);
+    TokenSequence tokens(lexer->source_ref());
+    tokens.stream_from(std::move(lexer));
+    return tokens;
+}
+
 TokenSequence Lexer::tokenize() {
     TokenSequence tokens(source_ref_);
     bool strict_mode_detected = false;

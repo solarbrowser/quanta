@@ -28,9 +28,11 @@ std::unique_ptr<ASTNode> ScriptUnit::parse_body_from_source(const Position& star
     Lexer::LexerOptions opts;
     opts.strict_mode = strict;
     opts.reparsing_accepted_source = true;
-    Lexer lexer(source_, opts);
-    TokenSequence toks = lexer.tokenize_range(start, end_offset);
-    if (toks.size() <= 1) return nullptr;
+    // Pumped as the parse asks for it rather than laid out first: a body read
+    // back can be most of a file, and the whole token run was peak memory paid
+    // to hand back a tree.
+    TokenSequence toks = Lexer::stream_range(source_, start, end_offset, opts);
+    if (toks.lexed_count() <= 1 && toks.size() != SIZE_MAX) return nullptr;
     Parser parser(std::move(toks));
     parser.set_source(source_);
     BuildScope scope(this);

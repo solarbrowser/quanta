@@ -52,6 +52,10 @@ struct BodyScopeInfo {
     // analysis does not enter, so the whole function falls back to keeping
     // every local in the environment rather than guessing.
     bool class_expression = false;
+    // Where the body closes in the source, one past its `}`. Recorded so a
+    // body read back later can be stepped over without being parsed: what a
+    // skipped body would have said is already in this record.
+    uint32_t body_end = 0;
 };
 
 class ScriptUnit {

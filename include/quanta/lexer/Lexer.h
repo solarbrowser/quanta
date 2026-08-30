@@ -38,6 +38,7 @@ private:
     // are only readable for as long as it exists.
     std::shared_ptr<const std::string> source_ref_;
     size_t position_;
+    size_t stop_offset_ = static_cast<size_t>(-1);
     Position current_position_;
     LexerOptions options_;
     std::vector<std::string> errors_;
@@ -91,6 +92,12 @@ public:
     // doing it. The sequence keeps the text alive, so both outlive the call.
     static TokenSequence stream(std::shared_ptr<const std::string> source,
                                 const LexerOptions& options);
+    // The same, for one body read back out of the source it was written in:
+    // the tokens are pumped as the parse asks for them and let go of behind
+    // it, so reading a large body back does not first lay the whole thing out.
+    static TokenSequence stream_range(std::shared_ptr<const std::string> source,
+                                      const Position& from, size_t end_offset,
+                                      const LexerOptions& options);
     
     Position get_position() const { return current_position_; }
     void reset(size_t position = 0);
@@ -102,7 +109,10 @@ public:
     const std::vector<std::string>& get_errors() const { return errors_; }
     bool has_errors() const { return !errors_.empty(); }
     
-    bool at_end() const { return position_ >= source().length(); }
+    // A lexer reading one function body back stops where that body closes, so
+    // the stream ends there instead of running to the end of the file.
+    void set_stop_offset(size_t off) { stop_offset_ = off; }
+    bool at_end() const { return position_ >= stop_offset_ || position_ >= source().length(); }
     size_t remaining() const { return source().length() - position_; }
 
     // The text of a token this lexer produced, resolved the same way

@@ -78,6 +78,7 @@ private:
     // can overwrite it.
     size_t last_body_tok_first_ = 0;
     uint32_t last_body_src_first_ = 0;
+    uint32_t last_body_src_last_ = 0;
     size_t last_body_tok_last_ = 0;
 
     // Subtree facts gathered on the way up (see SubtreeFlags). A bit is set
@@ -136,7 +137,9 @@ private:
         // finds the same entry.
         uint32_t body_src = 0;
         bool has_body = false;
+        uint32_t body_end = 0;
         void record_body(uint32_t src) { body_src = src; has_body = true; }
+        void record_body_end(uint32_t end) { body_end = end; }
         BodyScopeInfo take() const {
             BodyScopeInfo info;
             const NameScope& mine = p.name_scopes_.back();
@@ -145,6 +148,7 @@ private:
             info.super_anywhere = mine.all.count("super") != 0;
             info.eval_in_nested = mine.eval_in_nested;
             info.class_expression = mine.class_expression;
+            info.body_end = body_end;
             return info;
         }
         ~FunctionNames() {
