@@ -9122,11 +9122,22 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 // instead of kept as a tree -- every other function literal
                 // records it, and without it a shorthand method's body was the
                 // one kind that never could be let go.
-                if (!detached_tokens_ &&
-                    method_value->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
-                    static_cast<FunctionExpression*>(method_value.get())
-                        ->set_body_token_range(last_body_tok_first_, last_body_tok_last_,
-                                               last_body_src_first_);
+                if (!detached_tokens_) {
+                    if (method_value->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                        static_cast<FunctionExpression*>(method_value.get())
+                            ->set_body_token_range(last_body_tok_first_, last_body_tok_last_,
+                                                   last_body_src_first_);
+                    } else if (method_value->get_type() ==
+                               ASTNode::Type::ASYNC_FUNCTION_EXPRESSION) {
+                        // An async one records it too. Whether a body counts as
+                        // a leaf is read off the span recorded just before it,
+                        // so a literal that records none makes the body around
+                        // it look like one -- and that body is then let go of
+                        // while something inside it still needs it.
+                        static_cast<AsyncFunctionExpression*>(method_value.get())
+                            ->set_body_token_range(last_body_tok_first_, last_body_tok_last_,
+                                                   last_body_src_first_);
+                    }
                 }
             }
 
