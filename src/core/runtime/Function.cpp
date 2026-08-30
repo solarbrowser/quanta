@@ -993,7 +993,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                 // Two things can still point into it: AST nodes the chunk kept
                 // for itself, and the executables of any function written
                 // inside it, which borrow their bodies out of the same tree.
-                if (!executable_->bytecode_chunk->ast_nodes &&
+                if (!executable_->bytecode_chunk->keeps_ast_nodes() &&
                     !executable_->bytecode_chunk->closures) {
                     executable_->release_rebuilt_body();
                 }

@@ -3507,6 +3507,123 @@ void ExportStatement::hoist_default(Context& ctx) {
     if (default_is_hoistable()) link(ctx, /*declaration_already_run=*/false);
 }
 
+// Applies one export record. Everything the declaration settled while
+// compiling is here; the only thing that ran is a default export's value,
+// which arrives in `default_value`.
+Value link_export_record(Context& ctx, const BytecodeChunk::ExportRecord& rec,
+                         const Value& default_value) {
+    Value exports_value = ctx.get_binding("exports");
+    Object* exports_obj = nullptr;
+    if (!exports_value.is_object()) {
+        exports_obj = new Object();
+        ctx.create_binding("exports", Value(exports_obj), true);
+        if (Environment* lexical_env = ctx.get_lexical_environment()) {
+            lexical_env->create_binding("exports", Value(exports_obj), true);
+        }
+    } else {
+        exports_obj = exports_value.as_object();
+    }
+
+    // export name -> the module-scope binding behind it, so Module::get_export
+    // can answer with what that binding holds now rather than a copy of what it
+    // held at instantiation.
+    auto record_local_name = [&](const std::string& export_name, const std::string& local_name) {
+        const std::string LOCALNAMES_KEY = "\x01localnames";
+        Object* tracker = nullptr;
+        Value tracker_val = ctx.get_binding(LOCALNAMES_KEY);
+        if (tracker_val.is_object()) {
+            tracker = tracker_val.as_object();
+        } else {
+            auto t = ObjectFactory::create_object();
+            if (t) {
+                tracker = t.get();
+                ctx.create_binding(LOCALNAMES_KEY, Value(t.release()));
+            }
+        }
+        if (tracker) tracker->set_property(export_name, Value(local_name));
+    };
+
+    if (rec.is_default) {
+        const std::string binding_name =
+            rec.default_local.empty() ? std::string("*default*") : rec.default_local;
+        // A hoistable default was built and bound before the module's
+        // statements ran; reaching the statement must not replace the function
+        // an importer may already hold.
+        Value value = (rec.default_is_hoistable && ctx.has_binding(binding_name))
+                          ? ctx.get_binding(binding_name)
+                          : default_value;
+        if (rec.default_local.empty() && value.is_function()) {
+            // SetFunctionName: an anonymous default is named "default".
+            Function* fn = value.as_function();
+            if (fn->get_property("name").to_string().empty()) {
+                PropertyDescriptor nm(Value(std::string("default")), PropertyAttributes::Configurable);
+                fn->set_property_descriptor("name", nm);
+            }
+        }
+        if (!ctx.has_binding(binding_name)) {
+            ctx.create_binding(binding_name, value, true);
+        } else {
+            ctx.set_binding(binding_name, value);
+        }
+        record_local_name("default", binding_name);
+        exports_obj->set_property("default", value);
+        if (Engine* engine = ctx.get_engine()) engine->register_default_export("", value);
+    }
+
+    for (const auto& entry : rec.entries) {
+        const std::string& export_name = entry.export_name;
+        const std::string& local_name = entry.local_name;
+        if (rec.is_re_export && !rec.source_module.empty()) {
+            Engine* engine = ctx.get_engine();
+            ModuleLoader* loader = engine ? engine->get_module_loader() : nullptr;
+            if (!loader) continue;
+            Module* src = loader->load_module(rec.source_module, ctx.get_current_filename());
+            if (local_name == "*") {
+                if (src && src->has_thrown_exception()) {
+                    ctx.throw_exception(src->get_thrown_exception());
+                    return Value();
+                }
+                // `export * from` re-exports each name rather than a property;
+                // only the named form (`export * as ns from`) makes one.
+                if (src && export_name != "*") {
+                    exports_obj->set_property(export_name,
+                                              ModuleLoader::build_module_namespace(src));
+                }
+                continue;
+            }
+            if (!src) {
+                ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" +
+                                       rec.source_module + "'");
+                return Value();
+            }
+            if (src->has_thrown_exception()) {
+                ctx.throw_exception(src->get_thrown_exception());
+                return Value();
+            }
+            if (src->resolve_export(local_name).ambiguous) {
+                ctx.throw_syntax_error("Ambiguous re-export of '" + local_name + "' from '" +
+                                       rec.source_module + "'");
+                return Value();
+            }
+            if (!src->is_loading() && !src->has_export(local_name)) {
+                ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" +
+                                       rec.source_module + "'");
+                return Value();
+            }
+            exports_obj->set_property(export_name, Value(new ImportBindingObject(src, local_name)));
+            continue;
+        }
+        if (!ctx.has_binding(local_name)) {
+            if (entry.from_declaration) continue;
+            ctx.throw_exception(Value("ReferenceError: " + local_name + " is not defined"));
+            return Value();
+        }
+        exports_obj->set_property(export_name, ctx.get_binding(local_name));
+        record_local_name(export_name, local_name);
+    }
+    return Value();
+}
+
 Value ExportStatement::link(Context& ctx, bool declaration_already_run) {
     Value exports_value = ctx.get_binding("exports");
     Object* exports_obj = nullptr;

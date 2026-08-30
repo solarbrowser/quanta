@@ -7095,30 +7095,102 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::EXPORT_STATEMENT: {
             if (!script_mode_) return false;  // only a Program has module declarations
-            if (chunk_->ensure_ast_nodes().size() >= 0xFFFF) return false;
-            // `export let x = 1` is a declaration with a record kept about it.
-            // The declaration is compiled here like any other, so the opcode is
-            // left with the record alone.
-            bool declaration_compiled = false;
-            if (node->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
-                const auto* ex = static_cast<const ExportStatement*>(node);
-                if (ex->is_declaration_export() && ex->get_declaration()) {
-                    const ASTNode* decl = ex->get_declaration();
-                    // A function declaration was already instantiated during
-                    // hoisting, same as a bare one at this level.
-                    if (decl->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
-                        declaration_compiled = true;
-                    } else if (compile_statement(decl)) {
-                        declaration_compiled = true;
-                    } else {
-                        return false;
+            if (chunk_->ensure_exports().size() >= 0xFFFF) return false;
+            const auto* ex = static_cast<const ExportStatement*>(node);
+            BytecodeChunk::ExportRecord rec;
+            rec.is_re_export = ex->is_re_export();
+            rec.source_module = ex->get_source_module();
+
+            // `export let x = 1` is a declaration with a record kept about it,
+            // so the declaration is compiled here like any other and the record
+            // says only which of its names leave the module.
+            if (ex->is_declaration_export() && ex->get_declaration()) {
+                const ASTNode* decl = ex->get_declaration();
+                // A function declaration was already instantiated during
+                // hoisting, same as a bare one at this level.
+                if (decl->get_type() != ASTNode::Type::FUNCTION_DECLARATION &&
+                    !compile_statement(decl)) {
+                    return false;
+                }
+                switch (decl->get_type()) {
+                    case ASTNode::Type::FUNCTION_DECLARATION: {
+                        const auto* fd = static_cast<const FunctionDeclaration*>(decl);
+                        if (fd->get_id()) {
+                            rec.entries.push_back({fd->get_id()->get_name(),
+                                                   fd->get_id()->get_name(), true});
+                        }
+                        break;
                     }
+                    case ASTNode::Type::CLASS_DECLARATION: {
+                        const auto* cd = static_cast<const ClassDeclaration*>(decl);
+                        if (cd->get_id() && !cd->get_id()->get_name().empty()) {
+                            rec.entries.push_back({cd->get_id()->get_name(),
+                                                   cd->get_id()->get_name(), true});
+                        }
+                        break;
+                    }
+                    case ASTNode::Type::VARIABLE_DECLARATION: {
+                        const auto* vd = static_cast<const VariableDeclaration*>(decl);
+                        for (const auto& d : vd->get_declarations()) {
+                            if (d->get_init() && d->get_init()->get_type() ==
+                                                     ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                                std::vector<std::string> bound;
+                                static_cast<const DestructuringAssignment*>(d->get_init())
+                                    ->collect_bound_names(bound);
+                                for (const auto& bn : bound) rec.entries.push_back({bn, bn, true});
+                                continue;
+                            }
+                            if (!d->get_id()) return false;
+                            const std::string& n = d->get_id()->get_name();
+                            if (!n.empty()) rec.entries.push_back({n, n, true});
+                        }
+                        break;
+                    }
+                    default:
+                        return false;
                 }
             }
-            chunk_->ensure_ast_nodes().push_back(node);
-            emit(Op::LinkModule);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_ast_nodes().size() - 1));
-            emit_u8(declaration_compiled ? 1 : 0);
+
+            for (const auto& sp : ex->get_specifiers()) {
+                rec.entries.push_back({sp->get_exported_name(), sp->get_local_name(), false});
+            }
+
+            if (ex->is_default_export() && ex->get_default_export()) {
+                rec.is_default = true;
+                rec.default_is_hoistable = ex->default_is_hoistable();
+                const ASTNode* def = ex->get_default_export();
+                switch (def->get_type()) {
+                    case ASTNode::Type::FUNCTION_EXPRESSION: {
+                        const auto* fe = static_cast<const FunctionExpression*>(def);
+                        if (fe->is_named()) rec.default_local = fe->get_id()->get_name();
+                        break;
+                    }
+                    case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
+                        const auto* af = static_cast<const AsyncFunctionExpression*>(def);
+                        if (af->get_id()) rec.default_local = af->get_id()->get_name();
+                        break;
+                    }
+                    case ASTNode::Type::CLASS_DECLARATION: {
+                        auto* cd = const_cast<ClassDeclaration*>(
+                            static_cast<const ClassDeclaration*>(def));
+                        if (cd->get_id()) rec.default_local = cd->get_id()->get_name();
+                        // NamedEvaluation: a static initializer can observe the
+                        // name while the class is still being built, so it is
+                        // inferred before anything runs.
+                        if (rec.default_local.empty()) cd->set_inferred_name("default");
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                // A hoistable default was already built and bound; evaluating
+                // it here would replace the function an importer may hold.
+                if (!rec.default_is_hoistable && !compile_expression(def)) return false;
+            }
+
+            chunk_->ensure_exports().push_back(std::move(rec));
+            emit(Op::LinkExports);
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_exports().size() - 1));
             return !failed_;
         }
 

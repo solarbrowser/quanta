@@ -16,7 +16,7 @@ namespace Quanta {
 
 // closures and ast_nodes are deliberately two vectors, not one: closures
 // carries prebuilt ClosureTemplates, while ast_nodes holds the nodes
-// Op::DefineClass and Op::LinkModule read as descriptions of themselves.
+// Op::DefineClass reads as a description of itself.
 #if defined(__GLIBCXX__)
 static_assert(sizeof(BytecodeChunk) == 128);
 #else
@@ -153,7 +153,7 @@ const OpInfo& op_info(Op op) {
         {"BindClassName", 2, 'n'},
         {"SuperCallSpread", 1, 'r'},
         {"ThrowSuperDelete", 0, '-'},
-        {"LinkModule", 3, 'z'}
+        {"LinkExports", 2, 'z'}
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");

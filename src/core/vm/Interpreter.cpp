@@ -64,6 +64,8 @@ Value build_rest_object(Context& ctx, const Value& source_value, Object* source_
                         const std::vector<std::string>& assigned_keys);
 // And from language.cpp, backing Op::CreateClosure / Op::DeclareFunction.
 Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl);
+Value link_export_record(Context& ctx, const BytecodeChunk::ExportRecord& rec,
+                         const Value& default_value);
 Function* resolve_construct_target(Object* obj);
 Value declare_function(Context& ctx, const ClosureTemplate& tpl);
 // And from call.cpp, backing Op::SuperCall.
@@ -3369,7 +3371,7 @@ Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
-                ASTNode* node = const_cast<ASTNode*>((*chunk.ast_nodes)[idx]);
+                ASTNode* node = const_cast<ASTNode*>(chunk.side_tables->ast_nodes[idx]);
                 acc = static_cast<ClassDeclaration*>(node)->define_class(ctx);
                 CHECK_EXC();
                 break;
@@ -3768,6 +3770,23 @@ Value h_gen_DefinePrivateStatic(Frame& f, uint32_t pc, Value acc) {
         if (!ctor) break;
         ctor->add_private_field(
             name + "@" + std::to_string(reinterpret_cast<uintptr_t>(ctor)), acc);
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_LinkExports(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        uint16_t idx = read_u16(code, pc);
+        pc += 2;
+        link_export_record(ctx, chunk.side_tables->exports[idx], acc);
+        CHECK_EXC();
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
@@ -4206,32 +4225,6 @@ Value h_gen_SetSuperKeyed(Frame& f, uint32_t pc, Value acc) {
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();
                 super_set_on(ctx, as_object_like(regs[base_reg]), key, acc);
-                CHECK_EXC();
-                break;
-            }
-    } while (0);
-    CHECK_EXC_TAIL();
-    DISPATCH();
-}
-
-Value h_gen_LinkModule(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = f.ctx;
-    const uint8_t* code = f.code;
-    uint32_t& instr_pc = f.instr_pc;
-    instr_pc = pc;
-    pc += 1;
-    do {
-                {
-                uint16_t idx = read_u16(code, pc);
-                const bool decl_done = code[pc + 2] != 0;
-                pc += 3;
-                ASTNode* node = const_cast<ASTNode*>((*chunk.ast_nodes)[idx]);
-                if (node->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
-                    static_cast<ExportStatement*>(node)->link(ctx, decl_done);
-                } else {
-                    node->evaluate(ctx);
-                }
                 CHECK_EXC();
                 break;
             }
@@ -5815,7 +5808,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::DefinePrivateStatic)] = &h_gen_DefinePrivateStatic;
     t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
     t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
-    t[static_cast<uint8_t>(Op::LinkModule)] = &h_gen_LinkModule;
+    t[static_cast<uint8_t>(Op::LinkExports)] = &h_gen_LinkExports;
     t[static_cast<uint8_t>(Op::CopyRestProperties)] = &h_gen_CopyRestProperties;
     t[static_cast<uint8_t>(Op::Call)] = &h_gen_Call;
     t[static_cast<uint8_t>(Op::CallResolved)] = &h_gen_CallResolved;

@@ -382,11 +382,9 @@ enum class Op : uint8_t {
     // `delete super.x` always throws (13.5.1.2 step 4.b), but only after the
     // reference is evaluated -- which the opcodes before this one did.
     ThrowSuperDelete,
-    // k -- runs the import/export declaration at BytecodeChunk::ast_nodes[k].
-    // Module linking is bookkeeping over the declaration itself (specifier
-    // lists, live local-name aliases), so like a class it is described by its
-    // node rather than by anything built at compile time.
-    LinkModule,                // k u8: whether the declaration was compiled
+    // k -- applies the export record at BytecodeChunk::exports[k]. The
+    // accumulator holds a default export's value where one was evaluated.
+    LinkExports,
 
     kCount
 };
@@ -738,8 +736,39 @@ struct BytecodeChunk {
     // expression a class definition owns is compiled and run.
     // The constructs still described by their own node: classes and module
     // declarations. Everything else the chunk needs was built at compile time.
-    std::unique_ptr<std::vector<const ASTNode*>> ast_nodes;
-    std::vector<const ASTNode*>& ensure_ast_nodes() { if (!ast_nodes) ast_nodes = std::make_unique<std::vector<const ASTNode*>>(); return *ast_nodes; }
+    // What one `export` declaration says, settled while compiling. An export
+    // is a record the grammar fixes, not code -- the only part that runs is a
+    // default export's expression, which is emitted like any other.
+    struct ExportRecord {
+        struct Entry {
+            std::string export_name;
+            std::string local_name;
+            // A name a declaration binds is exported only once it exists; a
+            // name written in a specifier list has to exist.
+            bool from_declaration = false;
+        };
+        std::vector<Entry> entries;
+        std::string source_module;   // set only for a re-export
+        std::string default_local;   // the name a default export also binds
+        bool is_default = false;
+        bool default_is_hoistable = false;
+        bool is_re_export = false;
+    };
+    // Both are rare and neither is ever the only one worth a pointer of its
+    // own, so one allocation carries them and the chunk stays its size.
+    struct SideTables {
+        std::vector<const ASTNode*> ast_nodes;
+        std::vector<ExportRecord> exports;
+    };
+    std::unique_ptr<SideTables> side_tables;
+    SideTables& ensure_side_tables() {
+        if (!side_tables) side_tables = std::make_unique<SideTables>();
+        return *side_tables;
+    }
+    std::vector<const ASTNode*>& ensure_ast_nodes() { return ensure_side_tables().ast_nodes; }
+    std::vector<ExportRecord>& ensure_exports() { return ensure_side_tables().exports; }
+    // Whether anything of the parse tree is still pointed at from here.
+    bool keeps_ast_nodes() const { return side_tables && !side_tables->ast_nodes.empty(); }
 
     std::unique_ptr<std::vector<HandlerEntry>> handlers;
     std::vector<HandlerEntry>& ensure_handlers() { if (!handlers) handlers = std::make_unique<std::vector<HandlerEntry>>(); return *handlers; }
