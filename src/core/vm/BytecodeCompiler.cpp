@@ -1599,28 +1599,20 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             return;
         }
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
-            // Delegates whole to the tree-walker when used bare, so every
-            // name it touches must be env-resident regardless of the ambient
-            // inside_closure (same as YIELD/AWAIT below).
+            // A pattern is emitted like any other code now, so the names it
+            // binds are read the way any name is: nothing here has to be kept
+            // in the environment for a walker to resolve by name.
             const auto* n = static_cast<const DestructuringAssignment*>(node);
-            collect_closure_names(n->get_source(), true, out, op, suspendable, super_only);
-            std::vector<std::string> bound;
-            n->collect_bound_names(bound);
-            for (const auto& bn : bound) add_name(bn);
+            collect_closure_names(n->get_source(), inside_closure, out, op, suspendable, super_only);
             n->for_each_expression([&](const ASTNode* e) {
-                collect_closure_names(e, true, out, op, suspendable, super_only);
+                collect_closure_names(e, inside_closure, out, op, suspendable, super_only);
             });
             return;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
-            // An array/object-literal LHS delegates whole to the tree-walker,
-            // same env-residency forcing as DESTRUCTURING_ASSIGNMENT above.
             const auto* n = static_cast<const AssignmentExpression*>(node);
-            bool is_pattern = n->get_left()->get_type() == ASTNode::Type::ARRAY_LITERAL ||
-                              n->get_left()->get_type() == ASTNode::Type::OBJECT_LITERAL;
-            bool forced = is_pattern ? true : inside_closure;
-            collect_closure_names(n->get_left(), forced, out, op, suspendable, super_only);
-            collect_closure_names(n->get_right(), forced, out, op, suspendable, super_only);
+            collect_closure_names(n->get_left(), inside_closure, out, op, suspendable, super_only);
+            collect_closure_names(n->get_right(), inside_closure, out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::UNARY_EXPRESSION:
