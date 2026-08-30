@@ -79,6 +79,18 @@ private:
     size_t last_body_tok_first_ = 0;
     uint32_t last_body_src_first_ = 0;
     uint32_t last_body_src_last_ = 0;
+    bool last_body_strict_ = false;
+    // Set while one body is being read back out of the source. A function
+    // written inside it is not read: what its own body would have said was
+    // written down the first time round, so the parse steps over it and the
+    // literal keeps only the range. Only bodies deeper than the one being read
+    // are stepped over -- that one is the point of the read.
+    bool lazy_inner_bodies_ = false;
+    int lazy_base_depth_ = 0;
+    // Whether the body just asked for was stepped over rather than read. The
+    // literal still gets built -- from the range, with no subtree.
+    bool last_body_skipped_ = false;
+    bool skip_recorded_body();
     size_t last_body_tok_last_ = 0;
 
     // Subtree facts gathered on the way up (see SubtreeFlags). A bit is set
@@ -138,8 +150,12 @@ private:
         uint32_t body_src = 0;
         bool has_body = false;
         uint32_t body_end = 0;
+        bool body_strict = false;
         void record_body(uint32_t src) { body_src = src; has_body = true; }
-        void record_body_end(uint32_t end) { body_end = end; }
+        void record_body_span(uint32_t end, bool strict) {
+            body_end = end;
+            body_strict = strict;
+        }
         BodyScopeInfo take() const {
             BodyScopeInfo info;
             const NameScope& mine = p.name_scopes_.back();
@@ -149,6 +165,7 @@ private:
             info.eval_in_nested = mine.eval_in_nested;
             info.class_expression = mine.class_expression;
             info.body_end = body_end;
+            info.body_strict = body_strict;
             return info;
         }
         ~FunctionNames() {

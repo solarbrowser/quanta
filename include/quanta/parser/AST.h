@@ -1166,6 +1166,7 @@ public:
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
@@ -1314,6 +1315,7 @@ public:
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
@@ -1424,6 +1426,7 @@ public:
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
@@ -1575,6 +1578,7 @@ public:
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
@@ -1728,6 +1732,7 @@ public:
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }
@@ -1896,6 +1901,7 @@ public:
         body_is_leaf_ = ast_detail::note_span_and_is_leaf(first, last);
     }
     uint32_t body_token_first() const { return body_tok_first_; }
+    uint32_t body_source_first() const { return body_src_first_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     bool body_is_leaf() const { return body_is_leaf_; }

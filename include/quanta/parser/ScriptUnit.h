@@ -56,6 +56,9 @@ struct BodyScopeInfo {
     // body read back later can be stepped over without being parsed: what a
     // skipped body would have said is already in this record.
     uint32_t body_end = 0;
+    // Whether the body opens with a "use strict" directive. Recorded for the
+    // same reason as body_end: a body stepped over cannot be asked.
+    bool body_strict = false;
 };
 
 class ScriptUnit {

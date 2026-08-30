@@ -1453,24 +1453,30 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         case ASTNode::Type::FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const FunctionExpression*>(node);
             walk_params(n->get_params());
+            // A body stepped over is one this scan cannot see through, and a
+            // name it would have found is one a register must not take.
+            if (!n->get_body()) { op.unknown = true; return; }
             collect_closure_names(n->get_body(), true, out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::FUNCTION_DECLARATION: {
             const auto* n = static_cast<const FunctionDeclaration*>(node);
             walk_params(n->get_params());
+            if (!n->get_body()) { op.unknown = true; return; }
             collect_closure_names(n->get_body(), true, out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const ArrowFunctionExpression*>(node);
             walk_params(n->get_params());
+            if (!n->get_body()) { op.unknown = true; return; }
             collect_closure_names(n->get_body(), true, out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
             walk_params(n->get_params());
+            if (!n->get_body()) { op.unknown = true; return; }
             collect_closure_names(n->get_body(), true, out, op, suspendable, super_only);
             return;
         }

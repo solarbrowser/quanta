@@ -132,6 +132,12 @@ public:
     // private: there is no way to aim this at a node without also saying what
     // keeps that node alive, so a later eval-like path cannot quietly leave a
     // dangling body behind.
+    // Where a body sits when there is no node to read it off: a literal whose
+    // body was stepped over knows its own range and nothing else does.
+    void set_body_range(const Position& start, uint32_t end_offset) {
+        body_start_ = start;
+        body_end_offset_ = end_offset;
+    }
     void adopt_body(std::unique_ptr<ASTNode> node);
     // Owns the body and keeps the unit it was copied out of alive, so a
     // literal inside it can still report its own source text.

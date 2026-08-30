@@ -114,6 +114,28 @@ ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
     return unit;
 }
 
+// Steps over a function body that has been read once already. Answers false
+// unless everything needed to do it without looking is on record: where the
+// body closes, and what a reader of it would have had to work out.
+bool Parser::skip_recorded_body() {
+    if (!lazy_inner_bodies_) return false;
+    if (options_.function_depth <= lazy_base_depth_) return false;
+    if (current_token().get_type() != TokenType::LEFT_BRACE) return false;
+    ScriptUnit* unit = ScriptUnit::building();
+    if (!unit) return false;
+    const uint32_t open = static_cast<uint32_t>(current_token().get_start().offset);
+    const BodyScopeInfo* info = unit->scope_info_at(open);
+    if (!info || info->body_end <= open) return false;
+    const size_t first = current_token_index_;
+    while (!at_end() && current_token().get_start().offset < info->body_end) advance();
+    last_body_tok_first_ = first;
+    last_body_tok_last_ = current_token_index_;
+    last_body_src_first_ = open;
+    last_body_src_last_ = info->body_end;
+    last_body_strict_ = info->body_strict;
+    return true;
+}
+
 std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
                                                bool is_generator, bool is_async) {
     if (tok_index >= tokens_.size()) return nullptr;
@@ -127,6 +149,11 @@ std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
     // the call that asked for it.
     options_.function_depth++;
     if (!is_generator && !is_async) options_.non_arrow_function_depth++;
+    // Everything nested in this body has been read once; step over it.
+    const bool saved_lazy = lazy_inner_bodies_;
+    const int saved_lazy_depth = lazy_base_depth_;
+    lazy_inner_bodies_ = true;
+    lazy_base_depth_ = options_.function_depth;
     // This is a rebuild, not a validation pass: whatever placement rules apply
     // to this body were already enforced when the script was first parsed, and
     // the enclosing context that made them pass is not reconstructible from a
@@ -151,6 +178,8 @@ std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
     options_.in_constructor = saved_in_constructor;
     options_.in_class_method = saved_in_class_method;
     options_.class_depth = saved_class_depth;
+    lazy_inner_bodies_ = saved_lazy;
+    lazy_base_depth_ = saved_lazy_depth;
     options_.function_depth--;
     if (!is_generator && !is_async) options_.non_arrow_function_depth--;
     if (has_errors()) return nullptr;
@@ -3780,6 +3809,13 @@ static std::string check_params_body_lex_conflict(
 }
 
 std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
+    // A body already read once is stepped over rather than read again: the
+    // literal keeps the range and answers from what was written down then.
+    if (is_function_body && skip_recorded_body()) {
+        last_body_skipped_ = true;
+        return nullptr;
+    }
+    last_body_skipped_ = false;
     SubtreeScope scope(*this);
     Position start = get_current_position();
     const size_t body_tok_first = current_token_index_;
@@ -3891,6 +3927,14 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         last_body_tok_last_ = current_token_index_;
         last_body_src_first_ = static_cast<uint32_t>(start.offset);
         last_body_src_last_ = static_cast<uint32_t>(end.offset);
+        last_body_strict_ = false;
+        if (!statements.empty()) {
+            if (auto* es = dynamic_cast<ExpressionStatement*>(statements[0].get())) {
+                if (auto* sl = dynamic_cast<StringLiteral*>(es->get_expression())) {
+                    last_body_strict_ = sl->get_value() == "use strict";
+                }
+            }
+        }
     }
     auto block = std::make_unique<BlockStatement>(std::move(statements), start, end);
     block->set_subtree_flags(scope.flags() |
@@ -5467,7 +5511,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     options_.switch_depth = saved_sw_fn;
     options_.active_labels = std::move(saved_al_fn);
     options_.loop_labels = std::move(saved_ll_fn);
-    if (!body) {
+    if (!body && !last_body_skipped_) {
         add_error("Expected function body");
         return nullptr;
     }
@@ -5572,8 +5616,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     );
     fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
-    fn_names.record_body(last_body_src_first_);
-    fn_names.record_body_end(last_body_src_last_);
+    if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_span(last_body_src_last_, last_body_strict_);
     return fn_decl;
 }
 
@@ -6889,7 +6933,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     options_.in_async_body = saved_a;
     options_.in_generator_body = saved_g;
     options_.in_class_static_block = saved_sb;
-    if (!body) {
+    if (!body && !last_body_skipped_) {
         add_error("Expected method body");
         return nullptr;
     }
@@ -6947,8 +6991,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     );
     function_expr->set_source_range(method_src_start, method_src_end);
     if (!detached_tokens_) function_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
-    fn_names.record_body(last_body_src_first_);
-    fn_names.record_body_end(last_body_src_last_);
+    if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_span(last_body_src_last_, last_body_strict_);
 
     Position end = get_current_position();
     auto method = std::make_unique<MethodDefinition>(
@@ -7205,7 +7249,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     options_.switch_depth = saved_sw_fn;
     options_.active_labels = std::move(saved_al_fn);
     options_.loop_labels = std::move(saved_ll_fn);
-    if (!body) {
+    if (!body && !last_body_skipped_) {
         add_error("Expected function body");
         return nullptr;
     }
@@ -7309,8 +7353,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     );
     fn_expr->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) fn_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
-    fn_names.record_body(last_body_src_first_);
-    fn_names.record_body_end(last_body_src_last_);
+    if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_span(last_body_src_last_, last_body_strict_);
     return fn_expr;
 }
 
@@ -7576,7 +7620,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     options_.in_class_field_init = saved_cfi_ae;
     options_.in_class_static_block = saved_sb_ae;
     options_.in_class_method = saved_cm_ae;
-    if (!body) {
+    if (!body && !last_body_skipped_) {
         add_error("Expected async function body");
         return nullptr;
     }
@@ -7617,8 +7661,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         );
         gen_expr->set_source_range(src_text_start, src_text_end);
         if (!detached_tokens_) gen_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
-        fn_names.record_body(last_body_src_first_);
-    fn_names.record_body_end(last_body_src_last_);
+        if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_span(last_body_src_last_, last_body_strict_);
         return gen_expr;
     }
     subtree_acc_ |= kSubtreeClosure;
@@ -7629,8 +7673,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     );
     async_expr->set_source_range(src_text_start, src_text_end);
     if (!detached_tokens_) async_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
-    fn_names.record_body(last_body_src_first_);
-    fn_names.record_body_end(last_body_src_last_);
+    if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_span(last_body_src_last_, last_body_strict_);
     return async_expr;
 }
 
@@ -7887,7 +7931,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     options_.in_generator_body = saved_gen2;
     options_.in_class_field_init = saved_cfi_ad;
     options_.in_class_method = saved_cm_ad;
-    if (!body) {
+    if (!body && !last_body_skipped_) {
         add_error("Expected async function body");
         return nullptr;
     }
@@ -7925,8 +7969,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     );
     async_fn_decl->set_source_range(start.offset, last_meaningful_token().get_start().offset + 1);
     if (!detached_tokens_) async_fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
-    fn_names.record_body(last_body_src_first_);
-    fn_names.record_body_end(last_body_src_last_);
+    if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_span(last_body_src_last_, last_body_strict_);
     return async_fn_decl;
 }
 
@@ -8148,7 +8192,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     }
     options_.in_class_static_block = saved_sb_arrow;
 
-    if (!body) {
+    if (!body && !last_body_skipped_) {
         add_error("Expected arrow function body");
         return nullptr;
     }
@@ -8176,7 +8220,10 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     // would hand this arrow a span pointing at a different body -- one that
     // still opens with `{` and closes with `}`, so no structural check would
     // catch it. Only a block body has a range to record.
-    const bool has_block_body = body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT;
+    // A body stepped over was a block: that is the only shape a step over can
+    // find, since only a block has a range recorded to step to.
+    const bool has_block_body =
+        last_body_skipped_ || (body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT);
     subtree_acc_ |= kSubtreeClosure;
     auto arrow_expr = std::make_unique<ArrowFunctionExpression>(
         std::move(params), std::move(body), false, start, end
@@ -8189,8 +8236,8 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         arrow_expr->set_source_range(start.offset, src_end);
         if (has_block_body) {
             if (!detached_tokens_) arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
-    fn_names.record_body(last_body_src_first_);
-    fn_names.record_body_end(last_body_src_last_);
+    if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
+    fn_names.record_body_span(last_body_src_last_, last_body_strict_);
         } else {
             // No range to record, but it still joins the innermost-first chain
             // the leaf test walks -- otherwise a body holding only a concise
@@ -9004,8 +9051,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
                 FunctionNames method_names(*this);
                 body = parse_block_statement(true);
-                method_names.record_body(last_body_src_first_);
-                method_names.record_body_end(last_body_src_last_);
+                if (!last_body_skipped_) method_names.record_body(last_body_src_first_);
+                method_names.record_body_span(last_body_src_last_, last_body_strict_);
             }
             options_.function_depth--;
             options_.non_arrow_function_depth--;
@@ -9014,7 +9061,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             options_.in_class_static_block = saved_sb_ol;
             options_.in_class_method = saved_cm_ol;
             options_.in_constructor = saved_ic_ol;
-            if (!body) {
+            if (!body && !last_body_skipped_) {
                 add_error("Expected method body");
                 return nullptr;
             }
@@ -9129,11 +9176,6 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                                                    last_body_src_first_);
                     } else if (method_value->get_type() ==
                                ASTNode::Type::ASYNC_FUNCTION_EXPRESSION) {
-                        // An async one records it too. Whether a body counts as
-                        // a leaf is read off the span recorded just before it,
-                        // so a literal that records none makes the body around
-                        // it look like one -- and that body is then let go of
-                        // while something inside it still needs it.
                         static_cast<AsyncFunctionExpression*>(method_value.get())
                             ->set_body_token_range(last_body_tok_first_, last_body_tok_last_,
                                                    last_body_src_first_);

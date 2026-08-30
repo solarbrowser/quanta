@@ -233,7 +233,9 @@ static void install_literal_body(FunctionExecutable* exe, ASTNode* value_node) {
         }
     }
     exe->adopt_body(value_node && value_node->get_type() == ASTNode::Type::FUNCTION_EXPRESSION
-                        ? static_cast<FunctionExpression*>(value_node)->get_body()->clone()
+                        ? (static_cast<FunctionExpression*>(value_node)->get_body()
+                               ? static_cast<FunctionExpression*>(value_node)->get_body()->clone()
+                               : nullptr)
                         : nullptr);
 }
 
@@ -258,7 +260,7 @@ static ExecutableRef<FunctionExecutable> ensure_shared_executable(
         exe->borrow_body(ExecutableRef<ScriptUnit>(owning_unit),
                          const_cast<ASTNode*>(body));
     } else {
-        exe->adopt_body(body->clone());
+        exe->adopt_body(body ? body->clone() : nullptr);
     }
     for (const auto& param : params) {
         exe->parameter_objects.push_back(
@@ -307,6 +309,22 @@ static void load_body_facts(const Literal* lit, bool& is_strict, bool& has_eval)
     if (lit->body_strict_state() < 0) {
         const ASTNode* body = lit->get_body();
         bool strict = false, eval = false;
+        if (!body && lit->has_body_token_range()) {
+            // A body stepped over rather than read: what it would have said is
+            // on the unit, written down the first time it was read.
+            if (ScriptUnit* unit = lit->owning_unit()) {
+                if (const BodyScopeInfo* info = unit->scope_info_at(lit->body_source_first())) {
+                    strict = info->body_strict;
+                    // `eval` named anywhere in the body, which is more than a
+                    // direct call to it and errs the safe way.
+                    eval = info->eval_anywhere;
+                }
+            }
+            lit->set_body_facts(strict, eval);
+            is_strict = strict;
+            has_eval = eval;
+            return;
+        }
         if (body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             const auto* block = static_cast<const BlockStatement*>(body);
             strict = block->has_use_strict_directive();
@@ -339,9 +357,33 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
     // references (ast_nodes) pointing at freed nodes.
     if (!fresh) return;
     if (!exe || !lit->has_body_token_range()) return;
-    if (!lit->body_is_leaf()) return;
     ScriptUnit* unit = lit->owning_unit();
-    if (!unit || !unit->can_reparse_bodies() || !lit->get_body()) return;
+    if (!unit || !unit->can_reparse_bodies()) return;
+    if (!lit->get_body()) {
+        // Stepped over while its enclosing body was read back: there is no
+        // subtree to let go of, only a range to remember -- and no node to
+        // read that range off, so the literal hands it over itself.
+        const BodyScopeInfo* info = unit->scope_info_at(lit->body_source_first());
+        if (!info || info->body_end <= lit->body_source_first()) return;
+        // The line and column are the literal's own: a frame reports where
+        // the function was written, and the body opens on the same line as
+        // often as not. The offset has to be the body's, since that is what a
+        // record of it is keyed on.
+        Position body_start = lit->get_start();
+        body_start.offset = lit->body_source_first();
+        exe->set_body_range(body_start, info->body_end);
+        exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async);
+        return;
+    }
+    // Stepping over a body inside one being read back is still being brought
+    // up: with it off, only a leaf body is let go of, which is what the engine
+    // has always done.
+    static const bool lazy_inner = std::getenv("QUANTA_LAZY_INNER") != nullptr;
+    if (!lazy_inner && !lit->body_is_leaf()) return;
+    // A concise arrow body is an expression: there is no `{` to read back to,
+    // so one that still has its body keeps it.
+    if (lit->get_body() && lit->get_body()->get_type() != ASTNode::Type::BLOCK_STATEMENT) return;
+
     exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async);
     const_cast<Literal*>(lit)->release_body();
 }
@@ -363,7 +405,10 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
                 tpl.needs_outer_env = true;  // suspendable body: not analyzed, keep the pin
             } else {
                 if (fe->get_needs_outer_env_state() < 0) {
+                    // A body stepped over cannot be asked whether it reaches
+                    // outward, so it is taken to.
                     fe->set_needs_outer_env_state(
+                        !fe->get_body() ||
                         closure_needs_outer_environment(fe->get_params(), fe->get_body(),
                                                         /*is_arrow=*/false) ? 1 : 0);
                 }
@@ -404,11 +449,19 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.is_arrow = true;
             // Only the sync branch ever pinned the environment.
             tpl.needs_outer_env = !ar->is_async();
-            { bool unused_strict = false; load_body_facts(ar, unused_strict, tpl.has_direct_eval); }
+            load_body_facts(ar, tpl.body_is_strict, tpl.has_direct_eval);
             tpl.executable = ensure_shared_executable(ar->get_cached_executable(), ar->get_body(),
                                                       ar->get_params(), ar->source_start(), ar->source_end(),
                                                       ar->owning_unit());
-            if (!ar->get_cached_executable()) ar->set_cached_executable(tpl.executable);
+            const bool ar_fresh = !ar->get_cached_executable();
+            if (ar_fresh) ar->set_cached_executable(tpl.executable);
+            // An arrow's body is never let go of on its own. One stepped over
+            // while its enclosing body was read back has no subtree to begin
+            // with, and only that case needs telling where to find itself.
+            if (!ar->get_body()) {
+                defer_leaf_body(ar, tpl.executable.get(), ar_fresh, tpl.body_is_strict,
+                                /*is_generator=*/false, ar->is_async());
+            }
             tpl.declared_length = spec_length_of(*tpl.executable);
             break;
         }
@@ -424,7 +477,12 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
             tpl.executable = ensure_shared_executable(af->get_cached_executable(), af->get_body(),
                                                       af->get_params(), af->source_start(), af->source_end(),
                                                       af->owning_unit());
-            if (!af->get_cached_executable()) af->set_cached_executable(tpl.executable);
+            const bool af_fresh = !af->get_cached_executable();
+            if (af_fresh) af->set_cached_executable(tpl.executable);
+            if (!af->get_body()) {
+                defer_leaf_body(af, tpl.executable.get(), af_fresh, tpl.body_is_strict,
+                                /*is_generator=*/false, /*is_async=*/true);
+            }
             tpl.declared_length = spec_length_of(*tpl.executable);
             break;
         }
@@ -641,13 +699,28 @@ std::unique_ptr<ASTNode> FunctionDeclaration::clone() const {
     auto cloned = std::make_unique<FunctionDeclaration>(
         std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())),
         std::move(cloned_params),
-        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
+        std::unique_ptr<BlockStatement>(
+            body_ ? static_cast<BlockStatement*>(body_->clone().release()) : nullptr),
         start_, end_, is_async_, is_generator_
     );
     // The source range is recorded post-construction, so clone() must carry it
     // (and the unit it points into) explicitly or toString() loses the source.
     cloned->set_source_ref(
         ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
+    // A literal whose body was stepped over has nothing but its range, so a
+    // copy that loses it can never be read back. One that still has its body
+    // does not carry the range over: a copy is made to be rewritten, and the
+    // source no longer says what it holds.
+    if (!body_) {
+        cloned->body_tok_first_ = body_tok_first_;
+        cloned->body_tok_last_ = body_tok_last_;
+        cloned->body_src_first_ = body_src_first_;
+        cloned->body_is_leaf_ = body_is_leaf_;
+        // And the source it refers into: with no body of its own, that is the
+        // whole of what this literal is. Whatever turns the copy into an
+        // executable holds the unit alive from there on.
+        cloned->set_source_ref(owning_unit_, src_start_, src_end_);
+    }
     return cloned;
 }
 
@@ -1812,18 +1885,34 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
         cloned = std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())),
             std::move(cloned_superclass),
-            std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
+            std::unique_ptr<BlockStatement>(
+            body_ ? static_cast<BlockStatement*>(body_->clone().release()) : nullptr),
             start_, end_
         );
     } else {
         cloned = std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())),
-            std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
+            std::unique_ptr<BlockStatement>(
+            body_ ? static_cast<BlockStatement*>(body_->clone().release()) : nullptr),
             start_, end_
         );
     }
     cloned->set_source_ref(
         ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
+    // A literal whose body was stepped over has nothing but its range, so a
+    // copy that loses it can never be read back. One that still has its body
+    // does not carry the range over: a copy is made to be rewritten, and the
+    // source no longer says what it holds.
+    if (!body_) {
+        cloned->body_tok_first_ = body_tok_first_;
+        cloned->body_tok_last_ = body_tok_last_;
+        cloned->body_src_first_ = body_src_first_;
+        cloned->body_is_leaf_ = body_is_leaf_;
+        // And the source it refers into: with no body of its own, that is the
+        // whole of what this literal is. Whatever turns the copy into an
+        // executable holds the unit alive from there on.
+        cloned->set_source_ref(owning_unit_, src_start_, src_end_);
+    }
     cloned->set_is_expression(is_expression_);
     // The name a site infers belongs to the site, so a copy of it answers the
     // same. Dropping it left an anonymous class expression nameless wherever
@@ -1848,7 +1937,8 @@ std::unique_ptr<ASTNode> ClassField::clone() const {
 
 std::unique_ptr<ASTNode> ClassStaticBlock::clone() const {
     return std::make_unique<ClassStaticBlock>(
-        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
+        std::unique_ptr<BlockStatement>(
+            body_ ? static_cast<BlockStatement*>(body_->clone().release()) : nullptr),
         start_, end_
     );
 }
@@ -1936,13 +2026,28 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
     auto cloned = std::make_unique<FunctionExpression>(
         std::move(cloned_id),
         std::move(cloned_params),
-        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
+        std::unique_ptr<BlockStatement>(
+            body_ ? static_cast<BlockStatement*>(body_->clone().release()) : nullptr),
         start_, end_, is_generator_, is_async_
     );
     // The source range is recorded post-construction, so clone() must carry it
     // (and the unit it points into) explicitly or toString() loses the source.
     cloned->set_source_ref(
         ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
+    // A literal whose body was stepped over has nothing but its range, so a
+    // copy that loses it can never be read back. One that still has its body
+    // does not carry the range over: a copy is made to be rewritten, and the
+    // source no longer says what it holds.
+    if (!body_) {
+        cloned->body_tok_first_ = body_tok_first_;
+        cloned->body_tok_last_ = body_tok_last_;
+        cloned->body_src_first_ = body_src_first_;
+        cloned->body_is_leaf_ = body_is_leaf_;
+        // And the source it refers into: with no body of its own, that is the
+        // whole of what this literal is. Whatever turns the copy into an
+        // executable holds the unit alive from there on.
+        cloned->set_source_ref(owning_unit_, src_start_, src_end_);
+    }
     cloned->set_decl_form(is_decl_form_);
     cloned->set_method_shorthand(is_method_shorthand_);
     return cloned;
@@ -1990,6 +2095,20 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
     // (and the unit it points into) explicitly or toString() loses the source.
     cloned->set_source_ref(
         ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
+    // A literal whose body was stepped over has nothing but its range, so a
+    // copy that loses it can never be read back. One that still has its body
+    // does not carry the range over: a copy is made to be rewritten, and the
+    // source no longer says what it holds.
+    if (!body_) {
+        cloned->body_tok_first_ = body_tok_first_;
+        cloned->body_tok_last_ = body_tok_last_;
+        cloned->body_src_first_ = body_src_first_;
+        cloned->body_is_leaf_ = body_is_leaf_;
+        // And the source it refers into: with no body of its own, that is the
+        // whole of what this literal is. Whatever turns the copy into an
+        // executable holds the unit alive from there on.
+        cloned->set_source_ref(owning_unit_, src_start_, src_end_);
+    }
     return cloned;
 }
 
@@ -3316,7 +3435,8 @@ std::unique_ptr<ASTNode> AsyncFunctionExpression::clone() const {
     auto cloned = std::make_unique<AsyncFunctionExpression>(
         id_ ? std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())) : nullptr,
         std::move(cloned_params),
-        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
+        std::unique_ptr<BlockStatement>(
+            body_ ? static_cast<BlockStatement*>(body_->clone().release()) : nullptr),
         start_, end_, is_arrow_
     );
     cloned->set_decl_form(is_decl_form_);
