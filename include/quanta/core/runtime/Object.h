@@ -1591,7 +1591,7 @@ public:
     // Appends one field to what construction gives each instance, in the order
     // the class writes them.
     void add_field_initializer(const std::string& key, const Value& initializer,
-                               bool name_result);
+                               uint32_t flags);
     Object* field_initializers() const { return class_slots().field_inits; }
     // Runs them against a freshly built instance: spec 7.3.32 DefineField, so
     // an own property each time, never a set through the prototype.

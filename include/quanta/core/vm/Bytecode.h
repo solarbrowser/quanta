@@ -351,6 +351,25 @@ enum class Op : uint8_t {
     // computed: the key was resolved once, where the class was built, and the
     // register holds what it came to.
     AddFieldInitializerKeyed,
+    // r_ctor r_proto n u8flags -- records one of the class's private names on
+    // the constructor, against the object that brands it: the prototype for an
+    // instance name, the constructor itself for a static one. flags bit 0:
+    // static; bit 1: a method or accessor rather than a field, which is what a
+    // brand check has to tell apart. The map starts from the one the enclosing
+    // class left on the running frame, so a nested class still sees the names
+    // written around it.
+    DeclarePrivateName,
+    // r_holder n u8kind -- installs a private method or accessor on the object
+    // that brands it, under the key its name resolves to there. kind: 0
+    // method, 1 getter, 2 setter. The accumulator holds the function.
+    DefinePrivateMember,
+    // r_ctor r_proto -- hands every member the class's private-name map, so a
+    // name written in one member's body resolves wherever that body runs.
+    LinkPrivateBrands,
+    // r_ctor n -- a static private field: the accumulator's value becomes a
+    // slot of the constructor's own, under the key the name resolves to
+    // there, rather than a property anything could read.
+    DefinePrivateStatic,
     // n -- binds the class's own name in the running scope, to the class in
     // the accumulator. A class declaration's name is created where the
     // declaration stands rather than reserved with the scope's other lexicals,

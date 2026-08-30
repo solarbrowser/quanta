@@ -1823,6 +1823,10 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
     }
     cloned->set_source_ref(nullptr, src_start_, src_end_);
     cloned->set_is_expression(is_expression_);
+    // The name a site infers belongs to the site, so a copy of it answers the
+    // same. Dropping it left an anonymous class expression nameless wherever
+    // its tree was copied.
+    cloned->set_inferred_name(inferred_name_);
     return cloned;
 }
 

@@ -3323,6 +3323,17 @@ bool named_evaluation_is_class(const ASTNode* node) {
 // So the name goes on the node instead, as the tree-walker does before
 // evaluating. A site's inferred name never varies between evaluations, so
 // stamping it once while compiling says what the tree-walker says every time.
+// A number written as a key is the string ToString gives it. The integer case
+// is spelled out because it is the common one; everything else goes through
+// the engine's own conversion, since C++'s default formatting differs from
+// JavaScript's on the exponent forms (0.0000001 is "1e-7", not "1e-07").
+std::string numeric_key_text(double n) {
+    if (n == std::floor(n) && n >= LLONG_MIN && n <= LLONG_MAX) {
+        return std::to_string(static_cast<long long>(n));
+    }
+    return Value(n).to_string();
+}
+
 void stamp_inferred_class_name(const ASTNode* init, const std::string& name) {
     if (!named_evaluation_is_class(init)) return;
     auto* cd = const_cast<ClassDeclaration*>(static_cast<const ClassDeclaration*>(init));
@@ -7943,10 +7954,12 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                     key = static_cast<const Identifier*>(kn)->get_name();
                 } else if (kn->get_type() == ASTNode::Type::STRING_LITERAL) {
                     key = static_cast<const StringLiteral*>(kn)->get_value();
+                } else if (kn->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                    key = numeric_key_text(static_cast<const NumberLiteral*>(kn)->get_value());
                 } else {
                     return false;
                 }
-                if (key.empty() || key[0] == '#') return false;
+                if (key.empty()) return false;
             }
             if (!inner_name.empty() && cf->get_value() &&
                 references_identifier(cf->get_value(), inner_name)) {
@@ -7993,12 +8006,12 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 key = static_cast<const Identifier*>(kn)->get_name();
             } else if (kn->get_type() == ASTNode::Type::STRING_LITERAL) {
                 key = static_cast<const StringLiteral*>(kn)->get_value();
+            } else if (kn->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                key = numeric_key_text(static_cast<const NumberLiteral*>(kn)->get_value());
             } else {
                 return false;
             }
-            // A private name is not a property key at all: it lives in a
-            // brand, which nothing emitted here sets up.
-            if (!key.empty() && key[0] == '#') return false;
+            if (key.empty()) return false;
         }
         Element e;
         e.is_field = false;
@@ -8125,6 +8138,28 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     emit_u8(static_cast<uint8_t>(proto_reg));
     emit_u8(ctor ? 0 : 0x1);
 
+    // Every private name the class writes, recorded before any member is
+    // built: a member's body may name one declared further down.
+    bool has_private = false;
+    for (const auto& se : static_elements) {
+        if (se.key.empty() || se.key[0] != '#') continue;
+        has_private = true;
+        emit(Op::DeclarePrivateName);
+        emit_u8(static_cast<uint8_t>(ctor_reg));
+        emit_u8(static_cast<uint8_t>(proto_reg));
+        emit_u16(add_name(se.key));
+        emit_u8(0x1);
+    }
+    for (const auto& e : elements) {
+        if (e.key.empty() || e.key[0] != '#') continue;
+        has_private = true;
+        emit(Op::DeclarePrivateName);
+        emit_u8(static_cast<uint8_t>(ctor_reg));
+        emit_u8(static_cast<uint8_t>(proto_reg));
+        emit_u16(add_name(e.key));
+        emit_u8(static_cast<uint8_t>((e.is_static ? 0x1 : 0) | (e.is_field ? 0 : 0x2)));
+    }
+
     // The inner name is settled before the members are built, so a member's
     // body sees the class the moment it can run.
     if (class_env_idx >= 0) {
@@ -8156,14 +8191,24 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         }
 
         if (e.is_field) {
+            // Before the body is taken: what the initializer builds is named
+            // from where it is written, and the name has to be on the node the
+            // closure is made from.
+            bool name_result = false;
+            if (e.init && !e.key.empty() && is_named_evaluation_rhs(e.init)) {
+                stamp_inferred_class_name(e.init, e.key);
+                name_result = !named_evaluation_is_class(e.init);
+            }
             if (e.init) {
                 // The initializer is a function of its own: it runs with `this`
                 // bound to the instance being built, which is why it cannot be
                 // emitted here alongside the class.
                 ClosureTemplate tmpl;
                 auto exe = make_executable_ref();
-                exe->borrow_body(ExecutableRef<ScriptUnit>(cls->source_unit()),
-                                 const_cast<ASTNode*>(e.init));
+                // Owned, not borrowed: the tree this was written in can be a
+                // clone the class's own evaluation made and then dropped, and
+                // a borrowed body would outlive it.
+                exe->adopt_body(e.init->clone());
                 tmpl.executable = std::move(exe);
                 tmpl.form = ClosureTemplate::Form::FunctionExpr;
                 tmpl.body_is_strict = true;
@@ -8175,11 +8220,6 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             } else {
                 emit(Op::LdaUndefined);
             }
-            bool name_result = false;
-            if (e.init && !e.key.empty() && is_named_evaluation_rhs(e.init)) {
-                stamp_inferred_class_name(e.init, e.key);
-                name_result = !named_evaluation_is_class(e.init);
-            }
             if (e.key_expr) {
                 emit(Op::AddFieldInitializerKeyed);
                 emit_u8(static_cast<uint8_t>(ctor_reg));
@@ -8189,7 +8229,8 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 emit(Op::AddFieldInitializer);
                 emit_u8(static_cast<uint8_t>(ctor_reg));
                 emit_u16(add_name(e.key));
-                emit_u8(name_result ? 1 : 0);
+                emit_u8(static_cast<uint8_t>((name_result ? 0x1 : 0) |
+                                             (e.key[0] == '#' ? 0x2 : 0)));
             }
         } else {
             {
@@ -8219,6 +8260,11 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 // spells it 2, keeping 0 for a property that is not one.
                 emit_u8(static_cast<uint8_t>((e.kind == 0 ? 2 : e.kind) | kClassElementFlag |
                                              (e.is_static ? 0x10 : 0)));
+            } else if (e.key[0] == '#') {
+                emit(Op::DefinePrivateMember);
+                emit_u8(target);
+                emit_u16(add_name(e.key));
+                emit_u8(e.kind);
             } else {
                 emit(Op::FinalizeStaticProperty);
                 emit_u8(target);
@@ -8245,14 +8291,30 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         emit_u8(static_cast<uint8_t>(proto_reg));
     }
 
+    // After the heritage: what a member has to check a brand against depends on
+    // whether the class is derived, which the link above is what settles.
+    if (has_private) {
+        emit(Op::LinkPrivateBrands);
+        emit_u8(static_cast<uint8_t>(ctor_reg));
+        emit_u8(static_cast<uint8_t>(proto_reg));
+    }
+
     // Last, and in the order they were written: a static element sees the
     // finished class, its members and its heritage.
     for (const auto& se : static_elements) {
+        // NamedEvaluation: only a function written anonymously right here takes
+        // the field's name. A name that merely holds one keeps its own, which
+        // is why the shape is asked at compile time and not the value at run
+        // time -- and it is asked before the body is taken.
+        bool name_static = false;
+        if (se.body && !se.key.empty() && is_named_evaluation_rhs(se.body)) {
+            stamp_inferred_class_name(se.body, se.key);
+            name_static = !named_evaluation_is_class(se.body);
+        }
         if (se.body) {
             ClosureTemplate tmpl;
             auto exe = make_executable_ref();
-            exe->borrow_body(ExecutableRef<ScriptUnit>(cls->source_unit()),
-                             const_cast<ASTNode*>(se.body));
+            exe->adopt_body(se.body->clone());
             tmpl.executable = std::move(exe);
             tmpl.form = ClosureTemplate::Form::FunctionExpr;
             tmpl.body_is_strict = true;
@@ -8267,21 +8329,20 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             emit(Op::LdaUndefined);
         }
         if (!se.key.empty()) {
-            // NamedEvaluation: only a function written anonymously right here
-            // takes the field's name. A name that merely holds one keeps its
-            // own, which is why the shape is asked at compile time and not the
-            // value at run time.
-            if (se.body && is_named_evaluation_rhs(se.body)) {
-                stamp_inferred_class_name(se.body, se.key);
-                if (!named_evaluation_is_class(se.body)) {
-                    emit(Op::SetFunctionNameIfUnnamed);
-                    emit_u16(add_name(se.key));
-                }
+            if (name_static) {
+                emit(Op::SetFunctionNameIfUnnamed);
+                emit_u16(add_name(se.key));
             }
-            emit(Op::DefineOwn);
-            emit_u8(static_cast<uint8_t>(ctor_reg));
-            emit_u16(add_name(se.key));
-            emit_u16(alloc_feedback_slot());
+            if (se.key[0] == '#') {
+                emit(Op::DefinePrivateStatic);
+                emit_u8(static_cast<uint8_t>(ctor_reg));
+                emit_u16(add_name(se.key));
+            } else {
+                emit(Op::DefineOwn);
+                emit_u8(static_cast<uint8_t>(ctor_reg));
+                emit_u16(add_name(se.key));
+                emit_u16(alloc_feedback_slot());
+            }
         }
     }
 
@@ -10007,14 +10068,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     } else if (kt == ASTNode::Type::STRING_LITERAL) {
                         key = static_cast<const StringLiteral*>(prop->key.get())->get_value();
                     } else {
-                        double n = static_cast<const NumberLiteral*>(prop->key.get())->get_value();
-                        if (n == std::floor(n) && n >= LLONG_MIN && n <= LLONG_MAX) {
-                            key = std::to_string(static_cast<long long>(n));
-                        } else {
-                            std::ostringstream oss;
-                            oss << n;
-                            key = oss.str();
-                        }
+                        key = numeric_key_text(
+                            static_cast<const NumberLiteral*>(prop->key.get())->get_value());
                     }
 
                     if (!compile_expression(prop->value.get())) return false;

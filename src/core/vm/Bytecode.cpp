@@ -146,6 +146,10 @@ const OpInfo& op_info(Op op) {
         {"AddFieldInitializer", 4, 'Y'},
         {"RunStaticElement", 1, 'r'},
         {"AddFieldInitializerKeyed", 3, 'B'},
+        {"DeclarePrivateName", 5, 'P'},
+        {"DefinePrivateMember", 4, 'Q'},
+        {"LinkPrivateBrands", 2, 'r'},
+        {"DefinePrivateStatic", 3, 'Y'},
         {"BindClassName", 2, 'n'},
         {"SuperCallSpread", 1, 'r'},
         {"ThrowSuperDelete", 0, '-'},
@@ -210,7 +214,8 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'W': check(0, "constructs"); check(1, "spread array"); break;
             case 'g': case 'f': case 'l': case 'm': case 's': check(0, "receiver"); break;
             // A register and a name.
-            case 'Y': check(0, "reads"); break;
+            case 'Y': case 'Q': check(0, "reads"); break;
+            case 'P': check(0, "reads"); check(1, "reads"); break;
             case 'C': check(0, "closes the iterator in"); break;
             case 'x': case 'j': check(0, "reads"); check(1, "reads"); break;
             case 'J': check(0, "reads"); check(1, "reads"); check(2, "reads"); break;
@@ -436,6 +441,23 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
                                (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
                 out << " [" << idx << "]";
+                break;
+            }
+            case 'P': {
+                uint16_t nidx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
+                                 (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " '" << chunk.name_at(nidx) << "'"
+                    << " flags=" << static_cast<int>(chunk.code[operand_pc + 4]);
+                break;
+            }
+            case 'Q': {
+                uint16_t nidx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                 (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.name_at(nidx) << "'"
+                    << " kind=" << static_cast<int>(chunk.code[operand_pc + 3]);
                 break;
             }
             case 'Y': {

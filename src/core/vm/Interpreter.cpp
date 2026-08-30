@@ -3529,7 +3529,7 @@ Value h_gen_AddFieldInitializer(Frame& f, uint32_t pc, Value acc) {
     do {
         auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
         uint16_t name_idx = read_u16(code, pc + 1);
-        const bool name_result = code[pc + 3] != 0;
+        const uint8_t field_flags = code[pc + 3];
         pc += 4;
         if (acc.is_function()) {
             Function* init = acc.as_function();
@@ -3539,7 +3539,7 @@ Value h_gen_AddFieldInitializer(Frame& f, uint32_t pc, Value acc) {
             init->set_home_object(ctor->home_object());
             init->set_is_field_initializer();
         }
-        ctor->add_field_initializer(chunk.name_at(name_idx), acc, name_result);
+        ctor->add_field_initializer(chunk.name_at(name_idx), acc, field_flags);
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
@@ -3583,14 +3583,191 @@ Value h_gen_AddFieldInitializerKeyed(Frame& f, uint32_t pc, Value acc) {
         auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
         std::string key = regs[code[pc + 1]].to_property_key();
         CHECK_EXC();
-        const bool name_result = code[pc + 2] != 0;
+        const uint8_t field_flags = code[pc + 2];
         pc += 3;
         if (acc.is_function()) {
             Function* init = acc.as_function();
             init->set_home_object(ctor->home_object());
             init->set_is_field_initializer();
         }
-        ctor->add_field_initializer(key, acc, name_result);
+        ctor->add_field_initializer(key, acc, field_flags);
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_DeclarePrivateName(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
+        Object* proto = regs[code[pc + 1]].as_object();
+        const std::string& name = chunk.name_at(read_u16(code, pc + 2));
+        const uint8_t flags = code[pc + 4];
+        pc += 5;
+        Object* brands = ctor->private_brands();
+        if (!brands) {
+            auto fresh = ObjectFactory::create_object();
+            // A class written inside another one can name the outer class's
+            // private names, so the map starts from the running frame's.
+            CallStack& cs = CallStack::instance();
+            if (!cs.is_empty() && cs.top().function_ptr) {
+                if (Object* outer = cs.top().function_ptr->private_brands()) {
+                    for (const auto& k : outer->get_own_property_keys())
+                        fresh->set_property(k, outer->get_property(k));
+                }
+            }
+            brands = fresh.release();
+            ctor->set_private_brands(brands);
+        }
+        Object* holder = (flags & 0x1) ? static_cast<Object*>(ctor) : proto;
+        brands->set_property(name, Value(holder));
+        if ((flags & 0x2) && !(flags & 0x1)) {
+            // A private method is reached through a brand the instance carries,
+            // not through a slot of its own, so the class needs a slot name no
+            // other evaluation of it shares.
+            if (ctor->pm_brand_slot().empty()) {
+                ctor->set_pm_brand_slot(
+                    "#[[pm:" + std::to_string(reinterpret_cast<uintptr_t>(proto)) + "]]");
+            }
+            Value names = ctor->get_internal_slot("__private_method_names__");
+            Object* names_obj = names.is_object() ? names.as_object() : nullptr;
+            if (!names_obj) {
+                auto fresh = ObjectFactory::create_object();
+                names_obj = fresh.release();
+                ctor->set_internal_slot("__private_method_names__", Value(names_obj));
+            }
+            names_obj->set_property(name, Value(true));
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_DefinePrivateMember(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        Object* holder = regs[code[pc]].as_object();
+        const std::string& name = chunk.name_at(read_u16(code, pc + 1));
+        const uint8_t kind = code[pc + 3];
+        pc += 4;
+        if (!holder || !acc.is_function()) break;
+        Function* fn = acc.as_function();
+        fn->set_name(kind == 1 ? "get " + name : kind == 2 ? "set " + name : name);
+        fn->set_home_object(holder);
+        fn->set_is_strict(true);
+        fn->set_internal_slot("__private_class_brand__", Value(holder));
+        if (fn->is_constructor()) {
+            fn->set_is_constructor(false);
+            fn->set_function_prototype(nullptr);
+        }
+        // The key a private name resolves to on the object that brands it, so
+        // an ordinary property spelled the same can never reach it.
+        std::string qualified =
+            name + "@" + std::to_string(reinterpret_cast<uintptr_t>(holder));
+        if (kind == 0) {
+            PropertyDescriptor d(acc, static_cast<PropertyAttributes>(
+                PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            holder->set_property_descriptor(qualified, d);
+        } else {
+            // The other half of the pair is asked for by descriptor, not by
+            // has_own_property: a qualified key is kept out of the object's
+            // observable own keys, so asking that way answers no.
+            PropertyDescriptor d;
+            PropertyDescriptor existing = holder->get_property_descriptor(qualified);
+            if (existing.is_accessor_descriptor()) d = existing;
+            if (kind == 1) d.set_getter(fn); else d.set_setter(fn);
+            d.set_enumerable(false);
+            d.set_configurable(true);
+            holder->set_property_descriptor(qualified, d);
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_LinkPrivateBrands(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
+        Object* proto = regs[code[pc + 1]].as_object();
+        pc += 2;
+        Object* brands = ctor->private_brands();
+        if (!brands) break;
+        // A derived class's instances are branded where super() returns, so a
+        // method of one has to carry the slot name to check against.
+        const bool derived = ctor->is_derived_ctor();
+        const std::string pm_slot = derived ? ctor->pm_brand_slot() : std::string();
+        Value pm_names = derived ? ctor->get_internal_slot("__private_method_names__") : Value();
+        auto stamp = [&](Object* holder) {
+            if (!holder) return;
+            for (const auto& key : holder->get_own_property_keys_unfiltered()) {
+                PropertyDescriptor d = holder->get_property_descriptor(key);
+                Function* fns[2] = {nullptr, nullptr};
+                if (d.is_accessor_descriptor()) {
+                    fns[0] = d.has_getter() ? as_function(d.get_getter()) : nullptr;
+                    fns[1] = d.has_setter() ? as_function(d.get_setter()) : nullptr;
+                } else if (d.has_value() && d.get_value().is_function()) {
+                    fns[0] = d.get_value().as_function();
+                }
+                for (Function* fn : fns) {
+                    if (!fn || fn == ctor) continue;
+                    fn->set_private_brands(brands);
+                    if (!pm_slot.empty()) {
+                        fn->set_pm_brand_slot(pm_slot);
+                        if (!pm_names.is_undefined())
+                            fn->set_internal_slot("__private_method_names__", pm_names);
+                    }
+                }
+            }
+        };
+        stamp(proto);
+        stamp(ctor);
+        // The field initializers run private code too.
+        if (Object* fields = ctor->field_initializers()) {
+            uint32_t n = static_cast<uint32_t>(fields->get_length());
+            for (uint32_t i = 1; i < n; i += 3) {
+                Value v = fields->get_element(i);
+                if (v.is_function()) v.as_function()->set_private_brands(brands);
+            }
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_DefinePrivateStatic(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        Object* ctor = regs[code[pc]].as_object();
+        const std::string& name = chunk.name_at(read_u16(code, pc + 1));
+        pc += 3;
+        if (!ctor) break;
+        ctor->add_private_field(
+            name + "@" + std::to_string(reinterpret_cast<uintptr_t>(ctor)), acc);
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
@@ -5632,6 +5809,10 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::AddFieldInitializer)] = &h_gen_AddFieldInitializer;
     t[static_cast<uint8_t>(Op::RunStaticElement)] = &h_gen_RunStaticElement;
     t[static_cast<uint8_t>(Op::AddFieldInitializerKeyed)] = &h_gen_AddFieldInitializerKeyed;
+    t[static_cast<uint8_t>(Op::DeclarePrivateName)] = &h_gen_DeclarePrivateName;
+    t[static_cast<uint8_t>(Op::DefinePrivateMember)] = &h_gen_DefinePrivateMember;
+    t[static_cast<uint8_t>(Op::LinkPrivateBrands)] = &h_gen_LinkPrivateBrands;
+    t[static_cast<uint8_t>(Op::DefinePrivateStatic)] = &h_gen_DefinePrivateStatic;
     t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
     t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
     t[static_cast<uint8_t>(Op::LinkModule)] = &h_gen_LinkModule;

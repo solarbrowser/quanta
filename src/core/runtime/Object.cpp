@@ -555,7 +555,7 @@ void Function::set_private_brands(Object* brands) {
 }
 
 void Function::add_field_initializer(const std::string& key, const Value& initializer,
-                                     bool name_result) {
+                                     uint32_t flags) {
     Collector::write_barrier(this);
     ClassSlots& slots = mutable_class_slots();
     if (!slots.field_inits) {
@@ -564,9 +564,9 @@ void Function::add_field_initializer(const std::string& key, const Value& initia
     uint32_t n = static_cast<uint32_t>(slots.field_inits->get_length());
     slots.field_inits->set_element(n, Value(key));
     slots.field_inits->set_element(n + 1, initializer);
-    // Whether the value it answers takes this field's name: true only where
-    // the initializer is a function written anonymously in place.
-    slots.field_inits->set_element(n + 2, Value(name_result));
+    // Bit 0: the value it answers takes this field's name, which only a
+    // function written anonymously in place does. Bit 1: the field is private.
+    slots.field_inits->set_element(n + 2, Value(static_cast<double>(flags)));
     // What the instance is about to grow, so its storage is sized once.
     set_construct_slot_hint((n + 3) / 3);
 }
@@ -578,7 +578,11 @@ void Function::initialize_instance_fields(Context& ctx, Object* instance) const 
     for (uint32_t i = 0; i + 2 < n; i += 3) {
         std::string key = fields->get_element(i).to_string();
         Value init = fields->get_element(i + 1);
-        const bool name_result = fields->get_element(i + 2).to_boolean();
+        const uint32_t flags = static_cast<uint32_t>(fields->get_element(i + 2).to_number());
+        const bool name_result = (flags & 0x1) != 0;
+        // Written with a `#`, not merely spelled with one: a computed key can
+        // come to "#m" and is an ordinary property all the same.
+        const bool is_private = (flags & 0x2) != 0;
         Value value;
         if (init.is_function()) {
             value = init.as_function()->call(ctx, {}, Value(instance));
@@ -590,6 +594,16 @@ void Function::initialize_instance_fields(Context& ctx, Object* instance) const 
                 Function* fn = value.as_function();
                 if (fn->get_name().empty() || fn->get_name() == "<arrow>") fn->set_name(key);
             }
+        }
+        if (is_private) {
+            // A private field is a slot of the instance's own, under the key
+            // the name resolves to against the object that brands it.
+            Value brand = get_internal_slot("__private_class_brand__");
+            Object* holder = brand.is_object() ? brand.as_object() : nullptr;
+            std::string qualified =
+                holder ? key + "@" + std::to_string(reinterpret_cast<uintptr_t>(holder)) : key;
+            instance->add_private_field(qualified, value);
+            continue;
         }
         PropertyDescriptor d(value, static_cast<PropertyAttributes>(
             PropertyAttributes::Writable | PropertyAttributes::Enumerable |
