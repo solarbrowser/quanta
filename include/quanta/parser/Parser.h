@@ -113,18 +113,6 @@ private:
         ~NameRecording() { p.recording_names_ = saved; }
     };
     bool recording_names_ = true;
-    // A destructuring form is handed whole to the tree-walker, which reads its
-    // names out of the environment, so every name one touches has to be there
-    // whether or not a closure could otherwise see it.
-    int forcing_capture_ = 0;
-    struct ForceCapture {
-        Parser& p;
-        explicit ForceCapture(Parser& parser) : p(parser) { p.forcing_capture_++; }
-        ForceCapture(const ForceCapture&) = delete;
-        ForceCapture& operator=(const ForceCapture&) = delete;
-        ~ForceCapture() { p.forcing_capture_--; }
-    };
-
     void note_class_expression() {
         if (!name_scopes_.empty()) name_scopes_.back().class_expression = true;
     }
@@ -133,7 +121,6 @@ private:
         if (!recording_names_) return;
         if (name_scopes_.empty()) return;
         name_scopes_.back().all.insert(n);
-        if (forcing_capture_ > 0) name_scopes_.back().captured.insert(n);
     }
     // Opens the scope of a function literal; closing it hands what the
     // function mentioned to whatever encloses it.

@@ -3440,9 +3440,6 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
     do {
         if (current_token().get_type() == TokenType::LEFT_BRACKET || 
             current_token().get_type() == TokenType::LEFT_BRACE) {
-            // Pattern and initializer both: the form goes to the tree-walker
-            // whole, so neither side's names can take a register.
-            const ForceCapture force(*this);
             auto destructuring = parse_destructuring_pattern();
             if (!destructuring) {
                 add_error("Invalid destructuring pattern");
@@ -4360,10 +4357,6 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             if (current_token().get_type() == TokenType::LEFT_BRACKET ||
                 current_token().get_type() == TokenType::LEFT_BRACE) {
 
-                // Same as a plain destructuring declaration: the form is
-                // handed to the tree-walker whole, so its names have to be in
-                // the environment.
-                const ForceCapture force(*this);
                 auto destructuring = parse_destructuring_pattern();
                 if (!destructuring) {
                     add_error("Failed to parse destructuring pattern");

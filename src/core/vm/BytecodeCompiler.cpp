@@ -3832,10 +3832,13 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     if (!full_env && (has_closures || has_nested_lex || suspendable || has_delegated_expr ||
                       has_destructuring)) {
         ScanOpacity op;
-        // Still being brought up: the parse works the same set out while it
-        // reads the body, and QUANTA_SCOPE_CHECK reports where the two
-        // disagree. Without QUANTA_SCOPE_USE the walk is still the answer.
-        const bool use_parse = scope_info && std::getenv("QUANTA_SCOPE_USE");
+        // The parse works this set out while it reads the body and leaves it
+        // on the unit, keyed by where the body opens. Reading it back is what
+        // lets a body be compiled without walking it -- which a body kept only
+        // as a range cannot be. The walk stays for a body the parse left no
+        // record of: a synthesized one, or a top level that is not a function.
+        // QUANTA_SCOPE_CHECK reports where the two disagree.
+        const bool use_parse = scope_info != nullptr;
         if (use_parse) {
             env_resident = scope_info->captured;
             if (scope_info->eval_in_nested) op.saw_eval = true;
