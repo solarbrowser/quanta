@@ -7902,39 +7902,70 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     bool reads_own_name = !inner_name.empty() && superclass &&
                           references_identifier(superclass, inner_name);
     const MethodDefinition* ctor = nullptr;
-    struct Member { std::string key; const MethodDefinition* m; uint8_t kind; bool is_static; };
-    std::vector<Member> methods;
-    // An instance field: its key, and the expression computing its value, which
-    // runs against each new instance rather than here.
-    struct Field { std::string key; const ASTNode* init; };
-    std::vector<Field> fields;
+    // Every element the definition pass handles, in the order the class writes
+    // them -- which is the order their keys are evaluated in, and a computed
+    // key is arbitrary code, so the order is observable.
+    struct Element {
+        bool is_field;
+        std::string key;                    // empty when the key is computed
+        const ASTNode* key_expr = nullptr;  // the computed key, if any
+        const ASTNode* init = nullptr;      // a field's initializer
+        const MethodDefinition* m = nullptr;
+        uint8_t kind = 0;                   // 0 method, 1 getter, 2 setter
+        bool is_static = false;
+    };
+    std::vector<Element> elements;
+    // A static field or a static block: both run once, against the
+    // constructor, after the definition pass, in the order the class writes
+    // them. An empty key marks a block, which answers nothing.
+    struct StaticElement { std::string key; const ASTNode* body; };
+    std::vector<StaticElement> static_elements;
     for (const auto& st : body->get_statements()) {
+        if (st->get_type() == ASTNode::Type::CLASS_STATIC_BLOCK) {
+            const auto* sb = static_cast<const ClassStaticBlock*>(st.get());
+            if (!sb->get_body()) return false;
+            if (!inner_name.empty() && references_identifier(sb->get_body(), inner_name)) {
+                reads_own_name = true;
+            }
+            static_elements.push_back({std::string(), sb->get_body()});
+            continue;
+        }
         if (st->get_type() == ASTNode::Type::CLASS_FIELD) {
             const auto* cf = static_cast<const ClassField*>(st.get());
-            // A static field's value is computed where the class is built, and
-            // a computed key is resolved there too: neither is what the
-            // per-instance list below carries.
-            if (cf->is_static() || cf->is_computed()) return false;
-            const ASTNode* kn = cf->get_key();
+            // A static element's key is resolved in the definition pass but its
+            // value only afterwards, so a computed one would have to be carried
+            // between the two; that is left to Op::DefineClass.
+            if (cf->is_computed() && cf->is_static()) return false;
             std::string key;
-            if (kn->get_type() == ASTNode::Type::IDENTIFIER) {
-                key = static_cast<const Identifier*>(kn)->get_name();
-            } else if (kn->get_type() == ASTNode::Type::STRING_LITERAL) {
-                key = static_cast<const StringLiteral*>(kn)->get_value();
-            } else {
-                return false;
+            if (!cf->is_computed()) {
+                const ASTNode* kn = cf->get_key();
+                if (kn->get_type() == ASTNode::Type::IDENTIFIER) {
+                    key = static_cast<const Identifier*>(kn)->get_name();
+                } else if (kn->get_type() == ASTNode::Type::STRING_LITERAL) {
+                    key = static_cast<const StringLiteral*>(kn)->get_value();
+                } else {
+                    return false;
+                }
+                if (key.empty() || key[0] == '#') return false;
             }
-            if (key.empty() || key[0] == '#') return false;
             if (!inner_name.empty() && cf->get_value() &&
                 references_identifier(cf->get_value(), inner_name)) {
                 reads_own_name = true;
             }
-            fields.push_back({std::move(key), cf->get_value()});
+            if (cf->is_static()) {
+                static_elements.push_back({std::move(key), cf->get_value()});
+            } else {
+                Element e;
+                e.is_field = true;
+                e.key = std::move(key);
+                e.key_expr = cf->is_computed() ? cf->get_key() : nullptr;
+                e.init = cf->get_value();
+                elements.push_back(std::move(e));
+            }
             continue;
         }
         if (st->get_type() != ASTNode::Type::METHOD_DEFINITION) return false;
         const auto* m = static_cast<const MethodDefinition*>(st.get());
-        if (m->is_computed()) return false;
         const FunctionExpression* fe = m->get_value();
         if (!fe) return false;
         // The class name is an inner immutable binding of its own scope. No
@@ -7956,36 +7987,39 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             }
         }
         std::string key;
-        const ASTNode* kn = m->get_key();
-        if (kn->get_type() == ASTNode::Type::IDENTIFIER) {
-            key = static_cast<const Identifier*>(kn)->get_name();
-        } else if (kn->get_type() == ASTNode::Type::STRING_LITERAL) {
-            key = static_cast<const StringLiteral*>(kn)->get_value();
-        } else {
-            return false;
+        if (!m->is_computed()) {
+            const ASTNode* kn = m->get_key();
+            if (kn->get_type() == ASTNode::Type::IDENTIFIER) {
+                key = static_cast<const Identifier*>(kn)->get_name();
+            } else if (kn->get_type() == ASTNode::Type::STRING_LITERAL) {
+                key = static_cast<const StringLiteral*>(kn)->get_value();
+            } else {
+                return false;
+            }
+            // A private name is not a property key at all: it lives in a
+            // brand, which nothing emitted here sets up.
+            if (!key.empty() && key[0] == '#') return false;
         }
-        // A private name is not a property key at all: it lives in a brand,
-        // which nothing emitted here sets up.
-        if (!key.empty() && key[0] == '#') return false;
+        Element e;
+        e.is_field = false;
+        e.key = std::move(key);
+        e.key_expr = m->is_computed() ? m->get_key() : nullptr;
+        e.m = m;
+        e.is_static = m->is_static();
         switch (m->get_kind()) {
             case MethodDefinition::CONSTRUCTOR:
-                if (ctor) return false;
+                if (ctor || m->is_computed()) return false;
                 ctor = m;
-                break;
-            case MethodDefinition::METHOD:
-                methods.push_back({std::move(key), m, 0, m->is_static()});
-                break;
-            case MethodDefinition::GETTER:
-                methods.push_back({std::move(key), m, 1, m->is_static()});
-                break;
-            case MethodDefinition::SETTER:
-                methods.push_back({std::move(key), m, 2, m->is_static()});
-                break;
+                continue;
+            case MethodDefinition::METHOD: e.kind = 0; break;
+            case MethodDefinition::GETTER: e.kind = 1; break;
+            case MethodDefinition::SETTER: e.kind = 2; break;
             default:
                 return false;
         }
+        elements.push_back(std::move(e));
     }
-    if (chunk_->ensure_closures().size() + methods.size() + 1 >= 0xFFFF) return false;
+    if (chunk_->ensure_closures().size() + elements.size() + 1 >= 0xFFFF) return false;
 
     // From here on instructions go out. Only the heritage expression can still
     // refuse -- it is arbitrary code, and whether the compiler takes it is not
@@ -8049,7 +8083,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     }
 
     emit(Op::CreateObject);
-    emit_u16(static_cast<uint16_t>(methods.size() + 1));
+    emit_u16(static_cast<uint16_t>(elements.size() + 1));
     emit(Op::Star);
     emit_u8(static_cast<uint8_t>(proto_reg));
 
@@ -8091,31 +8125,6 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     emit_u8(static_cast<uint8_t>(proto_reg));
     emit_u8(ctor ? 0 : 0x1);
 
-    for (const auto& fld : fields) {
-        if (fld.init) {
-            // The initializer is a function of its own: it runs with `this`
-            // bound to the instance being built, which is why it cannot be
-            // emitted here alongside the class.
-            ClosureTemplate tmpl;
-            auto exe = make_executable_ref();
-            exe->borrow_body(ExecutableRef<ScriptUnit>(cls->source_unit()),
-                             const_cast<ASTNode*>(fld.init));
-            tmpl.executable = std::move(exe);
-            tmpl.form = ClosureTemplate::Form::FunctionExpr;
-            tmpl.body_is_strict = true;
-            tmpl.is_method_shorthand = true;  // no .prototype, not a constructor
-            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
-            chunk_->ensure_closures().push_back(std::move(tmpl));
-            emit(Op::CreateClosure);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
-        } else {
-            emit(Op::LdaUndefined);
-        }
-        emit(Op::AddFieldInitializer);
-        emit_u8(static_cast<uint8_t>(ctor_reg));
-        emit_u16(add_name(fld.key));
-    }
-
     // The inner name is settled before the members are built, so a member's
     // body sees the class the moment it can run.
     if (class_env_idx >= 0) {
@@ -8126,34 +8135,104 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     }
 
     constexpr uint8_t kClassElementFlag = 0x8;
-    for (const auto& m : methods) {
-        {
-            ClosureTemplate tmpl = closure_template_for(m.m->get_value());
-            // A class writes `async m()` as an ordinary function literal
-            // carrying the async flag, whereas everywhere else an async
-            // function arrives as its own node. instantiate_closure reads the
-            // form, so say which one this is, or the method is built as a
-            // plain function that returns its body's value instead of a
-            // promise.
-            if (tmpl.is_async && !tmpl.is_generator) {
-                tmpl.form = ClosureTemplate::Form::AsyncFunctionExpr;
-            }
-            chunk_->ensure_closures().push_back(std::move(tmpl));
+    for (const auto& e : elements) {
+        // A computed key is evaluated here, in the order it was written, and
+        // exactly once: what it comes to is what the member is installed under
+        // and, for a field, what every instance gets.
+        int raw_key_reg = -1, key_reg = -1;
+        if (e.key_expr) {
+            raw_key_reg = alloc_temp();
+            if (failed_) return false;
+            if (!compile_expression(e.key_expr)) { failed_ = true; return false; }
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(raw_key_reg));
+            key_reg = alloc_temp();
+            if (failed_) return false;
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(raw_key_reg));
+            emit(Op::ToPropertyKeyStrict);
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(key_reg));
         }
-        emit(Op::CreateClosure);
-        emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
-        emit(Op::FinalizeStaticProperty);
-        // An instance member belongs to the prototype, a static one to the
-        // constructor -- which is also what each homes on for `super`.
-        emit_u8(static_cast<uint8_t>(m.is_static ? ctor_reg : proto_reg));
-        emit_u16(add_name(m.key));
-        // An accessor's function is named for how it is reached, not for the
-        // key alone.
-        emit_u16(add_name(m.kind == 1 ? "get " + m.key
-                        : m.kind == 2 ? "set " + m.key
-                                      : m.key));
-        emit_u8(static_cast<uint8_t>(m.kind | kClassElementFlag));
-        emit_u16(alloc_feedback_slot());
+
+        if (e.is_field) {
+            if (e.init) {
+                // The initializer is a function of its own: it runs with `this`
+                // bound to the instance being built, which is why it cannot be
+                // emitted here alongside the class.
+                ClosureTemplate tmpl;
+                auto exe = make_executable_ref();
+                exe->borrow_body(ExecutableRef<ScriptUnit>(cls->source_unit()),
+                                 const_cast<ASTNode*>(e.init));
+                tmpl.executable = std::move(exe);
+                tmpl.form = ClosureTemplate::Form::FunctionExpr;
+                tmpl.body_is_strict = true;
+                tmpl.is_method_shorthand = true;  // no .prototype, not a constructor
+                if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+                chunk_->ensure_closures().push_back(std::move(tmpl));
+                emit(Op::CreateClosure);
+                emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+            } else {
+                emit(Op::LdaUndefined);
+            }
+            bool name_result = false;
+            if (e.init && !e.key.empty() && is_named_evaluation_rhs(e.init)) {
+                stamp_inferred_class_name(e.init, e.key);
+                name_result = !named_evaluation_is_class(e.init);
+            }
+            if (e.key_expr) {
+                emit(Op::AddFieldInitializerKeyed);
+                emit_u8(static_cast<uint8_t>(ctor_reg));
+                emit_u8(static_cast<uint8_t>(key_reg));
+                emit_u8(0);
+            } else {
+                emit(Op::AddFieldInitializer);
+                emit_u8(static_cast<uint8_t>(ctor_reg));
+                emit_u16(add_name(e.key));
+                emit_u8(name_result ? 1 : 0);
+            }
+        } else {
+            {
+                ClosureTemplate tmpl = closure_template_for(e.m->get_value());
+                // A class writes `async m()` as an ordinary function literal
+                // carrying the async flag, whereas everywhere else an async
+                // function arrives as its own node. instantiate_closure reads
+                // the form, so say which one this is, or the method is built
+                // as a plain function that returns its body's value instead of
+                // a promise.
+                if (tmpl.is_async && !tmpl.is_generator) {
+                    tmpl.form = ClosureTemplate::Form::AsyncFunctionExpr;
+                }
+                chunk_->ensure_closures().push_back(std::move(tmpl));
+            }
+            emit(Op::CreateClosure);
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+            // An instance member belongs to the prototype, a static one to the
+            // constructor -- which is also what each homes on for `super`.
+            const uint8_t target = static_cast<uint8_t>(e.is_static ? ctor_reg : proto_reg);
+            if (e.key_expr) {
+                emit(e.kind == 0 ? Op::FinalizeComputedProperty : Op::FinalizeComputedAccessor);
+                emit_u8(target);
+                emit_u8(static_cast<uint8_t>(key_reg));
+                emit_u8(static_cast<uint8_t>(raw_key_reg));
+                // The plain-key form spells a method 0; the computed one
+                // spells it 2, keeping 0 for a property that is not one.
+                emit_u8(static_cast<uint8_t>((e.kind == 0 ? 2 : e.kind) | kClassElementFlag |
+                                             (e.is_static ? 0x10 : 0)));
+            } else {
+                emit(Op::FinalizeStaticProperty);
+                emit_u8(target);
+                emit_u16(add_name(e.key));
+                // An accessor's function is named for how it is reached, not
+                // for the key alone.
+                emit_u16(add_name(e.kind == 1 ? "get " + e.key
+                                : e.kind == 2 ? "set " + e.key
+                                              : e.key));
+                emit_u8(static_cast<uint8_t>(e.kind | kClassElementFlag));
+                emit_u16(alloc_feedback_slot());
+            }
+        }
+        if (raw_key_reg >= 0) free_temp(raw_key_reg);
     }
 
     // After the members, so each of them is handed the superclass its `super`
@@ -8164,6 +8243,46 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         emit(Op::LinkClassHeritage);
         emit_u8(static_cast<uint8_t>(ctor_reg));
         emit_u8(static_cast<uint8_t>(proto_reg));
+    }
+
+    // Last, and in the order they were written: a static element sees the
+    // finished class, its members and its heritage.
+    for (const auto& se : static_elements) {
+        if (se.body) {
+            ClosureTemplate tmpl;
+            auto exe = make_executable_ref();
+            exe->borrow_body(ExecutableRef<ScriptUnit>(cls->source_unit()),
+                             const_cast<ASTNode*>(se.body));
+            tmpl.executable = std::move(exe);
+            tmpl.form = ClosureTemplate::Form::FunctionExpr;
+            tmpl.body_is_strict = true;
+            tmpl.is_method_shorthand = true;
+            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+            chunk_->ensure_closures().push_back(std::move(tmpl));
+            emit(Op::CreateClosure);
+            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+            emit(Op::RunStaticElement);
+            emit_u8(static_cast<uint8_t>(ctor_reg));
+        } else {
+            emit(Op::LdaUndefined);
+        }
+        if (!se.key.empty()) {
+            // NamedEvaluation: only a function written anonymously right here
+            // takes the field's name. A name that merely holds one keeps its
+            // own, which is why the shape is asked at compile time and not the
+            // value at run time.
+            if (se.body && is_named_evaluation_rhs(se.body)) {
+                stamp_inferred_class_name(se.body, se.key);
+                if (!named_evaluation_is_class(se.body)) {
+                    emit(Op::SetFunctionNameIfUnnamed);
+                    emit_u16(add_name(se.key));
+                }
+            }
+            emit(Op::DefineOwn);
+            emit_u8(static_cast<uint8_t>(ctor_reg));
+            emit_u16(add_name(se.key));
+            emit_u16(alloc_feedback_slot());
+        }
     }
 
     if (class_env_idx >= 0) {

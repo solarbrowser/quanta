@@ -342,6 +342,15 @@ enum class Op : uint8_t {
     // fields are recorded on the constructor and run against each instance as
     // it is built, rather than folded into the constructor's own body.
     AddFieldInitializer,
+    // r_ctor -- runs one of the class's static elements: the accumulator holds
+    // the function standing for it, which is stamped as class code and called
+    // with the constructor as its receiver. What it answers is left in the
+    // accumulator, which a static field then defines and a static block drops.
+    RunStaticElement,
+    // r_ctor r_key u8flags -- AddFieldInitializer for a field whose key was
+    // computed: the key was resolved once, where the class was built, and the
+    // register holds what it came to.
+    AddFieldInitializerKeyed,
     // n -- binds the class's own name in the running scope, to the class in
     // the accumulator. A class declaration's name is created where the
     // declaration stands rather than reserved with the scope's other lexicals,

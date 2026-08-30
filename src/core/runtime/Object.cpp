@@ -554,7 +554,8 @@ void Function::set_private_brands(Object* brands) {
     mutable_class_slots().private_brands = brands;
 }
 
-void Function::add_field_initializer(const std::string& key, const Value& initializer) {
+void Function::add_field_initializer(const std::string& key, const Value& initializer,
+                                     bool name_result) {
     Collector::write_barrier(this);
     ClassSlots& slots = mutable_class_slots();
     if (!slots.field_inits) {
@@ -563,24 +564,29 @@ void Function::add_field_initializer(const std::string& key, const Value& initia
     uint32_t n = static_cast<uint32_t>(slots.field_inits->get_length());
     slots.field_inits->set_element(n, Value(key));
     slots.field_inits->set_element(n + 1, initializer);
+    // Whether the value it answers takes this field's name: true only where
+    // the initializer is a function written anonymously in place.
+    slots.field_inits->set_element(n + 2, Value(name_result));
     // What the instance is about to grow, so its storage is sized once.
-    set_construct_slot_hint((n + 2) / 2);
+    set_construct_slot_hint((n + 3) / 3);
 }
 
 void Function::initialize_instance_fields(Context& ctx, Object* instance) const {
     Object* fields = class_slots().field_inits;
     if (!fields || !instance) return;
     uint32_t n = static_cast<uint32_t>(fields->get_length());
-    for (uint32_t i = 0; i + 1 < n; i += 2) {
+    for (uint32_t i = 0; i + 2 < n; i += 3) {
         std::string key = fields->get_element(i).to_string();
         Value init = fields->get_element(i + 1);
+        const bool name_result = fields->get_element(i + 2).to_boolean();
         Value value;
         if (init.is_function()) {
             value = init.as_function()->call(ctx, {}, Value(instance));
             if (ctx.has_exception()) return;
-            // NamedEvaluation: a function the initializer built without a name
-            // of its own takes the field's.
-            if (value.is_function()) {
+            // NamedEvaluation: a function written anonymously as the
+            // initializer takes the field's name; one that merely came out of
+            // it keeps whatever name it has.
+            if (name_result && value.is_function()) {
                 Function* fn = value.as_function();
                 if (fn->get_name().empty() || fn->get_name() == "<arrow>") fn->set_name(key);
             }

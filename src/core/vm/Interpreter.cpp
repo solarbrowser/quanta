@@ -3529,7 +3529,8 @@ Value h_gen_AddFieldInitializer(Frame& f, uint32_t pc, Value acc) {
     do {
         auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
         uint16_t name_idx = read_u16(code, pc + 1);
-        pc += 3;
+        const bool name_result = code[pc + 3] != 0;
+        pc += 4;
         if (acc.is_function()) {
             Function* init = acc.as_function();
             // The initializer is method code: `super.x` in it resolves against
@@ -3538,7 +3539,58 @@ Value h_gen_AddFieldInitializer(Frame& f, uint32_t pc, Value acc) {
             init->set_home_object(ctor->home_object());
             init->set_is_field_initializer();
         }
-        ctor->add_field_initializer(chunk.name_at(name_idx), acc);
+        ctor->add_field_initializer(chunk.name_at(name_idx), acc, name_result);
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_RunStaticElement(Frame& f, uint32_t pc, Value acc) {
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    const BytecodeChunk& chunk = f.chunk;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
+        pc += 1;
+        if (!acc.is_function()) break;
+        Function* fn = acc.as_function();
+        // A static element homes on the constructor, so `super.x` in it reads
+        // the superclass; and it is initializer code, where `arguments` is an
+        // early error a direct eval has to enforce too.
+        fn->set_home_object(ctor);
+        fn->set_is_field_initializer();
+        fn->set_is_strict(true);
+        acc = fn->call(ctx, {}, Value(ctor));
+        CHECK_EXC();
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_AddFieldInitializerKeyed(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        auto* ctor = static_cast<Function*>(regs[code[pc]].as_object());
+        std::string key = regs[code[pc + 1]].to_property_key();
+        CHECK_EXC();
+        const bool name_result = code[pc + 2] != 0;
+        pc += 3;
+        if (acc.is_function()) {
+            Function* init = acc.as_function();
+            init->set_home_object(ctor->home_object());
+            init->set_is_field_initializer();
+        }
+        ctor->add_field_initializer(key, acc, name_result);
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
@@ -4949,7 +5001,24 @@ Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
                         fn->set_function_prototype(nullptr);
                     }
                 }
-                if (obj) {
+                if (obj && (raw_kind & 0x8) != 0) {
+                    // A class member: non-enumerable and strict, unlike an
+                    // object literal's property.
+                    std::string ckey = regs[key_reg].to_property_key();
+                    CHECK_EXC();
+                    // 15.7.14: a static member may not be written under the
+                    // key the class's prototype already holds.
+                    if ((raw_kind & 0x10) != 0 && ckey == "prototype") {
+                        ctx.throw_type_error(
+                            "Class may not have a static property named 'prototype'");
+                        CHECK_EXC();
+                        break;
+                    }
+                    if (acc.is_function()) acc.as_function()->set_is_strict(true);
+                    PropertyDescriptor cd(acc, static_cast<PropertyAttributes>(
+                        PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    obj->set_property_descriptor(ckey, cd);
+                } else if (obj) {
                     std::string key = regs[key_reg].to_property_key();
                     CHECK_EXC();
                     if (key == "__proto__") {
@@ -5271,7 +5340,26 @@ Value h_gen_FinalizeComputedAccessor(Frame& f, uint32_t pc, Value acc) {
         // No feedback slot, unlike the static form: the transition cache is
         // keyed by shape alone, and this instruction sees a different key each
         // time it runs, so a learned transition would install another key's.
-        if (obj) define_accessor_cached(obj, key, fn, kind == 1, nullptr);
+        if (obj && (raw_kind & 0x8) != 0) {
+            // A class accessor: non-enumerable and strict, and the other half
+            // of a pair under the same key reads back what this one leaves.
+            if ((raw_kind & 0x10) != 0 && key == "prototype") {
+                ctx.throw_type_error("Class may not have a static property named 'prototype'");
+                break;
+            }
+            fn->set_is_strict(true);
+            PropertyDescriptor d;
+            if (obj->has_own_property(key)) {
+                PropertyDescriptor existing = obj->get_property_descriptor(key);
+                if (existing.is_accessor_descriptor()) d = existing;
+            }
+            if (kind == 1) d.set_getter(fn); else d.set_setter(fn);
+            d.set_enumerable(false);
+            d.set_configurable(true);
+            obj->set_property_descriptor(key, d);
+        } else if (obj) {
+            define_accessor_cached(obj, key, fn, kind == 1, nullptr);
+        }
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
@@ -5542,6 +5630,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::BindClassName)] = &h_gen_BindClassName;
     t[static_cast<uint8_t>(Op::LinkClassHeritage)] = &h_gen_LinkClassHeritage;
     t[static_cast<uint8_t>(Op::AddFieldInitializer)] = &h_gen_AddFieldInitializer;
+    t[static_cast<uint8_t>(Op::RunStaticElement)] = &h_gen_RunStaticElement;
+    t[static_cast<uint8_t>(Op::AddFieldInitializerKeyed)] = &h_gen_AddFieldInitializerKeyed;
     t[static_cast<uint8_t>(Op::SuperCallSpread)] = &h_gen_SuperCallSpread;
     t[static_cast<uint8_t>(Op::ThrowSuperDelete)] = &h_gen_ThrowSuperDelete;
     t[static_cast<uint8_t>(Op::LinkModule)] = &h_gen_LinkModule;
