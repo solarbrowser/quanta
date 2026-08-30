@@ -350,7 +350,8 @@ static void load_body_facts(const Literal* lit, bool& is_strict, bool& has_eval)
 // about 5% of cycles -- the leaves alone give 39MB for no measurable time.
 template <typename Literal>
 static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fresh,
-                            bool strict, bool is_generator, bool is_async) {
+                            bool strict, bool is_generator, bool is_async,
+                            bool concise = false) {
     // Only the instantiation that built the executable may do this. A later one
     // would reach an executable that has since materialized its body and
     // compiled from it, and dropping that tree leaves the chunk's own AST
@@ -372,14 +373,14 @@ static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fr
         Position body_start = lit->get_start();
         body_start.offset = lit->body_source_first();
         exe->set_body_range(body_start, info->body_end);
-        exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async);
+        exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async, concise);
         return;
     }
     // A concise arrow body is an expression: there is no `{` to read back to,
     // so one that still has its body keeps it.
     if (lit->get_body() && lit->get_body()->get_type() != ASTNode::Type::BLOCK_STATEMENT) return;
 
-    exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async);
+    exe->defer_body(ExecutableRef<ScriptUnit>(unit), strict, is_generator, is_async, concise);
     const_cast<Literal*>(lit)->release_body();
 }
 
@@ -450,14 +451,12 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
                                                       ar->owning_unit());
             const bool ar_fresh = !ar->get_cached_executable();
             if (ar_fresh) ar->set_cached_executable(tpl.executable);
-            // An arrow's body is never let go of on its own. One stepped over
-            // while its enclosing body was read back has no subtree to begin
-            // with, and only that case needs telling where to find itself.
-            if (!ar->get_body()) {
+            {
                 bool ar_strict = false, ar_eval = false;
                 load_body_facts(ar, ar_strict, ar_eval);
                 defer_leaf_body(ar, tpl.executable.get(), ar_fresh, ar_strict,
-                                /*is_generator=*/false, ar->is_async());
+                                /*is_generator=*/false, ar->is_async(),
+                                ar->body_is_concise());
             }
             tpl.declared_length = spec_length_of(*tpl.executable);
             break;

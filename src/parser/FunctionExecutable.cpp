@@ -82,7 +82,8 @@ void FunctionExecutable::adopt_body(std::unique_ptr<ASTNode> node) {
 }
 
 void FunctionExecutable::defer_body(const ExecutableRef<ScriptUnit>& unit,
-                                   bool strict, bool is_generator, bool is_async) {
+                                   bool strict, bool is_generator, bool is_async,
+                                   bool concise) {
     owned_body_.reset();
     unit_ = unit;
     body_ = nullptr;
@@ -90,6 +91,7 @@ void FunctionExecutable::defer_body(const ExecutableRef<ScriptUnit>& unit,
     deferred_strict_ = strict;
     deferred_generator_ = is_generator;
     deferred_async_ = is_async;
+    deferred_concise_ = concise;
     body_has_use_strict = strict;
 }
 
@@ -112,7 +114,8 @@ ASTNode* FunctionExecutable::ensure_body() const {
     // still exist -- which is the point: for a multi-megabyte script it ran to
     // tens of megabytes and was kept for the life of the program.
     auto parsed = unit_->parse_body_from_source(body_start_, body_end_offset_, deferred_strict_,
-                                                deferred_generator_, deferred_async_);
+                                                deferred_generator_, deferred_async_,
+                                                deferred_concise_);
     if (!parsed) {
         // Left deferred on purpose. A rebuild that did not finish is not the
         // same thing as a function without a body, and whoever asked has to be

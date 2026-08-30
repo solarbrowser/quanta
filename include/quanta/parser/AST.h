@@ -1649,6 +1649,9 @@ class ArrowFunctionExpression : public ASTNode {
 private:
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<ASTNode> body_;
+    // Whether the range recorded for the body spells one expression rather
+    // than a block, which is what decides how it is read back.
+    bool body_is_concise_ = false;
     bool is_async_;
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
@@ -1708,6 +1711,8 @@ public:
     }
     uint32_t body_token_first() const { return body_tok_first_; }
     uint32_t body_source_first() const { return body_src_first_; }
+    void set_body_is_concise(bool v) { body_is_concise_ = v; }
+    bool body_is_concise() const { return body_is_concise_; }
     uint32_t body_token_last() const { return body_tok_last_; }
     bool has_body_token_range() const { return body_tok_last_ > body_tok_first_; }
     // Drops the body subtree, leaving the range to read it back from. A body

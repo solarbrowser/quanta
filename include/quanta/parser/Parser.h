@@ -384,6 +384,10 @@ public:
     // on the enclosing function's kind).
     std::unique_ptr<ASTNode> parse_body_at(size_t tok_index, bool strict,
                                            bool is_generator, bool is_async);
+    // The same, for a concise arrow: what sits at the range is one expression,
+    // and the value it comes to is what the arrow answers.
+    std::unique_ptr<ASTNode> parse_concise_body_at(size_t tok_index, bool strict,
+                                                   bool is_generator, bool is_async);
     // Hands the token stream to whoever will keep the tree, so a body recorded
     // as a range can be parsed back later. The parser is finished with it by
     // then -- parse_program_unit does the same thing at the end of a parse.

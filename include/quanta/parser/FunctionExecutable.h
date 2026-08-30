@@ -152,7 +152,7 @@ public:
     // borrow_body both record it, so it is already known by the time anyone
     // decides to let the tree go.
     void defer_body(const ExecutableRef<ScriptUnit>& unit,
-                    bool strict, bool is_generator, bool is_async);
+                    bool strict, bool is_generator, bool is_async, bool concise = false);
     // Reads the body, parsing it back from the unit's tokens if it was
     // deferred. Every consumer that needs a tree must come through here;
     // body() stays the raw accessor for the paths that only test for one.
@@ -255,6 +255,9 @@ public:
     // was originally parsed in -- a body's grammar depends on it, since yield
     // and await are identifiers or operators according to the enclosing kind.
     bool deferred_strict_ = false;
+    // A concise arrow's body is one expression, so reading it back parses an
+    // expression rather than a block.
+    bool deferred_concise_ = false;
     bool deferred_generator_ = false;
     bool deferred_async_ = false;
     mutable bool body_deferred_ = false;

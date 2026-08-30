@@ -136,6 +136,42 @@ bool Parser::skip_recorded_body() {
     return true;
 }
 
+std::unique_ptr<ASTNode> Parser::parse_concise_body_at(size_t tok_index, bool strict,
+                                                       bool is_generator, bool is_async) {
+    if (tok_index >= tokens_.size()) return nullptr;
+    current_token_index_ = tok_index;
+    errors_.clear();
+    options_.strict_mode = strict;
+    options_.in_generator_body = is_generator;
+    options_.in_async_body = is_async;
+    // Read as a function body for the same reasons parse_body_at gives: the
+    // placement rules that applied here were settled the first time round, and
+    // the context that made them pass is not recoverable from an offset.
+    options_.function_depth++;
+    const int saved_class_depth = options_.class_depth;
+    if (options_.class_depth == 0) options_.class_depth = 1;
+    const bool saved_in_class_method = options_.in_class_method;
+    const bool saved_in_constructor = options_.in_constructor;
+    const bool saved_class_has_heritage = options_.class_has_heritage;
+    options_.in_class_method = true;
+    options_.in_constructor = true;
+    options_.class_has_heritage = true;
+    const bool saved_lazy = lazy_inner_bodies_;
+    const int saved_lazy_depth = lazy_base_depth_;
+    lazy_inner_bodies_ = true;
+    lazy_base_depth_ = options_.function_depth;
+    auto expr = parse_assignment_expression();
+    lazy_inner_bodies_ = saved_lazy;
+    lazy_base_depth_ = saved_lazy_depth;
+    options_.class_has_heritage = saved_class_has_heritage;
+    options_.in_constructor = saved_in_constructor;
+    options_.in_class_method = saved_in_class_method;
+    options_.class_depth = saved_class_depth;
+    options_.function_depth--;
+    if (has_errors()) return nullptr;
+    return expr;
+}
+
 std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
                                                bool is_generator, bool is_async) {
     if (tok_index >= tokens_.size()) return nullptr;
@@ -8189,11 +8225,25 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         body = parse_block_statement(true);
         options_.function_depth--;
     } else {
-        // A concise body is an expression, not a range that can be read back.
         last_body_skipped_ = false;
+        const size_t concise_tok_first = current_token_index_;
+        const Position concise_start = get_current_position();
         SubtreeScope concise(*this);
         body = parse_assignment_expression();
         if (body) body->set_subtree_flags(concise.flags());
+        if (body) {
+            // A concise body is one expression rather than a block, but it
+            // still sits in the source between two offsets, which is all that
+            // reading it back needs.
+            last_body_tok_first_ = concise_tok_first;
+            last_body_tok_last_ = current_token_index_;
+            last_body_src_first_ = static_cast<uint32_t>(concise_start.offset);
+            last_body_src_last_ = static_cast<uint32_t>(
+                previous_token().get_end().offset > previous_token().get_start().offset
+                    ? previous_token().get_end().offset
+                    : previous_token().get_start().offset + 1);
+            last_body_strict_ = false;  // an expression carries no directive
+        }
     }
     options_.in_class_static_block = saved_sb_arrow;
 
@@ -8228,6 +8278,9 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     // Which path was taken, not what the body turned out to be: a block that
     // was stepped over leaves no node behind but is still a block body.
     const bool has_block_body = took_block_body;
+    // Asked before the body is handed to the node, which is what empties the
+    // local holding it.
+    const bool has_concise_body = !took_block_body && body != nullptr;
     subtree_acc_ |= kSubtreeClosure;
     auto arrow_expr = std::make_unique<ArrowFunctionExpression>(
         std::move(params), std::move(body), false, start, end
@@ -8238,10 +8291,13 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             ? last.get_start().offset + 1
             : last.get_end().offset;
         arrow_expr->set_source_range(start.offset, src_end);
-        if (has_block_body) {
+        // Both shapes record where the body sits; only how it is read back
+        // differs, and the literal carries that.
+        if (has_concise_body || has_block_body) {
             if (!detached_tokens_) {
                 arrow_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_,
                                                  last_body_src_first_);
+                arrow_expr->set_body_is_concise(!has_block_body);
             }
             if (!last_body_skipped_) {
                 fn_names.record_body(last_body_src_first_);

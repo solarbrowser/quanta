@@ -124,7 +124,8 @@ public:
     // buffer the whole script was parsed from and told where to stop -- so the
     // rebuilt tree reports the same lines the original did.
     std::unique_ptr<ASTNode> parse_body_from_source(const Position& start, uint32_t end_offset,
-                                                    bool strict, bool is_generator, bool is_async);
+                                                    bool strict, bool is_generator, bool is_async,
+                                                    bool concise = false);
 
     // Where a function literal's executable is remembered. It used to live on
     // the literal's own node, which made the node's ADDRESS the key -- and a

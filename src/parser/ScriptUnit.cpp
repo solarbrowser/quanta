@@ -23,7 +23,8 @@ void ScriptUnit::set_root(std::unique_ptr<ASTNode> root) {
 
 std::unique_ptr<ASTNode> ScriptUnit::parse_body_from_source(const Position& start,
                                                             uint32_t end_offset, bool strict,
-                                                            bool is_generator, bool is_async) {
+                                                            bool is_generator, bool is_async,
+                                                            bool concise) {
     if (!source_ || end_offset <= start.offset || end_offset > source_->size()) return nullptr;
     Lexer::LexerOptions opts;
     opts.strict_mode = strict;
@@ -36,7 +37,8 @@ std::unique_ptr<ASTNode> ScriptUnit::parse_body_from_source(const Position& star
     Parser parser(std::move(toks));
     parser.set_source(source_);
     BuildScope scope(this);
-    return parser.parse_body_at(0, strict, is_generator, is_async);
+    return concise ? parser.parse_concise_body_at(0, strict, is_generator, is_async)
+                   : parser.parse_body_at(0, strict, is_generator, is_async);
 }
 
 
