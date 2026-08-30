@@ -9003,6 +9003,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
                 FunctionNames method_names(*this);
                 body = parse_block_statement(true);
+                method_names.record_body(last_body_src_first_);
             }
             options_.function_depth--;
             options_.non_arrow_function_depth--;
@@ -9114,6 +9115,16 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     if (method_value->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
                         static_cast<FunctionExpression*>(method_value.get())->set_source_range(method_src_start, method_src_end);
                     }
+                }
+                // Where this body sits in the source, so it can be read back
+                // instead of kept as a tree -- every other function literal
+                // records it, and without it a shorthand method's body was the
+                // one kind that never could be let go.
+                if (!detached_tokens_ &&
+                    method_value->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                    static_cast<FunctionExpression*>(method_value.get())
+                        ->set_body_token_range(last_body_tok_first_, last_body_tok_last_,
+                                               last_body_src_first_);
                 }
             }
 

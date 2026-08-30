@@ -10108,6 +10108,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     return true;  // unknown shape: conservative, keep the write
                 }
                 const auto* fe = static_cast<const FunctionExpression*>(fn_node);
+                // A body already let go of cannot be scanned, and "not seen" is
+                // not "not there": ask before it is compiled, or keep the write.
+                if (!fe->get_body()) return true;
                 std::unordered_set<std::string> names;
                 ScanOpacity op;
                 collect_closure_names(fe->get_body(), /*inside_closure=*/true, names,
@@ -10153,6 +10156,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             static_cast<const NumberLiteral*>(prop->key.get())->get_value());
                     }
 
+                    // Asked before the value is compiled: compiling it is
+                    // what lets go of the body this reads.
+                    const bool keeps_super =
+                        (is_method || is_getter || is_setter) &&
+                        method_references_super(prop->value.get());
                     if (!compile_expression(prop->value.get())) return false;
 
                     // Only this spelling sets [[Prototype]]: the shorthand,
@@ -10175,9 +10183,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         emit_u16(key_name_idx);
                         emit_u16(display_name_idx);
                         uint8_t kind_byte = is_method ? 0 : (is_getter ? 1 : 2);
-                        if (is_method && !method_references_super(prop->value.get())) {
-                            kind_byte |= kSuperFreeFlag;
-                        }
+                        if (is_method && !keeps_super) kind_byte |= kSuperFreeFlag;
                         emit_u8(kind_byte);
                         emit_u16(alloc_feedback_slot());
                     } else {
@@ -10219,6 +10225,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     emit(Op::Star);
                     emit_u8(static_cast<uint8_t>(key_reg));
 
+                    const bool computed_keeps_super =
+                        (is_method || is_getter || is_setter) &&
+                        method_references_super(prop->value.get());
                     if (!compile_expression(prop->value.get())) return false;
 
                     // An accessor names itself "get k"/"set k" and merges
@@ -10231,8 +10240,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     } else {
                         kind = is_method ? 2 : (is_anon_fn_def(prop->value.get()) ? 1 : 0);
                     }
-                    if ((is_accessor || is_method) &&
-                        !method_references_super(prop->value.get())) {
+                    if ((is_accessor || is_method) && !computed_keeps_super) {
                         kind |= kSuperFreeFlag;
                     }
                     emit(is_accessor ? Op::FinalizeComputedAccessor : Op::FinalizeComputedProperty);
