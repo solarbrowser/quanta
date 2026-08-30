@@ -88,6 +88,35 @@ inline ExecutableRef<FunctionExecutable> make_executable_ref();
 // FunctionExpression::cached_executable_) -- so unlike the old per-outer-
 // instance nested_chunk_cache_ this replaced, there's nothing to cache here
 // about them.
+// One function's parameters as the compiler needs to see them: a name and
+// three questions each, plus the node for the few that carry something to run.
+// A literal hands over its own nodes, all of them present; an executable hands
+// over what it kept, which for a parameter that is only a name is nothing.
+struct ParamList {
+    const std::vector<std::unique_ptr<Parameter>>* nodes = nullptr;
+    const std::vector<std::string>* names = nullptr;  // null when nodes carry them
+    bool rest_last = false;
+
+    size_t size() const;
+    const std::string& name(size_t i) const;
+    bool is_rest(size_t i) const;
+    bool has_default(size_t i) const;
+    bool has_pattern(size_t i) const;
+    const ASTNode* default_value(size_t i) const;
+    const ASTNode* pattern(size_t i) const;
+    const Parameter* node(size_t i) const {
+        return nodes && (*nodes)[i] ? (*nodes)[i].get() : nullptr;
+    }
+    bool empty() const { return size() == 0; }
+
+    // A literal hands over its own nodes, every one of them present.
+    static ParamList from_nodes(const std::vector<std::unique_ptr<Parameter>>& v) {
+        ParamList l;
+        l.nodes = &v;
+        return l;
+    }
+};
+
 class FunctionExecutable {
 public:
     FunctionExecutable();
@@ -174,8 +203,34 @@ public:
     // almost nothing asks.
     bool release_rebuilt_body() const;
 
+    // A parameter that is only a name needs no node: its name is in
+    // `parameters` and everything else about it is one of these bits. The node
+    // is kept only where there is something to run -- a default or a pattern --
+    // which on a real script is a few hundred parameters out of tens of
+    // thousands. Both vectors stay the same length so an index means the same
+    // thing in either.
     std::vector<std::unique_ptr<Parameter>> parameter_objects;
     std::vector<std::string> parameters;
+
+    size_t param_count() const { return parameters.size(); }
+    const std::string& param_name(size_t i) const { return parameters[i]; }
+    // A rest parameter can only be the last one, so one bit says which
+    // parameter is it rather than one bit per parameter.
+    bool param_is_rest(size_t i) const {
+        return has_rest_param_ && i + 1 == parameters.size();
+    }
+    // A node is kept only where there is something to run, so its presence is
+    // the answer to both of these. Out of line: Parameter is only named here.
+    bool param_has_default(size_t i) const;
+    bool param_has_pattern(size_t i) const;
+    // Adds one parameter, keeping the node only when it carries something to
+    // run. `take` says whether this executable may own the node it is given.
+    void add_parameter(const Parameter& p, bool copy);
+    // Takes the node the caller already owns, keeping it only if it carries
+    // something to run.
+    void add_parameter_owned(std::unique_ptr<Parameter> p);
+    // What the compiler is handed for this function's parameters.
+    ParamList param_list() const;
 
     // unique_ptr, not shared_ptr: nothing ever co-owns a chunk. Both are
     // assigned once from a factory that already returns
@@ -301,6 +356,8 @@ public:
     // the same reason the gate is: every write to an input already recomputes.
     mutable bool fast_strict = false;
     mutable bool fast_uses_this = false;
+    // Whether the last parameter is a rest one; see param_is_rest.
+    bool has_rest_param_ = false;
     // The same question for the functions the compiler put in environment
     // mode. They cannot use the register-mode path -- their bindings live in a
     // real Environment, which the context has to own -- but everything the

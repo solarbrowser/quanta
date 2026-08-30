@@ -84,11 +84,11 @@ static Environment* capture_closure_environment(Context* closure_context, bool m
 
 // Duplicate parameter names share one binding; only the last occurrence is live-mapped.
 // Shared by setup_mapped_arguments() and the pre-pass seeding raw element values.
-static bool param_gets_mapped_accessor(const std::vector<std::unique_ptr<Parameter>>& params, size_t mi) {
-    const std::string& pname = params[mi]->get_name()->get_name();
+static bool param_gets_mapped_accessor(const std::vector<std::string>& names, size_t mi) {
+    const std::string& pname = names[mi];
     if (pname.empty() || pname[0] == '_') return false;
-    for (size_t later = mi + 1; later < params.size(); later++) {
-        if (params[later]->get_name()->get_name() == pname) return false;
+    for (size_t later = mi + 1; later < names.size(); later++) {
+        if (names[later] == pname) return false;
     }
     return true;
 }
@@ -141,10 +141,9 @@ Function::Function(const std::string& name,
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     auto exe = make_executable_ref();
     exe->name = name;  // fresh executable, guaranteed empty -- no compare needed
-    for (const auto& param : params) {
-        exe->parameters.push_back(param->get_name()->get_name());
+    for (auto& param : params) {
+        if (param) exe->add_parameter_owned(std::move(param));
     }
-    exe->parameter_objects = std::move(params);
     exe->adopt_body(std::move(body));
 
     // Deferred: the object, and the 304-byte descriptor block its own
@@ -156,8 +155,8 @@ Function::Function(const std::string& name,
     // "name"/"length" are lazy -- see the class-header comment. ES6: length =
     // number of params before first rest or default.
     size_t formal_length = 0;
-    for (const auto& param : exe->parameter_objects) {
-        if (param->is_rest() || param->has_default()) break;
+    for (size_t i = 0; i < exe->param_count(); i++) {
+        if (exe->param_is_rest(i) || exe->param_has_default(i)) break;
         formal_length++;
     }
     exe->declared_length = formal_length;
@@ -260,17 +259,19 @@ Function::~Function() {
 }
 
 void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> args, Object* arguments_obj) {
-    const auto& parameter_objects_ = get_parameter_objects();
+    const FunctionExecutable* exe = executable_.get();
+    const std::vector<std::string>& param_names =
+        exe ? exe->parameters : *(new std::vector<std::string>());
     // ES5 10.6 / ES6 9.4.4: mapped arguments only for simple, non-strict parameter lists.
     bool is_simple_params = true;
-    for (const auto& p : parameter_objects_) {
-        if (p->has_default() || p->is_rest() || p->has_destructuring()) {
+    for (size_t i = 0; exe && i < exe->param_count(); i++) {
+        if (exe->param_has_default(i) || exe->param_is_rest(i) || exe->param_has_pattern(i)) {
             is_simple_params = false; break;
         }
     }
-    if (fn_ctx.is_strict_mode() || parameter_objects_.empty() || !is_simple_params) return;
+    if (fn_ctx.is_strict_mode() || param_names.empty() || !is_simple_params) return;
 
-    size_t map_count = std::min(args.size(), parameter_objects_.size());
+    size_t map_count = std::min(args.size(), param_names.size());
     // fn_ctx itself does NOT outlive the accessors once the arguments object
     // escapes this call (e.g. `args = arguments;` then read later): fn_ctx is
     // popped from the exec-context stack when this call returns and becomes
@@ -281,8 +282,8 @@ void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> ar
     // closure capturing its defining scope.
     Environment* env_ptr = capture_closure_environment(&fn_ctx);
     for (size_t mi = 0; mi < map_count; mi++) {
-        if (!param_gets_mapped_accessor(parameter_objects_, mi)) continue;
-        auto name = std::make_shared<std::string>(parameter_objects_[mi]->get_name()->get_name());
+        if (!param_gets_mapped_accessor(param_names, mi)) continue;
+        auto name = std::make_shared<std::string>(param_names[mi]);
         auto getter_fn = ObjectFactory::create_native_function("get",
             [env_ptr, name](Context& ctx, std::span<const Value>, Value) -> Value {
                 (void)ctx;
@@ -312,19 +313,23 @@ void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> ar
 }
 
 void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> args) {
-    const auto& parameter_objects_ = get_parameter_objects();
+    const FunctionExecutable* exe = executable_.get();
+    static const std::vector<std::string> kNoNames;
+    const std::vector<std::string>& param_names = exe ? exe->parameters : kNoNames;
     auto arguments_obj = ObjectFactory::create_array(args.size());
     // Elements for non-mapped indices; mapped ones get accessor descriptors below.
     // Only skip elements for simple param lists (no defaults/rest/destructuring).
-    bool pre_simple = !fn_ctx.is_strict_mode() && !parameter_objects_.empty();
+    bool pre_simple = !fn_ctx.is_strict_mode() && !param_names.empty();
     if (pre_simple) {
-        for (const auto& p : parameter_objects_) {
-            if (p->has_default() || p->is_rest() || p->has_destructuring()) { pre_simple = false; break; }
+        for (size_t i = 0; i < exe->param_count(); i++) {
+            if (exe->param_has_default(i) || exe->param_is_rest(i) || exe->param_has_pattern(i)) {
+                pre_simple = false; break;
+            }
         }
     }
-    size_t map_count_pre = pre_simple ? std::min(args.size(), parameter_objects_.size()) : 0;
+    size_t map_count_pre = pre_simple ? std::min(args.size(), param_names.size()) : 0;
     for (size_t i = 0; i < args.size(); i++) {
-        if (i < map_count_pre && param_gets_mapped_accessor(parameter_objects_, i)) continue; // will be set via accessor
+        if (i < map_count_pre && param_gets_mapped_accessor(param_names, i)) continue; // will be set via accessor
         arguments_obj->set_element(i, args[i]);
     }
     {
@@ -405,6 +410,10 @@ void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> a
 
 bool Function::has_closure_props() const {
     return has_closure_props_hint_;
+}
+
+bool Function::param_is_rest(size_t i) const {
+    return executable_ && i < executable_->param_count() && executable_->param_is_rest(i);
 }
 
 const std::vector<std::unique_ptr<Parameter>>& Function::get_parameter_objects() const {
@@ -972,7 +981,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                 if (e->is_with_environment()) { outer_with = true; break; }
             }
             executable_->bytecode_chunk =
-                BytecodeCompiler::compile(ast, parameter_objects_, /*suspendable=*/false, is_arrow_,
+                BytecodeCompiler::compile(ast, executable_->param_list(), /*suspendable=*/false, is_arrow_,
                                           is_strict_ || executable_->fast_strict,
                                           /*env_bound=*/nullptr, outer_with,
                                           /*allow_arguments=*/false,
@@ -1748,11 +1757,11 @@ std::unique_ptr<Function> create_native_constructor(const std::string& name,
 
 std::vector<std::string> Function::parameter_bound_names() const {
     std::vector<std::string> names;
-    for (const auto& p : get_parameter_objects()) {
-        if (p->get_name() && !p->get_name()->get_name().empty()) {
-            names.push_back(p->get_name()->get_name());
-        }
-        if (p->has_destructuring()) {
+    const FunctionExecutable* exe = executable_.get();
+    for (size_t i = 0; exe && i < exe->param_count(); i++) {
+        if (!exe->param_name(i).empty()) names.push_back(exe->param_name(i));
+        const Parameter* p = exe->parameter_objects[i].get();
+        if (p && p->has_destructuring()) {
             const ASTNode* pat = p->get_destructuring_pattern();
             if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                 static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(names);

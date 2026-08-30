@@ -263,9 +263,7 @@ static ExecutableRef<FunctionExecutable> ensure_shared_executable(
         exe->adopt_body(body ? body->clone() : nullptr);
     }
     for (const auto& param : params) {
-        exe->parameter_objects.push_back(
-            std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-        exe->parameters.push_back(exe->parameter_objects.back()->get_name()->get_name());
+        if (param) exe->add_parameter(*param, /*copy=*/true);
     }
     // Cut from the unit's source here rather than at the call site: this runs
     // once per declaration site, while the call site runs on every closure
@@ -279,8 +277,8 @@ static ExecutableRef<FunctionExecutable> ensure_shared_executable(
 // ES6 `length`: parameters before the first rest or defaulted one.
 static uint32_t spec_length_of(const FunctionExecutable& exe) {
     uint32_t n = 0;
-    for (const auto& p : exe.parameter_objects) {
-        if (p->is_rest() || p->has_default()) break;
+    for (size_t i = 0; i < exe.param_count(); i++) {
+        if (exe.param_is_rest(i) || exe.param_has_default(i)) break;
         n++;
     }
     return n;
@@ -412,7 +410,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
                     // outward, so it is taken to.
                     fe->set_needs_outer_env_state(
                         !fe->get_body() ||
-                        closure_needs_outer_environment(fe->get_params(), fe->get_body(),
+                        closure_needs_outer_environment(ParamList::from_nodes(fe->get_params()), fe->get_body(),
                                                         /*is_arrow=*/false) ? 1 : 0);
                 }
                 tpl.needs_outer_env = fe->get_needs_outer_env_state() != 0;
@@ -1029,17 +1027,14 @@ Value ClassDeclaration::define_class(Context& ctx) {
                         install_literal_body(exe.get(), method->get_value());
                         if (method_func_expr) {
                             for (const auto& param : method_func_expr->get_params()) {
-                                exe->parameter_objects.push_back(
-                                    std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-                                exe->parameters.push_back(
-                                    exe->parameter_objects.back()->get_name()->get_name());
+                                if (param) exe->add_parameter(*param, /*copy=*/true);
                             }
                             method_func_expr->set_cached_executable(exe);
                         }
                     }
                     size_t method_declared_length = 0;
-                    for (const auto& p : exe->parameter_objects) {
-                        if (p->is_rest() || p->has_default()) break;
+                    for (size_t pi = 0; pi < exe->param_count(); pi++) {
+                        if (exe->param_is_rest(pi) || exe->param_has_default(pi)) break;
                         method_declared_length++;
                     }
                     if (method_is_gen && method_is_async) {
@@ -1315,10 +1310,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
             ctor_exe = make_executable_ref();
             install_literal_body(ctor_exe.get(), ctor_func_expr);
             for (const auto& param : ctor_func_expr->get_params()) {
-                ctor_exe->parameter_objects.push_back(
-                    std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
-                ctor_exe->parameters.push_back(
-                    ctor_exe->parameter_objects.back()->get_name()->get_name());
+                if (param) ctor_exe->add_parameter(*param, /*copy=*/true);
             }
             ctor_func_expr->set_cached_executable(ctor_exe);
         }
@@ -1329,17 +1321,16 @@ Value ClassDeclaration::define_class(Context& ctx) {
         if (!ctor_exe) {
             ctor_exe = make_executable_ref();
             ctor_exe->adopt_body(std::move(constructor_body));
-            ctor_exe->parameter_objects = std::move(constructor_params);
-            for (const auto& p : ctor_exe->parameter_objects) {
-                ctor_exe->parameters.push_back(p->get_name()->get_name());
+            for (auto& p : constructor_params) {
+                if (p) ctor_exe->add_parameter_owned(std::move(p));
             }
             if (ctor_exe_cacheable) set_cached_ctor_exe(ctor_exe);
         }
     }
 
     size_t ctor_length = 0;
-    for (const auto& p : ctor_exe->parameter_objects) {
-        if (p->is_rest() || p->has_default()) break;
+    for (size_t i = 0; i < ctor_exe->param_count(); i++) {
+        if (ctor_exe->param_is_rest(i) || ctor_exe->param_has_default(i)) break;
         ctor_length++;
     }
     constructor_fn = std::make_unique<Function>(ctor_name, std::move(ctor_exe), &ctx,
@@ -1471,13 +1462,14 @@ Value ClassDeclaration::define_class(Context& ctx) {
                     if (!exe) {
                         exe = make_executable_ref();
                         install_literal_body(exe.get(), method->get_value());
-                        for (const auto& p : static_params) exe->parameters.push_back(p->get_name()->get_name());
-                        exe->parameter_objects = std::move(static_params);
+                        for (auto& p : static_params) {
+                            if (p) exe->add_parameter_owned(std::move(p));
+                        }
                         if (method_func_expr) method_func_expr->set_cached_executable(exe);
                     }
                     size_t method_declared_length = 0;
-                    for (const auto& p : exe->parameter_objects) {
-                        if (p->is_rest() || p->has_default()) break;
+                    for (size_t pi = 0; pi < exe->param_count(); pi++) {
+                        if (exe->param_is_rest(pi) || exe->param_has_default(pi)) break;
                         method_declared_length++;
                     }
                     if (static_is_gen && static_is_async) {
@@ -1646,6 +1638,8 @@ Value ClassDeclaration::define_class(Context& ctx) {
             bool refs = BytecodeCompiler::references_identifier(fn->get_body(), class_name);
             if (!refs) {
                 for (const auto& p : fn->get_parameter_objects()) {
+                    // Only a parameter carrying something to run keeps a node.
+                    if (!p) continue;
                     if (p->has_default() && BytecodeCompiler::references_identifier(p->get_default_value(), class_name)) { refs = true; break; }
                     if (p->has_destructuring() && BytecodeCompiler::references_identifier(p->get_destructuring_pattern(), class_name)) { refs = true; break; }
                 }

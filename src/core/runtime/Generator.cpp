@@ -691,6 +691,9 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     // a default/destructuring pattern reading `arguments` needs its own check.
     bool params_need_arguments = false;
     for (const auto& p : get_parameter_objects()) {
+        // Only a parameter that carries something to run keeps a node.
+        if (!p) continue;
+        if (!p) continue;
         if ((p->has_default() && BytecodeCompiler::references_arguments(p->get_default_value())) ||
             (p->has_destructuring() && BytecodeCompiler::references_arguments(p->get_destructuring_pattern()))) {
             params_need_arguments = true;
@@ -718,53 +721,57 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     const auto& param_objs = get_parameter_objects();
     if (!param_objs.empty()) {
         size_t regular_count = 0;
-        for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
+        for (size_t i = 0; i < param_objs.size(); i++) {
+            if (!param_is_rest(i)) regular_count++;
+        }
         gen_context.set_eval_arguments_conflict(true);
         {
             std::unordered_set<std::string> pnames;
-            for (const auto& p : param_objs) {
-                if (p->get_name() && !p->get_name()->get_name().empty())
-                    pnames.insert(p->get_name()->get_name());
+            for (const auto& n : get_parameters()) {
+                if (!n.empty()) pnames.insert(n);
             }
             gen_context.set_eval_param_names(std::move(pnames));
         }
         gen_context.set_in_param_eval(true);
         for (size_t i = 0; i < param_objs.size(); ++i) {
-            const auto& param = param_objs[i];
-            if (param->is_rest()) {
+            const Parameter* param = param_objs[i].get();
+            // Only a parameter carrying something to run keeps a node; the
+            // rest are a name and a bit.
+            const std::string& pname_i = get_parameters()[i];
+            if (param_is_rest(i)) {
                 auto rest_arr = ObjectFactory::create_array(0);
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
                 Value rest_val(rest_arr.release());
-                if (param->has_destructuring()) {
-                    VM::run_pattern_binder(param.get(), gen_context, rest_val);
+                if (param && param->has_destructuring()) {
+                    VM::run_pattern_binder(param, gen_context, rest_val);
                     if (gen_context.has_exception()) {
                         gen_context.set_in_param_eval(false);
                         ctx.throw_exception(gen_context.get_exception(), true);
                         return nullptr;
                     }
                 } else {
-                    gen_context.create_binding(param->get_name()->get_name(), rest_val, false);
+                    gen_context.create_binding(pname_i, rest_val, false);
                 }
             } else {
-                const std::string& pname = param->get_name() ? param->get_name()->get_name() : std::string();
+                const std::string& pname = pname_i;
                 // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
-                if (!pname.empty() && !param->has_destructuring()) {
+                if (!pname.empty() && !(param && param->has_destructuring())) {
                     if (gen_context.get_lexical_environment())
                         gen_context.get_lexical_environment()->create_uninitialized_binding(pname);
                 }
                 Value arg_val;
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
-                } else if (param->has_default()) {
-                    arg_val = VM::run_default_value(param.get(), gen_context);
+                } else if (param && param->has_default()) {
+                    arg_val = VM::run_default_value(param, gen_context);
                     if (gen_context.has_exception()) {
                         gen_context.set_in_param_eval(false);
                         ctx.throw_exception(gen_context.get_exception(), true);
                         return nullptr;
                     }
                 }
-                if (param->has_destructuring()) {
-                    VM::run_pattern_binder(param.get(), gen_context, arg_val);
+                if (param && param->has_destructuring()) {
+                    VM::run_pattern_binder(param, gen_context, arg_val);
                     {
                         if (gen_context.has_exception()) {
                             gen_context.set_in_param_eval(false);
@@ -795,7 +802,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     {
         bool has_complex_params = false;
         for (const auto& p : param_objs) {
-            if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
+            if (p && (p->has_default() || p->has_destructuring())) { has_complex_params = true; break; }
         }
         if (has_complex_params) {
             // Captured before the push: the parameters stay in this scope, and

@@ -1829,12 +1829,14 @@ void collect_free_names(const ASTNode* node,
     auto recurse_into_function = [&](const std::vector<std::unique_ptr<Parameter>>& params,
                                       const ASTNode* body, bool nested_is_arrow) {
         for (const auto& p : params) {
-            if (p->has_destructuring() || p->has_default()) { op.unknown = true; return; }
+            if (p && (p->has_destructuring() || p->has_default())) { op.unknown = true; return; }
         }
         std::vector<DeclInfo> declared;
         if (!prescan_declarations(body, declared)) { op.unknown = true; return; }
         std::unordered_set<std::string> frame;
-        for (const auto& p : params) frame.insert(p->get_name()->get_name());
+        for (const auto& p : params) {
+            if (p && p->get_name()) frame.insert(p->get_name()->get_name());
+        }
         for (const auto& info : declared) {
             if (!info.is_lexical) frame.insert(info.name);  // var/function: function-wide
         }
@@ -2419,16 +2421,16 @@ bool BytecodeCompiler::references_identifier(const ASTNode* node, const std::str
 // linkage (declared in BytecodeCompiler.h): called from FunctionExpression::
 // evaluate, which caches the result per AST node instead of recomputing it
 // on every instantiation.
-bool closure_needs_outer_environment(const std::vector<std::unique_ptr<Parameter>>& params,
+bool closure_needs_outer_environment(const ParamList& params,
                                       const ASTNode* body, bool is_arrow) {
-    for (const auto& p : params) {
-        if (p->has_destructuring() || p->has_default()) return true;
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (params.has_pattern(pidx) || params.has_default(pidx)) return true;
     }
     std::vector<DeclInfo> declared;
     if (!prescan_declarations(body, declared)) return true;
     std::vector<std::unordered_set<std::string>> scope_stack;
     std::unordered_set<std::string> frame;
-    for (const auto& p : params) frame.insert(p->get_name()->get_name());
+    for (size_t pidx = 0; pidx < params.size(); pidx++) frame.insert(params.name(pidx));
     for (const auto& info : declared) {
         if (!info.is_lexical) frame.insert(info.name);
     }
@@ -3667,7 +3669,7 @@ void drop_shadowed_annexb_fn_vars(std::vector<DeclInfo>& declared,
 }
 
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
-    const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
+    const ASTNode* body, const ParamList& params,
     bool suspendable, bool is_arrow, bool is_strict,
     const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
     const BodyScopeInfo* scope_info) {
@@ -3682,24 +3684,24 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // fresh (not run()-auto-bound) slot, and destructuring only knows how
     // to bind through a real Environment.
     bool has_complex_params = false;
-    for (const auto& p : params) {
-        if (p->has_default() || p->has_destructuring() || p->is_rest()) {
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (params.has_default(pidx) || params.has_pattern(pidx) || params.is_rest(pidx)) {
             has_complex_params = true;
             break;
         }
     }
     // Rest is always the last parameter (grammar); everything before it
     // occupies a fixed position that run() auto-binds by index.
-    bool has_rest = !params.empty() && params.back()->is_rest();
+    bool has_rest = !params.empty() && params.is_rest(params.size() - 1);
     size_t fixed_param_count = has_rest ? params.size() - 1 : params.size();
 
     std::vector<std::string> param_names;  // excludes rest -- see CreateRestArray below
     std::string rest_name;
     bool arguments_is_param = false;
-    for (const auto& p : params) {
-        const std::string& pname = p->get_name()->get_name();
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        const std::string& pname = params.name(pidx);
         if (pname == "arguments") arguments_is_param = true;
-        if (p->is_rest()) {
+        if (params.is_rest(pidx)) {
             rest_name = pname;
         } else {
             param_names.push_back(pname);
@@ -3727,9 +3729,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // expression can reference it too (spec: it exists during parameter
     // evaluation already).
     bool needs_arguments = uses_arguments(body);
-    for (const auto& p : params) {
-        if (p->has_default() && uses_arguments(p->get_default_value())) needs_arguments = true;
-        if (p->has_destructuring() && uses_arguments(p->get_destructuring_pattern())) needs_arguments = true;
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (params.has_default(pidx) && uses_arguments(params.default_value(pidx))) needs_arguments = true;
+        if (params.has_pattern(pidx) && uses_arguments(params.pattern(pidx))) needs_arguments = true;
     }
     // Shadowing is covered too: a true duplicate name always has a nested
     // occurrence (a top-level dup is already a parser SyntaxError).
@@ -3773,9 +3775,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // rules the entry sequence does not set up: it reads the parameter names and
     // the arguments conflict off the calling context.
     bool param_eval = false;
-    for (const auto& p : params) {
-        const ASTNode* pe = p->has_default() ? p->get_default_value()
-                          : p->has_destructuring() ? p->get_destructuring_pattern() : nullptr;
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        const ASTNode* pe = params.has_default(pidx) ? params.default_value(pidx)
+                          : params.has_pattern(pidx) ? params.pattern(pidx) : nullptr;
         if (!pe) continue;
         std::unordered_set<std::string> pn;
         ScanOpacity pe_op;
@@ -3787,9 +3789,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // has the implicit binding; an arrow only when a parameter carries the name.
     bool param_args_conflict = !is_arrow;
     if (!param_args_conflict) {
-        for (const auto& p : params) {
-            if (p->is_rest() || p->has_destructuring()) continue;
-            if (p->get_name() && p->get_name()->get_name() == "arguments") {
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (params.is_rest(pidx) || params.has_pattern(pidx)) continue;
+            if (params.name(pidx) == "arguments") {
                 param_args_conflict = true;
                 break;
             }
@@ -4107,11 +4109,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // the body declares. Only this shape pays for it.
     bool split_param_scope = false;
     bool param_expressions = false;
-    for (const auto& p : params) {
-        if (p->is_rest()) continue;
-        if (p->has_default() || p->has_destructuring()) param_expressions = true;
-        if ((p->has_default() && contains_closure(p->get_default_value())) ||
-            (p->has_destructuring() && contains_closure(p->get_destructuring_pattern()))) {
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (params.is_rest(pidx)) continue;
+        if (params.has_default(pidx) || params.has_pattern(pidx)) param_expressions = true;
+        if ((params.has_default(pidx) && contains_closure(params.default_value(pidx))) ||
+            (params.has_pattern(pidx) && contains_closure(params.pattern(pidx)))) {
             split_param_scope = true;
         }
     }
@@ -4248,9 +4250,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // into env_locals: BindEnvLocals runs after the parameter patterns have
     // bound and would reset them to undefined; StaEnvInit creates the binding.
     if (env_mode) {
-        for (const auto& p : params) {
-            if (!p->has_destructuring()) continue;
-            const ASTNode* pat = p->get_destructuring_pattern();
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (!params.has_pattern(pidx)) continue;
+            const ASTNode* pat = params.pattern(pidx);
             if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) continue;
             std::vector<std::string> bound;
             static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
@@ -4301,9 +4303,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // BytecodeChunk::env_params_tdz): params seed uninitialized, and each
     // one initializes left to right from its register-held raw argument.
     bool params_tdz = false;
-    for (const auto& p : params) {
-        if (p->is_rest()) continue;
-        if (p->has_default() || p->has_destructuring()) params_tdz = true;
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (params.is_rest(pidx)) continue;
+        if (params.has_default(pidx) || params.has_pattern(pidx)) params_tdz = true;
     }
     // Op::BindEnvLocals already decides where the body's bindings go, and it
     // makes one scope for all of them; the lexicals-only split is the entry
@@ -4332,34 +4334,35 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
     {
         uint8_t param_index = 0;
-        for (const auto& p : params) {
-            if (p->is_rest()) continue;  // handled below, after BindEnvLocals
-            if (!params_tdz && !p->has_default() && !p->has_destructuring()) {
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (params.is_rest(pidx)) continue;  // handled below, after BindEnvLocals
+            if (!params_tdz && !params.has_default(pidx) && !params.has_pattern(pidx)) {
                 param_index++;
                 continue;
             }
-            const std::string& pname = p->get_name()->get_name();
+            const std::string& pname = params.name(pidx);
             if (params_tdz) {
                 compiler.emit(Op::Ldar);
                 compiler.emit_u8(param_index);
             } else {
                 compiler.emit_read_local(pname);
             }
-            if (p->has_default()) {
+            if (params.has_default(pidx)) {
                 // A class default has to be named before its static
                 // initializers run, which Op::SetFunctionNameIfUnnamed is too
                 // late for -- same reason the assignment forms delegate.
-                stamp_inferred_class_name(p->get_default_value(), pname);
+                stamp_inferred_class_name(params.default_value(pidx), pname);
                 size_t skip = compiler.emit_jump(Op::JumpIfNotUndefined);
-                if (!compiler.compile_expression(p->get_default_value())) return nullptr;
-                if (!p->has_destructuring() && is_named_evaluation_rhs(p->get_default_value())) {
+                if (!compiler.compile_expression(params.default_value(pidx))) return nullptr;
+                if (!params.has_pattern(pidx) && is_named_evaluation_rhs(params.default_value(pidx))) {
                     compiler.emit(Op::SetFunctionNameIfUnnamed);
                     compiler.emit_u16(compiler.add_name(pname));
                 }
                 if (!compiler.patch_jump(skip)) return nullptr;
             }
-            if (p->has_destructuring()) {
-                auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
+            if (params.has_pattern(pidx)) {
+                auto* destr = const_cast<DestructuringAssignment*>(
+                    static_cast<const DestructuringAssignment*>(params.pattern(pidx)));
                 const ASTNode* lit = destr->get_pattern_literal();
                 if (!compiler.pattern_is_emittable(lit, true)) return nullptr;
                 if (!compiler.emit_pattern_bind(lit, true, false)) return nullptr;
@@ -4375,11 +4378,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // bindings exist: a `var` a direct eval in its initializer declares belongs
     // among the parameters, which is where the list's own closures look.
     if (has_rest) {
-        const auto& p = params.back();
+        const size_t last = params.size() - 1;
         compiler.emit(Op::CreateRestArray);
         compiler.emit_u8(static_cast<uint8_t>(fixed_param_count));
-        if (p->has_destructuring()) {
-            auto* destr = static_cast<DestructuringAssignment*>(p->get_destructuring_pattern());
+        if (params.has_pattern(last)) {
+            auto* destr = const_cast<DestructuringAssignment*>(
+                static_cast<const DestructuringAssignment*>(params.pattern(last)));
             const ASTNode* lit = destr->get_pattern_literal();
             if (!compiler.pattern_is_emittable(lit, true)) return nullptr;
             if (!compiler.emit_pattern_bind(lit, true, false)) return nullptr;
@@ -4825,7 +4829,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
 std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_default_value(const ASTNode* expr,
                                                                       bool suspendable) {
     static const std::vector<std::unique_ptr<Parameter>> no_params;
-    auto chunk = compile(expr, no_params, suspendable, /*is_arrow=*/false, /*is_strict=*/false,
+    auto chunk = compile(expr, ParamList::from_nodes(no_params), suspendable, /*is_arrow=*/false, /*is_strict=*/false,
                          /*env_bound=*/nullptr, /*outer_with=*/false, /*allow_arguments=*/true);
     return chunk;
 }

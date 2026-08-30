@@ -304,9 +304,6 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // Errors during param evaluation must reject the promise, not propagate synchronously.
     const auto& param_objs = get_parameter_objects();
     bool param_named_arguments = false;
-    for (const auto& p : param_objs) {
-        if (p->get_name() && p->get_name()->get_name() == "arguments") param_named_arguments = true;
-    }
     for (const auto& p : get_parameters()) {
         if (p == "arguments") param_named_arguments = true;
     }
@@ -319,6 +316,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // check defaults/destructuring for `arguments` separately.
     bool params_need_arguments = false;
     for (const auto& p : param_objs) {
+        if (!p) continue;
         if ((p->has_default() && BytecodeCompiler::references_arguments(p->get_default_value())) ||
             (p->has_destructuring() && BytecodeCompiler::references_arguments(p->get_destructuring_pattern()))) {
             params_need_arguments = true;
@@ -348,52 +346,57 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
 
     if (!param_objs.empty()) {
         size_t regular_count = 0;
-        for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
+        for (size_t i = 0; i < param_objs.size(); i++) {
+            if (!param_is_rest(i)) regular_count++;
+        }
         {
             std::unordered_set<std::string> pnames;
-            for (const auto& p : param_objs) {
-                if (p->get_name() && !p->get_name()->get_name().empty())
-                    pnames.insert(p->get_name()->get_name());
+            for (const auto& n : get_parameters()) {
+                if (!n.empty()) pnames.insert(n);
             }
             exec_ctx->set_eval_param_names(std::move(pnames));
         }
         exec_ctx->set_in_param_eval(true);
         for (size_t i = 0; i < param_objs.size(); ++i) {
-            const auto& param = param_objs[i];
-            if (param->is_rest()) {
+            const Parameter* param = param_objs[i].get();
+            // Only a parameter carrying something to run keeps a node; the
+            // rest are a name and a bit.
+            const std::string& pname_i = get_parameters()[i];
+            if (param_is_rest(i)) {
                 auto rest_arr = ObjectFactory::create_array(0);
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
                 Value rest_val(rest_arr.release());
-                if (param->has_destructuring()) {
-                    VM::run_pattern_binder(param.get(), *exec_ctx, rest_val);
+                if (param && param->has_destructuring()) {
+                    VM::run_pattern_binder(param, *exec_ctx, rest_val);
                     if (exec_ctx->has_exception()) {
                         exec_ctx->set_in_param_eval(false);
                         promise_raw->reject(exec_ctx->get_exception());
                         return promise_value;
                     }
                 } else {
-                    exec_ctx->create_binding(param->get_name()->get_name(), rest_val, false);
+                    exec_ctx->create_binding(pname_i, rest_val, false);
                 }
             } else {
-                std::string pname = param->get_name() ? param->get_name()->get_name() : "";
+                const std::string& pname = pname_i;
                 // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
-                if (!pname.empty() && pname != "arguments" && !param->has_destructuring()) {
+                if (!pname.empty() && pname != "arguments" &&
+                    !(param && param->has_destructuring())) {
                     if (exec_ctx->get_lexical_environment())
                         exec_ctx->get_lexical_environment()->create_uninitialized_binding(pname);
                 }
                 Value arg_val;
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
-                } else if (param->has_default()) {
-                    arg_val = VM::run_default_value(param.get(), *exec_ctx);
+                } else if (param && param->has_default()) {
+                    arg_val = VM::run_default_value(param, *exec_ctx);
                     if (exec_ctx->has_exception()) {
                         exec_ctx->set_in_param_eval(false);
                         promise_raw->reject(exec_ctx->get_exception());
                         return promise_value;
                     }
                 }
-                if (param->has_destructuring()) {
-                    VM::run_pattern_binder(param.get(), *exec_ctx, arg_val);
+                if (param && param->has_destructuring()) {
+                    VM::run_pattern_binder(param, *exec_ctx, arg_val);
                     if (exec_ctx->has_exception()) {
                         exec_ctx->set_in_param_eval(false);
                         promise_raw->reject(exec_ctx->get_exception());
@@ -422,7 +425,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     {
         bool has_complex_params = false;
         for (const auto& p : param_objs) {
-            if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
+            if (p && (p->has_default() || p->has_destructuring())) { has_complex_params = true; break; }
         }
         if (has_complex_params) {
             // Captured before the push: the parameters stay in this scope, and
@@ -1629,25 +1632,29 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
     const auto& param_objs = get_parameter_objects();
     if (!param_objs.empty()) {
         size_t regular_count = 0;
-        for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
+        for (size_t i = 0; i < param_objs.size(); i++) {
+            if (!param_is_rest(i)) regular_count++;
+        }
         gen_ctx->set_eval_arguments_conflict(true);
         {
             std::unordered_set<std::string> pnames;
-            for (const auto& p : param_objs) {
-                if (p->get_name() && !p->get_name()->get_name().empty())
-                    pnames.insert(p->get_name()->get_name());
+            for (const auto& n : get_parameters()) {
+                if (!n.empty()) pnames.insert(n);
             }
             gen_ctx->set_eval_param_names(std::move(pnames));
         }
         gen_ctx->set_in_param_eval(true);
         for (size_t i = 0; i < param_objs.size(); ++i) {
-            const auto& param = param_objs[i];
-            if (param->is_rest()) {
+            const Parameter* param = param_objs[i].get();
+            // Only a parameter carrying something to run keeps a node; the
+            // rest are a name and a bit.
+            const std::string& pname_i = get_parameters()[i];
+            if (param_is_rest(i)) {
                 auto rest_arr = ObjectFactory::create_array(0);
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
                 Value rest_val(rest_arr.release());
-                if (param->has_destructuring()) {
-                    VM::run_pattern_binder(param.get(), *gen_ctx, rest_val);
+                if (param && param->has_destructuring()) {
+                    VM::run_pattern_binder(param, *gen_ctx, rest_val);
                     if (gen_ctx->has_exception()) {
                         gen_ctx->set_in_param_eval(false);
                         ctx.throw_exception(gen_ctx->get_exception(), true);
@@ -1657,25 +1664,25 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
                     gen_ctx->create_binding(param->get_name()->get_name(), rest_val, false);
                 }
             } else {
-                const std::string& pname = param->get_name() ? param->get_name()->get_name() : std::string();
+                const std::string& pname = pname_i;
                 // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
-                if (!pname.empty() && !param->has_destructuring()) {
+                if (!pname.empty() && !(param && param->has_destructuring())) {
                     if (gen_ctx->get_lexical_environment())
                         gen_ctx->get_lexical_environment()->create_uninitialized_binding(pname);
                 }
                 Value arg_val;
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
-                } else if (param->has_default()) {
-                    arg_val = VM::run_default_value(param.get(), *gen_ctx);
+                } else if (param && param->has_default()) {
+                    arg_val = VM::run_default_value(param, *gen_ctx);
                     if (gen_ctx->has_exception()) {
                         gen_ctx->set_in_param_eval(false);
                         ctx.throw_exception(gen_ctx->get_exception(), true);
                         return Value();
                     }
                 }
-                if (param->has_destructuring()) {
-                    VM::run_pattern_binder(param.get(), *gen_ctx, arg_val);
+                if (param && param->has_destructuring()) {
+                    VM::run_pattern_binder(param, *gen_ctx, arg_val);
                     {
                         if (gen_ctx->has_exception()) {
                             gen_ctx->set_in_param_eval(false);
@@ -1709,6 +1716,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
     // check defaults/destructuring for `arguments` separately.
     bool params_need_arguments = false;
     for (const auto& p : param_objs) {
+        if (!p) continue;
         if ((p->has_default() && BytecodeCompiler::references_arguments(p->get_default_value())) ||
             (p->has_destructuring() && BytecodeCompiler::references_arguments(p->get_destructuring_pattern()))) {
             params_need_arguments = true;
@@ -1737,7 +1745,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
     {
         bool has_complex_params = false;
         for (const auto& p : param_objs) {
-            if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
+            if (p && (p->has_default() || p->has_destructuring())) { has_complex_params = true; break; }
         }
         if (has_complex_params) {
             // Captured before the push: the parameters stay in this scope, and

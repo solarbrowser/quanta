@@ -7,6 +7,7 @@
 #ifndef QUANTA_VM_BYTECODE_COMPILER_H
 #define QUANTA_VM_BYTECODE_COMPILER_H
 
+#include "quanta/parser/FunctionExecutable.h"
 #include "quanta/core/vm/Bytecode.h"
 #include "quanta/parser/ScriptUnit.h"
 #include <memory>
@@ -38,7 +39,7 @@ public:
     // repeats a parameter's name would otherwise be given a register nothing
     // ever fills.
     static std::unique_ptr<BytecodeChunk> compile(
-        const ASTNode* body, const std::vector<std::unique_ptr<Parameter>>& params,
+        const ASTNode* body, const ParamList& params,
         bool suspendable = false,
                                                  bool is_arrow = false,
                                                  bool is_strict = false,
@@ -393,7 +394,7 @@ private:
 // scope's Environment (Function::capture_closure_environment's mark_escaped)
 // is actually necessary, instead of doing it unconditionally for every
 // closure regardless of whether anything inside it can ever observe it.
-bool closure_needs_outer_environment(const std::vector<std::unique_ptr<Parameter>>& params,
+bool closure_needs_outer_environment(const ParamList& params,
                                       const ASTNode* body, bool is_arrow);
 
 }

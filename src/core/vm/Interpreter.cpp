@@ -6194,7 +6194,7 @@ Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {
     // is already running on -- so the chunk is built suspendable and the
     // opcode does the suspending, exactly as it would in the body itself.
     const bool suspends = BytecodeCompiler::expression_suspends(expr);
-    auto chunk = BytecodeCompiler::compile(expr, no_params, suspends,
+    auto chunk = BytecodeCompiler::compile(expr, ParamList::from_nodes(no_params), suspends,
                                            /*is_arrow=*/false, /*is_strict=*/false,
                                            /*env_bound=*/nullptr, outer_with);
     if (!chunk) return Value();
@@ -6211,7 +6211,7 @@ std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
                                                    bool outer_with) {
     if (!body) return nullptr;
     static const std::vector<std::unique_ptr<Parameter>> no_params;
-    auto chunk = BytecodeCompiler::compile(body, no_params, /*suspendable=*/true,
+    auto chunk = BytecodeCompiler::compile(body, ParamList::from_nodes(no_params), /*suspendable=*/true,
                                            /*is_arrow=*/false, /*is_strict=*/false, &env_bound,
                                            outer_with);
     if (!chunk) return nullptr;

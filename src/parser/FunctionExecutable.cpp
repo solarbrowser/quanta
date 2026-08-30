@@ -45,6 +45,74 @@ FunctionExecutable::~FunctionExecutable() {
     if (live_next_) live_next_->live_prev_ = live_prev_;
 }
 
+bool FunctionExecutable::param_has_default(size_t i) const {
+    return parameter_objects[i] && parameter_objects[i]->has_default();
+}
+
+bool FunctionExecutable::param_has_pattern(size_t i) const {
+    return parameter_objects[i] && parameter_objects[i]->has_destructuring();
+}
+
+size_t ParamList::size() const {
+    return names ? names->size() : (nodes ? nodes->size() : 0);
+}
+const std::string& ParamList::name(size_t i) const {
+    static const std::string kEmpty;
+    if (names) return (*names)[i];
+    const Parameter* p = node(i);
+    return p && p->get_name() ? p->get_name()->get_name() : kEmpty;
+}
+bool ParamList::is_rest(size_t i) const {
+    if (const Parameter* p = node(i)) return p->is_rest();
+    return rest_last && i + 1 == size();
+}
+bool ParamList::has_default(size_t i) const {
+    const Parameter* p = node(i);
+    return p && p->has_default();
+}
+bool ParamList::has_pattern(size_t i) const {
+    const Parameter* p = node(i);
+    return p && p->has_destructuring();
+}
+const ASTNode* ParamList::default_value(size_t i) const {
+    const Parameter* p = node(i);
+    return p ? p->get_default_value() : nullptr;
+}
+const ASTNode* ParamList::pattern(size_t i) const {
+    const Parameter* p = node(i);
+    return p ? p->get_destructuring_pattern() : nullptr;
+}
+
+ParamList FunctionExecutable::param_list() const {
+    ParamList l;
+    l.nodes = &parameter_objects;
+    l.names = &parameters;
+    l.rest_last = has_rest_param_;
+    return l;
+}
+
+void FunctionExecutable::add_parameter_owned(std::unique_ptr<Parameter> p) {
+    if (!p) return;
+    if (p->is_rest()) has_rest_param_ = true;
+    parameters.push_back(p->get_name() ? p->get_name()->get_name() : std::string());
+    const bool keep = p->has_default() || p->has_destructuring();
+    parameter_objects.push_back(keep ? std::move(p) : nullptr);
+}
+
+void FunctionExecutable::add_parameter(const Parameter& p, bool copy) {
+    if (p.is_rest()) has_rest_param_ = true;
+    parameters.push_back(p.get_name() ? p.get_name()->get_name() : std::string());
+    // Only a parameter with something to run keeps its node; a name and a bit
+    // say everything about the rest of them.
+    if (p.has_default() || p.has_destructuring()) {
+        parameter_objects.push_back(
+            copy ? std::unique_ptr<Parameter>(static_cast<Parameter*>(p.clone().release()))
+                 : std::unique_ptr<Parameter>());
+    } else {
+        parameter_objects.push_back(nullptr);
+    }
+}
+
 void FunctionExecutable::gc_trace_roots(Visitor& v) {
     for (FunctionExecutable* exe = live_head_; exe; exe = exe->live_next_) {
         if (exe->bytecode_chunk) exe->bytecode_chunk->trace(v);

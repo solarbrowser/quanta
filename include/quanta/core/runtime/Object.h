@@ -1484,6 +1484,8 @@ public:
     // destructor needs Parameter complete, which this header can't provide
     // (only forward-declared here to avoid a runtime->parser header cycle).
     const std::vector<std::unique_ptr<class Parameter>>& get_parameter_objects() const;
+    // A parameter that is only a name keeps no node; these answer for it.
+    bool param_is_rest(size_t i) const;
     const ASTNode* get_body() const { return ast_body(); }
     size_t get_arity() const { return get_parameters().size(); }
     bool is_native() const { return is_native_; }
