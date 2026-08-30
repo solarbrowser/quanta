@@ -23,6 +23,22 @@ namespace Quanta {
 class BytecodeChunk;
 
 namespace ast_detail {
+// Whether a literal being copied keeps pointing at the source it was written
+// in. Off by default: a copy is not owned by the unit that parsed it, so the
+// pointer would outlive nothing in particular. A copier that keeps the unit
+// alive itself turns it on for the length of the copy -- which is what lets a
+// function or class written inside one still report its own text.
+inline bool& clone_keeps_source_flag() {
+    static thread_local bool on = false;
+    return on;
+}
+inline bool clone_keeps_source() { return clone_keeps_source_flag(); }
+struct CloneSourceScope {
+    bool saved = clone_keeps_source_flag();
+    CloneSourceScope() { clone_keeps_source_flag() = true; }
+    ~CloneSourceScope() { clone_keeps_source_flag() = saved; }
+};
+
 // A literal records its body span exactly once, and literals are constructed
 // innermost-first, so the span recorded immediately before this one belongs to
 // this body's last inner literal if it has any. One pair of counters answers

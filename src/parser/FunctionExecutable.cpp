@@ -67,6 +67,12 @@ static bool opens_with_use_strict(const ASTNode* node) {
            static_cast<const BlockStatement*>(node)->has_use_strict_directive();
 }
 
+void FunctionExecutable::adopt_body_from(std::unique_ptr<ASTNode> node,
+                                        const ExecutableRef<ScriptUnit>& unit) {
+    adopt_body(std::move(node));
+    unit_ = unit;
+}
+
 void FunctionExecutable::adopt_body(std::unique_ptr<ASTNode> node) {
     owned_body_ = std::move(node);
     unit_ = ExecutableRef<ScriptUnit>();

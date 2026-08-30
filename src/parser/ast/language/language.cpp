@@ -646,7 +646,8 @@ std::unique_ptr<ASTNode> FunctionDeclaration::clone() const {
     );
     // The source range is recorded post-construction, so clone() must carry it
     // (and the unit it points into) explicitly or toString() loses the source.
-    cloned->set_source_ref(nullptr, src_start_, src_end_);
+    cloned->set_source_ref(
+        ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
     return cloned;
 }
 
@@ -1821,7 +1822,8 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
             start_, end_
         );
     }
-    cloned->set_source_ref(nullptr, src_start_, src_end_);
+    cloned->set_source_ref(
+        ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
     cloned->set_is_expression(is_expression_);
     // The name a site infers belongs to the site, so a copy of it answers the
     // same. Dropping it left an anonymous class expression nameless wherever
@@ -1939,7 +1941,8 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
     );
     // The source range is recorded post-construction, so clone() must carry it
     // (and the unit it points into) explicitly or toString() loses the source.
-    cloned->set_source_ref(nullptr, src_start_, src_end_);
+    cloned->set_source_ref(
+        ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
     cloned->set_decl_form(is_decl_form_);
     cloned->set_method_shorthand(is_method_shorthand_);
     return cloned;
@@ -1985,7 +1988,8 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
     );
     // The source range is recorded post-construction, so clone() must carry it
     // (and the unit it points into) explicitly or toString() loses the source.
-    cloned->set_source_ref(nullptr, src_start_, src_end_);
+    cloned->set_source_ref(
+        ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
     return cloned;
 }
 

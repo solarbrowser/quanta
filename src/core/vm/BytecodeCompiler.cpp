@@ -8278,9 +8278,14 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 ClosureTemplate tmpl;
                 auto exe = make_executable_ref();
                 // Owned, not borrowed: the tree this was written in can be a
-                // clone the class's own evaluation made and then dropped, and
-                // a borrowed body would outlive it.
-                exe->adopt_body(e.init->clone());
+                // copy the class's own evaluation made and then dropped, and a
+                // borrowed body would outlive it. The copy keeps pointing at
+                // the source, which the executable holds alive for it.
+                ExecutableRef<ScriptUnit> unit(cls->source_unit());
+                {
+                    ast_detail::CloneSourceScope keep_source;
+                    exe->adopt_body_from(e.init->clone(), unit);
+                }
                 tmpl.executable = std::move(exe);
                 tmpl.form = ClosureTemplate::Form::FunctionExpr;
                 tmpl.body_is_strict = true;
@@ -8386,7 +8391,11 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         if (se.body) {
             ClosureTemplate tmpl;
             auto exe = make_executable_ref();
-            exe->adopt_body(se.body->clone());
+            ExecutableRef<ScriptUnit> unit(cls->source_unit());
+            {
+                ast_detail::CloneSourceScope keep_source;
+                exe->adopt_body_from(se.body->clone(), unit);
+            }
             tmpl.executable = std::move(exe);
             tmpl.form = ClosureTemplate::Form::FunctionExpr;
             tmpl.body_is_strict = true;

@@ -133,6 +133,9 @@ public:
     // keeps that node alive, so a later eval-like path cannot quietly leave a
     // dangling body behind.
     void adopt_body(std::unique_ptr<ASTNode> node);
+    // Owns the body and keeps the unit it was copied out of alive, so a
+    // literal inside it can still report its own source text.
+    void adopt_body_from(std::unique_ptr<ASTNode> node, const ExecutableRef<ScriptUnit>& unit);
     void borrow_body(const ExecutableRef<ScriptUnit>& unit, ASTNode* node);
     // Third form: keep the unit and the source range the body occupies in it,
     // but not the body. Only ever used for a LEAF body -- one holding no
