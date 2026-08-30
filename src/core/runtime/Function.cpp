@@ -986,17 +986,21 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                 // leaving the constants permanently unmarked -- a real
                 // dangling-pointer bug once sweep runs, not just a diagnostic.
                 Collector::write_barrier(this);
-                // The tree it was read back for has become bytecode. A chunk
-                // that kept AST nodes of its own -- a class body, a module
-                // declaration -- still points into it; one that did not can
-                // let it go and read it again if anything ever asks.
-                // Two things can still point into it: AST nodes the chunk kept
-                // for itself, and the executables of any function written
-                // inside it, which borrow their bodies out of the same tree.
-                if (!executable_->bytecode_chunk->keeps_ast_nodes() &&
-                    !executable_->bytecode_chunk->closures) {
-                    executable_->release_rebuilt_body();
+                // The tree it was read back for has become bytecode, and can
+                // go unless something still points into it: AST nodes the
+                // chunk kept for itself, or a function written inside it whose
+                // executable borrows its body out of the same tree. A literal
+                // that kept a range instead borrows nothing, which is what
+                // most of them do now -- so asking is worth more than assuming
+                // that any closure at all means the tree is pinned.
+                const BytecodeChunk* built = executable_->bytecode_chunk.get();
+                bool pinned = built->keeps_ast_nodes();
+                if (!pinned && built->closures) {
+                    for (const auto& t : *built->closures) {
+                        if (t.executable && t.executable->borrows_body()) { pinned = true; break; }
+                    }
                 }
+                if (!pinned) executable_->release_rebuilt_body();
                 static const bool disasm = [] {
                     const char* env = std::getenv("QUANTA_VM_DISASM");
                     return env && env[0] == '1';
