@@ -14,6 +14,13 @@ namespace Quanta {
 namespace {
 struct SizeClassPool {
     static constexpr size_t kPerClassCap = 16384;
+    // What a class's free list starts out able to hold. It used to start at
+    // the cap, so every distinct size ever asked for cost a 128 KB vector of
+    // pointers at once whether or not that many blocks were ever in flight --
+    // and a real program produces a hundred and more distinct sizes, because
+    // an object's storage grows in two independent dimensions. The list now
+    // grows towards the cap only as churn actually fills it.
+    static constexpr size_t kInitialClassCap = 32;
     std::vector<std::pair<size_t, std::vector<void*>>> classes;
 
     // Which free list a byte size belongs to. This used to be found by
@@ -62,15 +69,29 @@ struct SizeClassPool {
         if (!slot) return nullptr;
         if (*slot == kNoClass) {
             *slot = static_cast<uint32_t>(classes.size());
-            // Reserve now: so the push_back in give() can NEVER reallocate/throw
-            // -- deallocate() is noexcept, and a bad_alloc during that realloc
-            // would call std::terminate() (not far-fetched during a GC sweep,
-            // when many maps get torn down in a batch).
+            // Reserve now, and reserve again only from take(): the push_back
+            // in give() must NEVER reallocate or throw -- deallocate() is
+            // noexcept, and a bad_alloc during that realloc would call
+            // std::terminate() (not far-fetched during a GC sweep, when many
+            // maps get torn down in a batch). That is what give()'s test
+            // against capacity keeps true.
             classes.push_back({bytes, {}});
-            classes.back().second.reserve(kPerClassCap);
+            classes.back().second.reserve(kInitialClassCap);
             return nullptr;
         }
         std::vector<void*>& free_list = classes[*slot].second;
+        // Growth happens here and only here. give() is noexcept, so it may
+        // never be the one to reallocate; it pushes while there is room and
+        // hands the block back to the allocator when there is not. A list
+        // found full is one that has been turning blocks away, so this is
+        // where the class earns a larger one.
+        if (free_list.size() == free_list.capacity() &&
+            free_list.capacity() < kPerClassCap) {
+            size_t next = free_list.capacity() ? free_list.capacity() * 2
+                                               : kInitialClassCap;
+            if (next > kPerClassCap) next = kPerClassCap;
+            free_list.reserve(next);
+        }
         if (free_list.empty()) return nullptr;
         void* p = free_list.back();
         free_list.pop_back();
@@ -84,7 +105,8 @@ struct SizeClassPool {
             return;
         }
         std::vector<void*>& free_list = classes[*slot].second;
-        if (free_list.size() < kPerClassCap) free_list.push_back(p);
+        // Against capacity, not against the cap: this must not reallocate.
+        if (free_list.size() < free_list.capacity()) free_list.push_back(p);
         else ::operator delete(p);
     }
 };
