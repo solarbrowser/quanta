@@ -307,7 +307,7 @@ private:
     //
     // Null on a sequence that was tokenized in full, which is every sequence
     // small enough not to matter: a template substitution, a body lexed back
-    // on demand, a `new Function` source.
+    // on demand.
     std::shared_ptr<Lexer> lexer_;
     bool eof_seen_ = false;
     bool strict_directive_seen_ = false;

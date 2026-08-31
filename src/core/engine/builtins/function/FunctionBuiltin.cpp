@@ -102,10 +102,14 @@ void register_function_builtins(Context& ctx) {
             std::string().swap(body);
 
             try {
-                Lexer lexer(func_code, Lexer::LexerOptions{});
-                TokenSequence tokens = lexer.tokenize();
-                // Hand the tokens over rather than copying them: for a big
-                // source this vector is the largest thing in the process.
+                // Streamed rather than tokenized in full. This path assumed a
+                // `new Function` source was small enough for that not to
+                // matter; a real script builds one out of megabytes of text,
+                // and laying every token of it out at once was the single
+                // largest thing in the process while it did.
+                Lexer::LexerOptions lex_opts;
+                TokenSequence tokens = Lexer::stream(func_code, lex_opts);
+                // Moved, not copied: the parser takes the sequence by value.
                 Parser parser(std::move(tokens));
                 parser.set_source(func_code);
                 // The tree outlives this call inside the function being built,
