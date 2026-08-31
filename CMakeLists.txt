@@ -185,6 +185,35 @@ endif()
 add_library(utf8proc STATIC ${UTF8PROC_DIR}/utf8proc.c)
 target_compile_definitions(utf8proc PRIVATE UTF8PROC_STATIC)
 target_include_directories(utf8proc PUBLIC ${UTF8PROC_DIR})
+# ---------------------------------------------------------------------------
+# mimalloc (allocator behind C++ operator new)
+# ---------------------------------------------------------------------------
+set(MIMALLOC_DIR ${CMAKE_SOURCE_DIR}/third_party/mimalloc)
+
+if(NOT EXISTS "${MIMALLOC_DIR}/src/static.c")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        message(STATUS "Initializing mimalloc submodule...")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init third_party/mimalloc
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            RESULT_VARIABLE MIMALLOC_SUBMODULE_RESULT
+        )
+        if(NOT MIMALLOC_SUBMODULE_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to initialize mimalloc submodule.")
+        endif()
+    else()
+        message(FATAL_ERROR "Git not found and mimalloc submodule is missing.")
+    endif()
+endif()
+
+# One object for the whole library: src/static.c includes every other source.
+# No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and only
+# C++ operator new is redirected -- see src/core/runtime/MiMalloc.cpp.
+add_library(mimalloc-static STATIC ${MIMALLOC_DIR}/src/static.c)
+target_include_directories(mimalloc-static PUBLIC ${MIMALLOC_DIR}/include)
+target_compile_definitions(mimalloc-static PRIVATE NDEBUG)
+
 set_target_properties(utf8proc PROPERTIES
     C_STANDARD 99
     POSITION_INDEPENDENT_CODE ON
@@ -218,6 +247,13 @@ file(GLOB_RECURSE PARSER_SOURCES
 )
 
 # Create static library
+# Replacing operator new only counts if the object that does it is actually
+# linked, and an archive member is pulled in only to resolve an undefined
+# symbol -- which operator new never is, because the standard library already
+# defines it. Compiled into the executable instead of into quantalib.
+set(MIMALLOC_OVERRIDE ${CMAKE_SOURCE_DIR}/src/core/runtime/MiMalloc.cpp)
+list(REMOVE_ITEM CORE_SOURCES ${MIMALLOC_OVERRIDE})
+
 add_library(quantalib STATIC
     ${CORE_SOURCES}
     ${LEXER_SOURCES}
@@ -236,14 +272,16 @@ target_include_directories(quantalib PUBLIC
     ${PCRE2_DIR}
     ${UTF8PROC_DIR}
     ${CMAKE_SOURCE_DIR}/third_party/minicoro
+    ${MIMALLOC_DIR}/include
 )
 
 target_compile_definitions(quantalib PUBLIC UTF8PROC_STATIC)
-target_link_libraries(quantalib PUBLIC pcre2-8 utf8proc)
+target_link_libraries(quantalib PUBLIC pcre2-8 utf8proc mimalloc-static)
 
 # Console executable
 add_executable(quanta
     ${CMAKE_SOURCE_DIR}/console.cpp
+    ${MIMALLOC_OVERRIDE}
 )
 
 # Link libraries

@@ -160,6 +160,9 @@ setup_pcre2() {
     if [[ ! -f "third_party/utf8proc/utf8proc.c" ]]; then
         git submodule update --init --recursive third_party/utf8proc || fail "Failed to initialize utf8proc submodule"
     fi
+    if [[ ! -f "third_party/mimalloc/src/static.c" ]]; then
+        git submodule update --init --recursive third_party/mimalloc || fail "Failed to initialize mimalloc submodule"
+    fi
     if [[ ! -f "$pcre2_src/config.h" ]]; then
         cp "$pcre2_configs/config.h" "$pcre2_src/config.h"
     fi
@@ -196,7 +199,7 @@ phase_configure() {
         "$OBJ_DIR/core/engine" "$OBJ_DIR/core/engine/builtins" "$OBJ_DIR/core/gc" \
         "$OBJ_DIR/core/modules" "$OBJ_DIR/core/runtime" "$OBJ_DIR/core/vm" \
         "$OBJ_DIR/lexer" "$OBJ_DIR/parser" "$OBJ_DIR/parser/ast" \
-        "$OBJ_DIR/pcre2" "$OBJ_DIR/utf8proc"
+        "$OBJ_DIR/pcre2" "$OBJ_DIR/utf8proc" "$OBJ_DIR/mimalloc"
 }
 
 phase_thirdparty() {
@@ -210,6 +213,10 @@ phase_thirdparty() {
     launch_job "third_party/utf8proc/utf8proc.c" clang "${UTF8PROC_FLAGS[@]}" \
         -c third_party/utf8proc/utf8proc.c -o "$obj"
     UTF8PROC_OBJECTS+=("$obj")
+    obj="$OBJ_DIR/mimalloc/static.o"
+    launch_job "third_party/mimalloc/src/static.c" clang "${MIMALLOC_FLAGS[@]}" \
+        -c third_party/mimalloc/src/static.c -o "$obj"
+    MIMALLOC_OBJECTS+=("$obj")
     collect_jobs
 }
 
@@ -251,7 +258,7 @@ phase_link() {
         "${CORE_ENGINE_OBJECTS[@]}" "${BUILTIN_OBJECTS[@]}" "${CORE_GC_OBJECTS[@]}"
         "${CORE_MODULE_OBJECTS[@]}" "${CORE_RUNTIME_OBJECTS[@]}" "${CORE_VM_OBJECTS[@]}"
         "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}"
-        "${PCRE2_OBJECTS[@]}" "${UTF8PROC_OBJECTS[@]}" "${LIBS[@]}")
+        "${PCRE2_OBJECTS[@]}" "${UTF8PROC_OBJECTS[@]}" "${MIMALLOC_OBJECTS[@]}" "${LIBS[@]}")
     [ "${#STACK_FLAGS[@]}" -gt 0 ] && link_args+=("${STACK_FLAGS[@]}")
     run_compile "console.cpp (link)" "$errfile" clang++ "${link_args[@]}"
 }
@@ -296,7 +303,7 @@ CXXFLAGS=(
     -pthread
 )
 
-INCLUDES=(-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro)
+INCLUDES=(-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include)
 
 PCRE2FLAGS=(
     -O3
@@ -312,6 +319,16 @@ UTF8PROC_FLAGS=(
     -DUTF8PROC_STATIC
     -Ithird_party/utf8proc
     -march=native
+    -fomit-frame-pointer
+)
+
+# One object for the whole library: src/static.c includes every other source.
+# No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and only
+# C++ operator new is redirected -- see src/core/runtime/MiMalloc.cpp.
+MIMALLOC_FLAGS=(
+    -O3
+    -DNDEBUG
+    -Ithird_party/mimalloc/include
     -fomit-frame-pointer
 )
 
@@ -385,6 +402,7 @@ TOTAL_FILES=$((
 
 PCRE2_OBJECTS=()
 UTF8PROC_OBJECTS=()
+MIMALLOC_OBJECTS=()
 CORE_ENGINE_OBJECTS=()
 BUILTIN_OBJECTS=()
 CORE_GC_OBJECTS=()
