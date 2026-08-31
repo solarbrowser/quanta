@@ -716,12 +716,10 @@ std::unique_ptr<ASTNode> Parser::parse_expression() {
 std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
     last_expr_was_parenthesized_ = false;
 
-    if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ARROW) {
-        return parse_arrow_function();
-    }
-
-    // Non-strict, non-generator: yield/async can be plain arrow params (e.g. yield => 1)
-    if (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode &&
+    // `x => x`, for any x that names a binding here. A contextual keyword is
+    // one of those: `let => 1` and `of => 1` are arrow functions whose
+    // parameter happens to be spelled like a word the lexer knows.
+    if (token_names_a_binding(current_token().get_type()) &&
         peek_token(1).get_type() == TokenType::ARROW) {
         return parse_arrow_function();
     }
@@ -1959,6 +1957,20 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             add_error("SyntaxError: Unexpected token 'let'", current_token().get_start());
             advance();
             return nullptr;
+        case TokenType::STATIC:
+            // Reserved in strict code, a name everywhere else, exactly as
+            // `let` above. Without this the word could be bound but never
+            // read back: `var static = 1` parsed and `static` did not.
+            if (!options_.strict_mode) {
+                note_name("static");
+                auto id = std::make_unique<Identifier>("static",
+                    current_token().get_start(), current_token().get_end());
+                advance();
+                return id;
+            }
+            add_error("SyntaxError: Unexpected token 'static'", current_token().get_start());
+            advance();
+            return nullptr;
         case TokenType::OF:
         {   // 'of' is always a contextual keyword -- valid as identifier in expressions
             note_name("of");
@@ -3084,6 +3096,44 @@ bool Parser::token_is_unreserved_contextual(TokenType type) {
             return true;
         default:
             return false;
+    }
+}
+
+bool Parser::token_names_a_binding(TokenType type) const {
+    if (type == TokenType::IDENTIFIER) return true;
+    if (token_is_unreserved_contextual(type)) return true;
+    switch (type) {
+        // Never a reserved word, only a property of the global object that
+        // happens to be spelled like one.
+        case TokenType::UNDEFINED:
+            return true;
+        // Reserved in strict code and a name everywhere else.
+        case TokenType::LET:
+        case TokenType::STATIC:
+            return !options_.strict_mode;
+        case TokenType::YIELD:
+            return !options_.strict_mode && !options_.in_generator_body;
+        case TokenType::AWAIT:
+            return !options_.in_async_body && !options_.source_type_module &&
+                   !options_.in_class_static_block;
+        default:
+            return false;
+    }
+}
+
+std::string_view Parser::binding_name_text(const Token& token) const {
+    switch (token.get_type()) {
+        case TokenType::UNDEFINED: return "undefined";
+        case TokenType::LET:       return "let";
+        case TokenType::STATIC:    return "static";
+        case TokenType::YIELD:     return "yield";
+        case TokenType::AWAIT:     return "await";
+        case TokenType::ASYNC:     return "async";
+        case TokenType::OF:        return "of";
+        case TokenType::FROM:      return "from";
+        case TokenType::TARGET:    return "target";
+        // An ordinary identifier is spelled by the source it came from.
+        default:                   return token_text(token);
     }
 }
 
@@ -8023,12 +8073,9 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
     
-    if (match(TokenType::IDENTIFIER) ||
-        // Non-strict, non-generator: yield/await usable as plain identifier param
-        (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode)) {
+    if (token_names_a_binding(current_token().get_type())) {
         Position param_start = get_current_position();
-        std::string pname = (current_token().get_type() == TokenType::YIELD)
-                            ? std::string("yield") : token_string(current_token());
+        std::string pname(binding_name_text(current_token()));
         if (options_.strict_mode && (is_strict_reserved_name(pname) ||
                                      pname == "eval" || pname == "arguments")) {
             add_error("SyntaxError: '" + pname + "' cannot be a parameter name in strict mode");
@@ -8081,9 +8128,19 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                 has_non_simple_params = true;
                 advance();
                 // rest param name follows
-                if (current_token().get_type() == TokenType::IDENTIFIER) {
+                if (token_names_a_binding(current_token().get_type())) {
+                    std::string_view rest_name = binding_name_text(current_token());
+                    // The same names an ordinary parameter may not take, which
+                    // this branch was not asking about at all.
+                    if (options_.strict_mode &&
+                        (rest_name == "eval" || rest_name == "arguments" ||
+                         is_strict_reserved_name(rest_name))) {
+                        add_error("SyntaxError: '" + std::string(rest_name) +
+                                  "' cannot be used as parameter name in strict mode");
+                        return nullptr;
+                    }
                     Position rp_start = get_current_position();
-                    auto rp_name = std::make_unique<Identifier>(token_string(current_token()),
+                    auto rp_name = std::make_unique<Identifier>(std::string(rest_name),
                         current_token().get_start(), current_token().get_end());
                     advance();
                     auto rp = std::make_unique<Parameter>(std::move(rp_name), nullptr, true, rp_start, get_current_position());
@@ -8119,26 +8176,27 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             } else if (current_token().get_type() == TokenType::YIELD && options_.strict_mode) {
                 add_error("SyntaxError: 'yield' cannot be used as parameter name in strict mode");
                 return nullptr;
-            } else if (current_token().get_type() == TokenType::AWAIT) {
-                if (options_.in_async_body || options_.source_type_module) {
-                    add_error("SyntaxError: 'await' cannot be used as parameter name in async context");
-                    return nullptr;
-                }
-                // outside async context: await is a valid identifier param
-            } else if (token_is_unreserved_contextual(current_token().get_type()) ||
-                       ((current_token().get_type() == TokenType::LET ||
-                         current_token().get_type() == TokenType::STATIC) &&
-                        !options_.strict_mode)) {
+            } else if (current_token().get_type() == TokenType::AWAIT &&
+                       (options_.in_async_body || options_.source_type_module)) {
+                add_error("SyntaxError: 'await' cannot be used as parameter name in async context");
+                return nullptr;
+            } else if (token_names_a_binding(current_token().get_type())) {
                 // A contextual keyword names a parameter like any identifier.
                 // Without this it fell to the skip below and the parameter
                 // silently disappeared, so the body saw an unbound name.
+            } else if (current_token().get_type() == TokenType::YIELD) {
+                // Strict code was answered above, so what is left is a
+                // generator body, where the word is an operator and cannot
+                // also be a name.
+                add_error("SyntaxError: 'yield' cannot be used as parameter name in a generator");
+                return nullptr;
             } else {
                 advance();
                 continue;
             }
 
             Position param_start = get_current_position();
-            auto param_name = std::make_unique<Identifier>(token_string(current_token()),
+            auto param_name = std::make_unique<Identifier>(std::string(binding_name_text(current_token())),
                                                           current_token().get_start(), current_token().get_end());
             advance();
 

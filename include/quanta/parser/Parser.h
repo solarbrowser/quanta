@@ -449,6 +449,16 @@ private:
     bool is_keyword_token(TokenType type) const;
     bool is_valid_assignment_target(ASTNode* node) const;
 
+    // Whether this token names a binding where the code is being read. Some
+    // words the lexer gives their own type are still names, and some of those
+    // stop being names only in a particular mode, so the answer needs the
+    // options as well as the token.
+    bool token_names_a_binding(TokenType type) const;
+    // How such a token is spelled. A keyword token is known to the lexer by
+    // its type, so the spelling has to be written out rather than read back
+    // out of the source, where an escape would have left it unrecognisable.
+    std::string_view binding_name_text(const Token& token) const;
+
     // Spec early errors: "It is a Syntax Error if FormalParameters Contains
     // YieldExpression/AwaitExpression is true" (GeneratorDeclaration/Expression,
     // AsyncFunctionDeclaration/Expression, AsyncGeneratorDeclaration/Expression).
