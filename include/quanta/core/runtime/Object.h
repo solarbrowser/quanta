@@ -1438,10 +1438,15 @@ public:
     // recreated on each call of an enclosing function) takes this
     // constructor and reuses the identical body/params/compiled-chunk
     // instead of re-cloning the AST and recompiling.
+    // `capture_free` says the compiler proved this literal names nothing
+    // outside itself, so the scope it was created in need not be held. Only
+    // passed where that answer really was computed -- see
+    // closure_needs_outer_environment and instantiate_closure.
     Function(const std::string& name,
              ExecutableRef<const FunctionExecutable> executable,
              class Context* closure_context,
-             bool create_prototype = true);
+             bool create_prototype = true,
+             bool capture_free = false);
 
     Function(const std::string& name,
              std::function<Value(Context&, std::span<const Value>, Value)> native_fn,

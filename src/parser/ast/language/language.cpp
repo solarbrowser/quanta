@@ -7,6 +7,8 @@
 #include "quanta/core/gc/FiberRegistry.h"
 #include <span>
 #include "quanta/parser/AST.h"
+#include <cstdio>
+#include <cstdlib>
 #include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
@@ -406,14 +408,30 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
                 tpl.needs_outer_env = true;  // suspendable body: not analyzed, keep the pin
             } else {
                 if (fe->get_needs_outer_env_state() < 0) {
-                    // A body stepped over cannot be asked whether it reaches
-                    // outward, so it is taken to.
-                    fe->set_needs_outer_env_state(
-                        !fe->get_body() ||
-                        closure_needs_outer_environment(ParamList::from_nodes(fe->get_params()), fe->get_body(),
-                                                        /*is_arrow=*/false) ? 1 : 0);
+                    // A body that was stepped over cannot be asked, but it was
+                    // asked once, when it was first read: the parse wrote the
+                    // answer down beside the other facts a skipped body cannot
+                    // supply for itself.
+                    int answer;
+                    if (fe->get_body()) {
+                        answer = closure_needs_outer_environment(
+                                     ParamList::from_nodes(fe->get_params()), fe->get_body(),
+                                     /*is_arrow=*/false) ? 1 : 0;
+                    } else {
+                        answer = 1;
+                        if (ScriptUnit* unit = fe->owning_unit()) {
+                            if (const BodyScopeInfo* info =
+                                    unit->scope_info_at(fe->body_source_first())) {
+                                answer = info->captures_outer ? 1 : 0;
+                            }
+                        }
+                    }
+                    fe->set_needs_outer_env_state(answer);
                 }
                 tpl.needs_outer_env = fe->get_needs_outer_env_state() != 0;
+                // The one form whose answer came from the analysis rather than
+                // from what the form used to do.
+                tpl.capture_free = !tpl.needs_outer_env;
             }
             const bool fe_fresh = !fe->get_cached_executable();
             tpl.executable = ensure_shared_executable(fe->get_cached_executable(), fe->get_body(),
@@ -514,7 +532,7 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
         // would strip again immediately.
         bool create_prototype = !tpl.is_arrow && !tpl.is_method_shorthand &&
                                 tpl.form != Form::Arrow;
-        fn = new Function(tpl.name, std::move(exe), &ctx, create_prototype);
+        fn = new Function(tpl.name, std::move(exe), &ctx, create_prototype, tpl.capture_free);
     }
     std::unique_ptr<Function> function(fn);
 

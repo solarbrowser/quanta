@@ -57,7 +57,13 @@ constinit thread_local Object* Function::s_throw_type_error_ = nullptr;
 // environment's own signal is deliberately deferred by mark_escaped_now=false
 // and simply never arrives for generator/async class methods -- which left a
 // live closure pointing at a freed Context.
-static Context* capture_closure_context(Context* closure_context) {
+// `capture_free` is the compiler's answer, and only where it actually asked:
+// nothing inside this closure can name anything outside it. Then there is no
+// context to keep -- the two places that read one are an arrow's super/this
+// (this is never an arrow) and the fallback for an outer environment, which
+// the environment below supplies directly.
+static Context* capture_closure_context(Context* closure_context, bool capture_free) {
+    if (capture_free) return nullptr;
     if (closure_context) closure_context->mark_exposed_to_escape();
     return closure_context;
 }
@@ -68,10 +74,23 @@ static Context* capture_closure_context(Context* closure_context) {
 // nothing inside this specific closure can ever observe it, in which case
 // mark_escaped_now=false defers that decision to an explicit, later
 // Function::mark_closure_environment_escaped() call (or none at all).
-static Environment* capture_closure_environment(Context* closure_context, bool mark_escaped_now = true) {
+static Environment* capture_closure_environment(Context* closure_context,
+                                                bool mark_escaped_now = true,
+                                                bool capture_free = false) {
     if (!closure_context) return nullptr;
     Environment* env = closure_context->get_lexical_environment();
     if (!env) return nullptr;
+    if (capture_free) {
+        // The scopes between here and the outermost one are not part of what
+        // this closure can see, so it does not hold them. The outermost one it
+        // does keep: a call still has to stand on a chain, and that one is the
+        // global environment, which outlives every closure anyway. Which is
+        // the whole saving -- what was pinned was the call frame that happened
+        // to be running when the literal was evaluated, once per closure.
+        while (env->get_outer()) env = env->get_outer();
+        env->mark_referenced();
+        return env;
+    }
     // Either way the pointer is stored in closure_environment_ and read by the
     // tracer, so the chain stops being provably unreachable. mark_escaped is
     // the stronger claim (never free it on scope exit); when the caller has
@@ -99,7 +118,7 @@ Function::Function(const std::string& name,
                    Context* closure_context,
                    bool create_prototype)
     : Object(ObjectType::Function),
-      closure_context_(capture_closure_context(closure_context)),
+      closure_context_(capture_closure_context(closure_context, /*capture_free=*/false)),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     auto exe = make_executable_ref();
@@ -136,7 +155,7 @@ Function::Function(const std::string& name,
                    Context* closure_context,
                    bool create_prototype)
     : Object(ObjectType::Function),
-      closure_context_(capture_closure_context(closure_context)),
+      closure_context_(capture_closure_context(closure_context, /*capture_free=*/false)),
       closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     auto exe = make_executable_ref();
@@ -184,10 +203,12 @@ void Function::borrow_body_from(const ExecutableRef<ScriptUnit>& unit, ASTNode* 
 Function::Function(const std::string& name,
                    ExecutableRef<const FunctionExecutable> executable,
                    Context* closure_context,
-                   bool create_prototype)
+                   bool create_prototype,
+                   bool capture_free)
     : Object(ObjectType::Function), executable_(std::move(executable)),
-      closure_context_(capture_closure_context(closure_context)),
-      closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false)),
+      closure_context_(capture_closure_context(closure_context, capture_free)),
+      closure_environment_(capture_closure_environment(closure_context, /*mark_escaped_now=*/false,
+                                                       capture_free)),
       prototype_(nullptr), is_native_(false), is_constructor_(create_prototype), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false) {
     // executable_ may already be shared with sibling instances from the same
     // decl site -- populate its name once, or fall back to a per-instance

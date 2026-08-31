@@ -151,11 +151,15 @@ private:
         bool has_body = false;
         uint32_t body_end = 0;
         bool body_strict = false;
+        bool captures_outer = true;
         void record_body(uint32_t src) { body_src = src; has_body = true; }
         void record_body_span(uint32_t end, bool strict) {
             body_end = end;
             body_strict = strict;
         }
+        // Only the forms that can act on it bother to work this out; the rest
+        // leave the safe default standing.
+        void record_capture(bool captures) { captures_outer = captures; }
         BodyScopeInfo take() const {
             BodyScopeInfo info;
             const NameScope& mine = p.name_scopes_.back();
@@ -166,6 +170,7 @@ private:
             info.class_expression = mine.class_expression;
             info.body_end = body_end;
             info.body_strict = body_strict;
+            info.captures_outer = captures_outer;
             return info;
         }
         ~FunctionNames() {

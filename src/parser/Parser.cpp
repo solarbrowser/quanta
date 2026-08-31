@@ -8,6 +8,10 @@
 #include <cstdlib>
 #include "quanta/parser/Parser.h"
 #include "quanta/parser/ScriptUnit.h"
+// For closure_needs_outer_environment: the one question about a body that
+// has to be answered while the body is still here, because a later parse
+// steps this body over and cannot ask it again.
+#include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/parser/ThreadStack.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "utf8proc.h"
@@ -7444,6 +7448,13 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     if (!detached_tokens_) fn_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
     fn_names.record_body_span(last_body_src_last_, last_body_strict_);
+    // Asked here, where the body is in hand. A generator is not asked: its
+    // closure keeps the scope either way.
+    if (!last_body_skipped_ && fn_expr->get_body() && !fn_expr->is_generator()) {
+        fn_names.record_capture(closure_needs_outer_environment(
+            ParamList::from_nodes(fn_expr->get_params()), fn_expr->get_body(),
+            /*is_arrow=*/false));
+    }
     return fn_expr;
 }
 
@@ -9197,6 +9208,13 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 body = parse_block_statement(true);
                 if (!last_body_skipped_) method_names.record_body(last_body_src_first_);
                 method_names.record_body_span(last_body_src_last_, last_body_strict_);
+                // Asked here, where the body is in hand -- a later parse steps
+                // it over and cannot ask again. A suspendable method keeps the
+                // scope either way, so it is not asked.
+                if (!last_body_skipped_ && body && !is_generator && !is_async) {
+                    method_names.record_capture(closure_needs_outer_environment(
+                        ParamList::from_nodes(params), body.get(), /*is_arrow=*/false));
+                }
             }
             options_.function_depth--;
             options_.non_arrow_function_depth--;

@@ -56,6 +56,13 @@ struct BodyScopeInfo {
     // body read back later can be stepped over without being parsed: what a
     // skipped body would have said is already in this record.
     uint32_t body_end = 0;
+    // Whether anything inside this body names something outside it -- the
+    // answer closure_needs_outer_environment gives when it can see the body.
+    // Recorded for the same reason as body_end: a body stepped over cannot be
+    // asked, and a closure that reaches for nothing need not keep the scope it
+    // was born in. Defaults to the safe answer, so a body whose parse never
+    // wrote one down is treated as reaching outward.
+    bool captures_outer = true;
     // Whether the body opens with a "use strict" directive. Recorded for the
     // same reason as body_end: a body stepped over cannot be asked.
     bool body_strict = false;

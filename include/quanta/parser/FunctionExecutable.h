@@ -432,6 +432,11 @@ struct ClosureTemplate {
     bool is_arrow = false;
     bool is_method_shorthand = false;  // spec 14.3.9: no .prototype, not a constructor
     bool needs_self_binding = false;   // named function expression: immutable self-reference
+    // Set only where closure_needs_outer_environment actually ran and said no
+    // -- not where a form simply reproduces what it used to do. That is the
+    // difference between "we know nothing is captured" and "this form never
+    // pinned anything anyway", and only the first may drop the scope.
+    bool capture_free = false;
     bool needs_outer_env = true;       // closure_needs_outer_environment, or the
                                        // unconditional pin the other forms always took
     bool body_is_strict = false;       // "use strict" directive in the body itself
