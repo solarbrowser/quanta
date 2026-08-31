@@ -53,10 +53,14 @@ if %ERRORLEVEL% NEQ 0 (
 for /f "tokens=3" %%v in ('clang++ --version ^| findstr "version"') do set CLANG_VER=%%v
 
 set "CXXFLAGS=-std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.9.3\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
-set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro"
+set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include"
 set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32"
 set "PCRE2FLAGS=-O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -Ithird_party/pcre2/src -march=native -fomit-frame-pointer"
 set "UTF8PROC_FLAGS=-O3 -DUTF8PROC_STATIC -Ithird_party/utf8proc -march=native -fomit-frame-pointer"
+REM One object for the whole library: static.c includes every other source.
+REM No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and
+REM only C++ operator new is redirected -- see src\core\runtime\MiMalloc.cpp.
+set "MIMALLOC_FLAGS=-O3 -DNDEBUG -Ithird_party/mimalloc/include -fomit-frame-pointer"
 set "STACK=-Xlinker /STACK:67108864"
 echo [%time%] Compiler flags: %CXXFLAGS% >> "%LOG_FILE%"
 
@@ -127,6 +131,9 @@ if not exist "third_party\pcre2\src\pcre2.h.generic" (
 if not exist "third_party\utf8proc\utf8proc.c" (
     git submodule update --init --recursive third_party/utf8proc || (echo %CROSS% utf8proc submodule init failed & exit /b 1)
 )
+if not exist "third_party\mimalloc\src\static.c" (
+    git submodule update --init --recursive third_party/mimalloc || (echo %CROSS% mimalloc submodule init failed & exit /b 1)
+)
 if not exist "third_party\pcre2\src\config.h" copy "third_party\pcre2_configs\config.h" "third_party\pcre2\src\config.h" >nul
 if not exist "third_party\pcre2\src\pcre2.h" copy "third_party\pcre2\src\pcre2.h.generic" "third_party\pcre2\src\pcre2.h" >nul
 if not exist "third_party\pcre2\src\pcre2_chartables.c" copy "third_party\pcre2\src\pcre2_chartables.c.dist" "third_party\pcre2\src\pcre2_chartables.c" >nul
@@ -141,6 +148,7 @@ if not exist "build\obj\parser" mkdir build\obj\parser
 if not exist "build\obj\parser\ast" mkdir build\obj\parser\ast
 if not exist "build\obj\pcre2" mkdir build\obj\pcre2
 if not exist "build\obj\utf8proc" mkdir build\obj\utf8proc
+if not exist "build\obj\mimalloc" mkdir build\obj\mimalloc
 if not exist "build\bin" mkdir build\bin
 goto :eof
 
@@ -150,6 +158,8 @@ for %%f in (third_party\pcre2\src\pcre2_auto_possess.c third_party\pcre2\src\pcr
     if errorlevel 1 exit /b 1
 )
 call :compile_utf8proc "third_party\utf8proc\utf8proc.c" "build\obj\utf8proc\utf8proc.o"
+if errorlevel 1 exit /b 1
+call :compile_mimalloc "third_party\mimalloc\src\static.c" "build\obj\mimalloc\static.o"
 if errorlevel 1 exit /b 1
 goto :eof
 
@@ -208,7 +218,7 @@ goto :eof
 REM cmd.exe does not expand *.o wildcards on a plain command line (only
 REM inside a `for` loop does) -- build the object list explicitly first.
 set "OBJLIST="
-for %%d in (core\engine core\engine\builtins core\gc core\modules core\runtime core\vm lexer parser parser\ast pcre2 utf8proc) do (
+for %%d in (core\engine core\engine\builtins core\gc core\modules core\runtime core\vm lexer parser parser\ast pcre2 utf8proc mimalloc) do (
     for %%f in (build\obj\%%d\*.o) do set "OBJLIST=!OBJLIST! "%%f""
 )
 clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp ^
@@ -231,6 +241,10 @@ goto :post_compile
 
 :compile_utf8proc
 clang %UTF8PROC_FLAGS% -c "%~1" -o "%~2" 2> "%ERRTMP%"
+goto :post_compile
+
+:compile_mimalloc
+clang %MIMALLOC_FLAGS% -c "%~1" -o "%~2" 2> "%ERRTMP%"
 goto :post_compile
 
 :post_compile

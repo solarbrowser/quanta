@@ -55,6 +55,19 @@ ASAN_FLAGS = -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 PCRE2_DIR = third_party/pcre2/src
 PCRE2_CFLAGS = -O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -I$(PCRE2_DIR) -march=native -fomit-frame-pointer
 
+MIMALLOC_DIR = third_party/mimalloc
+# One object for the whole library: src/static.c includes every other source.
+# No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and
+# only C++ operator new is redirected -- see src/core/runtime/MiMalloc.cpp.
+MIMALLOC_CFLAGS = -O3 -DNDEBUG -I$(MIMALLOC_DIR)/include -fomit-frame-pointer
+MIMALLOC_OBJS = $(OBJ_DIR)/mimalloc/static.o
+# Named on the link line rather than left to the archive. Replacing operator
+# new is only a replacement if the object that does it is actually linked, and
+# an archive member is pulled in only to resolve something undefined -- which
+# operator new never is, because libstdc++ already defines it. Left to -lquanta
+# this object is silently dropped and the program keeps the standard allocator.
+MIMALLOC_OVERRIDE_OBJ = $(OBJ_DIR)/core/runtime/MiMalloc.o
+
 UTF8PROC_DIR = third_party/utf8proc
 UTF8PROC_CFLAGS = -O3 -DUTF8PROC_STATIC -I$(UTF8PROC_DIR) -march=native -fomit-frame-pointer
 UTF8PROC_SRCS = $(UTF8PROC_DIR)/utf8proc.c
@@ -93,7 +106,7 @@ PCRE2_SRCS = \
     $(PCRE2_DIR)/pcre2_xclass.c
 PCRE2_OBJS = $(PCRE2_SRCS:$(PCRE2_DIR)/%.c=$(OBJ_DIR)/pcre2/%.o)
 
-INCLUDES = -Iinclude -I$(PCRE2_DIR) -I$(UTF8PROC_DIR) -Ithird_party/minicoro
+INCLUDES = -Iinclude -I$(PCRE2_DIR) -I$(UTF8PROC_DIR) -Ithird_party/minicoro -I$(MIMALLOC_DIR)/include
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
 
@@ -148,7 +161,7 @@ CORE_OBJECTS = $(CORE_SOURCES:$(CORE_SRC)/%.cpp=$(OBJ_DIR)/core/%.o)
 LEXER_OBJECTS = $(LEXER_SOURCES:$(LEXER_SRC)/%.cpp=$(OBJ_DIR)/lexer/%.o)
 PARSER_OBJECTS = $(PARSER_SOURCES:$(PARSER_SRC)/%.cpp=$(OBJ_DIR)/parser/%.o)
 
-ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS) $(PCRE2_OBJS) $(UTF8PROC_OBJS)
+ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS) $(PCRE2_OBJS) $(UTF8PROC_OBJS) $(MIMALLOC_OBJS)
 
 # Header dependency tracking (-MMD): a header edit rebuilds every dependent TU.
 -include $(CORE_OBJECTS:.o=.d) $(LEXER_OBJECTS:.o=.d) $(PARSER_OBJECTS:.o=.d)
@@ -160,15 +173,19 @@ LIBQUANTA = $(BUILD_DIR)/libquanta.a
 CONSOLE_MAIN = console.cpp
 
 # Main targets
-.PHONY: all clean debug release asan setup-pcre2 heap-test shape-test
+.PHONY: all clean debug release asan setup-deps heap-test shape-test
 
 # Bare `make` builds release directly (no separate opt-in step needed).
 .DEFAULT_GOAL := release
 
-setup-pcre2:
+setup-deps:
 	@if [ ! -f "$(PCRE2_DIR)/pcre2.h.generic" ]; then \
 	    echo "[INFO] Initializing PCRE2 submodule..."; \
 	    git submodule update --init third_party/pcre2; \
+	fi
+	@if [ ! -f "$(MIMALLOC_DIR)/src/static.c" ]; then \
+	    echo "[INFO] Initializing mimalloc submodule..."; \
+	    git submodule update --init third_party/mimalloc; \
 	fi
 	@if [ ! -f "$(PCRE2_DIR)/config.h" ]; then \
 	    cp "$(PCRE2_DIR)/config.h.generic" "$(PCRE2_DIR)/config.h"; \
@@ -183,7 +200,7 @@ setup-pcre2:
 	    echo "[OK] Generated pcre2_chartables.c"; \
 	fi
 
-all: setup-pcre2 build_header $(LIBQUANTA) $(BIN_DIR)/quanta$(EXE_EXT) build_footer
+all: setup-deps build_header $(LIBQUANTA) $(BIN_DIR)/quanta$(EXE_EXT) build_footer
 
 build_header:
 	@echo ""
@@ -214,11 +231,11 @@ $(LIBQUANTA): $(ALL_OBJECTS)
 	@echo "[OK] Library created: $@"
 
 # Main console executable
-$(BIN_DIR)/quanta$(EXE_EXT): $(CONSOLE_MAIN) $(LIBQUANTA)
+$(BIN_DIR)/quanta$(EXE_EXT): $(CONSOLE_MAIN) $(LIBQUANTA) $(MIMALLOC_OVERRIDE_OBJ)
 	@$(MKDIR_P) $(BIN_DIR)
 	@echo "[LINK] Linking with ThinLTO..."
 	@echo "[LINK] Creating executable" >> $(LOG_FILE)
-	@$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $(LTO_FLAGS) -DMAIN_EXECUTABLE -o $@ $< -L$(BUILD_DIR) -lquanta $(LIBS) $(STACK_FLAGS) 2>> $(ERROR_LOG) || (echo "[ERROR] Linking failed" >> $(LOG_FILE) && exit 1)
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $(LTO_FLAGS) -DMAIN_EXECUTABLE -o $@ $< $(MIMALLOC_OVERRIDE_OBJ) -L$(BUILD_DIR) -lquanta $(LIBS) $(STACK_FLAGS) 2>> $(ERROR_LOG) || (echo "[ERROR] Linking failed" >> $(LOG_FILE) && exit 1)
 	@echo "[OK] Executable built: $@"
 
 # Object file compilation - create directories and compile
@@ -247,6 +264,10 @@ $(OBJ_DIR)/pcre2/%.o: $(PCRE2_DIR)/%.c
 $(OBJ_DIR)/utf8proc/utf8proc.o: $(UTF8PROC_DIR)/utf8proc.c
 	@$(MKDIR_P) $(dir $@)
 	@clang $(UTF8PROC_CFLAGS) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+
+$(OBJ_DIR)/mimalloc/static.o: $(MIMALLOC_DIR)/src/static.c
+	@$(MKDIR_P) $(dir $@)
+	@clang $(MIMALLOC_CFLAGS) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 # Debug build
 debug: CXXFLAGS += $(DEBUG_FLAGS)
