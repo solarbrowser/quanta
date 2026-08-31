@@ -59,15 +59,15 @@ void register_function_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
             }
 
+            // Read in place. Looking at a dozen characters used to copy the
+            // whole body twice, once entire and once from the first non-space
+            // on, and a body handed to this constructor can be megabytes.
             bool is_strict = false;
             {
-                std::string trimmed = body;
-                size_t start = trimmed.find_first_not_of(" \t\n\r");
+                size_t start = body.find_first_not_of(" \t\n\r");
                 if (start != std::string::npos) {
-                    std::string first = trimmed.substr(start);
-                    if (first.find("\"use strict\"") == 0 || first.find("'use strict'") == 0) {
-                        is_strict = true;
-                    }
+                    is_strict = body.compare(start, 12, "\"use strict\"") == 0 ||
+                                body.compare(start, 12, "'use strict'") == 0;
                 }
             }
 
@@ -85,11 +85,24 @@ void register_function_builtins(Context& ctx) {
                 }
             }
 
-            std::string toString_src = "function anonymous(" + params + "\n) {\n" + body + "\n}";
-            std::string func_code = "(" + toString_src + ")";
+            // One buffer for the whole call. The lexer addresses its tokens
+            // into it, the parser hands it to the unit, and the text the
+            // function reports for toString() is cut back out of it, so each
+            // of those holding its own copy meant the source stored once per
+            // participant. It is written parenthesized because the parse has
+            // to see an expression; the reported text is the same bytes with
+            // that pair left off, which is a range, not another string.
+            auto func_code = std::make_shared<std::string>("(function anonymous(");
+            func_code->reserve(params.size() + body.size() + 32);
+            *func_code += params;
+            *func_code += "\n) {\n";
+            *func_code += body;
+            *func_code += "\n})";
+            // Nothing reads it after this, and it is the same size again.
+            std::string().swap(body);
 
             try {
-                Lexer lexer(func_code);
+                Lexer lexer(func_code, Lexer::LexerOptions{});
                 TokenSequence tokens = lexer.tokenize();
                 // Hand the tokens over rather than copying them: for a big
                 // source this vector is the largest thing in the process.
@@ -135,17 +148,13 @@ void register_function_builtins(Context& ctx) {
                     func->borrow_body_from(unit, func_expr->get_body());
                     unit->set_source(func_code);
                     unit->set_root(std::move(expr));
-                    func->set_source_text(toString_src);
+                    // The reported text is the buffer without the pair of
+                    // parentheses this call wrote around it, so its bounds are
+                    // known here and need no string of their own. borrow_body_from
+                    // above is what gave the executable the unit to cut from.
+                    func->set_source_range(1, static_cast<uint32_t>(unit->source().size() - 1));
 
-                    // Detect "use strict" directive via body string
-                    {
-                        std::string trimmed = body;
-                        size_t s = trimmed.find_first_not_of(" \t\r\n");
-                        if (s != std::string::npos) trimmed = trimmed.substr(s);
-                        if (trimmed.find("\"use strict\"") == 0 || trimmed.find("'use strict'") == 0) {
-                            func->set_is_strict(true);
-                        }
-                    }
+                    if (is_strict) func->set_is_strict(true);
 
                     Function* raw_func = func.release();
                     Value new_target = ctx.get_new_target();

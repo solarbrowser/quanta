@@ -1556,6 +1556,17 @@ public:
         overrides.has_source_text = true;
     }
 
+    // The same text, named as a range into the unit's source instead of handed
+    // over as a string. For a caller that already holds the buffer the text is
+    // written in, this is what set_source_text should be: nothing is copied
+    // until toString() actually asks, and almost none of them are asked.
+    // Only for a function still the sole owner of its executable -- the same
+    // condition borrow_body_from() states -- since it writes the decl site
+    // directly rather than going through the override path above.
+    void set_source_range(uint32_t start, uint32_t end) {
+        if (executable_) executable_->set_source_range(start, end);
+    }
+
     // Lazily allocated + sized by the caller (Interpreter.cpp) to chunk.names.size().
     // Never called for native functions (they never reach Interpreter::run()).
     std::vector<BytecodeChunk::LookupCacheEntry,

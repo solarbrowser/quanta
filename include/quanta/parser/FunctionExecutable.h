@@ -278,7 +278,10 @@ public:
     mutable uint32_t source_start_ = 0;
     mutable uint32_t source_end_ = 0;
 
-    void set_source_range(uint32_t start, uint32_t end) {
+    // const for the same reason set_source_text is: both write the mutable
+    // decl-site fields below, and every Function instance holds its executable
+    // through an ExecutableRef<const FunctionExecutable>.
+    void set_source_range(uint32_t start, uint32_t end) const {
         source_start_ = start;
         source_end_ = end;
     }
