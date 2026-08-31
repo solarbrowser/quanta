@@ -87,17 +87,20 @@ void register_function_builtins(Context& ctx) {
 
             // One buffer for the whole call. The lexer addresses its tokens
             // into it, the parser hands it to the unit, and the text the
-            // function reports for toString() is cut back out of it, so each
+            // function reports for toString() is this buffer itself, so each
             // of those holding its own copy meant the source stored once per
-            // participant. It is written parenthesized because the parse has
-            // to see an expression; the reported text is the same bytes with
-            // that pair left off, which is a range, not another string.
-            auto func_code = std::make_shared<std::string>("(function anonymous(");
+            // participant.
+            // Written without a pair of parentheses around it. They only ever
+            // said "read this as an expression", and the cost of saying it
+            // that way is that deciding whether an open parenthesis begins an
+            // arrow function's parameters walks to the matching close -- which
+            // here is the last token of the whole source.
+            auto func_code = std::make_shared<std::string>("function anonymous(");
             func_code->reserve(params.size() + body.size() + 32);
             *func_code += params;
             *func_code += "\n) {\n";
             *func_code += body;
-            *func_code += "\n})";
+            *func_code += "\n}";
             // Nothing reads it after this, and it is the same size again.
             std::string().swap(body);
 
@@ -152,11 +155,10 @@ void register_function_builtins(Context& ctx) {
                     func->borrow_body_from(unit, func_expr->get_body());
                     unit->set_source(func_code);
                     unit->set_root(std::move(expr));
-                    // The reported text is the buffer without the pair of
-                    // parentheses this call wrote around it, so its bounds are
-                    // known here and need no string of their own. borrow_body_from
-                    // above is what gave the executable the unit to cut from.
-                    func->set_source_range(1, static_cast<uint32_t>(unit->source().size() - 1));
+                    // The reported text is the buffer itself, so it needs no
+                    // string of its own. borrow_body_from above is what gave
+                    // the executable the unit to cut it from.
+                    func->set_source_range(0, static_cast<uint32_t>(unit->source().size()));
 
                     if (is_strict) func->set_is_strict(true);
 
