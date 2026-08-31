@@ -72,13 +72,13 @@ void Object::operator delete(void* p, size_t) noexcept {
 
 void Object::adopt_inline_butterfly(size_t object_bytes, uint32_t slots) {
     char* trailing = reinterpret_cast<char*>(this) + object_bytes;
-    ButterflyHeader* header = reinterpret_cast<ButterflyHeader*>(trailing);
-    header->elements_length = 0;
-    header->elements_capacity = 0;
-    header->shape_capacity = slots | kInlineButterflyBit;
-    header->array_length = 0;
-    header->extras = nullptr;
-    Value* slot_base = reinterpret_cast<Value*>(header + 1);
+    // Core only. A literal's object is born with property slots and nothing
+    // else; if it ever gains an element or a RareExtras the block moves out of
+    // the cell anyway, and the extras come with it there.
+    ButterflyCore* core = reinterpret_cast<ButterflyCore*>(trailing);
+    core->shape_capacity = slots | kInlineButterflyBit;
+    core->elements_capacity = 0;
+    Value* slot_base = reinterpret_cast<Value*>(core + 1);
     for (uint32_t i = 0; i < slots; i++) slot_base[i] = Value();
     butterfly_ = slot_base;
 }
@@ -158,11 +158,17 @@ bool Object::has_shape_slot(const std::string& key) const {
     return shape_ && shape_->find_slot(key) >= 0;
 }
 
+ButterflyExtras& Object::ensure_butterfly_extras() {
+    if (!has_butterfly_extras()) {
+        realloc_butterfly(elements_capacity(), shape_capacity(), /*want_extras=*/true);
+    }
+    return *butterfly_extras();
+}
+
 RareExtras& Object::ensure_extras() {
-    if (!butterfly_) realloc_butterfly(0, 0);
-    ButterflyHeader* h = butterfly_header();
-    if (!h->extras) h->extras = new RareExtras();
-    return *h->extras;
+    ButterflyExtras& e = ensure_butterfly_extras();
+    if (!e.extras) e.extras = new RareExtras();
+    return *e.extras;
 }
 
 std::unordered_map<std::string, Value>* Object::sparse_overflow() const {
@@ -383,9 +389,21 @@ void Object::reserve_property_slots(size_t count) {
     ensure_shape_capacity(static_cast<uint32_t>(next_slot_tier(count)));
 }
 
-void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shape_capacity) {
+void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shape_capacity,
+                               bool want_extras) {
+    // An element region needs elements_length, which lives in the extras, so
+    // asking for one asks for them too. And a block that has them keeps them:
+    // an object that reached for a RareExtras or is an array with a length is
+    // not going to stop being one, and taking the region away again would mean
+    // moving the element region across the block on a path that has no reason
+    // to.
+    const bool with_extras = want_extras || new_elements_capacity > 0 ||
+                             has_butterfly_extras();
+    const size_t header_bytes = with_extras
+        ? sizeof(ButterflyCore) + sizeof(ButterflyExtras)
+        : sizeof(ButterflyCore);
     const size_t new_bytes = static_cast<size_t>(new_elements_capacity) * sizeof(Value) +
-                              sizeof(ButterflyHeader) +
+                              header_bytes +
                               static_cast<size_t>(new_shape_capacity) * sizeof(Value);
     // Pooled: doubling growth converges same-shaped objects onto a handful
     // of common byte sizes; plain new/delete here measurably regressed
@@ -401,31 +419,24 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
     // block is handed back below, so the difference is what is newly held.
     if (new_bytes >= Heap::kMaxTier1Size) {
         size_t old_bytes = 0;
-        if (butterfly_) {
-            ButterflyHeader* h = butterfly_header();
-            old_bytes = static_cast<size_t>(h->elements_capacity) * sizeof(Value) +
-                        sizeof(ButterflyHeader) +
-                        static_cast<size_t>(h->shape_capacity & ~kButterflyFlagBits) * sizeof(Value);
-        }
+        if (butterfly_) old_bytes = butterfly_block_bytes();
         if (new_bytes > old_bytes) Heap::note_extra_bytes(new_bytes - old_bytes);
     }
 
     char* new_block = static_cast<char*>(SmallMapPool::take(new_bytes));
     Value* new_butterfly = reinterpret_cast<Value*>(new_block + new_elements_capacity * sizeof(Value) +
-                                                      sizeof(ButterflyHeader));
-    ButterflyHeader* new_header = reinterpret_cast<ButterflyHeader*>(new_butterfly) - 1;
-    constexpr size_t kHeaderWidths = sizeof(ButterflyHeader) / sizeof(Value);
+                                                      header_bytes);
+    ButterflyCore* new_core = reinterpret_cast<ButterflyCore*>(new_butterfly) - 1;
 
     uint32_t old_elements_length = 0;
     uint32_t old_array_length = 0;
     RareExtras* old_extras = nullptr;
     if (butterfly_) {
-        ButterflyHeader* old_header = butterfly_header();
-        old_elements_length = old_header->elements_length;
-        old_array_length = old_header->array_length;
-        uint32_t old_elements_cap = old_header->elements_capacity;
-        uint32_t old_shape_cap = old_header->shape_capacity & ~kButterflyFlagBits;
-        old_extras = old_header->extras;
+        old_elements_length = elements_length();
+        old_array_length = array_length();
+        old_extras = peek_extras();
+        uint32_t old_elements_cap = butterfly_core()->elements_capacity;
+        uint32_t old_shape_cap = butterfly_core()->shape_capacity & ~kButterflyFlagBits;
         // Both regions' OLD capacities are <= their new ones (callers only
         // ever grow) -- copy each region's full old extent across at its
         // same per-slot index, just at new addresses either side of the
@@ -433,8 +444,10 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
         for (uint32_t i = 0; i < old_shape_cap; i++) {
             *(new_butterfly + i) = *shape_slot_ptr(i);
         }
+        // The element region only exists alongside the extras, so both the
+        // old and the new butterfly have the full header above it.
         for (uint32_t i = 0; i < old_elements_cap; i++) {
-            *(new_butterfly - kHeaderWidths - 1 - i) = *element_ptr(i);
+            *(new_butterfly - kFullHeaderWidths - 1 - i) = *element_ptr(i);
         }
         // Transplant, not delete: old_extras (if any) is still owned by this
         // object, just relocating to the new header below. release_butterfly_block
@@ -442,32 +455,44 @@ void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shap
         release_butterfly_block();
     }
 
-    new_header->elements_length = old_elements_length;
-    new_header->elements_capacity = new_elements_capacity;
-    // Relocating invalidates the dense answer, so the bit stays clear here.
-    new_header->shape_capacity = new_shape_capacity;
-    new_header->array_length = old_array_length;
-    new_header->extras = old_extras;
+    new_core->elements_capacity = new_elements_capacity;
+    // Relocating invalidates the dense answer, so that bit stays clear here.
+    new_core->shape_capacity = new_shape_capacity | (with_extras ? kButterflyExtrasBit : 0u);
+    if (with_extras) {
+        ButterflyExtras* new_extras = reinterpret_cast<ButterflyExtras*>(new_core) - 1;
+        new_extras->elements_length = old_elements_length;
+        new_extras->array_length = old_array_length;
+        new_extras->extras = old_extras;
+    }
     butterfly_ = new_butterfly;
 }
 
 void Object::free_butterfly() {
     if (!butterfly_) return;
-    delete butterfly_header()->extras;
+    delete peek_extras();
     release_butterfly_block();
+}
+
+size_t Object::butterfly_block_bytes() const {
+    const size_t header_bytes = has_butterfly_extras()
+        ? sizeof(ButterflyCore) + sizeof(ButterflyExtras)
+        : sizeof(ButterflyCore);
+    return static_cast<size_t>(elements_capacity()) * sizeof(Value) + header_bytes +
+           static_cast<size_t>(shape_capacity()) * sizeof(Value);
 }
 
 void Object::release_butterfly_block() {
     // An inline butterfly is part of the cell: it is freed when the cell is.
-    if (butterfly_header()->shape_capacity & kInlineButterflyBit) {
+    if (butterfly_core()->shape_capacity & kInlineButterflyBit) {
         butterfly_ = nullptr;
         return;
     }
-    size_t elem_cap = elements_capacity();
-    size_t shape_cap = shape_capacity();
-    char* base = reinterpret_cast<char*>(butterfly_) - sizeof(ButterflyHeader) -
-                 elem_cap * sizeof(Value);
-    size_t bytes = elem_cap * sizeof(Value) + sizeof(ButterflyHeader) + shape_cap * sizeof(Value);
+    const size_t header_bytes = has_butterfly_extras()
+        ? sizeof(ButterflyCore) + sizeof(ButterflyExtras)
+        : sizeof(ButterflyCore);
+    const size_t bytes = butterfly_block_bytes();
+    char* base = reinterpret_cast<char*>(butterfly_) - header_bytes -
+                 static_cast<size_t>(elements_capacity()) * sizeof(Value);
     SmallMapPool::give(bytes, static_cast<void*>(base));
     butterfly_ = nullptr;
 }
@@ -497,15 +522,17 @@ void Object::resize_elements(uint32_t new_length) {
             *element_ptr(i) = Value();
         }
     }
-    if (butterfly_) butterfly_header()->elements_length = new_length;
+    // Growing went through ensure_elements_capacity, which gives the block its
+    // extras; shrinking to nothing on a block that never had any leaves
+    // elements_length() answering zero already.
+    if (has_butterfly_extras()) butterfly_extras()->elements_length = new_length;
 }
 
 void Object::bump_array_length(double candidate) {
     invalidate_dense();
     if (get_type() == ObjectType::Array) {
         if (candidate <= static_cast<double>(array_length())) return;
-        if (!butterfly_) realloc_butterfly(0, shape_capacity());
-        butterfly_header()->array_length = static_cast<uint32_t>(candidate);
+        ensure_butterfly_extras().array_length = static_cast<uint32_t>(candidate);
         if (auto* d = descriptors()) {
             if (auto* dit = d->find("length")) dit->set_value(Value(candidate));
         }
@@ -1354,8 +1381,7 @@ bool Object::set_array_length_coerced(uint32_t new_length) {
                 // the element that refused -- but the operation reports
                 // failure, which is what makes defineProperty throw.
                 if (new_length < old_length) resize_elements(new_length);
-                if (!butterfly_) realloc_butterfly(0, shape_capacity());
-                butterfly_header()->array_length = new_length;
+                ensure_butterfly_extras().array_length = new_length;
                 if (auto* d = descriptors()) {
                     if (auto* it = d->find("length")) it->set_value(Value(static_cast<double>(new_length)));
                 }
@@ -1381,8 +1407,7 @@ bool Object::set_array_length_coerced(uint32_t new_length) {
     // The header is the store; a descriptor only exists when defineProperty
     // recorded an attribute the header cannot carry, and then it has to be
     // kept in step.
-    if (!butterfly_) realloc_butterfly(0, shape_capacity());
-    butterfly_header()->array_length = new_length;
+    ensure_butterfly_extras().array_length = new_length;
     if (auto* d = descriptors()) {
         if (auto* it = d->find("length")) it->set_value(length_value);
     }
@@ -2000,7 +2025,7 @@ bool Object::store_dense_element(uint32_t index, const Value& value) {
     if (index == elements_length()) {
         if (__builtin_expect(!has_plain_array_length(), 0)) return false;
         resize_elements(index + 1);
-        butterfly_header()->array_length = index + 1;
+        ensure_butterfly_extras().array_length = index + 1;
         // resize_elements clears the flag because a length change in general
         // can leave elements the vector no longer covers; growing by exactly
         // one and filling it cannot, and re-running the full check on the next
@@ -2953,8 +2978,7 @@ void Object::set_length(uint32_t length) {
         // descriptor map -- hundreds of bytes for one number -- and dropped it
         // into dictionary mode, which costs the array its shape as well.
         if (length < elements_length()) resize_elements(length);
-        if (!butterfly_) realloc_butterfly(0, shape_capacity());
-        butterfly_header()->array_length = length;
+        ensure_butterfly_extras().array_length = length;
         invalidate_dense();
         return;
     }

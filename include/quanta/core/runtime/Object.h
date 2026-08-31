@@ -29,19 +29,31 @@ class HybridDescriptorMap;
 class ScriptUnit;
 struct RareExtras;
 
-// Fixed-position header for Object::butterfly_ -- always exactly 3
-// Value-widths so it sits at a capacity-independent offset from the
-// butterfly pointer (`reinterpret_cast<ButterflyHeader*>(butterfly_) - 1`).
+// Object::butterfly_'s header, in two parts. The core sits immediately below
+// the butterfly pointer and is always there; the extras sit below the core and
+// only for the objects that need them. Both are at capacity-independent
+// offsets, which is the whole reason the header hangs off that end.
 // Never accessed as a Value, never GC-traced (plain counters + a raw,
 // explicitly-owned RareExtras*: Object::free_butterfly() deletes it,
 // Object::realloc_butterfly() transplants it to the new header instead --
 // see both for why the distinction matters).
-struct ButterflyHeader {
-    uint32_t elements_length = 0;
-    uint32_t elements_capacity = 0;
-    // Bit 31 carries dense_verified; the shape system caps a slot count at
-    // kMaxSlots (128), so the rest of the word is permanently free.
+struct ButterflyCore {
+    // Bit 31 carries dense_verified, bit 30 says the block is inline, bit 29
+    // says the extras below it are present; the shape system caps a slot
+    // count at kMaxSlots (128), so the rest of the word is permanently free.
     uint32_t shape_capacity = 0;
+    // Also the discriminant for the elements: a block with capacity for none
+    // has no element region and no elements_length to keep.
+    uint32_t elements_capacity = 0;
+};
+static_assert(sizeof(ButterflyCore) == sizeof(Value), "core must be one Value-width");
+
+// The rest of what a butterfly used to always carry, present only when
+// ButterflyCore's bit 29 says so. Nine objects in ten have no elements, are
+// not arrays and never reach for a RareExtras, and each of them was paying
+// these sixteen bytes to hold three zeroes and a null.
+struct ButterflyExtras {
+    uint32_t elements_length = 0;
     // The array's JS length, which is NOT the element count: trailing holes
     // are exactly the indices between elements_length and this. It lives here
     // rather than in a descriptor because a descriptor map costs hundreds of
@@ -50,7 +62,7 @@ struct ButterflyHeader {
     uint32_t array_length = 0;
     RareExtras* extras = nullptr;
 };
-static_assert(sizeof(ButterflyHeader) == 3 * sizeof(Value), "must be exactly 3 Value-widths");
+static_assert(sizeof(ButterflyExtras) == 2 * sizeof(Value), "extras must be two Value-widths");
 
 class Context;
 class Environment;
@@ -223,20 +235,29 @@ private:
     // values, one pointer instead of two std::vectors' own ptr+size+capacity
     // (the shape-slot count is already available from the shared `shape_`).
     // Layout, low to high address:
-    //   [element[capacity-1]]...[element[0]] [ButterflyHeader] [shape slot 0]...[shape slot N-1]
-    //                                                           ^ butterfly_ points here
-    // `butterfly_[i]` is shape slot i; `butterfly_[-4-i]` is element i (the
-    // header occupies the three slots right before butterfly_, including the
-    // RareExtras* -- see ButterflyHeader above). nullptr until the object
-    // needs any of: array elements, shape-mode properties, or RareExtras.
+    //   [element[cap-1]]...[element[0]] [ButterflyExtras] [ButterflyCore] [shape slot 0]...
+    //                                                                       ^ butterfly_
+    // `butterfly_[i]` is shape slot i. The core is always at `butterfly_[-1]`;
+    // the extras, when the core says they are there, are the two slots below
+    // it, and element i is then `butterfly_[-4-i]`. An object with no elements
+    // and nothing rare has no extras at all, which is most of them.
+    // nullptr until the object needs any of: array elements, shape-mode
+    // properties, or RareExtras.
     Value* butterfly_ = nullptr;
 
     // butterfly_ helpers. Trivial ones inline; growth/free in Object.cpp.
-    ButterflyHeader* butterfly_header() const {
-        return reinterpret_cast<ButterflyHeader*>(butterfly_) - 1;
+    ButterflyCore* butterfly_core() const {
+        return reinterpret_cast<ButterflyCore*>(butterfly_) - 1;
     }
-    uint32_t elements_capacity() const { return butterfly_ ? butterfly_header()->elements_capacity : 0; }
-    uint32_t elements_length() const { return butterfly_ ? butterfly_header()->elements_length : 0; }
+    // Only meaningful once has_butterfly_extras() has said yes.
+    ButterflyExtras* butterfly_extras() const {
+        return reinterpret_cast<ButterflyExtras*>(butterfly_core()) - 1;
+    }
+    bool has_butterfly_extras() const {
+        return butterfly_ && (butterfly_core()->shape_capacity & kButterflyExtrasBit);
+    }
+    uint32_t elements_capacity() const { return butterfly_ ? butterfly_core()->elements_capacity : 0; }
+    uint32_t elements_length() const { return has_butterfly_extras() ? butterfly_extras()->elements_length : 0; }
     // Caches the whole has_only_dense_elements() answer, not just its length
     // comparison: that check runs on every indexed access and every .length
     // read, and its holes/sparse/descriptor probes each chase
@@ -258,24 +279,32 @@ private:
     // its own. A shape caps its slot count at kMaxSlots (128), so these two
     // bits of the capacity word are free and cost the object nothing.
     static constexpr uint32_t kInlineButterflyBit = 1u << 30;
-    static constexpr uint32_t kButterflyFlagBits = kDenseVerifiedBit | kInlineButterflyBit;
+    // Says the two Values below the core are there to be read.
+    static constexpr uint32_t kButterflyExtrasBit = 1u << 29;
+    static constexpr uint32_t kButterflyFlagBits =
+        kDenseVerifiedBit | kInlineButterflyBit | kButterflyExtrasBit;
     bool dense_verified() const {
-        return butterfly_ && (butterfly_header()->shape_capacity & kDenseVerifiedBit);
+        return butterfly_ && (butterfly_core()->shape_capacity & kDenseVerifiedBit);
     }
     void mark_dense_verified() const {
-        if (butterfly_) butterfly_header()->shape_capacity |= kDenseVerifiedBit;
+        if (butterfly_) butterfly_core()->shape_capacity |= kDenseVerifiedBit;
     }
     void invalidate_dense() {
-        if (butterfly_) butterfly_header()->shape_capacity &= ~kDenseVerifiedBit;
+        if (butterfly_) butterfly_core()->shape_capacity &= ~kDenseVerifiedBit;
     }
     uint32_t shape_capacity() const {
-        return butterfly_ ? (butterfly_header()->shape_capacity & ~kButterflyFlagBits) : 0;
+        return butterfly_ ? (butterfly_core()->shape_capacity & ~kButterflyFlagBits) : 0;
     }
     // An array's JS length. Zero without a butterfly, which is right: an array
     // with no elements and no explicit length is empty.
-    uint32_t array_length() const { return butterfly_ ? butterfly_header()->array_length : 0; }
+    uint32_t array_length() const { return has_butterfly_extras() ? butterfly_extras()->array_length : 0; }
     Value* shape_slot_ptr(uint32_t i) const { return butterfly_ + i; }
-    Value* element_ptr(uint32_t i) const { return butterfly_ - (sizeof(ButterflyHeader) / sizeof(Value)) - 1 - i; }
+    // An element region only ever exists on a butterfly that also carries the
+    // extras (elements_length lives there), so the header above it is always
+    // the full three Value-widths and this offset does not vary.
+    static constexpr size_t kFullHeaderWidths =
+        (sizeof(ButterflyCore) + sizeof(ButterflyExtras)) / sizeof(Value);
+    Value* element_ptr(uint32_t i) const { return butterfly_ - kFullHeaderWidths - 1 - i; }
     // Amortized-doubling growth (like std::vector) so at least `needed`
     // shape slots resp. elements exist. New slots are NOT zero-initialized
     // -- callers must fill every newly-visible slot before it's traced or read.
@@ -287,10 +316,18 @@ private:
     // capacities, copies both regions' existing contents across (at their
     // OLD capacities -- the caller has already established the new ones
     // are >=), frees the old block, and repoints butterfly_.
-    void realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shape_capacity);
+    // `want_extras` forces the extras region on for a caller that is about to
+    // need it. It is otherwise implied -- by an element region, or by the block
+    // already having one, since nothing ever takes it back off.
+    void realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shape_capacity,
+                           bool want_extras = false);
+    // The extras region, materialized if this object does not have one yet.
+    ButterflyExtras& ensure_butterfly_extras();
+    // What SmallMapPool was handed for this butterfly, header included.
+    size_t butterfly_block_bytes() const;
     void free_butterfly();
     // Shared tail of free_butterfly()/realloc_butterfly(): returns the block
-    // to SmallMapPool without touching butterfly_header()->extras --
+    // to SmallMapPool without touching the extras' RareExtras* --
     // free_butterfly() deletes it first (real ownership release, object is
     // going away), realloc_butterfly() transplants it to the new header
     // first (still owned, just relocated to a bigger/smaller block).
@@ -308,11 +345,11 @@ public:
     static void* operator new(size_t size, size_t trailing_bytes);
     static void  operator delete(void* p, size_t trailing_bytes) noexcept;
     bool butterfly_is_inline() const {
-        return butterfly_ && (butterfly_header()->shape_capacity & kInlineButterflyBit);
+        return butterfly_ && (butterfly_core()->shape_capacity & kInlineButterflyBit);
     }
     // How many trailing bytes a cell needs to carry its own first butterfly.
     static constexpr size_t inline_butterfly_bytes(uint32_t slots) {
-        return sizeof(ButterflyHeader) + static_cast<size_t>(slots) * sizeof(Value);
+        return sizeof(ButterflyCore) + static_cast<size_t>(slots) * sizeof(Value);
     }
     // Points butterfly_ at the trailing space the cell was given. `object_bytes`
     // is where that space starts, which is the size of the concrete type.
@@ -766,12 +803,12 @@ private:
     // back to store_in_overflow (sparse_overflow_) instead of resizing.
     static bool sparse_growth_too_costly(uint32_t index, uint32_t old_size);
 
-    // RareExtras lives in the butterfly header (ButterflyHeader::extras)
+    // RareExtras lives in the butterfly's extras (ButterflyExtras::extras)
     // instead of its own Object field -- peek_extras() mirrors the old bare
     // `if (extras_)` check (nullptr if no butterfly, or a butterfly with no
     // RareExtras yet); ensure_extras() allocates a header-only butterfly
     // first if needed, then the RareExtras itself on first use.
-    RareExtras* peek_extras() const { return butterfly_ ? butterfly_header()->extras : nullptr; }
+    RareExtras* peek_extras() const { return has_butterfly_extras() ? butterfly_extras()->extras : nullptr; }
     RareExtras& ensure_extras();
 
     // RareExtras accessors: "peek" forms return nullptr without allocating
@@ -1098,7 +1135,7 @@ private:
 // deleted-element tombstones, non-default-attribute/accessor descriptors,
 // and the enumeration order of whichever of those a given object actually
 // has (shape-resident properties order via Shape::properties_in_order()
-// instead). Bundled behind one ButterflyHeader::extras pointer (see
+// instead). Bundled behind one ButterflyExtras::extras pointer (see
 // Object::peek_extras/ensure_extras) instead of four separate fields.
 struct RareExtras {
     std::unique_ptr<std::unordered_map<std::string, Value>> sparse_overflow;
