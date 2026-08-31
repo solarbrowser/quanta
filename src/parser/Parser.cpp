@@ -8313,16 +8313,45 @@ bool Parser::try_parse_arrow_function_params() {
         return false;
     }
     
-    // A parameter list opens with a binding: a name, an object or array
-    // pattern, a rest, or nothing at all. It can never open with another
-    // parenthesis, so `((...))` is a parenthesized expression, and answering
-    // that here costs one token instead of a walk to the matching bracket --
-    // which for a script wrapped in one of these is the whole file.
-    // Only an impossible opening is refused, never a merely unlikely one: a
-    // wrong yes is paid for by the walk below, which then answers correctly,
-    // while a wrong no would parse an arrow as something else.
-    if (peek_token(1).get_type() == TokenType::LEFT_PAREN) {
-        return false;
+    // A parameter list opens with a binding and nothing else: a name, an
+    // object or array pattern, a rest, or the close of an empty list.
+    // Answering from that one token is the whole point -- the only other way
+    // to answer is the walk below, which runs to the matching bracket, and
+    // for an expression written around a whole program that is the last token
+    // in the file. A streamed token sequence cannot hand anything back while
+    // such a walk is out ahead of the parser, so the walk alone decides how
+    // much of the source is held at once.
+    // Written as what may open a binding rather than as what may not: a wrong
+    // yes is only paid for by the walk, which then answers correctly, while a
+    // wrong no would parse an arrow function as something else.
+    // peek_token hands back whatever is next, trivia included, and a list is
+    // allowed to open on the line below its bracket.
+    size_t look = 1;
+    TokenType opener = peek_token(look).get_type();
+    while (opener == TokenType::NEWLINE || opener == TokenType::WHITESPACE ||
+           opener == TokenType::COMMENT) {
+        opener = peek_token(++look).get_type();
+    }
+    switch (opener) {
+        case TokenType::RIGHT_PAREN:    // ()
+        case TokenType::ELLIPSIS:       // (...rest
+        case TokenType::LEFT_BRACE:     // ({ a })
+        case TokenType::LEFT_BRACKET:   // ([ a ])
+        case TokenType::IDENTIFIER:
+        // Keyword tokens that are still binding identifiers somewhere: this
+        // decision is made before the parse knows the mode it will be read in,
+        // so every one of them has to be allowed through here.
+        case TokenType::YIELD:
+        case TokenType::AWAIT:
+        case TokenType::ASYNC:
+        case TokenType::LET:
+        case TokenType::STATIC:
+        case TokenType::FROM:
+        case TokenType::OF:
+        case TokenType::UNDEFINED:
+            break;
+        default:
+            return false;
     }
 
     size_t paren_count = 1;
