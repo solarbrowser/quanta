@@ -150,6 +150,20 @@ compile_group() {
     collect_jobs
 }
 
+# The same, for the sources that keep the stack canary.
+compile_group_hardened() {
+    local obj_subdir="$1" arr_name="$2"
+    shift 2
+    local src obj
+    for src in "$@"; do
+        obj="$OBJ_DIR/$obj_subdir/$(basename "${src%.cpp}").o"
+        launch_job "$src" clang++ "${CXXFLAGS[@]}" "${HARDEN_FLAGS[@]}" "${INCLUDES[@]}" \
+            -c "$src" -o "$obj"
+        eval "$arr_name+=(\"\$obj\")"
+    done
+    collect_jobs
+}
+
 setup_pcre2() {
     local pcre2_src="third_party/pcre2/src"
     local pcre2_configs="third_party/pcre2_configs"
@@ -235,9 +249,9 @@ phase_runtime() {
 }
 
 phase_frontend() {
-    compile_group lexer LEXER_OBJECTS "${LEXER_SOURCES[@]}"
-    compile_group parser PARSER_OBJECTS "${PARSER_SOURCES[@]}"
-    compile_group parser/ast AST_OBJECTS "${AST_SOURCES[@]}"
+    compile_group_hardened lexer LEXER_OBJECTS "${LEXER_SOURCES[@]}"
+    compile_group_hardened parser PARSER_OBJECTS "${PARSER_SOURCES[@]}"
+    compile_group_hardened parser/ast AST_OBJECTS "${AST_SOURCES[@]}"
 }
 
 phase_vm() {
@@ -300,8 +314,19 @@ CXXFLAGS=(
     -fomit-frame-pointer
     -fstrict-aliasing
     -fstrict-enums
+    # The stack canary is a mitigation for overflowing a stack buffer, and the
+    # interpreter and runtime have none to overflow -- their arrays are sized
+    # from the chunk the compiler just produced. It is kept where bytes the
+    # engine did not produce are first handled: the lexer, the parser and their
+    # buffers, which are cold once a script is running and so cost nothing to
+    # protect. Same split the Makefile makes, and for the same reason; the two
+    # were measurably different binaries until this line.
+    -fno-stack-protector
     -pthread
 )
+
+# Added back for the lexer and parser objects only -- see the note above.
+HARDEN_FLAGS=(-fstack-protector-strong)
 
 INCLUDES=(-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include)
 

@@ -52,7 +52,12 @@ if %ERRORLEVEL% NEQ 0 (
 )
 for /f "tokens=3" %%v in ('clang++ --version ^| findstr "version"') do set CLANG_VER=%%v
 
-set "CXXFLAGS=-std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.9.3\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+REM The stack canary is a mitigation for overflowing a stack buffer, and the
+REM interpreter and runtime have none to overflow. It is kept where bytes the
+REM engine did not produce are first handled: the lexer and parser, which get
+REM it back per-file below. Same split the Makefile and build.sh make.
+set "CXXFLAGS=-fno-stack-protector -std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.9.3\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+set "HARDEN=-fstack-protector-strong"
 set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include"
 set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32"
 set "PCRE2FLAGS=-O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -Ithird_party/pcre2/src -march=native -fomit-frame-pointer"
@@ -194,15 +199,15 @@ goto :eof
 
 :phase_frontend
 for %%f in (src\lexer\*.cpp) do (
-    call :compile_cpp "%%f" "build\obj\lexer\%%~nf.o"
+    call :compile_cpp_hardened "%%f" "build\obj\lexer\%%~nf.o"
     if errorlevel 1 exit /b 1
 )
 for %%f in (src\parser\*.cpp) do (
-    call :compile_cpp "%%f" "build\obj\parser\%%~nf.o"
+    call :compile_cpp_hardened "%%f" "build\obj\parser\%%~nf.o"
     if errorlevel 1 exit /b 1
 )
 for /r src\parser\ast %%f in (*.cpp) do (
-    call :compile_cpp "%%f" "build\obj\parser\ast\%%~nf.o"
+    call :compile_cpp_hardened "%%f" "build\obj\parser\ast\%%~nf.o"
     if errorlevel 1 exit /b 1
 )
 goto :eof
@@ -233,6 +238,11 @@ goto :eof
 
 :compile_cpp
 clang++ %CXXFLAGS% %INCLUDES% -c "%~1" -o "%~2" 2> "%ERRTMP%"
+goto :post_compile
+
+REM The same, for the sources that keep the stack canary.
+:compile_cpp_hardened
+clang++ %CXXFLAGS% %HARDEN% %INCLUDES% -c "%~1" -o "%~2" 2> "%ERRTMP%"
 goto :post_compile
 
 :compile_pcre2

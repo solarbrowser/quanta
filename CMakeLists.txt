@@ -237,6 +237,14 @@ list(APPEND CORE_SOURCES ${PLATFORM_SOURCES})
 list(FILTER CORE_SOURCES EXCLUDE REGEX ".*WindowsNativeAPI\\.cpp$")
 
 # Lexer source files
+# The stack canary is a mitigation for overflowing a stack buffer, and the
+# interpreter and runtime have none to overflow -- their arrays are sized from
+# the chunk the compiler just produced. It is kept where bytes the engine did
+# not produce are first handled: the lexer and the parser, which get it back
+# below. Same split the Makefile and build.sh make; the builds were producing
+# measurably different binaries until they agreed on it.
+add_compile_options(-fno-stack-protector)
+
 file(GLOB_RECURSE LEXER_SOURCES
     ${CMAKE_SOURCE_DIR}/src/lexer/*.cpp
 )
@@ -273,6 +281,11 @@ target_include_directories(quantalib PUBLIC
     ${UTF8PROC_DIR}
     ${CMAKE_SOURCE_DIR}/third_party/minicoro
     ${MIMALLOC_DIR}/include
+)
+
+set_source_files_properties(
+    ${LEXER_SOURCES} ${PARSER_SOURCES}
+    PROPERTIES COMPILE_OPTIONS "-fstack-protector-strong"
 )
 
 target_compile_definitions(quantalib PUBLIC UTF8PROC_STATIC)
