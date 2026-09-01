@@ -318,6 +318,11 @@ if(WIN32)
         winmm
         ole32
         shell32
+        # mimalloc's, and the list its own build links on Windows.
+        advapi32
+        bcrypt
+        psapi
+        user32
     )
 endif()
 

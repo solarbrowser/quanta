@@ -59,7 +59,11 @@ REM it back per-file below. Same split the Makefile and build.sh make.
 set "CXXFLAGS=-fno-stack-protector -std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.9.3\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
 set "HARDEN=-fstack-protector-strong"
 set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include"
-set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32"
+REM advapi32/bcrypt/psapi/user32 are mimalloc's, and are the list its own
+REM build links on Windows. Some of what it needs it loads by name at run
+REM time and some it calls directly -- reading the source to tell which is
+REM how the link broke once already, so this follows upstream's list.
+set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32 -ladvapi32 -lbcrypt -lpsapi -luser32"
 set "PCRE2FLAGS=-O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -Ithird_party/pcre2/src -march=native -fomit-frame-pointer"
 set "UTF8PROC_FLAGS=-O3 -DUTF8PROC_STATIC -Ithird_party/utf8proc -march=native -fomit-frame-pointer"
 REM One object for the whole library: static.c includes every other source.
