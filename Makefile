@@ -60,13 +60,11 @@ MIMALLOC_DIR = third_party/mimalloc
 # No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and
 # only C++ operator new is redirected -- see src/core/runtime/MiMalloc.cpp.
 #
-# Compiled as C++ (-x c++), which is what upstream's own build does wherever
-# the C compiler cannot carry a typed atomic: mimalloc's C fallback declares
-# every atomic as uintptr_t, and a page's self-pointer is an atomic pointer,
-# so the C path does not compile at all on a target whose C atomics are that
-# fallback. Its public header is extern "C" either way, so nothing about the
-# symbols changes.
-MIMALLOC_CFLAGS = -x c++ -O3 -DNDEBUG -I$(MIMALLOC_DIR)/include -fomit-frame-pointer
+# Compiled as C, which is what upstream builds by default and what its own
+# sources are written against -- a few of them hold an _Atomic in a way that
+# is C and not C++. Only the Windows build compiles it as C++, and only
+# because it has to; see build-windows.bat.
+MIMALLOC_CFLAGS = -O3 -DNDEBUG -I$(MIMALLOC_DIR)/include -fomit-frame-pointer
 MIMALLOC_OBJS = $(OBJ_DIR)/mimalloc/static.o
 # Named on the link line rather than left to the archive. Replacing operator
 # new is only a replacement if the object that does it is actually linked, and
@@ -274,7 +272,7 @@ $(OBJ_DIR)/utf8proc/utf8proc.o: $(UTF8PROC_DIR)/utf8proc.c
 
 $(OBJ_DIR)/mimalloc/static.o: $(MIMALLOC_DIR)/src/static.c
 	@$(MKDIR_P) $(dir $@)
-	@$(CXX) $(MIMALLOC_CFLAGS) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+	@clang $(MIMALLOC_CFLAGS) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 # Debug build
 debug: CXXFLAGS += $(DEBUG_FLAGS)

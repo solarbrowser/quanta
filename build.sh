@@ -228,7 +228,7 @@ phase_thirdparty() {
         -c third_party/utf8proc/utf8proc.c -o "$obj"
     UTF8PROC_OBJECTS+=("$obj")
     obj="$OBJ_DIR/mimalloc/static.o"
-    launch_job "third_party/mimalloc/src/static.c" clang++ "${MIMALLOC_FLAGS[@]}" \
+    launch_job "third_party/mimalloc/src/static.c" clang "${MIMALLOC_FLAGS[@]}" \
         -c third_party/mimalloc/src/static.c -o "$obj"
     MIMALLOC_OBJECTS+=("$obj")
     collect_jobs
@@ -351,10 +351,9 @@ UTF8PROC_FLAGS=(
 # No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and only
 # C++ operator new is redirected -- see src/core/runtime/MiMalloc.cpp.
 #
-# Compiled as C++, which is what upstream's own build does wherever the C
-# compiler cannot carry a typed atomic -- see the Makefile's note.
+# Compiled as C, which is what upstream builds by default -- see the
+# Makefile's note. Only the Windows build needs C++, and says why.
 MIMALLOC_FLAGS=(
-    -x c++
     -O3
     -DNDEBUG
     -Ithird_party/mimalloc/include
