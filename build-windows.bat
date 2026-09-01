@@ -65,7 +65,13 @@ set "UTF8PROC_FLAGS=-O3 -DUTF8PROC_STATIC -Ithird_party/utf8proc -march=native -
 REM One object for the whole library: static.c includes every other source.
 REM No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and
 REM only C++ operator new is redirected -- see src\core\runtime\MiMalloc.cpp.
-set "MIMALLOC_FLAGS=-O3 -DNDEBUG -Ithird_party/mimalloc/include -fomit-frame-pointer"
+REM
+REM Compiled as C++ (-x c++), which is what upstream's own build does here:
+REM clang targeting the MSVC ABI takes mimalloc's C atomic fallback, where
+REM every atomic is a uintptr_t, and a page's self-pointer is an atomic
+REM pointer -- so the C path does not compile at all. Its public header is
+REM extern "C" either way, so nothing about the symbols changes.
+set "MIMALLOC_FLAGS=-x c++ -O3 -DNDEBUG -Ithird_party/mimalloc/include -fomit-frame-pointer"
 set "STACK=-Xlinker /STACK:67108864"
 echo [%time%] Compiler flags: %CXXFLAGS% >> "%LOG_FILE%"
 
@@ -254,7 +260,7 @@ clang %UTF8PROC_FLAGS% -c "%~1" -o "%~2" 2> "%ERRTMP%"
 goto :post_compile
 
 :compile_mimalloc
-clang %MIMALLOC_FLAGS% -c "%~1" -o "%~2" 2> "%ERRTMP%"
+clang++ %MIMALLOC_FLAGS% -c "%~1" -o "%~2" 2> "%ERRTMP%"
 goto :post_compile
 
 :post_compile

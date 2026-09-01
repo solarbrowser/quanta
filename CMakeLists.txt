@@ -210,6 +210,12 @@ endif()
 # One object for the whole library: src/static.c includes every other source.
 # No MI_MALLOC_OVERRIDE: the C library's own malloc is left alone and only
 # C++ operator new is redirected -- see src/core/runtime/MiMalloc.cpp.
+# Compiled as C++, which is what upstream's own build does wherever the C
+# compiler cannot carry a typed atomic: mimalloc's C fallback declares every
+# atomic as uintptr_t, and a page's self-pointer is an atomic pointer, so the
+# C path does not compile at all on such a target. Its public header is
+# extern "C" either way, so nothing about the symbols changes.
+set_source_files_properties(${MIMALLOC_DIR}/src/static.c PROPERTIES LANGUAGE CXX)
 add_library(mimalloc-static STATIC ${MIMALLOC_DIR}/src/static.c)
 target_include_directories(mimalloc-static PUBLIC ${MIMALLOC_DIR}/include)
 target_compile_definitions(mimalloc-static PRIVATE NDEBUG)
