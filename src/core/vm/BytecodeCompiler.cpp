@@ -2441,6 +2441,17 @@ bool closure_needs_outer_environment(const ParamList& params,
     return op.saw_eval || op.saw_class || op.unknown || !free_names.empty();
 }
 
+bool method_body_references_super(const ASTNode* body) {
+    if (!body) return true;
+    std::unordered_set<std::string> names;
+    ScanOpacity op;
+    collect_closure_names(body, /*inside_closure=*/true, names, op, /*suspendable=*/false);
+    // A direct eval's text can name `super`, and a shape the scan could not
+    // read may too. Only a body proved to mention it nowhere may skip the
+    // [[HomeObject]] write.
+    return op.opaque() || names.count("super") > 0;
+}
+
 namespace {
 
 // True if `node` references `super` (property or call) or a private name
@@ -10124,17 +10135,18 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     return true;  // unknown shape: conservative, keep the write
                 }
                 const auto* fe = static_cast<const FunctionExpression*>(fn_node);
-                // A body already let go of cannot be scanned, and "not seen" is
-                // not "not there": ask before it is compiled, or keep the write.
-                if (!fe->get_body()) return true;
-                std::unordered_set<std::string> names;
-                ScanOpacity op;
-                collect_closure_names(fe->get_body(), /*inside_closure=*/true, names,
-                                      op, /*suspendable=*/false);
-                // A direct eval's text can name `super`, and a shape the scan
-                // could not read may too. Only a body proved to mention it
-                // nowhere may skip the [[HomeObject]] write.
-                return op.opaque() || names.count("super") > 0;
+                if (fe->get_body()) return method_body_references_super(fe->get_body());
+                // A body already let go of cannot be scanned here, but it was
+                // scanned once, when it was first read -- same idiom as
+                // captures_outer (see Parser::parse_object_literal's method
+                // path): the parse wrote the answer down where a stepped-over
+                // body's other facts already live.
+                if (ScriptUnit* unit = fe->owning_unit()) {
+                    if (const BodyScopeInfo* info = unit->scope_info_at(fe->body_source_first())) {
+                        return info->references_super;
+                    }
+                }
+                return true;  // no record: keep the write
             };
             // kind's low 2 bits are the existing 0/1/2 (Method/Getter/Setter);
             // bit 0x4 is new: "method body proved super-free, the

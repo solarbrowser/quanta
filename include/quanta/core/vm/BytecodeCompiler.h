@@ -397,6 +397,13 @@ private:
 bool closure_needs_outer_environment(const ParamList& params,
                                       const ASTNode* body, bool is_arrow);
 
+// Whether a method's own body -- not any function nested inside it -- can
+// ever reach `super`. Used to skip a method's [[HomeObject]] write (needed
+// only for super's resolution) when it is proven no method body could ever
+// ask for it. `body` may be null (a body stepped over on a reparse cannot be
+// asked and the caller keeps the write), in which case this answers true.
+bool method_body_references_super(const ASTNode* body);
+
 }
 
 #endif
