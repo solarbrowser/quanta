@@ -5372,11 +5372,29 @@ bool BytecodeCompiler::leaves_locals_untouched(const ASTNode* expr) const {
 void BytecodeCompiler::emit_read_local(const std::string& name) {
     if (env_names_.count(name)) {
         auto it = env_slot_info_.find(name);
-        if (it != env_slot_info_.end() && it->second.depth == env_depth_) {
-            emit(Op::LdaEnvSlot);
-            emit_u8(it->second.slot);
-            emit_u16(add_name(name));
-            return;
+        if (it != env_slot_info_.end()) {
+            if (it->second.depth == env_depth_) {
+                emit(Op::LdaEnvSlot);
+                emit_u8(it->second.slot);
+                emit_u16(add_name(name));
+                return;
+            }
+            // The declaring scope is exactly `hops` Environments out from the
+            // one active here -- env_depth_ counts the same EnterLoopEnv/
+            // BindEnvLocals nesting the declaration's own depth was recorded
+            // against, so the difference is fixed for every instance of this
+            // read, the same fact that already lets break/continue unwind by
+            // an exact count rather than walking by name. A hop count past
+            // what a byte can hold is pathological nesting no real program
+            // reaches; the name-walk path below still answers it correctly.
+            const int hops = env_depth_ - it->second.depth;
+            if (hops > 0 && hops <= 255) {
+                emit(Op::LdaEnvSlotAt);
+                emit_u8(static_cast<uint8_t>(hops));
+                emit_u8(it->second.slot);
+                emit_u16(add_name(name));
+                return;
+            }
         }
         emit(Op::LdaEnv);
         emit_u16(add_name(name));
@@ -5399,11 +5417,26 @@ void BytecodeCompiler::emit_read_local(const std::string& name) {
 void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declaration) {
     if (env_names_.count(name)) {
         auto it = env_slot_info_.find(name);
-        if (it != env_slot_info_.end() && it->second.depth == env_depth_) {
-            emit(is_declaration ? Op::StaEnvSlotInit : Op::StaEnvSlot);
-            emit_u8(it->second.slot);
-            emit_u16(add_name(name));
-            return;
+        if (it != env_slot_info_.end()) {
+            if (it->second.depth == env_depth_) {
+                emit(is_declaration ? Op::StaEnvSlotInit : Op::StaEnvSlot);
+                emit_u8(it->second.slot);
+                emit_u16(add_name(name));
+                return;
+            }
+            // A declaration always lands in the scope that was just entered
+            // for it, which is the current one -- so a depth mismatch here
+            // only ever means a plain write to a binding some number of
+            // scopes out, the same fact emit_read_local acts on and for the
+            // same reason.
+            const int hops = env_depth_ - it->second.depth;
+            if (!is_declaration && hops > 0 && hops <= 255) {
+                emit(Op::StaEnvSlotAt);
+                emit_u8(static_cast<uint8_t>(hops));
+                emit_u8(it->second.slot);
+                emit_u16(add_name(name));
+                return;
+            }
         }
         emit(is_declaration ? Op::StaEnvInit : Op::StaEnv);
         emit_u16(add_name(name));
@@ -8155,6 +8188,40 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     // over. Nothing else goes in it, and it is left before the outer binding
     // is made -- a named class expression binds its name only inside itself.
     int class_env_idx = -1;
+    // Shadows env_slot_info_'s entry for inner_name, if it has one, for
+    // exactly the scope holding this binding. global_decl_count_ never learns
+    // about this binding -- it is not a var/let/const/function declaration
+    // prescan_declarations recognizes, only ClassDefinitionEvaluation's own
+    // classScope -- so an outer declaration of the same name still looks
+    // globally unique to record_env_slot_info's own uniqueness gate. Left
+    // alone, a read of inner_name in here would trust that outer slot: right
+    // depth by the exact-match rule's own accounting, wrong scope, and (since
+    // Shape::intern makes every "x" the same pointer) indistinguishable from
+    // the right one by the by-name recheck LdaEnvSlot's guard is built on.
+    // Un-erased on every path out, including a mid-class return false.
+    struct ClassNameShadow {
+        // A reference into the (private) map, taken from inside the member
+        // function that already has access to it -- this local class is not
+        // itself a member of BytecodeCompiler and so has none of its own.
+        std::unordered_map<std::string, EnvSlotInfo>& slots;
+        std::string name;
+        bool active;
+        bool had_entry;
+        EnvSlotInfo saved{};
+        ClassNameShadow(std::unordered_map<std::string, EnvSlotInfo>& slots,
+                        std::string name, bool active)
+            : slots(slots), name(std::move(name)), active(active), had_entry(false) {
+            if (!active) return;
+            auto it = slots.find(this->name);
+            had_entry = it != slots.end();
+            if (had_entry) { saved = it->second; slots.erase(it); }
+        }
+        ~ClassNameShadow() {
+            if (!active) return;
+            if (had_entry) slots[name] = saved;
+            else slots.erase(name);
+        }
+    } class_name_shadow(env_slot_info_, inner_name, reads_own_name);
     if (reads_own_name) {
         std::vector<BytecodeChunk::LoopEnvVar> env_vars;
         env_vars.push_back({inner_name, /*is_lexical=*/true, /*is_const=*/true,

@@ -153,7 +153,8 @@ const OpInfo& op_info(Op op) {
         {"BindClassName", 2, 'n'},
         {"SuperCallSpread", 1, 'r'},
         {"ThrowSuperDelete", 0, '-'},
-        {"LinkExports", 2, 'z'}
+        {"LinkExports", 2, 'z'},
+        {"LdaEnvSlotAt", 4, 'D'}, {"StaEnvSlotAt", 4, 'D'}
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");
@@ -434,6 +435,14 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
                                     (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
                 out << " slot" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.name_at(name_idx) << "'";
+                break;
+            }
+            case 'D': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
+                out << " +" << static_cast<int>(chunk.code[operand_pc])
+                    << " slot" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " '" << chunk.name_at(name_idx) << "'";
                 break;
             }

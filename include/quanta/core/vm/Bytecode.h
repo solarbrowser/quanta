@@ -386,6 +386,19 @@ enum class Op : uint8_t {
     // accumulator holds a default export's value where one was evaluated.
     LinkExports,
 
+    // Depth-carrying counterparts of LdaEnvSlot/StaEnvSlot, for a name whose
+    // declaring scope is a fixed, known number of Environments out from the
+    // one active at this instruction -- one loop or block short of the exact
+    // match those two require, not an unrelated case: the compiler already
+    // computes this as env_depth_ minus the declaration's own recorded depth
+    // (see BytecodeCompiler::emit_read_local/emit_write_local and
+    // EnvSlotInfo's doc comment), the same difference that already makes
+    // break/continue's environment unwind exact. LdaEnvSlot/StaEnvSlot are
+    // left untouched rather than widened to carry a hop count that is zero
+    // for almost every read: this only exists for the reads that need it.
+    LdaEnvSlotAt,   // hops slot n
+    StaEnvSlotAt,   // hops slot n
+
     kCount
 };
 

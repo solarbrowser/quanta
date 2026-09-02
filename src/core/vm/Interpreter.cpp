@@ -2869,6 +2869,136 @@ Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// LdaEnvSlot's exact-depth guarantee, carried one further: the compiler has
+// proven the binding lives a fixed, known number of Environments out from the
+// one active here (see BytecodeCompiler::emit_read_local), so that many
+// get_outer() calls -- plain pointer follows, not a name comparison at each
+// one the way the chain walk below pays -- land on the declaring Environment
+// directly. Still re-checked by name before being trusted, the same
+// not-yet-fully-installed-in-that-slot guard LdaEnvSlot itself relies on
+// (see EnvSlotInfo's doc comment): a wrong hop count only costs the miss
+// path, never a wrong answer.
+Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t hops = code[pc];
+                uint8_t slot = code[pc + 1];
+                pc += 2;
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
+                pc += 2;
+                Environment* env = ctx.get_lexical_environment();
+                for (uint8_t h = 0; h < hops && env; h++) env = env->get_outer();
+                if (env) {
+                    if (auto* e = env->inline_slot_interned(slot, key)) {
+                        if (!e->slot.initialized) {
+                            ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                            CHECK_EXC();
+                            break;
+                        }
+                        acc = e->slot.value;
+                        break;
+                    }
+                }
+                // Miss: the same general chain walk LdaEnv itself does, from
+                // the innermost Environment rather than trusting the hop
+                // count any further -- see its own copy of this loop for why
+                // an object environment's answer is held while the walk
+                // continues.
+                Value object_value;
+                bool from_object = false;
+                int r = Environment::kNotBound;
+                for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+                    r = e->env_read_step_interned(key, acc, &ctx);
+                    CHECK_EXC();
+                    if (r == Environment::kObjectValue) {
+                        if (!from_object) { from_object = true; object_value = acc; }
+                        r = Environment::kNotBound;
+                        continue;
+                    }
+                    if (r != Environment::kNotBound) break;
+                }
+                if (r == Environment::kTdz) {
+                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                } else if (from_object) {
+                    acc = object_value;
+                } else if (r == Environment::kNotBound) {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                }
+                CHECK_EXC();
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t hops = code[pc];
+                uint8_t slot = code[pc + 1];
+                pc += 2;
+                const std::string* key = chunk.names[read_u16(code, pc)];
+                const std::string& name = *key;
+                pc += 2;
+                Environment* env = ctx.get_lexical_environment();
+                for (uint8_t h = 0; h < hops && env; h++) env = env->get_outer();
+                if (env) {
+                    if (auto* e = env->inline_slot_interned(slot, key)) {
+                        if (!e->slot.initialized) {
+                            ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                            CHECK_EXC();
+                            break;
+                        }
+                        if (!e->slot.mutable_flag) {
+                            if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
+                                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                                CHECK_EXC();
+                            }
+                            break;
+                        }
+                        Collector::write_barrier_env_for(env, acc);
+                        e->slot.value = acc;
+                        break;
+                    }
+                }
+                // Miss: same general resolve-and-write LdaEnv/StaEnv rely on.
+                if (ctx.is_in_tdz_interned(key)) {
+                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    CHECK_EXC();
+                    break;
+                }
+                Environment* found = ctx.find_binding_env_interned(key);
+                if (found) {
+                    if (!found->set_binding_direct_interned(key, acc, &ctx) &&
+                        (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        CHECK_EXC();
+                    }
+                } else {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                }
+                CHECK_EXC();
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5758,6 +5888,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaEnvSlot)] = &h_LdaEnvSlotFast<false>;
     t[static_cast<uint8_t>(Op::StaEnvSlot)] = &h_gen_StaEnvSlot;
     t[static_cast<uint8_t>(Op::StaEnvSlotInit)] = &h_gen_StaEnvSlotInit;
+    t[static_cast<uint8_t>(Op::LdaEnvSlotAt)] = &h_gen_LdaEnvSlotAt;
+    t[static_cast<uint8_t>(Op::StaEnvSlotAt)] = &h_gen_StaEnvSlotAt;
     t[static_cast<uint8_t>(Op::BindEnvLocals)] = &h_gen_BindEnvLocals;
     t[static_cast<uint8_t>(Op::EnterLoopEnv)] = &h_gen_EnterLoopEnv;
     t[static_cast<uint8_t>(Op::AdvanceLoopEnv)] = &h_gen_AdvanceLoopEnv;
