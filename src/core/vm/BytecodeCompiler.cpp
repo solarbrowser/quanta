@@ -1427,7 +1427,7 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
     // A body stepped over is one this walk cannot see through directly, but
     // the parse already answered this exact question once, while the body
     // was still in hand, and filed it under the same source position a
-    // stepped-over body carries forward (see captures_outer/references_super
+    // stepped-over body carries forward (see captures_outer/super_anywhere
     // -- same idiom, generalized to the other two flags this scan also
     // needs). Only a body with no such record at all falls back to unknown.
     auto try_recorded_scope = [&](auto* n) {
@@ -2500,7 +2500,7 @@ bool method_value_references_super(const ASTNode* fn_node) {
     // answer down where a stepped-over body's other facts already live.
     if (ScriptUnit* unit = fe->owning_unit()) {
         if (const BodyScopeInfo* info = unit->scope_info_at(fe->body_source_first())) {
-            return info->references_super;
+            return info->super_anywhere;
         }
     }
     return true;  // no record: keep the write

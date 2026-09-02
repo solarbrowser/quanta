@@ -70,11 +70,6 @@ struct BodyScopeInfo {
     // was born in. Defaults to the safe answer, so a body whose parse never
     // wrote one down is treated as reaching outward.
     bool captures_outer = true;
-    // Whether a method body can ever reach `super` -- the answer
-    // method_body_references_super gives when it can see the body. Recorded
-    // for the same reason: only a method's own written property gets one, so
-    // this defaults to the safe answer for every other body.
-    bool references_super = true;
     // Whether the body opens with a "use strict" directive. Recorded for the
     // same reason as body_end: a body stepped over cannot be asked.
     bool body_strict = false;

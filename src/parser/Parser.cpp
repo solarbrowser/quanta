@@ -9215,12 +9215,6 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     method_names.record_capture(closure_needs_outer_environment(
                         ParamList::from_nodes(params), body.get(), /*is_arrow=*/false));
                 }
-                // Unlike the capture question above, whether a method reaches
-                // `super` does not depend on whether it can suspend, so this
-                // is recorded for every shorthand-method kind alike.
-                if (!last_body_skipped_ && body) {
-                    method_names.record_super_reference(method_body_references_super(body.get()));
-                }
             }
             options_.function_depth--;
             options_.non_arrow_function_depth--;

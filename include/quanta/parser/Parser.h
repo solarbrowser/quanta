@@ -152,7 +152,6 @@ private:
         uint32_t body_end = 0;
         bool body_strict = false;
         bool captures_outer = true;
-        bool references_super = true;
         void record_body(uint32_t src) { body_src = src; has_body = true; }
         void record_body_span(uint32_t end, bool strict) {
             body_end = end;
@@ -161,20 +160,23 @@ private:
         // Only the forms that can act on it bother to work this out; the rest
         // leave the safe default standing.
         void record_capture(bool captures) { captures_outer = captures; }
-        void record_super_reference(bool references) { references_super = references; }
         BodyScopeInfo take() const {
             BodyScopeInfo info;
             const NameScope& mine = p.name_scopes_.back();
             info.captured = mine.captured;
             info.all_names = mine.all;
             info.eval_anywhere = mine.all.count("eval") != 0;
+            // Folds up through every nested scope (arrow or not) the same way
+            // all_names does, so it sees a `super` however deep an arrow
+            // chain carries it -- unlike captures_outer, this needs no
+            // separate per-form opt-in: whatever named `super` at all is
+            // already in `mine.all` before this reads it.
             info.super_anywhere = mine.all.count("super") != 0;
             info.eval_in_nested = mine.eval_in_nested;
             info.class_expression = mine.class_expression;
             info.body_end = body_end;
             info.body_strict = body_strict;
             info.captures_outer = captures_outer;
-            info.references_super = references_super;
             return info;
         }
         ~FunctionNames() {
