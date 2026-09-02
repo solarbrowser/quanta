@@ -586,6 +586,15 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         fast_ctx.set_variable_environment(outer_env);
         fast_ctx.set_arrow_function_context(is_arrow_);
         if (is_strict_ || executable_->fast_strict) fast_ctx.set_strict_mode(true);
+        // reset_for_call always clears new.target/is_in_constructor_call, so a
+        // base-class constructor let in by ctor_ok above (the only kind of
+        // constructor call that reaches this path) needs it copied back from
+        // the caller before its own Op::LdaNewTarget can read it -- the same
+        // restore call_tree_walker does for its own per-call context.
+        if (ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined()) {
+            fast_ctx.set_in_constructor_call(true);
+            fast_ctx.set_new_target(ctx.get_new_target());
+        }
 
         Value fast_this = this_value;
         // Skipped entirely when the body cannot observe `this`: Op::LdaThis is
