@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/SmallMapPool.h"
+#include <algorithm>
 #include <utility>
 #include <vector>
 #include <cstdint>
@@ -135,6 +136,25 @@ void* SmallMapPool::take(size_t bytes) {
 }
 void SmallMapPool::give(size_t bytes, void* p) {
     pool().give(bytes, p);
+}
+
+void SmallMapPool::trim() {
+    if (!g_pool) return;
+    // A flat block-count floor would keep 64 slots of whatever a 166 KB
+    // class's elements happen to be just as readily as 64 slots of a
+    // 16-byte one -- scale the reserve by size instead, so every class
+    // keeps roughly the same standing capacity rather than the same count.
+    constexpr size_t kKeepBytesPerClass = 8192;
+    for (auto& entry : g_pool->classes) {
+        size_t bytes = entry.first;
+        std::vector<void*>& free_list = entry.second;
+        size_t keep = bytes ? std::max<size_t>(4, kKeepBytesPerClass / bytes) : 4;
+        while (free_list.size() > keep) {
+            ::operator delete(free_list.back());
+            free_list.pop_back();
+        }
+        free_list.shrink_to_fit();
+    }
 }
 
 }

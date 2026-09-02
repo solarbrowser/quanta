@@ -5,9 +5,11 @@
  */
 
 #include "quanta/core/gc/Heap.h"
+#include "quanta/core/runtime/SmallMapPool.h"
 #include "quanta/core/runtime/Value.h"
 #include <cassert>
 #include <cstdio>
+#include <mimalloc.h>
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -485,14 +487,25 @@ void Heap::decommit_idle_memory() {
         heap->block_allocator_.decommit_idle_chunks();
     }
     // GC-managed cells are only part of the footprint: property storage
-    // (shape_slots_/sparse_overflow_/descriptors_), array elements_, and rope/string
-    // internals are plain heap allocations glibc's own arena holds onto
-    // after they're freed. malloc_trim asks it to give what it can back to
-    // the OS -- measured to matter far more than the chunk decommit above
-    // for a typical churn-heavy workload.
+    // (shape_slots_/sparse_overflow_/descriptors_), array elements_, and
+    // rope/string internals all go through operator new, which mimalloc
+    // owns now (see MiMalloc.cpp) rather than glibc's arena -- mi_collect
+    // is what actually gives those idle pages back to the OS today.
+    // malloc_trim still earns its keep for the handful of sites that call
+    // the C allocator directly (ArrayBuffer's detachable storage, this
+    // file's own LargeCell path).
 #ifdef __GLIBC__
     malloc_trim(0);
 #endif
+    mi_collect(true);
+    // Same idle-capacity problem as the block allocator above, for the
+    // small-map/vector free lists SmallMapAllocator-backed containers
+    // (Environment/Shape/Object overflow maps, per-instance lookup caches)
+    // pool by size class: give()/take() never shrink one on their own, so a
+    // program's busiest moment -- typically parsing, when the shape tree is
+    // still being discovered -- sets a floor every class holds onto for the
+    // rest of the run otherwise.
+    SmallMapPool::trim();
 }
 
 void Heap::clear_all_marks() {

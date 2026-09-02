@@ -29,6 +29,16 @@ class SmallMapPool {
 public:
     static void* take(size_t bytes);
     static void give(size_t bytes, void* p);
+    // Releases free-list capacity a class isn't using back to the allocator.
+    // take()/give() never do this themselves -- give() in particular must
+    // stay allocation-free (see SizeClassPool::give's own comment) -- so
+    // nothing here ever shrinks on its own; a churn-heavy program's free
+    // lists only grow, and the pool never returns what it once needed at
+    // its busiest. Meant to be called at the same cadence as
+    // Heap::decommit_idle_memory (after a major GC, where the cost of
+    // walking every class is already amortized against a much bigger
+    // pause), not from any allocation hot path.
+    static void trim();
 };
 
 // Generic STL Allocator that routes through SmallMapPool. Stateless (always
