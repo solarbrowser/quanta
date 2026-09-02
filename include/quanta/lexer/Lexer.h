@@ -55,8 +55,6 @@ private:
     const std::string& source() const { return *source_ref_; }
 
     static const std::unordered_map<std::string, TokenType> keywords_;
-    
-    static const std::unordered_map<char, TokenType> single_char_tokens_;
 
 public:
     explicit Lexer(const std::string& source);

@@ -61,21 +61,6 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"enum", TokenType::ENUM}
 };
 
-const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
-    {'(', TokenType::LEFT_PAREN},
-    {')', TokenType::RIGHT_PAREN},
-    {'{', TokenType::LEFT_BRACE},
-    {'}', TokenType::RIGHT_BRACE},
-    {'[', TokenType::LEFT_BRACKET},
-    {']', TokenType::RIGHT_BRACKET},
-    {';', TokenType::SEMICOLON},
-    {',', TokenType::COMMA},
-    {':', TokenType::COLON},
-    {'~', TokenType::BITWISE_NOT},
-    {'#', TokenType::HASH},
-    {'@', TokenType::AT}
-};
-
 
 Lexer::Lexer(const std::string& source)
     : source_ref_(std::make_shared<const std::string>(source)), position_(0),
@@ -309,12 +294,25 @@ Token Lexer::next_token() {
         return read_identifier();
     }
     
-    auto single_it = single_char_tokens_.find(ch);
-    if (single_it != single_char_tokens_.end()) {
-        advance();
-        return create_token(single_it->second, start);
+    // A single-character delimiter, checked directly rather than through a
+    // char-keyed hash map: every entry here is exactly one character, so a
+    // switch compiles to a dense jump table with no hashing or bucket chase.
+    switch (ch) {
+        case '(': advance(); return create_token(TokenType::LEFT_PAREN, start);
+        case ')': advance(); return create_token(TokenType::RIGHT_PAREN, start);
+        case '{': advance(); return create_token(TokenType::LEFT_BRACE, start);
+        case '}': advance(); return create_token(TokenType::RIGHT_BRACE, start);
+        case '[': advance(); return create_token(TokenType::LEFT_BRACKET, start);
+        case ']': advance(); return create_token(TokenType::RIGHT_BRACKET, start);
+        case ';': advance(); return create_token(TokenType::SEMICOLON, start);
+        case ',': advance(); return create_token(TokenType::COMMA, start);
+        case ':': advance(); return create_token(TokenType::COLON, start);
+        case '~': advance(); return create_token(TokenType::BITWISE_NOT, start);
+        case '#': advance(); return create_token(TokenType::HASH, start);
+        case '@': advance(); return create_token(TokenType::AT, start);
+        default: break;
     }
-    
+
     return read_operator();
 }
 
