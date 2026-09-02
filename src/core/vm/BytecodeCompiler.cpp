@@ -2483,6 +2483,29 @@ bool method_body_references_super(const ASTNode* body) {
     return op.opaque() || names.count("super") > 0;
 }
 
+// Same question as method_body_references_super, asked of the method's own
+// FunctionExpression node instead of an already-unwrapped body -- lets a
+// caller holding onto the property/class-element value (which is what both
+// the object-literal and the class compilers actually have in hand) ask
+// directly. Shared so the two compilers' answers can never quietly diverge.
+bool method_value_references_super(const ASTNode* fn_node) {
+    if (!fn_node || fn_node->get_type() != ASTNode::Type::FUNCTION_EXPRESSION) {
+        return true;  // unknown shape: conservative, keep the write
+    }
+    const auto* fe = static_cast<const FunctionExpression*>(fn_node);
+    if (fe->get_body()) return method_body_references_super(fe->get_body());
+    // A body already let go of cannot be scanned here, but it was scanned
+    // once, when it was first read -- same idiom as captures_outer (see
+    // Parser::parse_object_literal's method path): the parse wrote the
+    // answer down where a stepped-over body's other facts already live.
+    if (ScriptUnit* unit = fe->owning_unit()) {
+        if (const BodyScopeInfo* info = unit->scope_info_at(fe->body_source_first())) {
+            return info->references_super;
+        }
+    }
+    return true;  // no record: keep the write
+}
+
 namespace {
 
 // True if `node` references `super` (property or call) or a private name
@@ -8367,6 +8390,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     }
 
     constexpr uint8_t kClassElementFlag = 0x8;
+    constexpr uint8_t kSuperFreeFlag = 0x4;
     for (const auto& e : elements) {
         // A computed key is evaluated here, in the order it was written, and
         // exactly once: what it comes to is what the member is installed under
@@ -8435,6 +8459,10 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                                              (e.key[0] == '#' ? 0x2 : 0)));
             }
         } else {
+            // Asked before the value is compiled: compiling it is what lets
+            // go of the body this reads (same ordering as the object-literal
+            // compiler's own keeps_super check).
+            const bool keeps_super = method_value_references_super(e.m->get_value());
             {
                 ClosureTemplate tmpl = closure_template_for(e.m->get_value());
                 // A class writes `async m()` as an ordinary function literal
@@ -8461,7 +8489,8 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 // The plain-key form spells a method 0; the computed one
                 // spells it 2, keeping 0 for a property that is not one.
                 emit_u8(static_cast<uint8_t>((e.kind == 0 ? 2 : e.kind) | kClassElementFlag |
-                                             (e.is_static ? 0x10 : 0)));
+                                             (e.is_static ? 0x10 : 0) |
+                                             (!keeps_super ? kSuperFreeFlag : 0)));
             } else if (e.key[0] == '#') {
                 emit(Op::DefinePrivateMember);
                 emit_u8(target);
@@ -8476,7 +8505,12 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 emit_u16(add_name(e.kind == 1 ? "get " + e.key
                                 : e.kind == 2 ? "set " + e.key
                                               : e.key));
-                emit_u8(static_cast<uint8_t>(e.kind | kClassElementFlag));
+                // FinalizeStaticProperty's super_free bit is only consulted
+                // for a method (kind 0); a getter/setter here always writes
+                // [[HomeObject]], matching the object-literal compiler's own
+                // plain-key form.
+                emit_u8(static_cast<uint8_t>(e.kind | kClassElementFlag |
+                                             (e.kind == 0 && !keeps_super ? kSuperFreeFlag : 0)));
                 emit_u16(alloc_feedback_slot());
             }
         }
@@ -10218,34 +10252,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // up Function.prototype/Object.prototype, both already dictionary-
             // mode) on every single method creation, even for the overwhelming
             // majority of shorthand methods that never reference `super` at
-            // all. Reuse collect_closure_names (the same whole-body scanner
-            // already trusted for the enclosing function's own full_env
-            // decision, `all_names.count("super")` above) on just this
-            // method's body to prove "no super anywhere in here" at compile
-            // time, and skip the write entirely when proven -- correct
-            // because collect_closure_names's IDENTIFIER case captures a bare
-            // `super` reference regardless of nesting depth (arrows correctly
-            // inherit the enclosing method's super binding and must count;
-            // an ordinary nested function can never legally contain `super`
-            // at all, so recursing into one is harmless, never a false-clear).
-            auto method_references_super = [](const ASTNode* fn_node) {
-                if (!fn_node || fn_node->get_type() != ASTNode::Type::FUNCTION_EXPRESSION) {
-                    return true;  // unknown shape: conservative, keep the write
-                }
-                const auto* fe = static_cast<const FunctionExpression*>(fn_node);
-                if (fe->get_body()) return method_body_references_super(fe->get_body());
-                // A body already let go of cannot be scanned here, but it was
-                // scanned once, when it was first read -- same idiom as
-                // captures_outer (see Parser::parse_object_literal's method
-                // path): the parse wrote the answer down where a stepped-over
-                // body's other facts already live.
-                if (ScriptUnit* unit = fe->owning_unit()) {
-                    if (const BodyScopeInfo* info = unit->scope_info_at(fe->body_source_first())) {
-                        return info->references_super;
-                    }
-                }
-                return true;  // no record: keep the write
-            };
+            // all. method_value_references_super proves "no super anywhere in
+            // here" at compile time (see its own doc comment), and skip the
+            // write entirely when proven.
             // kind's low 2 bits are the existing 0/1/2 (Method/Getter/Setter);
             // bit 0x4 is new: "method body proved super-free, the
             // [[HomeObject]] write was skipped" (Interpreter.cpp masks it off
@@ -10286,7 +10295,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     // what lets go of the body this reads.
                     const bool keeps_super =
                         (is_method || is_getter || is_setter) &&
-                        method_references_super(prop->value.get());
+                        method_value_references_super(prop->value.get());
                     if (!compile_expression(prop->value.get())) return false;
 
                     // Only this spelling sets [[Prototype]]: the shorthand,
@@ -10353,7 +10362,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
                     const bool computed_keeps_super =
                         (is_method || is_getter || is_setter) &&
-                        method_references_super(prop->value.get());
+                        method_value_references_super(prop->value.get());
                     if (!compile_expression(prop->value.get())) return false;
 
                     // An accessor names itself "get k"/"set k" and merges
