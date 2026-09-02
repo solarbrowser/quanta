@@ -2155,7 +2155,11 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 }
                 CHECK_EXC();
                 if (found) {
-                    if (beyond_frame && env != entry_env && !env->is_per_call_scope()) {
+                    // A script's entry_env is the persistent script environment,
+                    // not a per-call frame like a function's -- so caching a slot
+                    // found exactly there is safe too, unlike for a function chunk.
+                    if (beyond_frame && (env != entry_env || chunk.script_mode) &&
+                        !env->is_per_call_scope()) {
                         uint32_t obj_slot = 0;
                         bool slot_writable = false;
                         // See the identical block in the main dispatch loop.
@@ -2290,15 +2294,19 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                     bool ok = env->set_binding(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                    } else if (ok && env != entry_env) {
+                    } else if (ok && (env != entry_env || chunk.script_mode)) {
                         // Same rule as Op::LdaLookup: only a binding beyond the
                         // frame's entry environment keeps its address. This
                         // path resolved without walking, so the reach is
-                        // checked here -- on the cache-miss path only.
-                        bool beyond_frame = false;
-                        for (Environment* e = entry_env ? entry_env->get_outer() : nullptr; e;
-                             e = e->get_outer()) {
-                            if (e == env) { beyond_frame = true; break; }
+                        // checked here -- on the cache-miss path only. A
+                        // script's entry_env is persistent for the whole
+                        // execution, not per-call, so a binding found exactly
+                        // there is beyond_frame too (unlike a function's own).
+                        bool beyond_frame = chunk.script_mode && env == entry_env;
+                        if (!beyond_frame) {
+                            for (Environment* e = entry_env->get_outer(); e; e = e->get_outer()) {
+                                if (e == env) { beyond_frame = true; break; }
+                            }
                         }
                         bool slot_writable = false;
                         Value* slot = beyond_frame ? env->stable_binding_slot(name, &slot_writable)
@@ -6085,8 +6093,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 
     // The frame's own environment: per-call, so lookup_cache must never
     // point into it (outer captured envs are the cacheable ones). A script
-    // frame's env is the persistent script env -- fully cacheable.
-    Environment* entry_env = chunk.script_mode ? nullptr : ctx.get_lexical_environment();
+    // frame's env is the persistent script env -- fully cacheable, so
+    // LdaLookup/StaLookup's own env==entry_env exclusion is lifted for
+    // chunk.script_mode (see both handlers below); this pointer stays the
+    // real environment either way so the beyond_frame walk still starts
+    // from the right place.
+    Environment* entry_env = ctx.get_lexical_environment();
 
     // A chunk may be shared across several Function instances created from the
     // same declaration site (see FunctionExecutable), each with its own
