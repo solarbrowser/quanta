@@ -333,6 +333,15 @@ public:
     // comments on the fields these replace.
     mutable int8_t strict_directive_state = -1;
     mutable int8_t closure_props_state = -1;
+    // -1 unknown, 0 body never names itself, 1 it does and needs a binding
+    // for that name, 2 it does but the captured chain already carries one
+    // (a same-named function declaration in an enclosing scope). Read by
+    // call_tree_walker alone now: the register/env-mode paths reach a
+    // named function expression's own self-reference the same way they
+    // reach any other captured name, through outer_env -- instantiate_closure
+    // already seeded that chain with a dedicated binding for exactly this
+    // case (see needs_self_binding/closure_environment_ in language.cpp),
+    // before either fast path ever asks. No gate term needed it.
     mutable int8_t self_name_state = -1;
     mutable int8_t super_marker_state = -1;
     // Whether this body can observe its own `arguments` object. The register
@@ -369,12 +378,10 @@ public:
     mutable bool fast_env_gate = false;
     void recompute_fast_gate() const {
         fast_gate = !vm_incompatible && bytecode_chunk && !bytecode_chunk->env_mode &&
-                    strict_directive_state >= 0 && closure_props_state == 0 &&
-                    (self_name_state == 0 || self_name_state == 2);
+                    strict_directive_state >= 0 && closure_props_state == 0;
         fast_env_gate = !vm_incompatible && bytecode_chunk && bytecode_chunk->env_mode &&
                         !bytecode_chunk->needs_arguments && strict_directive_state >= 0 &&
-                        closure_props_state == 0 &&
-                        (self_name_state == 0 || self_name_state == 2);
+                        closure_props_state == 0;
         fast_strict = strict_directive_state == 1;
         fast_uses_this = bytecode_chunk && bytecode_chunk->uses_this;
     }

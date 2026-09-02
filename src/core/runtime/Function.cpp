@@ -523,9 +523,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // resolutions further down remain as the fallback for a chunk that
     // compiles for the first time later in this same call.
     //
-    // A set fast_gate already means all three resolved, so a warm call skips
-    // the block outright instead of re-asking three questions it settled on
-    // its first trip through.
+    // A set fast_gate already means both resolved, so a warm call skips the
+    // block outright instead of re-asking two questions it settled on its
+    // first trip through. self_name_state used to be a third one here, but
+    // it no longer has anything to do with this gate (see its own doc
+    // comment) -- resolving it eagerly bought nothing but a chunk->names
+    // scan for a function that may never reach call_tree_walker, the only
+    // place left that reads it.
     if (executable_ && !executable_->fast_gate && executable_->bytecode_chunk) {
         if (executable_->strict_directive_state < 0) {
             // A concise arrow body is an expression, which cannot carry a
@@ -538,16 +542,6 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         }
         if (executable_->closure_props_state < 0) {
             executable_->closure_props_state = has_closure_props() ? 1 : 0;
-            executable_->recompute_fast_gate();
-        }
-        if (executable_->self_name_state < 0) {
-            executable_->self_name_state = 0;
-            const std::string& self_name = get_name();
-            if (!self_name.empty() && self_name != "<anonymous>") {
-                for (const auto& n : executable_->bytecode_chunk->names) {
-                    if (*n == self_name) { executable_->self_name_state = 1; break; }
-                }
-            }
             executable_->recompute_fast_gate();
         }
     }
