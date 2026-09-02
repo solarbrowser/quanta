@@ -39,6 +39,13 @@ struct BodyScopeInfo {
     // closure actually reads only costs it a register; missing one that a
     // closure does read would be wrong.
     std::unordered_set<std::string> captured;
+    // Every identifier this body itself names, at its own top level or
+    // nested inside it -- the superset `captured` folds into a caller's own
+    // set when THIS body is the thing found nested (see collect_closure_names'
+    // dropped-body fallback): a direct `return i;` here is not "captured"
+    // from this body's own perspective (nothing nested in it reads `i`), but
+    // it is exactly the reference a scan of an enclosing scope needs to see.
+    std::unordered_set<std::string> all_names;
     // `eval` named anywhere in the body, nested or not: its text can reach any
     // binding here, so nothing may take a register.
     bool eval_anywhere = false;

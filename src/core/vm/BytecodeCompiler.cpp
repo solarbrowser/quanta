@@ -1424,6 +1424,31 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         if (super_only) { if (n == "super") *super_only = true; return; }
         out.insert(n);
     };
+    // A body stepped over is one this walk cannot see through directly, but
+    // the parse already answered this exact question once, while the body
+    // was still in hand, and filed it under the same source position a
+    // stepped-over body carries forward (see captures_outer/references_super
+    // -- same idiom, generalized to the other two flags this scan also
+    // needs). Only a body with no such record at all falls back to unknown.
+    auto try_recorded_scope = [&](auto* n) {
+        ScriptUnit* unit = n->owning_unit();
+        const BodyScopeInfo* info = unit ? unit->scope_info_at(n->body_source_first()) : nullptr;
+        if (!info) return false;
+        if (super_only) {
+            if (info->super_anywhere) *super_only = true;
+        } else {
+            // all_names, not captured: captured is THIS body's own "what do
+            // things nested inside me reach for" answer, but the caller here
+            // is asking the other question -- what THIS body itself reaches
+            // for, since collect_closure_names just walked in from outside
+            // it. A direct `return i;` is exactly that case: nothing nested
+            // in this function captures `i`, but the function itself does.
+            for (const auto& name : info->all_names) out.insert(name);
+        }
+        if (info->eval_anywhere) op.saw_eval = true;
+        if (info->class_expression) op.saw_class = true;
+        return true;
+    };
     if (!node) return;
     auto walk_params = [&](const std::vector<std::unique_ptr<Parameter>>& ps) {
         for (const auto& p : ps) {
@@ -1460,28 +1485,28 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             walk_params(n->get_params());
             // A body stepped over is one this scan cannot see through, and a
             // name it would have found is one a register must not take.
-            if (!n->get_body()) { op.unknown = true; return; }
+            if (!n->get_body()) { if (!try_recorded_scope(n)) op.unknown = true; return; }
             collect_closure_names(n->get_body(), true, out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::FUNCTION_DECLARATION: {
             const auto* n = static_cast<const FunctionDeclaration*>(node);
             walk_params(n->get_params());
-            if (!n->get_body()) { op.unknown = true; return; }
+            if (!n->get_body()) { if (!try_recorded_scope(n)) op.unknown = true; return; }
             collect_closure_names(n->get_body(), true, out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const ArrowFunctionExpression*>(node);
             walk_params(n->get_params());
-            if (!n->get_body()) { op.unknown = true; return; }
+            if (!n->get_body()) { if (!try_recorded_scope(n)) op.unknown = true; return; }
             collect_closure_names(n->get_body(), true, out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const AsyncFunctionExpression*>(node);
             walk_params(n->get_params());
-            if (!n->get_body()) { op.unknown = true; return; }
+            if (!n->get_body()) { if (!try_recorded_scope(n)) op.unknown = true; return; }
             collect_closure_names(n->get_body(), true, out, op, suspendable, super_only);
             return;
         }

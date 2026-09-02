@@ -166,6 +166,7 @@ private:
             BodyScopeInfo info;
             const NameScope& mine = p.name_scopes_.back();
             info.captured = mine.captured;
+            info.all_names = mine.all;
             info.eval_anywhere = mine.all.count("eval") != 0;
             info.super_anywhere = mine.all.count("super") != 0;
             info.eval_in_nested = mine.eval_in_nested;
