@@ -1684,6 +1684,12 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         case ASTNode::Type::SPREAD_ELEMENT:
             collect_closure_names(static_cast<const SpreadElement*>(node)->get_argument(), inside_closure, out, op, suspendable, super_only);
             return;
+        // `new.target`/`import.meta` resolve from Context state (see
+        // Op::LdaNewTarget/LdaImportMeta and __arrow_new_target__ for an
+        // arrow's own inherited copy), not the environment chain -- no outer
+        // name to capture, same as a literal.
+        case ASTNode::Type::META_PROPERTY:
+            return;
         case ASTNode::Type::TEMPLATE_LITERAL: {
             const auto* n = static_cast<const TemplateLiteral*>(node);
             for (const auto& el : n->get_elements())

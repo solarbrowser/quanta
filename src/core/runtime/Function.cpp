@@ -595,6 +595,16 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             fast_ctx.set_in_constructor_call(true);
             fast_ctx.set_new_target(ctx.get_new_target());
         }
+        // An arrow has no new.target of its own -- instantiate_closure stamped
+        // the enclosing one onto it at closure-creation time (see
+        // __arrow_new_target__'s write site), and reading it back here is the
+        // other half call_tree_walker already does for its own per-call
+        // context. Overrides the restore above on purpose: an arrow's own
+        // captured value, not whatever new.target happens to be active for
+        // THIS call, is what a nested `new.target` inside it must see.
+        if (is_arrow_ && this->has_own_property("__arrow_new_target__")) {
+            fast_ctx.set_new_target(this->get_property("__arrow_new_target__"));
+        }
 
         Value fast_this = this_value;
         // Skipped entirely when the body cannot observe `this`: Op::LdaThis is
