@@ -399,6 +399,14 @@ enum class Op : uint8_t {
     LdaEnvSlotAt,   // hops slot n
     StaEnvSlotAt,   // hops slot n
 
+    // for-in's "does the object still have this key" check, which the loop
+    // makes once per key per pass. TestIn answers it by finding the key's
+    // shape slot, which hashes the name -- the same cost the body's own o[k]
+    // pays, doubled for nothing when nothing was deleted. This takes the keys
+    // array too, so it can recognize that the array being walked IS the one
+    // remembered for the receiver's current shape, and answer from that.
+    ForInKeyPresent,  // obj keys key
+
     kCount
 };
 

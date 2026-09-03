@@ -1885,6 +1885,7 @@ Value h_gen_TestIn(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+
 Value h_gen_Neg(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -3418,6 +3419,44 @@ bool for_in_proto_chain_silent(Object* obj) {
 }
 
 }  // namespace
+
+// for-in's per-key "is it still there" test. The loop's keys came from an
+// array this very object produced; if the array remembered for the receiver's
+// CURRENT shape is that same array, then the receiver still has exactly the
+// keys in it and the answer is yes without touching the key at all. Anything
+// that could have removed one -- a delete, an attribute change, a new element
+// -- moves the object off that shape or gives it an extras block, and either
+// makes this test fail and fall through to the real `in`.
+Value h_gen_ForInKeyPresent(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        const Value& recv = regs[code[pc]];
+        const Value& keys = regs[code[pc + 1]];
+        const Value& key = regs[code[pc + 2]];
+        pc += 3;
+        if (Object* o = as_object_like(recv)) {
+            if (Shape* s = o->for_in_cache_shape()) {
+                ForInKeyCache& cache = for_in_key_cache();
+                size_t slot = for_in_cache_slot(s);
+                if (cache.shapes[slot] == s && cache.arrays[slot].is_object() &&
+                    keys.is_object() && cache.arrays[slot].as_object() == keys.as_object()) {
+                    acc = Value(true);
+                    break;
+                }
+            }
+        }
+        acc = binary_slow(ctx, BinOp::IN, key, recv);
+        CHECK_EXC();
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
 
 Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
@@ -5961,6 +6000,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::Shr)] = &h_Shr;
     t[static_cast<uint8_t>(Op::TestInstanceOf)] = &h_gen_TestInstanceOf;
     t[static_cast<uint8_t>(Op::TestIn)] = &h_gen_TestIn;
+    t[static_cast<uint8_t>(Op::ForInKeyPresent)] = &h_gen_ForInKeyPresent;
     t[static_cast<uint8_t>(Op::Neg)] = &h_gen_Neg;
     t[static_cast<uint8_t>(Op::LogicalNot)] = &h_gen_LogicalNot;
     t[static_cast<uint8_t>(Op::BitNot)] = &h_gen_BitNot;

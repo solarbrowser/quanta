@@ -5213,13 +5213,20 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     // runs would still be visited. Keep the object around to re-ask.
     int forin_obj_reg = -1;
     int forin_key_reg = -1;
+    int forin_keys_reg = -1;
     if (is_for_in) {
         forin_obj_reg = alloc_temp();
         if (failed_) return false;
         forin_key_reg = alloc_temp();
         if (failed_) return false;
+        // The key list itself, kept for the per-key presence check below: it
+        // is how that check recognizes a list still describing the receiver.
+        forin_keys_reg = alloc_temp();
+        if (failed_) return false;
         emit(Op::CreateForInKeys);  // acc = Array of enumerable key strings
         emit_u8(static_cast<uint8_t>(forin_obj_reg));
+        emit(Op::Star);
+        emit_u8(static_cast<uint8_t>(forin_keys_reg));
     }
 
     int next_fn_reg = alloc_temp();
@@ -5265,9 +5272,9 @@ bool BytecodeCompiler::compile_for_each_loop(const ASTNode* left, const ASTNode*
     if (is_for_in) {
         emit(Op::Star);
         emit_u8(static_cast<uint8_t>(forin_key_reg));
-        emit(Op::Ldar);
+        emit(Op::ForInKeyPresent);
         emit_u8(static_cast<uint8_t>(forin_obj_reg));
-        emit(Op::TestIn);
+        emit_u8(static_cast<uint8_t>(forin_keys_reg));
         emit_u8(static_cast<uint8_t>(forin_key_reg));
         if (!emit_jump_back(Op::JumpIfFalse, loop_start)) return false;
         emit(Op::Ldar);
