@@ -148,10 +148,22 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
 // below, the write path in assignment.cpp and the compiled Op::GetSuper
 // family, so all three agree on how __super__/__super_is_static__/
 // __home_object__ are interpreted.
-Object* resolve_super_base(Context& ctx) {
+Object* resolve_super_base(Context& ctx, Function* owner) {
     // Spec: GetSuperBase() is [[HomeObject]].[[GetPrototypeOf]](). Reading the
     // prototype live also keeps a post-definition Object.setPrototypeOf on the
     // home object visible, which a cached parent constructor would miss.
+    //
+    // The running function carries the same home object the call bound into
+    // the environment under this name, so a frame that knows which function
+    // it is reads it straight instead of walking the scope chain for a name
+    // on every super access. Anything without one -- an arrow inheriting its
+    // enclosing method's super, a direct eval, a frame with no owner -- falls
+    // through to the binding, which is where those cases keep it.
+    if (owner) {
+        if (Object* home_obj = owner->class_slots().home_object) {
+            return home_obj->get_prototype();
+        }
+    }
     Value home = ctx.get_binding("__home_object__");
     if (!home.is_undefined() && !home.is_null()) {
         Object* home_obj = home.is_function() ? static_cast<Object*>(home.as_function())
@@ -197,12 +209,12 @@ Value super_get_on(Context& ctx, Object* base, const std::string& prop_name) {
 
 // super.<name>: no key expression, so the base can be resolved here.
 // Shared with Op::GetSuper.
-Value super_get(Context& ctx, const std::string& prop_name) {
+Value super_get(Context& ctx, const std::string& prop_name, Function* owner) {
     if (ctx.this_needs_super()) {
         ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
         return Value();
     }
-    return super_get_on(ctx, resolve_super_base(ctx), prop_name);
+    return super_get_on(ctx, resolve_super_base(ctx, owner), prop_name);
 }
 
 // super [[Set]] (ES2024 13.3.7.4) on an already-resolved base: the lookup walks the
@@ -230,12 +242,12 @@ void super_set_on(Context& ctx, Object* base, const std::string& prop_name, cons
 }
 
 // super.<name> = value. Shared with Op::SetSuper.
-void super_set(Context& ctx, const std::string& prop_name, const Value& value) {
+void super_set(Context& ctx, const std::string& prop_name, const Value& value, Function* owner) {
     if (ctx.this_needs_super()) {
         ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
         return;
     }
-    super_set_on(ctx, resolve_super_base(ctx), prop_name, value);
+    super_set_on(ctx, resolve_super_base(ctx, owner), prop_name, value);
 }
 
 

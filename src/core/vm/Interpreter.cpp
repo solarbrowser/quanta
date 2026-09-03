@@ -71,10 +71,10 @@ Value declare_function(Context& ctx, const ClosureTemplate& tpl);
 // And from call.cpp, backing Op::SuperCall.
 Value perform_super_call(Context& ctx, std::span<const Value> arg_values, bool super_already_called);
 // And from member.cpp, backing the Op::GetSuper family.
-Object* resolve_super_base(Context& ctx);
-Value super_get(Context& ctx, const std::string& prop_name);
+Object* resolve_super_base(Context& ctx, Function* owner);
+Value super_get(Context& ctx, const std::string& prop_name, Function* owner);
 Value super_get_on(Context& ctx, Object* base, const std::string& prop_name);
-void super_set(Context& ctx, const std::string& prop_name, const Value& value);
+void super_set(Context& ctx, const std::string& prop_name, const Value& value, Function* owner);
 void super_set_on(Context& ctx, Object* base, const std::string& prop_name, const Value& value);
 
 namespace VM {
@@ -4350,7 +4350,7 @@ Value h_gen_GetSuper(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t name_idx = read_u16(code, pc);
                 pc += 2;
-                acc = super_get(ctx, chunk.name_at(name_idx));
+                acc = super_get(ctx, chunk.name_at(name_idx), f.owner);
                 CHECK_EXC();
                 break;
             }
@@ -4401,7 +4401,7 @@ Value h_gen_ResolveSuperBase(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Object* base = resolve_super_base(ctx);
+                Object* base = resolve_super_base(ctx, f.owner);
                 CHECK_EXC();
                 regs[dst] = base ? Value(base) : Value();
                 break;

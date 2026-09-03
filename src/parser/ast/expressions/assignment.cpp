@@ -44,7 +44,7 @@
 namespace Quanta {
 
 // Defined in member.cpp (GetSuperBase / super [[Set]]).
-Object* resolve_super_base(Context&);
+Object* resolve_super_base(Context&, Function*);
 void super_set_on(Context&, Object*, const std::string&, const Value&);
 
 static bool is_anonymous_function_def(const ASTNode* node);
