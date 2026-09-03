@@ -1855,6 +1855,27 @@ Value h_gen_TestIn(Frame& f, uint32_t pc, Value acc) {
                 {
                 const Value& lhs = regs[code[pc]];
                 pc += 1;
+                // A for-in loop re-asks this about a key it just enumerated,
+                // on the object it enumerated -- which is the overwhelming
+                // caller of this opcode, once per key per pass. A shape slot
+                // IS an own data property, so finding one answers `in`
+                // outright: no ToPropertyKey copy of the key, no walk up the
+                // prototype chain, and none of the general operator dispatch
+                // behind them. Deleting a shape-resident property migrates the
+                // object to dictionary mode, so a key that has been deleted
+                // can no longer be found here and falls through unchanged.
+                if (lhs.is_string() && acc.is_object()) {
+                    Object* o = acc.as_object();
+                    if (o->get_type() == Object::ObjectType::Ordinary &&
+                        !o->has_any_descriptor_override()) {
+                        if (Shape* s = o->get_shape()) {
+                            if (s->find_slot(lhs.as_string()->str()) >= 0) {
+                                acc = Value(true);
+                                break;
+                            }
+                        }
+                    }
+                }
                 acc = binary_slow(ctx, BinOp::IN, lhs, acc);
                 CHECK_EXC();
                 break;
@@ -3381,15 +3402,20 @@ Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
                 // it has to be the very object enumerated here rather than the
                 // head's value: a receiver this converts stays converted.
                 regs[obj_out] = obj ? Value(obj) : Value();
-                Object* result = ObjectFactory::create_array(0).release();
-                if (obj) {
-                    std::vector<std::string> keys;
-                    if (!ForInStatement::collect_keys(ctx, obj, keys)) {
-                        CHECK_EXC();
-                        break;
-                    }
-                    for (size_t i = 0; i < keys.size(); i++) {
-                        result->set_element(static_cast<uint32_t>(i), Value(keys[i]));
+                // Collected before the array exists so the array can be built
+                // at its final size: set_element grew the element store one
+                // key at a time, and a loop over a thirty-property object paid
+                // that growth (and the length bump behind it) on every entry.
+                std::vector<std::string> keys;
+                if (obj && !ForInStatement::collect_keys(ctx, obj, keys)) {
+                    CHECK_EXC();
+                    break;
+                }
+                const uint32_t key_count = static_cast<uint32_t>(keys.size());
+                Object* result = ObjectFactory::create_array(key_count).release();
+                if (key_count) {
+                    for (uint32_t i = 0; i < key_count; i++) {
+                        result->set_element(i, Value(keys[i]));
                     }
                 }
                 acc = Value(result);
