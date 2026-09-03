@@ -1397,6 +1397,16 @@ struct ScanOpacity {
     bool saw_eval = false;   // a direct eval's text can name anything
     bool saw_class = false;  // a class body this scan does not enter
     bool unknown = false;    // a node shape outside the switch
+    // Policy rather than opacity, but it rides here because this is the one
+    // thing already threaded through every recursive step: whether a `yield`
+    // (or `await`) counts as a closure boundary. A suspension does not capture
+    // anything -- an arrow inside the yielded expression still marks itself
+    // through its own case -- so the one caller asking purely about CLOSURE
+    // observability (loop_vars_may_be_captured, i.e. whether per-iteration
+    // loop environments are needed at all) sets this. Every other caller
+    // leaves it false and keeps the conservative reading, where a name read
+    // across a suspension counts as escaping and stays environment-resident.
+    bool yield_transparent = false;
     bool opaque() const { return saw_eval || saw_class || unknown; }
 };
 
@@ -1746,13 +1756,17 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         case ASTNode::Type::YIELD_EXPRESSION: {
             const auto* n = static_cast<const YieldExpression*>(node);
             if (n->get_argument())
-                collect_closure_names(n->get_argument(), true, out, op, suspendable, super_only);
+                collect_closure_names(n->get_argument(),
+                                      op.yield_transparent ? inside_closure : true,
+                                      out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::AWAIT_EXPRESSION: {
             const auto* n = static_cast<const AwaitExpression*>(node);
             if (n->get_argument())
-                collect_closure_names(n->get_argument(), true, out, op, suspendable, super_only);
+                collect_closure_names(n->get_argument(),
+                                      op.yield_transparent ? inside_closure : true,
+                                      out, op, suspendable, super_only);
             return;
         }
         case ASTNode::Type::PARAMETER: {
@@ -2194,6 +2208,12 @@ bool loop_vars_may_be_captured(const std::vector<const ASTNode*>& roots,
     if (vars.empty()) return false;
     std::unordered_set<std::string> refs;
     ScanOpacity op;
+    // A suspension is not a capture: `for (let i...) yield i;` hands the value
+    // out and comes back to the same binding, and nothing outside can hold two
+    // iterations' worth of it unless a real closure took one -- which the
+    // arrow/function cases below still report. Without this a generator paid
+    // per-iteration environments for every loop it yields from.
+    op.yield_transparent = true;
     for (const ASTNode* root : roots) {
         collect_closure_names(root, /*inside_closure=*/false, refs, op);
     }
