@@ -134,6 +134,36 @@ if (source_value.is_string()) {
     }
 } else {
     // For objects: use enumerable keys only (spec excludes non-enumerable).
+    // W|E|C is PropertyAttributes::Default, so each key goes in as an
+    // ordinary data property: defining it through a descriptor instead would
+    // give the rest object a descriptors map it never needs, and that map
+    // then costs every later read of it, enumeration included.
+    const std::string* fast_names[Shape::kMaxSlots];
+    Value fast_vals[Shape::kMaxSlots];
+    uint32_t fast_n = 0;
+    bool bail = false;
+    // An accessor's getter is user code that could reshape the source while
+    // this walk is still reading slots out of its shape, so it takes the
+    // general path below instead.
+    bool walked = source_obj->for_each_own_enumerable_fast(
+        [&](const std::string& k, uint32_t slot, bool is_accessor) {
+            if (bail) return;
+            const Value* v = is_accessor ? nullptr
+                                         : source_obj->get_shape_slot_unchecked(slot);
+            if (!v || fast_n >= Shape::kMaxSlots) { bail = true; return; }
+            fast_names[fast_n] = &k;
+            fast_vals[fast_n++] = *v;
+        }, /*include_symbols=*/true);
+    if (walked && !bail) {
+        for (uint32_t i = 0; i < fast_n; i++) {
+            const std::string& k = *fast_names[i];
+            bool already_assigned = false;
+            for (const auto& ak : assigned_keys) {
+                if (ak == k) { already_assigned = true; break; }
+            }
+            if (!already_assigned) rest_obj->create_own_data_property(k, fast_vals[i]);
+        }
+    } else {
     auto keys = source_obj->get_enumerable_keys();
     for (const auto& k : keys) {
         bool already_assigned = false;
@@ -143,11 +173,9 @@ if (source_value.is_string()) {
         if (!already_assigned) {
             Value val = source_obj->get_property(k);
             if (ctx.has_exception()) return Value();
-            PropertyDescriptor rdesc(val,
-                static_cast<PropertyAttributes>(PropertyAttributes::Writable |
-                    PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
-            rest_obj->set_property_descriptor(k, rdesc);
+            rest_obj->create_own_data_property(k, val);
         }
+    }
     }
 }
     return Value(rest_obj.release());

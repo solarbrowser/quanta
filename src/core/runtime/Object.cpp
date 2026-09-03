@@ -2056,10 +2056,15 @@ static bool is_symbol_key(const std::string& key) {
 // Internal storage that must never surface as an own key: the "[[...]]"
 // names that stand in for spec internal slots, the qualified private-field
 // and brand slots, and symbol keys (which a for-in never reports).
-static bool is_hidden_own_key(const std::string& k) {
+static bool is_internal_own_key(const std::string& k) {
     if (k.size() >= 4 && k[0] == '[' && k[1] == '[') return true;
     if (!k.empty() && k[0] == '#' &&
         (k.find('@') != std::string::npos || (k.size() > 2 && k[1] == '[' && k[2] == '['))) return true;
+    return false;
+}
+
+static bool is_hidden_own_key(const std::string& k) {
+    if (is_internal_own_key(k)) return true;
     return is_symbol_key(k) || k.rfind("Symbol(", 0) == 0;
 }
 
@@ -2090,6 +2095,8 @@ bool Object::any_own_enumerable() const {
 }
 
 bool Object::is_hidden_key(const std::string& k) { return is_hidden_own_key(k); }
+
+bool Object::is_internal_key(const std::string& k) { return is_internal_own_key(k); }
 
 bool Object::for_in_own_keys_fast(std::vector<std::string>& out) const {
     if (get_type() != ObjectType::Ordinary) return false;

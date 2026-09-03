@@ -89,10 +89,35 @@ bool object_spread_into(Context& ctx, Object* target, const Value& spread_value)
                     target->create_own_data_property(prop_name, prop_value);
                 }
             } else {
-                auto property_names = spread_obj->get_enumerable_keys();
-                for (const auto& prop_name : property_names) {
-                    Value prop_value = spread_obj->get_property(prop_name);
-                    target->create_own_data_property(prop_name, prop_value);
+                // Names and values both come off the source's shape, so the
+                // key list is never materialized and no name is looked up
+                // twice. An accessor gives the whole spread back to the
+                // general path: its getter is user code that can move the
+                // source to another shape or to dictionary mode while the
+                // walk is still standing on this one.
+                const std::string* fast_names[Shape::kMaxSlots];
+                Value fast_vals[Shape::kMaxSlots];
+                uint32_t fast_n = 0;
+                bool bail = false;
+                bool walked = spread_obj->for_each_own_enumerable_fast(
+                    [&](const std::string& k, uint32_t slot, bool is_accessor) {
+                        if (bail) return;
+                        const Value* v = is_accessor ? nullptr
+                                                     : spread_obj->get_shape_slot_unchecked(slot);
+                        if (!v || fast_n >= Shape::kMaxSlots) { bail = true; return; }
+                        fast_names[fast_n] = &k;
+                        fast_vals[fast_n++] = *v;
+                    }, /*include_symbols=*/true);
+                if (walked && !bail) {
+                    for (uint32_t i = 0; i < fast_n; i++) {
+                        target->create_own_data_property(*fast_names[i], fast_vals[i]);
+                    }
+                } else {
+                    auto property_names = spread_obj->get_enumerable_keys();
+                    for (const auto& prop_name : property_names) {
+                        Value prop_value = spread_obj->get_property(prop_name);
+                        target->create_own_data_property(prop_name, prop_value);
+                    }
                 }
             }
         } catch (const std::exception& e) {

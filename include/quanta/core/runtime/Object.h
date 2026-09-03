@@ -691,6 +691,9 @@ public:
     // enumeration may surface: an internal "[[...]]" slot, a private field or
     // brand, or a symbol key.
     static bool is_hidden_key(const std::string& k);
+    // The same minus the symbol case, for the enumerations that do carry
+    // symbol keys through -- object spread and rest destructuring.
+    static bool is_internal_key(const std::string& k);
     // The same walk for_in_own_keys_fast does, handing each own enumerable
     // key to `fn` as the interned string the shape already holds plus the
     // slot it lives in, so a caller wanting the values too does not go back
@@ -699,14 +702,14 @@ public:
     // the default attributes -- enumerable among them -- unless a descriptor
     // overrides it, and a descriptor means extras, which this rejects.
     template <typename Fn>
-    bool for_each_own_enumerable_fast(Fn&& fn) const {
+    bool for_each_own_enumerable_fast(Fn&& fn, bool include_symbols = false) const {
         if (get_type() != ObjectType::Ordinary) return false;
         if (elements_length() > 0) return false;
         if (peek_extras()) return false;
         Shape* sh = get_shape();
         if (!sh) return true;
         sh->for_each_property([&](const Shape::PropertyInfo& p) {
-            if (is_hidden_key(*p.key)) return;
+            if (include_symbols ? is_internal_key(*p.key) : is_hidden_key(*p.key)) return;
             fn(*p.key, p.slot_index, p.is_accessor);
         });
         return true;
