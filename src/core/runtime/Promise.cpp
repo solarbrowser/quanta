@@ -538,8 +538,8 @@ void Promise::setup_promise_methods(Promise* promise) {
             if (args.size() > 0 && args[0].is_function()) {
                 Function* callback = args[0].as_function();
                 try {
-                    std::vector<Value> callback_args = {Value(std::string("resolved"))};
-                    Value result = callback->call(ctx, callback_args);
+                    const Value callback_args[] = {Value(std::string("resolved"))};
+                    Value result = callback->call_register_args(ctx, callback_args, Value());
                     new_promise->fulfill(result);
                 } catch (...) {
                     new_promise->reject(Value(std::string("Callback execution failed")));

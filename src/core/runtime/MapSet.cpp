@@ -514,8 +514,8 @@ void Map::setup_map_prototype(Context& ctx) {
             // Live index walk: soft-deleted entries keep positions stable; added entries are picked up as i reaches them.
             for (size_t i = 0; i < map->entries_.size(); i++) {
                 if (map->entries_[i].deleted) continue;
-                std::vector<Value> cb_args = {map->entries_[i].value, map->entries_[i].key, Value(obj)};
-                callback->call(ctx, cb_args, this_arg);
+                const Value cb_args[] = {map->entries_[i].value, map->entries_[i].key, Value(obj)};
+                callback->call_register_args(ctx, cb_args, this_arg);
                 if (ctx.has_exception()) return Value();
             }
             return Value();
@@ -1030,8 +1030,8 @@ void Set::setup_set_prototype(Context& ctx) {
             for (size_t i = 0; i < set->values_.size(); i++) {
                 if (set->values_[i].deleted) continue;
                 Value val = set->values_[i].value;
-                std::vector<Value> cb_args = {val, val, Value(obj)};
-                callback->call(ctx, cb_args, this_arg);
+                const Value cb_args[] = {val, val, Value(obj)};
+                callback->call_register_args(ctx, cb_args, this_arg);
                 if (ctx.has_exception()) return Value();
             }
             return Value();

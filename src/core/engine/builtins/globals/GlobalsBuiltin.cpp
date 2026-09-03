@@ -2018,8 +2018,8 @@ void register_test262_builtins(Context& ctx) {
                     Value ctor = ctx.get_binding(ctorName);
                     if (ctor.is_function()) {
                         try {
-                            std::vector<Value> callArgs = { ctor };
-                            callback->call(ctx, callArgs, Value());
+                            const Value callArgs[] = { ctor };
+                            callback->call_register_args(ctx, callArgs, Value());
                         } catch (...) {
                             ctx.throw_exception(Value("Error in testWithTypedArrayConstructors with " + ctorName));
                             return Value();

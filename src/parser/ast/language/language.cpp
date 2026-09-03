@@ -3238,8 +3238,8 @@ Value perform_yield_delegate(Context& ctx, Value iterable) {
         if (!iter_done) {
             Value throw_fn = iter_obj->get_property("throw");
             if (throw_fn.is_function()) {
-                std::vector<Value> throw_args = {current_gen->throw_value_};
-                Value throw_result = throw_fn.as_function()->call(ctx, throw_args, iter_val);
+                const Value throw_args[] = {current_gen->throw_value_};
+                Value throw_result = throw_fn.as_function()->call_register_args(ctx, throw_args, iter_val);
                 Generator::set_current_generator(saved_gen);
                 if (ctx.has_exception()) return false;
                 if (throw_result.is_object()) {
@@ -3324,8 +3324,8 @@ Value perform_yield_delegate(Context& ctx, Value iterable) {
                 if (!ctx.has_exception()) {
                     Value return_fn_v = iter_obj->get_property("return");
                     if (return_fn_v.is_function()) {
-                        std::vector<Value> ret_args = {current_gen->return_argument_};
-                        return_fn_v.as_function()->call(ctx, ret_args, iter_val);
+                        const Value ret_args[] = {current_gen->return_argument_};
+                        return_fn_v.as_function()->call_register_args(ctx, ret_args, iter_val);
                         ctx.clear_exception();
                     }
                 }

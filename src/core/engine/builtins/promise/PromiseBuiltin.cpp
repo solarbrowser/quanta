@@ -99,8 +99,8 @@ static bool new_promise_capability(Context& ctx, Value C_val, PromiseCapabilityR
 static void reject_capability_with_exception(Context& ctx, PromiseCapabilityResult& cap) {
     Value exc = ctx.get_exception();
     ctx.clear_exception();
-    std::vector<Value> a = { exc };
-    cap.reject->call(ctx, a);
+    const Value a[] = { exc };
+    cap.reject->call_register_args(ctx, a, Value());
 }
 
 static void reject_capability_type_error(Context& ctx, PromiseCapabilityResult& cap, const std::string& msg) {
@@ -290,8 +290,8 @@ void register_promise_builtins(Context& ctx) {
             if (ctx.has_exception()) {
                 Value err = ctx.get_exception();
                 ctx.clear_exception();
-                std::vector<Value> rej_args = { err };
-                reject_fn_raw->call(ctx, rej_args);
+                const Value rej_args[] = { err };
+                reject_fn_raw->call_register_args(ctx, rej_args, Value());
                 ctx.clear_exception();
             }
 
@@ -319,12 +319,12 @@ void register_promise_builtins(Context& ctx) {
             if (ctx.has_exception()) {
                 Value err = ctx.get_exception();
                 ctx.clear_exception();
-                std::vector<Value> rej_args = { err };
-                cap.reject->call(ctx, rej_args);
+                const Value rej_args[] = { err };
+                cap.reject->call_register_args(ctx, rej_args, Value());
                 return cap.promise;
             }
-            std::vector<Value> res_args = { result };
-            cap.resolve->call(ctx, res_args);
+            const Value res_args[] = { result };
+            cap.resolve->call_register_args(ctx, res_args, Value());
             if (ctx.has_exception()) return Value();
             return cap.promise;
         }, 1);
@@ -413,8 +413,8 @@ void register_promise_builtins(Context& ctx) {
                 [on_fulfilled, cap_resolve, cap_reject, fast_child](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     auto settle = [&](const Value& v, bool ok) {
                         if (fast_child) { ok ? fast_child->fulfill(v) : fast_child->reject(v); return; }
-                        std::vector<Value> a = { v };
-                        (ok ? cap_resolve : cap_reject)->call(ctx, a);
+                        const Value a[] = { v };
+                        (ok ? cap_resolve : cap_reject)->call_register_args(ctx, a, Value());
                     };
                     Value val = args.empty() ? Value() : args[0];
                     if (!on_fulfilled) { settle(val, true); return Value(); }
@@ -431,8 +431,8 @@ void register_promise_builtins(Context& ctx) {
                 [on_rejected, cap_resolve, cap_reject, fast_child](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                     auto settle = [&](const Value& v, bool ok) {
                         if (fast_child) { ok ? fast_child->fulfill(v) : fast_child->reject(v); return; }
-                        std::vector<Value> a = { v };
-                        (ok ? cap_resolve : cap_reject)->call(ctx, a);
+                        const Value a[] = { v };
+                        (ok ? cap_resolve : cap_reject)->call_register_args(ctx, a, Value());
                     };
                     Value reason = args.empty() ? Value() : args[0];
                     if (!on_rejected) { settle(reason, false); return Value(); }
@@ -486,9 +486,9 @@ void register_promise_builtins(Context& ctx) {
                 return Value();
             }
             Value on_rejected = args.empty() ? Value() : args[0];
-            std::vector<Value> then_args = { Value(), on_rejected };
+            const Value then_args[] = { Value(), on_rejected };
             Value then_receiver = this_val.is_object() || this_val.is_function() ? this_val : Value(this_obj);
-            return then_val.as_function()->call(ctx, then_args, then_receiver);
+            return then_val.as_function()->call_register_args(ctx, then_args, then_receiver);
         }, 1);
     promise_prototype->set_property("catch", Value(promise_catch.release()), PropertyAttributes::BuiltinFunction);
     
@@ -516,8 +516,8 @@ void register_promise_builtins(Context& ctx) {
             if (!on_finally) {
                 // Spec: when onFinally isn't callable, thenFinally/catchFinally are onFinally itself.
                 Value non_callable = args.empty() ? Value() : args[0];
-                std::vector<Value> then_args = { non_callable, non_callable };
-                return then_val.as_function()->call(ctx, then_args, this_val);
+                const Value then_args[] = { non_callable, non_callable };
+                return then_val.as_function()->call_register_args(ctx, then_args, this_val);
             }
             // Spec: C = SpeciesConstructor(promise, %Promise%); result = onFinally();
             // promise = PromiseResolve(C, result); return Invoke(promise, "then", «continuation»).
@@ -540,8 +540,8 @@ void register_promise_builtins(Context& ctx) {
                 Value then_m = wrapped_obj->get_property("then");
                 if (ctx.has_exception()) return Value();
                 if (!then_m.is_function()) { ctx.throw_type_error("then is not a function"); return Value(); }
-                std::vector<Value> ta = { Value(continuation) };
-                return then_m.as_function()->call(ctx, ta, wrapped);
+                const Value ta[] = { Value(continuation) };
+                return then_m.as_function()->call_register_args(ctx, ta, wrapped);
             };
             auto then_wrapper = ObjectFactory::create_native_function("",
                 [on_finally, resolve_then_continue](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
@@ -575,8 +575,8 @@ void register_promise_builtins(Context& ctx) {
             tw->set_property("[[SpeciesCtor]]", Value(species_ctor), PropertyAttributes::None);
             cw->set_property("[[OnFinally]]", Value(on_finally), PropertyAttributes::None);
             cw->set_property("[[SpeciesCtor]]", Value(species_ctor), PropertyAttributes::None);
-            std::vector<Value> then_args = { Value(tw), Value(cw) };
-            return then_val.as_function()->call(ctx, then_args, this_val);
+            const Value then_args[] = { Value(tw), Value(cw) };
+            return then_val.as_function()->call_register_args(ctx, then_args, this_val);
         }, 1);
     promise_prototype->set_property("finally", Value(promise_finally.release()), PropertyAttributes::BuiltinFunction);
 
@@ -620,8 +620,8 @@ void register_promise_builtins(Context& ctx) {
             }
             PromiseCapabilityResult cap;
             if (!new_promise_capability(ctx, c_val, cap)) return Value();
-            std::vector<Value> resolve_args = { value };
-            cap.resolve->call(ctx, resolve_args);
+            const Value resolve_args[] = { value };
+            cap.resolve->call_register_args(ctx, resolve_args, Value());
             if (ctx.has_exception()) return Value();
             return cap.promise;
         }, 1);
@@ -637,8 +637,8 @@ void register_promise_builtins(Context& ctx) {
             }
             PromiseCapabilityResult cap;
             if (!new_promise_capability(ctx, c_val, cap)) return Value();
-            std::vector<Value> reject_args = { reason };
-            cap.reject->call(ctx, reject_args);
+            const Value reject_args[] = { reason };
+            cap.reject->call_register_args(ctx, reject_args, Value());
             if (ctx.has_exception()) return Value();
             return cap.promise;
         }, 1);
@@ -689,15 +689,15 @@ void register_promise_builtins(Context& ctx) {
                     if (--state->remaining == 0) {
                         auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                         for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
-                        std::vector<Value> ra = { Value(arr.release()) };
-                        cap_resolve->call(ctx, ra);
+                        const Value ra[] = { Value(arr.release()) };
+                        cap_resolve->call_register_args(ctx, ra, Value());
                         if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
                     }
                     return cap.promise;
                 }
 
-                std::vector<Value> resolve_args = { element };
-                Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
+                const Value resolve_args[] = { element };
+                Value next_promise = resolve_fn->call_register_args(ctx, resolve_args, Value(this_ctor));
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
                     iterator_close(ctx, rec);
@@ -720,12 +720,12 @@ void register_promise_builtins(Context& ctx) {
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
-                            std::vector<Value> ra = { Value(arr.release()) };
-                            cap_resolve->call(ctx, ra);
+                            const Value ra[] = { Value(arr.release()) };
+                            cap_resolve->call_register_args(ctx, ra, Value());
                             if (ctx.has_exception()) {
                                 Value exc = ctx.get_exception(); ctx.clear_exception();
-                                std::vector<Value> rja = { exc };
-                                cap_reject->call(ctx, rja);
+                                const Value rja[] = { exc };
+                                cap_reject->call_register_args(ctx, rja, Value());
                             }
                         }
                         return Value();
@@ -744,8 +744,8 @@ void register_promise_builtins(Context& ctx) {
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
-                std::vector<Value> then_args = { Value(ful_fn), Value(cap.reject) };
-                then_method.as_function()->call(ctx, then_args, next_promise);
+                const Value then_args[] = { Value(ful_fn), Value(cap.reject) };
+                then_method.as_function()->call_register_args(ctx, then_args, next_promise);
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
 
                 idx++;
@@ -793,8 +793,8 @@ void register_promise_builtins(Context& ctx) {
                 if (step == IterStepStatus::ABRUPT) { reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (step == IterStepStatus::DONE) return cap.promise;
 
-                std::vector<Value> resolve_args = { element };
-                Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
+                const Value resolve_args[] = { element };
+                Value next_promise = resolve_fn->call_register_args(ctx, resolve_args, Value(this_ctor));
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
                     iterator_close(ctx, rec);
@@ -810,8 +810,8 @@ void register_promise_builtins(Context& ctx) {
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
-                std::vector<Value> then_args = { Value(cap.resolve), Value(cap.reject) };
-                then_method.as_function()->call(ctx, then_args, next_promise);
+                const Value then_args[] = { Value(cap.resolve), Value(cap.reject) };
+                then_method.as_function()->call_register_args(ctx, then_args, next_promise);
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
             }
         }, 1);
@@ -861,15 +861,15 @@ void register_promise_builtins(Context& ctx) {
                     if (--state->remaining == 0) {
                         auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                         for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
-                        std::vector<Value> ra = { Value(arr.release()) };
-                        cap_resolve->call(ctx, ra);
+                        const Value ra[] = { Value(arr.release()) };
+                        cap_resolve->call_register_args(ctx, ra, Value());
                         if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
                     }
                     return cap.promise;
                 }
 
-                std::vector<Value> resolve_args = { element };
-                Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
+                const Value resolve_args[] = { element };
+                Value next_promise = resolve_fn->call_register_args(ctx, resolve_args, Value(this_ctor));
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
                     iterator_close(ctx, rec);
@@ -897,12 +897,12 @@ void register_promise_builtins(Context& ctx) {
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
-                            std::vector<Value> ra = { Value(arr.release()) };
-                            cap_resolve->call(ctx, ra);
+                            const Value ra[] = { Value(arr.release()) };
+                            cap_resolve->call_register_args(ctx, ra, Value());
                             if (ctx.has_exception()) {
                                 Value exc = ctx.get_exception(); ctx.clear_exception();
-                                std::vector<Value> rja = { exc };
-                                cap_reject->call(ctx, rja);
+                                const Value rja[] = { exc };
+                                cap_reject->call_register_args(ctx, rja, Value());
                             }
                         }
                         return Value();
@@ -923,12 +923,12 @@ void register_promise_builtins(Context& ctx) {
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
-                            std::vector<Value> ra = { Value(arr.release()) };
-                            cap_resolve->call(ctx, ra);
+                            const Value ra[] = { Value(arr.release()) };
+                            cap_resolve->call_register_args(ctx, ra, Value());
                             if (ctx.has_exception()) {
                                 Value exc = ctx.get_exception(); ctx.clear_exception();
-                                std::vector<Value> rja = { exc };
-                                cap_reject->call(ctx, rja);
+                                const Value rja[] = { exc };
+                                cap_reject->call_register_args(ctx, rja, Value());
                             }
                         }
                         return Value();
@@ -948,8 +948,8 @@ void register_promise_builtins(Context& ctx) {
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
-                std::vector<Value> then_args = { Value(ful_fn), Value(rej_fn) };
-                then_method.as_function()->call(ctx, then_args, next_promise);
+                const Value then_args[] = { Value(ful_fn), Value(rej_fn) };
+                then_method.as_function()->call_register_args(ctx, then_args, next_promise);
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
 
                 idx++;
@@ -1005,8 +1005,8 @@ void register_promise_builtins(Context& ctx) {
             pin_target->set_internal_slot("__allkeyed_results__", Value(results_raw));
 
             if (keys.empty()) {
-                std::vector<Value> ra = { Value(results_raw) };
-                cap.resolve->call(ctx, ra);
+                const Value ra[] = { Value(results_raw) };
+                cap.resolve->call_register_args(ctx, ra, Value());
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
                 return cap.promise;
             }
@@ -1023,8 +1023,8 @@ void register_promise_builtins(Context& ctx) {
                 Value value = dict->get_property(key);
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
 
-                std::vector<Value> resolve_args = { value };
-                Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
+                const Value resolve_args[] = { value };
+                Value next_promise = resolve_fn->call_register_args(ctx, resolve_args, Value(this_ctor));
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
                     reject_capability_type_error(ctx, cap, "Promise.resolve did not return an object");
@@ -1040,12 +1040,12 @@ void register_promise_builtins(Context& ctx) {
                         Value val = args.empty() ? Value() : args[0];
                         state->results->set_property(key, val);
                         if (--state->remaining == 0) {
-                            std::vector<Value> ra = { Value(state->results) };
-                            cap_resolve->call(ctx, ra);
+                            const Value ra[] = { Value(state->results) };
+                            cap_resolve->call_register_args(ctx, ra, Value());
                             if (ctx.has_exception()) {
                                 Value exc = ctx.get_exception(); ctx.clear_exception();
-                                std::vector<Value> rja = { exc };
-                                cap_reject->call(ctx, rja);
+                                const Value rja[] = { exc };
+                                cap_reject->call_register_args(ctx, rja, Value());
                             }
                         }
                         return Value();
@@ -1062,8 +1062,8 @@ void register_promise_builtins(Context& ctx) {
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
-                std::vector<Value> then_args = { Value(ful_fn), Value(cap.reject) };
-                then_method.as_function()->call(ctx, then_args, next_promise);
+                const Value then_args[] = { Value(ful_fn), Value(cap.reject) };
+                then_method.as_function()->call_register_args(ctx, then_args, next_promise);
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
             }
 
@@ -1116,8 +1116,8 @@ void register_promise_builtins(Context& ctx) {
             pin_target->set_internal_slot("__settledkeyed_results__", Value(results_raw));
 
             if (keys.empty()) {
-                std::vector<Value> ra = { Value(results_raw) };
-                cap.resolve->call(ctx, ra);
+                const Value ra[] = { Value(results_raw) };
+                cap.resolve->call_register_args(ctx, ra, Value());
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
                 return cap.promise;
             }
@@ -1134,8 +1134,8 @@ void register_promise_builtins(Context& ctx) {
                 Value value = dict->get_property(key);
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
 
-                std::vector<Value> resolve_args = { value };
-                Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
+                const Value resolve_args[] = { value };
+                Value next_promise = resolve_fn->call_register_args(ctx, resolve_args, Value(this_ctor));
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
                     reject_capability_type_error(ctx, cap, "Promise.resolve did not return an object");
@@ -1155,12 +1155,12 @@ void register_promise_builtins(Context& ctx) {
                         settled->set_property("value", val);
                         state->results->set_property(key, Value(settled.release()));
                         if (--state->remaining == 0) {
-                            std::vector<Value> ra = { Value(state->results) };
-                            cap_resolve->call(ctx, ra);
+                            const Value ra[] = { Value(state->results) };
+                            cap_resolve->call_register_args(ctx, ra, Value());
                             if (ctx.has_exception()) {
                                 Value exc = ctx.get_exception(); ctx.clear_exception();
-                                std::vector<Value> rja = { exc };
-                                cap_reject->call(ctx, rja);
+                                const Value rja[] = { exc };
+                                cap_reject->call_register_args(ctx, rja, Value());
                             }
                         }
                         return Value();
@@ -1178,12 +1178,12 @@ void register_promise_builtins(Context& ctx) {
                         settled->set_property("reason", reason);
                         state->results->set_property(key, Value(settled.release()));
                         if (--state->remaining == 0) {
-                            std::vector<Value> ra = { Value(state->results) };
-                            cap_resolve->call(ctx, ra);
+                            const Value ra[] = { Value(state->results) };
+                            cap_resolve->call_register_args(ctx, ra, Value());
                             if (ctx.has_exception()) {
                                 Value exc = ctx.get_exception(); ctx.clear_exception();
-                                std::vector<Value> rja = { exc };
-                                cap_reject->call(ctx, rja);
+                                const Value rja[] = { exc };
+                                cap_reject->call_register_args(ctx, rja, Value());
                             }
                         }
                         return Value();
@@ -1202,8 +1202,8 @@ void register_promise_builtins(Context& ctx) {
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
-                std::vector<Value> then_args = { Value(ful_fn), Value(rej_fn) };
-                then_method.as_function()->call(ctx, then_args, next_promise);
+                const Value then_args[] = { Value(ful_fn), Value(rej_fn) };
+                then_method.as_function()->call_register_args(ctx, then_args, next_promise);
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
             }
 
@@ -1258,8 +1258,8 @@ void register_promise_builtins(Context& ctx) {
                 } else {
                     reason = Value(std::string("AggregateError: All promises were rejected"));
                 }
-                std::vector<Value> ra = { reason };
-                st->cap_reject->call(c, ra);
+                const Value ra[] = { reason };
+                st->cap_reject->call_register_args(c, ra, Value());
             };
 
             uint32_t idx = 0;
@@ -1272,8 +1272,8 @@ void register_promise_builtins(Context& ctx) {
                     return cap.promise;
                 }
 
-                std::vector<Value> resolve_args = { elem };
-                Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
+                const Value resolve_args[] = { elem };
+                Value next_promise = resolve_fn->call_register_args(ctx, resolve_args, Value(this_ctor));
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
                     iterator_close(ctx, rec);
@@ -1315,8 +1315,8 @@ void register_promise_builtins(Context& ctx) {
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
-                std::vector<Value> then_args = { Value(cap_resolve), Value(reject_raw) };
-                then_method.as_function()->call(ctx, then_args, next_promise);
+                const Value then_args[] = { Value(cap_resolve), Value(reject_raw) };
+                then_method.as_function()->call_register_args(ctx, then_args, next_promise);
                 if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
 
                 idx++;

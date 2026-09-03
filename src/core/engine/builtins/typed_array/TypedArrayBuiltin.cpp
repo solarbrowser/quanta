@@ -809,8 +809,8 @@ void register_typed_array_builtins(Context& ctx) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
-                callback->call(ctx, cb_args, thisArg);
+                const Value cb_args[] = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
+                callback->call_register_args(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
             }
             return Value();
@@ -918,8 +918,8 @@ void register_typed_array_builtins(Context& ctx) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
-                Value r = cb->call(ctx, cb_args, thisArg);
+                const Value cb_args[] = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
+                Value r = cb->call_register_args(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (!r.to_boolean()) return Value(false);
             }
@@ -936,8 +936,8 @@ void register_typed_array_builtins(Context& ctx) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
-                Value r = cb->call(ctx, cb_args, thisArg);
+                const Value cb_args[] = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
+                Value r = cb->call_register_args(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (r.to_boolean()) return Value(true);
             }
@@ -955,8 +955,8 @@ void register_typed_array_builtins(Context& ctx) {
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
                 Value el = ta->get_element(i);
-                std::vector<Value> cb_args = { el, Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
-                Value r = cb->call(ctx, cb_args, thisArg);
+                const Value cb_args[] = { el, Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
+                Value r = cb->call_register_args(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (r.to_boolean()) return el;
             }
@@ -973,8 +973,8 @@ void register_typed_array_builtins(Context& ctx) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
             size_t len = ta->length();
             for (size_t i = 0; i < len; i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
-                Value r = cb->call(ctx, cb_args, thisArg);
+                const Value cb_args[] = { ta->get_element(i), Value(static_cast<double>(i)), Value(receiver.as_object_or_null()) };
+                Value r = cb->call_register_args(ctx, cb_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (r.to_boolean()) return Value(static_cast<double>(i));
             }
@@ -993,8 +993,8 @@ void register_typed_array_builtins(Context& ctx) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
             for (int64_t i = static_cast<int64_t>(ta->length()) - 1; i >= 0; i--) {
                 Value el = ta->get_element(static_cast<size_t>(i));
-                std::vector<Value> cb_args = { el, Value(static_cast<double>(i)), Value(this_obj) };
-                if (cb->call(ctx, cb_args, thisArg).to_boolean()) return el;
+                const Value cb_args[] = { el, Value(static_cast<double>(i)), Value(this_obj) };
+                if (cb->call_register_args(ctx, cb_args, thisArg).to_boolean()) return el;
             }
             return Value();
         }, 1);
@@ -1010,8 +1010,8 @@ void register_typed_array_builtins(Context& ctx) {
             Function* cb = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             for (int64_t i = static_cast<int64_t>(ta->length()) - 1; i >= 0; i--) {
-                std::vector<Value> cb_args = { ta->get_element(static_cast<size_t>(i)), Value(static_cast<double>(i)), Value(this_obj) };
-                if (cb->call(ctx, cb_args, thisArg).to_boolean()) return Value(static_cast<double>(i));
+                const Value cb_args[] = { ta->get_element(static_cast<size_t>(i)), Value(static_cast<double>(i)), Value(this_obj) };
+                if (cb->call_register_args(ctx, cb_args, thisArg).to_boolean()) return Value(static_cast<double>(i));
             }
             return Value(-1.0);
         }, 1);
@@ -1073,8 +1073,8 @@ void register_typed_array_builtins(Context& ctx) {
                 acc = ta->get_element(static_cast<size_t>(0)); k = 1;
             }
             for (; k < len; k++) {
-                std::vector<Value> cb_args = { acc, ta->get_element(k), Value(static_cast<double>(k)), Value(receiver.as_object_or_null()) };
-                acc = cb->call(ctx, cb_args, Value());
+                const Value cb_args[] = { acc, ta->get_element(k), Value(static_cast<double>(k)), Value(receiver.as_object_or_null()) };
+                acc = cb->call_register_args(ctx, cb_args, Value());
                 if (ctx.has_exception()) return Value();
             }
             return acc;
@@ -1093,8 +1093,8 @@ void register_typed_array_builtins(Context& ctx) {
                 acc = ta->get_element(static_cast<size_t>(k)); k--;
             }
             for (; k >= 0; k--) {
-                std::vector<Value> cb_args = { acc, ta->get_element(static_cast<size_t>(k)), Value(static_cast<double>(k)), Value(receiver.as_object_or_null()) };
-                acc = cb->call(ctx, cb_args, Value());
+                const Value cb_args[] = { acc, ta->get_element(static_cast<size_t>(k)), Value(static_cast<double>(k)), Value(receiver.as_object_or_null()) };
+                acc = cb->call_register_args(ctx, cb_args, Value());
                 if (ctx.has_exception()) return Value();
             }
             return acc;
@@ -1203,8 +1203,8 @@ void register_typed_array_builtins(Context& ctx) {
             std::stable_sort(els.begin(), els.end(), [&](const Value& a, const Value& b) {
                 if (ctx.has_exception()) return false;
                 if (cmp) {
-                    std::vector<Value> ca = {a, b};
-                    double r = cmp->call(ctx, ca, Value()).to_number();
+                    const Value ca[] = {a, b};
+                    double r = cmp->call_register_args(ctx, ca, Value()).to_number();
                     if (ctx.has_exception()) return false;
                     return r < 0;
                 }
@@ -1771,8 +1771,8 @@ void register_typed_array_builtins(Context& ctx) {
             for (size_t i = 0; i < items.size(); i++) {
                 Value v = items[i];
                 if (mfn) {
-                    std::vector<Value> cb_args = { v, Value(static_cast<double>(i)) };
-                    v = mfn->call(ctx, cb_args, this_arg);
+                    const Value cb_args[] = { v, Value(static_cast<double>(i)) };
+                    v = mfn->call_register_args(ctx, cb_args, this_arg);
                     if (ctx.has_exception()) return Value();
                 }
                 if (target_is_big) {

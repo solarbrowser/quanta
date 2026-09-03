@@ -865,8 +865,8 @@ void register_string_builtins(Context& ctx) {
 
             std::string replacement;
             if (is_function_replace) {
-                std::vector<Value> fn_args = { Value(search), Value(static_cast<double>(pos)), Value(str) };
-                Value r = replace_value.as_function()->call(ctx, fn_args, Value());
+                const Value fn_args[] = { Value(search), Value(static_cast<double>(pos)), Value(str) };
+                Value r = replace_value.as_function()->call_register_args(ctx, fn_args, Value());
                 if (ctx.has_exception()) return Value();
                 replacement = obj_to_string(ctx, r);
                 if (ctx.has_exception()) return Value();
@@ -977,8 +977,8 @@ void register_string_builtins(Context& ctx) {
                 result += str.substr(end_of_last_match, p - end_of_last_match);
                 std::string replacement;
                 if (is_function) {
-                    std::vector<Value> fn_args = { Value(search), Value(static_cast<double>(p)), Value(str) };
-                    Value r = replace_value.as_function()->call(ctx, fn_args);
+                    const Value fn_args[] = { Value(search), Value(static_cast<double>(p)), Value(str) };
+                    Value r = replace_value.as_function()->call_register_args(ctx, fn_args, Value());
                     if (ctx.has_exception()) return Value();
                     replacement = obj_to_string(ctx, r);
                     if (ctx.has_exception()) return Value();

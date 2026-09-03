@@ -3086,8 +3086,8 @@ std::unique_ptr<Object> Object::filter(Function* callback, Context& ctx, const V
     for (uint32_t i = 0; i < length; i++) {
         Value element = get_element(i);
         if (!element.is_undefined()) {
-            std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
-            Value should_include = callback->call(ctx, args, thisArg);
+            const Value args[] = {element, Value(static_cast<double>(i)), Value(this)};
+            Value should_include = callback->call_register_args(ctx, args, thisArg);
             if (ctx.has_exception()) return nullptr;
 
             if (should_include.to_boolean()) {
@@ -3110,9 +3110,9 @@ void Object::forEach(Function* callback, Context& ctx, const Value& thisArg) {
     for (uint32_t i = 0; i < length; i++) {
         Value element = get_element(i);
         if (!element.is_undefined()) {
-            std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
+            const Value args[] = {element, Value(static_cast<double>(i)), Value(this)};
 
-            Value result = callback->call(ctx, args, thisArg);
+            Value result = callback->call_register_args(ctx, args, thisArg);
             if (ctx.has_exception()) return;
         }
     }
@@ -3135,8 +3135,8 @@ Value Object::reduce(Function* callback, const Value& initial_value, Context& ct
     for (uint32_t i = start_index; i < length; i++) {
         Value element = get_element(i);
         if (!element.is_undefined()) {
-            std::vector<Value> args = {accumulator, element, Value(static_cast<double>(i)), Value(this)};
-            accumulator = callback->call(ctx, args);
+            const Value args[] = {accumulator, element, Value(static_cast<double>(i)), Value(this)};
+            accumulator = callback->call_register_args(ctx, args, Value());
             if (ctx.has_exception()) return Value();
         }
     }
@@ -3166,8 +3166,8 @@ Value Object::reduceRight(Function* callback, const Value& initial_value, Contex
     for (int32_t i = start_index; i >= 0; i--) {
         Value element = get_element(static_cast<uint32_t>(i));
         if (!element.is_undefined()) {
-            std::vector<Value> args = {accumulator, element, Value(static_cast<double>(i)), Value(this)};
-            accumulator = callback->call(ctx, args);
+            const Value args[] = {accumulator, element, Value(static_cast<double>(i)), Value(this)};
+            accumulator = callback->call_register_args(ctx, args, Value());
             if (ctx.has_exception()) return Value();
         }
     }
@@ -3192,8 +3192,8 @@ Value Object::groupBy(Function* callback, Context& ctx) {
     for (int i = 0; i < length; i++) {
         Value element = this->get_property(std::to_string(i));
         
-        std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this)};
-        Value key = callback->call(ctx, callback_args);
+        const Value callback_args[] = {element, Value(static_cast<double>(i)), Value(this)};
+        Value key = callback->call_register_args(ctx, callback_args, Value());
         std::string key_str = key.to_string();
         
         Value group = result->get_property(key_str);
@@ -3251,8 +3251,8 @@ std::unique_ptr<Object> Object::flatMap(Function* callback, Context& ctx, const 
     for (uint32_t i = 0; i < length; i++) {
         Value element = get_element(i);
 
-        std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
-        Value mapped = callback->call(ctx, args, thisArg);
+        const Value args[] = {element, Value(static_cast<double>(i)), Value(this)};
+        Value mapped = callback->call_register_args(ctx, args, thisArg);
         if (ctx.has_exception()) return result;
 
         if (mapped.is_object() && mapped.as_object()->is_array()) {
@@ -3306,8 +3306,8 @@ Value Object::findLast(Function* callback, Context& ctx, const Value& thisArg) {
     uint32_t length = get_length();
     for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
         Value element = get_element(static_cast<uint32_t>(i));
-        std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
-        Value result = callback->call(ctx, args, thisArg);
+        const Value args[] = {element, Value(static_cast<double>(i)), Value(this)};
+        Value result = callback->call_register_args(ctx, args, thisArg);
         if (ctx.has_exception()) return Value();
         if (result.to_boolean()) {
             return element;
@@ -3324,8 +3324,8 @@ Value Object::findLastIndex(Function* callback, Context& ctx, const Value& thisA
     uint32_t length = get_length();
     for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
         Value element = get_element(static_cast<uint32_t>(i));
-        std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
-        Value result = callback->call(ctx, args, thisArg);
+        const Value args[] = {element, Value(static_cast<double>(i)), Value(this)};
+        Value result = callback->call_register_args(ctx, args, thisArg);
         if (ctx.has_exception()) return Value(-1.0);
         if (result.to_boolean()) {
             return Value(static_cast<double>(i));
@@ -3396,8 +3396,8 @@ std::unique_ptr<Object> Object::toSorted(Function* compareFn, Context& ctx) {
             for (uint32_t j = 0; j < length - i - 1; j++) {
                 Value a = result->get_element(j);
                 Value b = result->get_element(j + 1);
-                std::vector<Value> args = {a, b};
-                Value cmp = compareFn->call(ctx, args);
+                const Value args[] = {a, b};
+                Value cmp = compareFn->call_register_args(ctx, args, Value());
                 if (ctx.has_exception()) return result;
                 if (cmp.to_number() > 0) {
                     result->set_element(j, b);
