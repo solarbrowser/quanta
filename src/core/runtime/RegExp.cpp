@@ -2835,12 +2835,19 @@ Value RegExp::exec(const std::string& str, const String* cell) {
         for (const auto& ng : named_groups_) {
             int gn = matched_capture(ng.second);
             Value gval = gn >= 0 ? Value(slice(saved[2*gn], saved[2*gn+1])) : Value();
-            groups_owner->set_property_descriptor(ng.first, PropertyDescriptor(gval, PropertyAttributes::Default));
+            groups_owner->create_own_data_property(ng.first, gval);
         }
-        // CreateDataProperty: define directly on A, bypassing any inherited setter on Array.prototype["groups"].
-        result->set_property_descriptor("groups", PropertyDescriptor(Value(groups_owner.release()), PropertyAttributes::Default));
+        // CreateDataProperty: define directly on A, bypassing any inherited
+        // setter on Array.prototype["groups"] -- which is what
+        // create_own_data_property does, without the descriptor a
+        // default-attribute define through set_property_descriptor would
+        // leave behind. That descriptor was on every match result there is,
+        // and it takes the whole object off the shape-slot path for good:
+        // index and input, defined as ordinary properties just above, were
+        // then read back out of a hash map too.
+        result->create_own_data_property("groups", Value(groups_owner.release()));
     } else {
-        result->set_property_descriptor("groups", PropertyDescriptor(Value(), PropertyAttributes::Default));
+        result->create_own_data_property("groups", Value());
     }
 
     if (has_indices_) {
@@ -2864,9 +2871,9 @@ Value RegExp::exec(const std::string& str, const String* cell) {
                 Value pv = gn >= 0 ? make_pair(saved[2*gn], saved[2*gn+1]) : Value();
                 igroups->set_property_descriptor(ng.first, PropertyDescriptor(pv, PropertyAttributes::Default));
             }
-            indices_owner->set_property_descriptor("groups", PropertyDescriptor(Value(igroups.release()), PropertyAttributes::Default));
+            indices_owner->create_own_data_property("groups", Value(igroups.release()));
         } else {
-            indices_owner->set_property_descriptor("groups", PropertyDescriptor(Value(), PropertyAttributes::Default));
+            indices_owner->create_own_data_property("groups", Value());
         }
         result->set_property_descriptor("indices", PropertyDescriptor(Value(indices_owner.release()), PropertyAttributes::Default));
     }

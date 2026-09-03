@@ -857,7 +857,7 @@ void register_regexp_builtins(Context& ctx) {
                 int idx_js = static_cast<int>(idx_d);
                 std::u16string str16 = wtf8_to_utf16(str);
                 size_t pos = std::min(static_cast<size_t>(idx_js), str16.size());
-                size_t end_pos = std::min(pos + wtf8_to_utf16(matched_str).size(), str16.size());
+                size_t end_pos = std::min(pos + utf16_length(matched_str), str16.size());
                 // Get nCaptures
                 Value len_v = m->get_property("length");
                 if (ctx.has_exception()) return Value();
@@ -979,6 +979,16 @@ void register_regexp_builtins(Context& ctx) {
             }
             if (matches.empty()) return Value(str);
             std::u16string str16 = wtf8_to_utf16(str);
+            // Every callback gets the same subject S. Rebuilding it per match
+            // allocated a second copy of the whole string each time; when the
+            // argument arrived as a string its own cell already is S.
+            Value subject_value = arg0_r.is_string() ? arg0_r : Value(str);
+            // One argument list for all the matches: cleared and refilled
+            // rather than allocated per call, and rooted, which its per-match
+            // predecessor was not -- a vector's elements sit in malloc'd
+            // storage the conservative stack scan never walks.
+            std::vector<Value> fn_a;
+            ValueVectorRoot fn_a_root(&fn_a);
             std::string result;
             size_t last_end = 0;
             for (auto& mr : matches) {
@@ -986,14 +996,18 @@ void register_regexp_builtins(Context& ctx) {
                 if (mi > str16.size()) mi = str16.size();
                 // Spec: skip match if position moved backwards (position < nextSourcePosition)
                 if (mi < last_end) continue;
+                // Asked once: the two places below that need where this match
+                // ends were each converting the matched text to UTF-16 in full
+                // to read a length off it.
+                const size_t matched_units = utf16_length(mr.matched);
                 if (mi > last_end) result += utf16_to_wtf8(str16.data() + last_end, mi - last_end);
                 std::string repl;
                 if (is_fn_replace) {
-                    std::vector<Value> fn_a;
+                    fn_a.clear();
                     fn_a.push_back(Value(mr.matched));
                     for (auto& c : mr.captures) fn_a.push_back(c);
                     fn_a.push_back(Value(static_cast<double>(mr.js_idx)));
-                    fn_a.push_back(Value(str));
+                    fn_a.push_back(subject_value);
                     if (!mr.groups.is_undefined()) fn_a.push_back(mr.groups);
                     Value r = replace_val.as_function()->call(ctx, fn_a, Value());
                     if (ctx.has_exception()) return Value();
@@ -1004,12 +1018,12 @@ void register_regexp_builtins(Context& ctx) {
                     std::vector<std::string> caps_str;
                     for (auto& c : mr.captures) caps_str.push_back(c.is_undefined() ? "" : c.to_string());
                     if (mr.groups.is_null()) { ctx.throw_type_error("Cannot convert null to object"); return Value(); }
-                    size_t m_end = std::min(mi + wtf8_to_utf16(mr.matched).size(), str16.size());
+                    size_t m_end = std::min(mi + matched_units, str16.size());
                     if (!regexp_get_substitution(ctx, replace_str, str16, mi, m_end, mr.matched, caps_str, mr.groups, repl))
                         return Value();
                 }
                 result += repl;
-                last_end = std::min(mi + wtf8_to_utf16(mr.matched).size(), str16.size());
+                last_end = std::min(mi + matched_units, str16.size());
             }
             if (last_end <= str16.size())
                 result += utf16_to_wtf8(str16.data() + last_end, str16.size() - last_end);
