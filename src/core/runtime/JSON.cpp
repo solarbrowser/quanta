@@ -420,9 +420,15 @@ Value JSON::Parser::parse_object() {
         Value value = parse_value();
         record_source(obj.get(), key, value_start, value);
 
-        PropertyDescriptor d(value, static_cast<PropertyAttributes>(
-            PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
-        obj->set_property_descriptor(key, d);
+        // {writable, enumerable, configurable: true} is CreateDataProperty's
+        // own default, so this needs no descriptor at all -- set_property_
+        // descriptor with every attribute already at its default still built
+        // one, which (RareExtras::descriptors, once allocated, never goes
+        // away) took every property this parse ever adds, on every object it
+        // ever builds, off the shape-slot fast path for good. obj is fresh
+        // and key has no own property yet, the two conditions
+        // create_own_data_property needs to be equivalent here.
+        obj->create_own_data_property(key, value);
         
         skip_whitespace();
         char ch = current_char();

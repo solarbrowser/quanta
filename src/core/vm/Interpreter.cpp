@@ -5284,7 +5284,13 @@ Value h_gen_DefineOwnKeyed(Frame& f, uint32_t pc, Value acc) {
                         // otherwise find Object.prototype's own __proto__
                         // ACCESSOR via its inherited-setter walk and wrongly
                         // invoke it instead of creating an own property.
-                        obj->set_property_descriptor(key, PropertyDescriptor(acc, PropertyAttributes::Default));
+                        // create_own_data_property, not a Default-attribute
+                        // descriptor: the latter builds a real descriptors_
+                        // map (RareExtras), which never goes away once
+                        // allocated and would have taken this object's every
+                        // other property off the shape-slot fast path too,
+                        // not just this one.
+                        obj->create_own_data_property(key, acc);
                     } else {
                         obj->set_property(key, acc);
                     }
@@ -5471,8 +5477,10 @@ Value h_gen_FinalizeComputedProperty(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     if (key == "__proto__") {
                         // Same fix as DefineOwnKeyed: computed __proto__ is a
-                        // plain data property, never [[Prototype]].
-                        obj->set_property_descriptor(key, PropertyDescriptor(acc, PropertyAttributes::Default));
+                        // plain data property, never [[Prototype]] -- and
+                        // create_own_data_property, not a Default-attribute
+                        // descriptor, for the same reason (see there).
+                        obj->create_own_data_property(key, acc);
                     } else {
                         obj->create_own_data_property(key, acc);
                     }
