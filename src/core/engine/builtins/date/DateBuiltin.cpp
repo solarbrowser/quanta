@@ -35,7 +35,14 @@ void register_date_builtins(Context& ctx) {
                 if (p.is_object()) proto = p.as_object();
                 else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
             }
-            result.as_object()->set_prototype(proto);
+            // result is fresh from Date::date_constructor above and has not
+            // been handed back to the caller yet, let alone read by any IC --
+            // set_prototype's proto_epoch bump (needed when an ALREADY-
+            // observed object's prototype changes) has nothing to invalidate
+            // here, and every `new Date(...)` was paying it anyway, which
+            // meant every Date.prototype method call anywhere in the program
+            // found its cache stale on the read right after.
+            result.as_object()->initialize_prototype(proto);
             return result;
         }, 7);
 
