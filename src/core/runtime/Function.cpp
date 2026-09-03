@@ -653,7 +653,15 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         !is_class_constructor_ &&
         !(ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined())) {
         const ClassSlots& slots = class_slots();
-        if (!slots.home_object && !slots.super_ctor && !slots.super_is_null && !slots.private_brands) {
+        // A method that reaches `super` was kept out of here for as long as
+        // nothing in this path created the bindings its opcodes resolve
+        // through -- not because the path could not serve it. It builds a
+        // per-call Environment already, which is the only thing those
+        // bindings need, so they are written into it below exactly as the
+        // general path writes them into its own. Private brands stay out:
+        // the general path only binds those for a body a direct eval can
+        // reach, which is a question this gate does not ask.
+        if (!slots.private_brands) {
             Engine* env_engine = ctx.get_engine();
             Context& env_ctx = *CallContextPool::acquire(env_engine, &ctx);
             struct PoolRelease {
@@ -684,6 +692,25 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             ExecContextScope gc_frame(&env_ctx);
             env_ctx.set_arrow_function_context(false);
             if (is_strict_ || executable_->fast_strict) env_ctx.set_strict_mode(true);
+            // The same bindings the general path creates, for the same
+            // reason: Op::GetSuper and its siblings resolve the home object
+            // and the superclass by ordinary environment lookup. Written
+            // before VM::run seeds the chunk's own names, which is where the
+            // general path writes them too -- a predicted env slot that these
+            // shift is re-validated by name at the read, so a shifted
+            // prediction costs the slot fast path and nothing else.
+            if (slots.home_object) {
+                env_ctx.create_binding("__home_object__", Value(slots.home_object), false);
+            }
+            if (slots.super_ctor) {
+                env_ctx.create_binding("__super__", Value(slots.super_ctor), false);
+                if (slots.is_static_method) {
+                    env_ctx.create_binding("__super_is_static__", Value(true), false);
+                }
+            }
+            if (slots.super_is_null) {
+                env_ctx.create_binding("__super_is_null__", Value(true), false);
+            }
 
             Value actual_this = this_value;
             if (!env_ctx.is_strict_mode()) {
