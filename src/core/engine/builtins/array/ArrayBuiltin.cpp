@@ -307,8 +307,8 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             if (mapfn_v.is_function()) {
                 Value idx_v = rp->get_internal_slot("__fa_idx__");
                 Value this_arg = rp->get_internal_slot("__fa_thisarg__");
-                std::vector<Value> margs = { value, idx_v };
-                Value mapped = mapfn_v.as_function()->call(c, margs, this_arg);
+                const Value margs[] = { value, idx_v };
+                Value mapped = mapfn_v.as_function()->call_register_args(c, margs, this_arg);
                 if (c.has_exception()) { Value e = c.get_exception(); c.clear_exception(); fa_reject(c, rp, e); return Value(); }
                 Promise* mp = Promise::resolve(mapped);
                 fa_chain(c, rp, mp, "__fa_on_mapped__");
@@ -495,8 +495,8 @@ static double flatten_into_array(Context& ctx, Object* target, Object* source, d
             if (ctx.has_exception()) return -1;
         }
         if (mapper_fn) {
-            std::vector<Value> call_args = {element, Value(source_index), Value(source)};
-            element = mapper_fn->call(ctx, call_args, this_arg);
+            const Value call_args[] = {element, Value(source_index), Value(source)};
+            element = mapper_fn->call_register_args(ctx, call_args, this_arg);
             if (ctx.has_exception()) return -1;
         }
 
@@ -1016,8 +1016,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             for (uint32_t i = 0; i < length; i++) {
                 Value element = this_obj->get_element(i);
-                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                Value result = callback->call(ctx, callback_args, thisArg);
+                const Value callback_args[] = {element, Value(static_cast<double>(i)), Value(this_obj)};
+                Value result = callback->call_register_args(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
 
                 if (result.to_boolean()) {
@@ -1068,8 +1068,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
             for (int64_t i = static_cast<int64_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
-                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                Value result = callback_fn->call(ctx, callback_args, thisArg);
+                const Value callback_args[] = {element, Value(static_cast<double>(i)), Value(this_obj)};
+                Value result = callback_fn->call_register_args(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     return element;
@@ -1112,8 +1112,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.has_exception()) return Value();
             for (int64_t i = static_cast<int64_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
-                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                Value result = callback_fn->call(ctx, callback_args, thisArg);
+                const Value callback_args[] = {element, Value(static_cast<double>(i)), Value(this_obj)};
+                Value result = callback_fn->call_register_args(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     return Value(static_cast<double>(i));
@@ -1746,8 +1746,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     element = this_obj->get_property(key);
                     if (ctx.has_exception()) return Value();
                 }
-                std::vector<Value> callback_args = { accumulator, element, Value(k), Value(this_obj) };
-                accumulator = callback_func->call(ctx, callback_args, Value());
+                const Value callback_args[] = { accumulator, element, Value(k), Value(this_obj) };
+                accumulator = callback_func->call_register_args(ctx, callback_args, Value());
                 if (ctx.has_exception()) return Value();
             }
 
@@ -2140,8 +2140,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     element = this_obj->get_property(std::to_string(i));
                     if (ctx.has_exception()) return Value();
                 }
-                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
-                Value result = callback->call(ctx, callback_args, thisArg);
+                const Value callback_args[] = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                Value result = callback->call_register_args(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (!result.to_boolean()) return Value(false);
             }
@@ -2187,8 +2187,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     element = this_obj->get_property(key);
                     if (ctx.has_exception()) return Value();
                 }
-                std::vector<Value> callback_args = { element, Value(k), Value(this_obj) };
-                Value test_result = callback->call(ctx, callback_args, thisArg);
+                const Value callback_args[] = { element, Value(k), Value(this_obj) };
+                Value test_result = callback->call_register_args(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (test_result.to_boolean()) {
                     if (!create_indexed_data_property(ctx, result, to, element)) return Value();
@@ -2233,8 +2233,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     }
                     element = this_obj->get_element(i);
                 }
-                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                callback->call(ctx, callback_args, this_arg);
+                const Value callback_args[] = {element, Value(static_cast<double>(i)), Value(this_obj)};
+                callback->call_register_args(ctx, callback_args, this_arg);
                 if (ctx.has_exception()) return Value();
             }
             return Value();
@@ -2329,8 +2329,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     }
                 }
                 if (present) {
-                    std::vector<Value> callback_args = { element, Value(k), Value(this_obj) };
-                    Value mapped = callback->call(ctx, callback_args, thisArg);
+                    const Value callback_args[] = { element, Value(k), Value(this_obj) };
+                    Value mapped = callback->call_register_args(ctx, callback_args, thisArg);
                     if (ctx.has_exception()) return Value();
                     if (!create_indexed_data_property(ctx, result, k, mapped)) return Value();
                 }
@@ -2397,8 +2397,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     element = this_obj->get_property(key);
                     if (ctx.has_exception()) return Value();
                 }
-                std::vector<Value> callback_args = { accumulator, element, Value(k), Value(this_obj) };
-                accumulator = callback->call(ctx, callback_args);
+                const Value callback_args[] = { accumulator, element, Value(k), Value(this_obj) };
+                accumulator = callback->call_register_args(ctx, callback_args, Value());
                 if (ctx.has_exception()) return Value();
             }
 
@@ -2435,8 +2435,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     }
                     element = this_obj->get_element(i);
                 }
-                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
-                Value result = callback->call(ctx, callback_args, thisArg);
+                const Value callback_args[] = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                Value result = callback->call_register_args(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     return Value(true);
@@ -2468,8 +2468,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             for (uint32_t i = 0; i < length; i++) {
                 Value element = this_obj->get_element(i);
-                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
-                Value result = callback->call(ctx, callback_args, thisArg);
+                const Value callback_args[] = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                Value result = callback->call_register_args(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     return Value(static_cast<double>(i));
