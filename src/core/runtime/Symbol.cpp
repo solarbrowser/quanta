@@ -127,8 +127,13 @@ std::string Symbol::to_property_key() const {
     if (!description_.empty() && description_.find("Symbol.") == 0) {
         return description_;
     }
-    // User-created symbols use a unique key based on their ID
-    return "@@sym:" + std::to_string(id_);
+    // User-created symbols use a unique key based on their ID, fixed for
+    // the Symbol's lifetime -- built once and reused for every further key
+    // this Symbol names.
+    if (property_key_cache_.empty()) {
+        property_key_cache_ = "@@sym:" + std::to_string(id_);
+    }
+    return property_key_cache_;
 }
 
 bool Symbol::equals(const Symbol* other) const {

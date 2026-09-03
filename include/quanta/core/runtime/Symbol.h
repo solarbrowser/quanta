@@ -23,6 +23,14 @@ private:
     bool has_description_ = false;
     static constinit thread_local uint64_t next_id_;
     uint64_t id_;
+    // to_property_key()'s answer, built once. id_ never changes once a
+    // Symbol exists, so "@@sym:" + the id is the same string for the rest
+    // of the Symbol's life -- every further computed-key access naming this
+    // Symbol (o[sym] read or write, defineProperty, ownKeys) was rebuilding
+    // it via std::to_string from scratch. Empty means not built yet; a
+    // well-known symbol keyed by its description (the common early-return
+    // in to_property_key()) never touches this field at all.
+    mutable std::string property_key_cache_;
 
     // Thread-local: each agent has its own well-known/registered symbols,
     // matching real engines' per-isolate Symbol.for() scoping.
