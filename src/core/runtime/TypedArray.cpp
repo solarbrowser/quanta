@@ -387,19 +387,32 @@ TypedArray<T>::TypedArray(ArrayType type, std::shared_ptr<ArrayBuffer> buffer, s
 }
 
 template<typename T>
-T TypedArray<T>::get_typed_element(size_t index) const {
-    if (!check_bounds(index)) {
-        return T{};
-    }
-    
+T TypedArray<T>::get_typed_element_unchecked(size_t index) const {
     uint8_t* data = get_data_ptr();
     if (!data) {
         return T{};
     }
-    
     T result;
     quanta_memcpy(&result, data + index * sizeof(T), sizeof(T));
     return result;
+}
+
+template<typename T>
+bool TypedArray<T>::set_typed_element_unchecked(size_t index, T value) {
+    uint8_t* data = get_data_ptr();
+    if (!data) {
+        return false;
+    }
+    quanta_memcpy(data + index * sizeof(T), &value, sizeof(T));
+    return true;
+}
+
+template<typename T>
+T TypedArray<T>::get_typed_element(size_t index) const {
+    if (!check_bounds(index)) {
+        return T{};
+    }
+    return get_typed_element_unchecked(index);
 }
 
 template<typename T>
@@ -407,20 +420,13 @@ bool TypedArray<T>::set_typed_element(size_t index, T value) {
     if (!check_bounds(index)) {
         return false;
     }
-    
-    uint8_t* data = get_data_ptr();
-    if (!data) {
-        return false;
-    }
-    
-    quanta_memcpy(data + index * sizeof(T), &value, sizeof(T));
-    return true;
+    return set_typed_element_unchecked(index, value);
 }
 
 template<typename T>
 Value TypedArray<T>::get_element(size_t index) const {
     if (!check_bounds(index)) return Value();
-    T value = get_typed_element(index);
+    T value = get_typed_element_unchecked(index);
     if constexpr (std::is_floating_point_v<T>) {
         return Value(static_cast<double>(value));
     } else if constexpr (std::is_signed_v<T>) {
@@ -434,23 +440,28 @@ template<typename T>
 bool TypedArray<T>::set_element(size_t index, const Value& value) {
     if constexpr (std::is_floating_point_v<T>) {
         double num_val = value.to_number();
-        return set_typed_element(index, static_cast<T>(num_val));
+        if (!check_bounds(index)) return false;
+        return set_typed_element_unchecked(index, static_cast<T>(num_val));
     } else {
         // ES6: Integer typed arrays use modular arithmetic (wrapping), not clamping
         double num_val = value.to_number();
+        T stored;
         if (std::isnan(num_val) || std::isinf(num_val) || num_val == 0.0) {
-            return set_typed_element(index, T{0});
+            stored = T{0};
+        } else {
+            double truncated = std::trunc(num_val);
+            constexpr int bits = sizeof(T) * 8;
+            double mod = std::pow(2.0, bits);
+            double mod_val = std::fmod(truncated, mod);
+            if (mod_val < 0) mod_val += mod;
+            if constexpr (std::is_signed_v<T>) {
+                double half = mod / 2.0;
+                if (mod_val >= half) mod_val -= mod;
+            }
+            stored = static_cast<T>(static_cast<int64_t>(mod_val));
         }
-        double truncated = std::trunc(num_val);
-        constexpr int bits = sizeof(T) * 8;
-        double mod = std::pow(2.0, bits);
-        double mod_val = std::fmod(truncated, mod);
-        if (mod_val < 0) mod_val += mod;
-        if constexpr (std::is_signed_v<T>) {
-            double half = mod / 2.0;
-            if (mod_val >= half) mod_val -= mod;
-        }
-        return set_typed_element(index, static_cast<T>(static_cast<int64_t>(mod_val)));
+        if (!check_bounds(index)) return false;
+        return set_typed_element_unchecked(index, stored);
     }
 }
 

@@ -132,7 +132,15 @@ private:
 protected:
     T get_typed_element(size_t index) const;
     bool set_typed_element(size_t index, T value);
-    
+    // The same memcpy, without check_bounds -- for get_element/set_element,
+    // which already paid for one call to it themselves. check_bounds's own
+    // cost is current_length(), which walks the buffer's detached/
+    // out-of-bounds/length-tracking state; get_typed_element/set_typed_element
+    // ran that twice per access for no caller here that didn't already run
+    // it once. Still only reached after a bounds check, by either name.
+    T get_typed_element_unchecked(size_t index) const;
+    bool set_typed_element_unchecked(size_t index, T value);
+
 public:
     using element_type = T;
     
