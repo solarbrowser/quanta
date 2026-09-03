@@ -44,6 +44,50 @@ static void spread_create_own_data_property(Object* target, const std::string& k
     target->create_own_data_property(key, value);
 }
 
+// The fast loop below spreads the same fixed sequence of keys -- straight
+// off the source's own shape, in its own order -- into a target on the
+// same starting shape every time an object literal's `{...src, ...}` runs
+// in a loop over the same src: same (source shape, target's own starting
+// shape) pair in, same resulting sequence of target shapes out, every
+// time. One memoized slot answers it (not a small cache -- collapsing back
+// to the same pair after a rarer one is the common case too), the same
+// shortcut RegExp::exec's match result construction uses for a fixed
+// sequence of properties instead of a variable one. Array-index-shaped
+// keys route through set_property_descriptor above, not a shape
+// transition at all, so the memo simply never forms when the source has
+// one -- rare for an object literal's own spread, and the plain call below
+// is still correct for it, just not memoized.
+static thread_local Shape* spread_src_shape = nullptr;
+static thread_local Shape* spread_target_from = nullptr;
+static thread_local Shape* spread_target_after[Shape::kMaxSlots];
+static thread_local uint32_t spread_memo_n = 0;
+
+static void spread_fast_copy(Object* target, const std::string* const* names, const Value* vals,
+                             uint32_t n, Shape* src_shape) {
+    Shape* target_from = target->get_shape();
+    if (src_shape == spread_src_shape && target_from == spread_target_from && spread_memo_n == n) {
+        for (uint32_t i = 0; i < n; i++) {
+            target->add_shape_property_cached(*names[i], vals[i], spread_target_after[i]);
+        }
+        return;
+    }
+    // Learning afresh invalidates whatever memo stood (a different key
+    // sequence needs its own record) until this walk proves itself clean.
+    spread_src_shape = nullptr;
+    spread_target_from = target_from;
+    spread_memo_n = 0;
+    bool any_index = false;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t idx;
+        if (target->is_array_index(*names[i], &idx)) any_index = true;
+        spread_create_own_data_property(target, *names[i], vals[i]);
+        if (!any_index && spread_memo_n < Shape::kMaxSlots) {
+            spread_target_after[spread_memo_n++] = target->get_shape();
+        }
+    }
+    if (!any_index && spread_memo_n == n) spread_src_shape = src_shape;
+}
+
 // One definition of what an object spread copies, shared by the tree-walker's
 // ObjectLiteral::evaluate and the VM's Op::ObjectSpreadInto so the two cannot
 // drift -- the same reason append_spread_values exists for the array and
@@ -127,9 +171,7 @@ bool object_spread_into(Context& ctx, Object* target, const Value& spread_value)
                         fast_vals[fast_n++] = *v;
                     }, /*include_symbols=*/true);
                 if (walked && !bail) {
-                    for (uint32_t i = 0; i < fast_n; i++) {
-                        spread_create_own_data_property(target, *fast_names[i], fast_vals[i]);
-                    }
+                    spread_fast_copy(target, fast_names, fast_vals, fast_n, spread_obj->get_shape());
                 } else {
                     auto property_names = spread_obj->get_enumerable_keys();
                     for (const auto& prop_name : property_names) {
