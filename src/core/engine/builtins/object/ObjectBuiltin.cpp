@@ -335,6 +335,7 @@ void register_object_builtins(Context& ctx) {
                             else overflow = true;
                         }) && !overflow) {
                     auto fast_array = ObjectFactory::create_array(fast_n);
+                    fast_array->reserve_dense_elements(fast_n);
                     for (uint32_t i = 0; i < fast_n; i++) {
                         fast_array->set_element(i, Value(*fast_names[i]));
                     }
@@ -377,6 +378,7 @@ void register_object_builtins(Context& ctx) {
             if (!result_array) {
                 result_array = ObjectFactory::create_array(0);
             }
+            result_array->reserve_dense_elements(static_cast<uint32_t>(filtered.size()));
 
             for (size_t i = 0; i < filtered.size(); i++) {
                 result_array->set_element(i, Value(filtered[i]));
@@ -407,6 +409,7 @@ void register_object_builtins(Context& ctx) {
                             fast_vals[fast_n++] = *v;
                         }) && !bail) {
                     auto fast_array = ObjectFactory::create_array(fast_n);
+                    fast_array->reserve_dense_elements(fast_n);
                     for (uint32_t i = 0; i < fast_n; i++) fast_array->set_element(i, fast_vals[i]);
                     return Value(fast_array.release());
                 }
@@ -475,8 +478,10 @@ void register_object_builtins(Context& ctx) {
                             fast_vals[fast_n++] = *v;
                         }) && !bail) {
                     auto fast_array = ObjectFactory::create_array(fast_n);
+                    fast_array->reserve_dense_elements(fast_n);
                     for (uint32_t i = 0; i < fast_n; i++) {
                         auto pair = ObjectFactory::create_array(2);
+                        pair->reserve_dense_elements(2);
                         pair->set_element(0, Value(*fast_names[i]));
                         pair->set_element(1, fast_vals[i]);
                         fast_array->set_element(i, Value(pair.release()));

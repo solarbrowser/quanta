@@ -646,6 +646,14 @@ public:
     // the one remaining refusal is possible -- an array whose length carries a
     // recorded attribute -- leaving that case to the general path.
     bool store_dense_element(uint32_t index, const Value& value);
+    // For a caller that is about to fill every one of `count` indices with a
+    // real value right away (Object.keys/values/entries' own result array,
+    // for instance): reserves and zero-initializes elements_ up front, so
+    // the fill loop's own set_element calls each land inside existing
+    // capacity instead of growing by exactly one index at a time -- which,
+    // unlike create_array(count)'s own length (a header field only, with no
+    // backing capacity behind it), is what set_element actually checks.
+    void reserve_dense_elements(uint32_t count) { resize_elements(count); }
     void push(const Value& value);
     Value pop();
     void unshift(const Value& value);
