@@ -145,7 +145,16 @@ public:
     static constinit thread_local Object* s_generator_prototype_;
     // %GeneratorFunction.prototype%
     static constinit thread_local Object* s_generator_function_prototype_;
-    
+    // The exact Function object installed as %GeneratorPrototype%.next.
+    // ForOfStatement::iterator_step compares its own resolved `next` against
+    // this: a match means the call it is about to make would only rebuild
+    // {value, done} from fields this Generator already has in hand, so it
+    // reads Generator::next()'s result directly instead. GetIterator already
+    // read `.next` once for the whole loop (spec), so this identity check is
+    // exactly as sound as making the call -- a `next` reassigned mid-loop,
+    // on the instance or the prototype, was never going to be seen by either.
+    static constinit thread_local Function* s_generator_next_fn_;
+
 private:
     void complete_generator(const Value& value);
     // A completed generator can never be resumed, so its fiber is dead weight.

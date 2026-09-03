@@ -50,6 +50,7 @@ constinit thread_local Generator* Generator::current_generator_ = nullptr;
 constinit thread_local size_t Generator::current_yield_counter_ = 0;
 constinit thread_local Object* Generator::s_generator_prototype_ = nullptr;
 constinit thread_local Object* Generator::s_generator_function_prototype_ = nullptr;
+constinit thread_local Function* Generator::s_generator_next_fn_ = nullptr;
 
 void Generator::fiber_entry(mco_coro* co) {
     Generator* gen = static_cast<Generator*>(mco_get_user_data(co));
@@ -403,6 +404,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
     }
 
     auto next_fn = ObjectFactory::create_native_function("next", generator_next, 1);
+    s_generator_next_fn_ = next_fn.get();
     gen_prototype->set_property("next", Value(next_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto return_fn = ObjectFactory::create_native_function("return", generator_return, 1);

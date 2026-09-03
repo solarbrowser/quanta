@@ -885,7 +885,47 @@ bool ForOfStatement::iterator_step(Context& ctx, const Value& iterator, Value& n
         ctx.throw_type_error("next method is not a function");
         return false;
     }
-    Value result = next_fn.as_function()->call(ctx, {}, iterator);
+    Value result;
+    bool have_result = false;
+    // `next` resolved to the exact function %GeneratorPrototype%.next still is
+    // -- the same identity check the array-index form above relies on, since
+    // GetIterator read `.next` once for the whole loop and a mid-loop
+    // reassignment (instance or prototype) was never going to reach either
+    // path. When it matches, generator_next's own body (state check, the
+    // fiber resume, the exception/raw_result branches) runs directly instead
+    // of through a Function::call that only re-derives the same three
+    // outcomes -- and the plain-value outcome, the overwhelming majority of
+    // every step of every for-of over a generator, needs no {value, done}
+    // object at all: it hands the two fields straight to the caller.
+    if (next_fn.as_function() == Generator::s_generator_next_fn_ && iterator.is_object()) {
+        Object* iter_obj = iterator.as_object();
+        if (iter_obj->get_type() == Object::ObjectType::Custom &&
+            static_cast<CustomObjectBase*>(iter_obj)->get_custom_kind() == CustomObjectBase::CustomKind::Generator) {
+            Generator* generator = static_cast<Generator*>(iter_obj);
+            if (generator->get_state() == Generator::State::Executing) {
+                ctx.throw_type_error("Generator is already executing");
+                return false;
+            }
+            Generator::GeneratorResult gr = generator->next(Value());
+            if (gr.has_exception) {
+                ctx.throw_exception(gr.exception, true);
+                return false;
+            }
+            if (!gr.raw_result) {
+                out_done = gr.done;
+                if (!out_done) out_value = gr.value;
+                return true;
+            }
+            // yield* forwarded the inner iterator's own result object
+            // verbatim: read it the same way any other iterator result is
+            // read below, rather than rebuilding {value, done} from it.
+            result = gr.value;
+            have_result = true;
+        }
+    }
+    if (!have_result) {
+        result = next_fn.as_function()->call(ctx, {}, iterator);
+    }
     // Per spec: if next() throws abruptly, do NOT close the iterator.
     if (ctx.has_exception()) return false;
     if (!result.is_object()) {
