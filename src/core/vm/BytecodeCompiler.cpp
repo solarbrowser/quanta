@@ -5709,7 +5709,17 @@ void BytecodeCompiler::fuse_store_pairs() {
 
 void BytecodeCompiler::emit(Op op) {
     if (op == Op::LdaLookup || op == Op::StaLookup) chunk_->uses_lookup_cache = true;
-    if (op == Op::LdaThis) chunk_->uses_this = true;
+    // super.x/super.x=/super[expr] all read `this` too, as the receiver an
+    // accessor they find is called with (or, for ResolveSuperBase, as the
+    // fallback resolve_super_base(ctx, owner) reads when owner has no home
+    // object of its own) -- none of that shows up as its own Op::LdaThis, so
+    // without this a register-mode chunk containing only one of these never
+    // set uses_this at all, and the caller's fast_ctx setup -- gated on this
+    // same flag -- skipped writing this_value_ for it entirely.
+    if (op == Op::LdaThis || op == Op::GetSuper || op == Op::SetSuper ||
+        op == Op::ResolveSuperBase || op == Op::SuperCall || op == Op::SuperCallSpread) {
+        chunk_->uses_this = true;
+    }
     code_.push_back(static_cast<uint8_t>(op));
 }
 void BytecodeCompiler::emit_u8(uint8_t v) { code_.push_back(v); }

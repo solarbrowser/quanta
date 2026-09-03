@@ -599,11 +599,31 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         if (is_arrow_ && this->has_own_property("__arrow_new_target__")) {
             fast_ctx.set_new_target(this->get_property("__arrow_new_target__"));
         }
+        // Mirrors the general path's own seed (function_context.set_super_called
+        // from closure_context_): the gate above only lets an arrow in here
+        // once closure_context_->this_needs_super() has already gone false,
+        // which happens exactly once, when the constructor's own super() call
+        // completes -- so an arrow reaching fast_ctx at all means the answer
+        // to "has super already run" lives on closure_context_, not on this
+        // fresh, pooled fast_ctx. Without this seed a super() written a
+        // second time inside the same escaped arrow read false here and ran
+        // again instead of throwing.
+        if (is_arrow_ && closure_context_) {
+            fast_ctx.set_super_called(closure_context_->was_super_called());
+        }
 
         Value fast_this = this_value;
-        // Skipped entirely when the body cannot observe `this`: Op::LdaThis is
-        // the only reader, and a native called from here is handed its own
-        // receiver rather than reading one off this context.
+        // Skipped entirely when the body cannot observe `this` through
+        // Op::LdaThis, which is the only reader most calls here have. A
+        // super.x/super[expr] read is the exception: super_get_on calls its
+        // accessor with ctx.get_binding("this"), which answers from this
+        // context's own this_value_ regardless of how `this` got here --
+        // unrelated to (and not covered by) Op::LdaThis's own register-frame
+        // caching. That read was never reachable from this path before a
+        // method's own super.x stopped forcing env_mode, so this context's
+        // this_value_ was never set for the primitive case: only the
+        // boxed-or-object branch below used to write it, via
+        // set_this_binding.
         if (executable_->fast_uses_this) {
             if (is_arrow_) {
                 // Own, not inherited: ArrowFunctionExpression::evaluate stamps
@@ -622,10 +642,12 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                     fast_this = ObjectFactory::box_primitive_this_sloppy(fast_ctx, this_value);
                 }
             }
-            if (fast_this.is_object() || fast_this.is_function()) {
-                fast_ctx.set_this_binding(fast_this.is_object() ? fast_this.as_object()
-                                                                : fast_this.as_function());
-            }
+            // Strict-mode primitive `this` (a class method's super.x read,
+            // called with a primitive receiver) reaches here unboxed by
+            // design -- set_this_value takes it as-is, the same as
+            // set_this_binding always did for the object case (it is
+            // this_value_ = Value(obj) under its own name).
+            fast_ctx.set_this_value(fast_this);
         }
 
         ExecContextScope gc_frame(&fast_ctx);
@@ -633,6 +655,22 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         Object::current_context_ = &fast_ctx;
         Value vm_result = VM::run(*executable_->bytecode_chunk, fast_ctx, args, &fast_this, this);
         Object::current_context_ = prev_context;
+        // Only reachable at all when this call ran Op::SuperCall, which the
+        // parser accepts nowhere but a derived constructor's own body or an
+        // arrow nested inside one -- and ctor_ok above already excludes a
+        // derived constructor from this path, so is_arrow_ is the only way
+        // in. An arrow that escapes its constructor (stashed in a variable,
+        // called later, the shape this guards) needs the same propagation
+        // the general path gives it: closure_context_ is the constructor's
+        // OWN Context, the one every later standalone call of this arrow
+        // re-reads this_needs_super() from, and nothing else ever clears it.
+        if (fast_ctx.was_super_called()) {
+            ctx.set_super_called(true);
+            if (is_arrow_ && closure_context_) {
+                closure_context_->set_super_called(true);
+                closure_context_->set_this_needs_super(false);
+            }
+        }
         if (fast_ctx.has_exception()) {
             ctx.throw_exception(fast_ctx.get_exception(), true);
             return Value();
