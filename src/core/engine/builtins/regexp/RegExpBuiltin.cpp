@@ -1068,15 +1068,24 @@ void register_regexp_builtins(Context& ctx) {
             bool set_ok = this_obj->set_property("lastIndex", Value(0.0));
             if (ctx.has_exception()) return Value();
             if (!set_ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex' of regexp"); return Value(); }
-            struct MatchRecord { int js_idx; std::string matched; std::vector<Value> captures; Value groups; };
+            // cap_start/cap_count index into all_values below; groups sits at
+            // all_values[cap_start + cap_count], one slot past this match's
+            // own captures.
+            struct MatchRecord { int js_idx; std::string matched; size_t cap_start; size_t cap_count; };
             std::vector<MatchRecord> matches;
-            // matches' Values (captures/groups) live inside a vector<MatchRecord>,
-            // which ValueVectorRoot can't root directly (it only walks vector<Value>).
-            // Mirror every such Value into this flat, rooted vector too, so they
-            // survive from collection here through the replacement loop below,
-            // which may run long after (and allocate a lot, under GC_STRESS).
-            std::vector<Value> matches_values_root_vec;
-            ValueVectorRoot matches_values_root(&matches_values_root_vec);
+            // Every match's captures used to be its own std::vector<Value>,
+            // freshly heap-allocated on every single match -- and, since
+            // ValueVectorRoot can't walk into a vector<MatchRecord>'s nested
+            // vectors, each Value inside it was mirrored again into a second,
+            // flat vector just so it had something rootable to survive from
+            // collection here through the replacement loop below (which may
+            // run long after, and allocate a lot, under GC_STRESS). One
+            // growing vector serves both jobs: it is what MatchRecord indexes
+            // into, and it is what gets rooted, so a match's captures (and
+            // its one groups value, appended right after them) are stored --
+            // and grow -- exactly once.
+            std::vector<Value> all_values;
+            ValueVectorRoot all_values_root(&all_values);
             // Decoded once for the whole call, not once per match: every
             // iteration below hands this straight to regexp_exec_abstract,
             // which needs the same units for its own PCRE2 match and would
@@ -1120,7 +1129,7 @@ void register_regexp_builtins(Context& ctx) {
                     if (ctx.has_exception()) return Value();
                     mlen = (std::isnan(len_d) || len_d < 1) ? 1 : static_cast<int>(len_d);
                 }
-                std::vector<Value> caps;
+                size_t cap_start = all_values.size();
                 for (int ci = 1; ci < mlen; ci++) {
                     Value cv = m->get_element(ci);
                     if (ctx.has_exception()) return Value();
@@ -1130,15 +1139,15 @@ void register_regexp_builtins(Context& ctx) {
                         else if (cv.is_object() || cv.is_function()) { std::string cs = cv.to_property_key(); if (ctx.has_exception()) return Value(); cv = Value(cs); }
                         else cv = Value(cv.to_string());
                     }
-                    caps.push_back(cv);
+                    all_values.push_back(cv);
                 }
+                size_t cap_count = all_values.size() - cap_start;
                 if (!fast) {
                     grps_v = m->get_property("groups");
                     if (ctx.has_exception()) return Value();
                 }
-                matches.push_back({idx_js, matched_s, caps, grps_v});
-                for (const auto& c : caps) matches_values_root_vec.push_back(c);
-                matches_values_root_vec.push_back(grps_v);
+                all_values.push_back(grps_v);
+                matches.push_back({idx_js, matched_s, cap_start, cap_count});
                 if (matched_s.empty()) {
                     // ToLength(Get(rx, "lastIndex")) then AdvanceStringIndex
                     Value cur_li = this_obj->get_property("lastIndex");
@@ -1170,6 +1179,13 @@ void register_regexp_builtins(Context& ctx) {
             std::vector<Value> fn_a;
             ValueVectorRoot fn_a_root(&fn_a);
             std::string result;
+            // The subject's own byte length is a reasonable stand-in for the
+            // output's: most replacements are close in size to what they
+            // replace, and this only has to save the small, repeated
+            // reallocations std::string's own doubling growth would do as
+            // result += grows past each threshold -- a bad guess here still
+            // ends correct, just back to that same growth past this point.
+            result.reserve(str.size());
             size_t last_end = 0;
             for (auto& mr : matches) {
                 size_t mi = static_cast<size_t>(mr.js_idx >= 0 ? mr.js_idx : 0);
@@ -1182,13 +1198,18 @@ void register_regexp_builtins(Context& ctx) {
                 const size_t matched_units = utf16_length(mr.matched);
                 if (mi > last_end) result += utf16_to_wtf8(str16.data() + last_end, mi - last_end);
                 std::string repl;
+                // This match's captures sit at all_values[cap_start,
+                // cap_start+cap_count), with its one groups value right
+                // after them -- see the collection loop above.
+                const Value* caps_data = all_values.data() + mr.cap_start;
+                const Value& groups_v = all_values[mr.cap_start + mr.cap_count];
                 if (is_fn_replace) {
                     fn_a.clear();
                     fn_a.push_back(Value(mr.matched));
-                    for (auto& c : mr.captures) fn_a.push_back(c);
+                    for (size_t ci = 0; ci < mr.cap_count; ci++) fn_a.push_back(caps_data[ci]);
                     fn_a.push_back(Value(static_cast<double>(mr.js_idx)));
                     fn_a.push_back(subject_value);
-                    if (!mr.groups.is_undefined()) fn_a.push_back(mr.groups);
+                    if (!groups_v.is_undefined()) fn_a.push_back(groups_v);
                     Value r = replace_val.as_function()->call(ctx, fn_a, Value());
                     if (ctx.has_exception()) return Value();
                     if (r.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
@@ -1196,10 +1217,11 @@ void register_regexp_builtins(Context& ctx) {
                     else { repl = r.to_string(); if (ctx.has_exception()) return Value(); }
                 } else {
                     std::vector<std::string> caps_str;
-                    for (auto& c : mr.captures) caps_str.push_back(c.is_undefined() ? "" : c.to_string());
-                    if (mr.groups.is_null()) { ctx.throw_type_error("Cannot convert null to object"); return Value(); }
+                    caps_str.reserve(mr.cap_count);
+                    for (size_t ci = 0; ci < mr.cap_count; ci++) caps_str.push_back(caps_data[ci].is_undefined() ? "" : caps_data[ci].to_string());
+                    if (groups_v.is_null()) { ctx.throw_type_error("Cannot convert null to object"); return Value(); }
                     size_t m_end = std::min(mi + matched_units, str16.size());
-                    if (!regexp_get_substitution(ctx, replace_str, str16, mi, m_end, mr.matched, caps_str, mr.groups, repl))
+                    if (!regexp_get_substitution(ctx, replace_str, str16, mi, m_end, mr.matched, caps_str, groups_v, repl))
                         return Value();
                 }
                 result += repl;
