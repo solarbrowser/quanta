@@ -687,6 +687,30 @@ public:
     // Own enumerable keys of a plain object in insertion order, or false when
     // this object is not one of the shapes this can answer for.
     bool for_in_own_keys_fast(std::vector<std::string>& out) const;
+    // Whether `k` is one of the names the property table carries but no
+    // enumeration may surface: an internal "[[...]]" slot, a private field or
+    // brand, or a symbol key.
+    static bool is_hidden_key(const std::string& k);
+    // The same walk for_in_own_keys_fast does, handing each own enumerable
+    // key to `fn` as the interned string the shape already holds plus the
+    // slot it lives in, so a caller wanting the values too does not go back
+    // through a name lookup. False (with `fn` never called) when this object
+    // needs the general path. Sound because a shape-resident property carries
+    // the default attributes -- enumerable among them -- unless a descriptor
+    // overrides it, and a descriptor means extras, which this rejects.
+    template <typename Fn>
+    bool for_each_own_enumerable_fast(Fn&& fn) const {
+        if (get_type() != ObjectType::Ordinary) return false;
+        if (elements_length() > 0) return false;
+        if (peek_extras()) return false;
+        Shape* sh = get_shape();
+        if (!sh) return true;
+        sh->for_each_property([&](const Shape::PropertyInfo& p) {
+            if (is_hidden_key(*p.key)) return;
+            fn(*p.key, p.slot_index, p.is_accessor);
+        });
+        return true;
+    }
     // The shape a for-in key list may be remembered under, or null when this
     // object's own key order is not the shape's alone -- the same three
     // conditions for_in_own_keys_fast answers by. Every object sharing a

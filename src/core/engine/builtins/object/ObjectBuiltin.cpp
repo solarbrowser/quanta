@@ -321,6 +321,27 @@ void register_object_builtins(Context& ctx) {
                 static_cast<Object*>(args[0].as_function()) :
                 args[0].as_object();
 
+            // Insertion order and enumerability both come straight off the
+            // shape here, so no descriptor is built and no key string is
+            // copied on the way to the result. Bounded by Shape's slot cap,
+            // which is what lets the name list sit in this frame.
+            {
+                const std::string* fast_names[Shape::kMaxSlots];
+                uint32_t fast_n = 0;
+                bool overflow = false;
+                if (obj->for_each_own_enumerable_fast(
+                        [&](const std::string& k, uint32_t, bool) {
+                            if (fast_n < Shape::kMaxSlots) fast_names[fast_n++] = &k;
+                            else overflow = true;
+                        }) && !overflow) {
+                    auto fast_array = ObjectFactory::create_array(fast_n);
+                    for (uint32_t i = 0; i < fast_n; i++) {
+                        fast_array->set_element(i, Value(*fast_names[i]));
+                    }
+                    return Value(fast_array.release());
+                }
+            }
+
             std::vector<std::string> filtered;
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 Proxy* proxy = static_cast<Proxy*>(obj);
@@ -370,6 +391,27 @@ void register_object_builtins(Context& ctx) {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
 
+            // Data-only shape: the value is the slot, so the whole result is
+            // one walk of the shape with no descriptor and no getter to run.
+            // An accessor gives up the fast path rather than being called
+            // here, because a getter can rewrite the very object being walked.
+            {
+                Value fast_vals[Shape::kMaxSlots];
+                uint32_t fast_n = 0;
+                bool bail = false;
+                if (obj->for_each_own_enumerable_fast(
+                        [&](const std::string&, uint32_t slot, bool is_accessor) {
+                            if (is_accessor || fast_n >= Shape::kMaxSlots) { bail = true; return; }
+                            const Value* v = obj->get_shape_slot_unchecked(slot);
+                            if (!v) { bail = true; return; }
+                            fast_vals[fast_n++] = *v;
+                        }) && !bail) {
+                    auto fast_array = ObjectFactory::create_array(fast_n);
+                    for (uint32_t i = 0; i < fast_n; i++) fast_array->set_element(i, fast_vals[i]);
+                    return Value(fast_array.release());
+                }
+            }
+
             bool is_proxy = obj->get_type() == Object::ObjectType::Proxy;
             std::vector<std::string> own_keys;
             if (is_proxy) {
@@ -415,6 +457,33 @@ void register_object_builtins(Context& ctx) {
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
+
+            // Same data-only shape as values(): key from the shape, value
+            // from its slot, and an accessor hands the whole call back to the
+            // general path rather than running a getter mid-walk.
+            {
+                const std::string* fast_names[Shape::kMaxSlots];
+                Value fast_vals[Shape::kMaxSlots];
+                uint32_t fast_n = 0;
+                bool bail = false;
+                if (obj->for_each_own_enumerable_fast(
+                        [&](const std::string& k, uint32_t slot, bool is_accessor) {
+                            if (is_accessor || fast_n >= Shape::kMaxSlots) { bail = true; return; }
+                            const Value* v = obj->get_shape_slot_unchecked(slot);
+                            if (!v) { bail = true; return; }
+                            fast_names[fast_n] = &k;
+                            fast_vals[fast_n++] = *v;
+                        }) && !bail) {
+                    auto fast_array = ObjectFactory::create_array(fast_n);
+                    for (uint32_t i = 0; i < fast_n; i++) {
+                        auto pair = ObjectFactory::create_array(2);
+                        pair->set_element(0, Value(*fast_names[i]));
+                        pair->set_element(1, fast_vals[i]);
+                        fast_array->set_element(i, Value(pair.release()));
+                    }
+                    return Value(fast_array.release());
+                }
+            }
 
             bool is_proxy = obj->get_type() == Object::ObjectType::Proxy;
             std::vector<std::string> own_keys;

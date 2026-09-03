@@ -2089,6 +2089,8 @@ bool Object::any_own_enumerable() const {
     return false;
 }
 
+bool Object::is_hidden_key(const std::string& k) { return is_hidden_own_key(k); }
+
 bool Object::for_in_own_keys_fast(std::vector<std::string>& out) const {
     if (get_type() != ObjectType::Ordinary) return false;
     if (elements_length() > 0) return false;

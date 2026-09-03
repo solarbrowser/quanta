@@ -122,12 +122,16 @@ public:
     // "could this name be a key at all" without growing the pool for good.
     static const std::string* intern_existing(const std::string& key);
 
+    // The property count a shape tree is allowed to reach before an object
+    // moves to dictionary mode. Public so an enumeration that walks a shape
+    // can size a frame-local buffer to it instead of allocating.
+    static constexpr uint32_t kMaxSlots = 128;
+
 private:
     Shape() = default;
     Shape(Shape* parent, const std::string* key, uint32_t slot_index, bool is_accessor = false);
 
     static constexpr uint32_t kMaxTransitions = 128;
-    static constexpr uint32_t kMaxSlots = 128;
 
     Shape* parent_ = nullptr;
     const std::string* added_key_ = nullptr;
