@@ -462,13 +462,49 @@ void register_promise_builtins(Context& ctx) {
 
             // Lambda captures are invisible to the collector: mirror them as
             // hidden properties so the wrappers keep whatever they will settle.
-            if (on_fulfilled) ful_wrapper->set_property("[[Handler]]", Value(on_fulfilled));
-            if (on_rejected) rej_wrapper->set_property("[[Handler]]", Value(on_rejected));
+            // Two brand new properties on a just-created native function, so on
+            // the general path each is its own Shape::transition hash lookup --
+            // paid twice per wrapper, twice per .then() call. The ordinary,
+            // unsubclassed case (fast_child set) only ever reaches one of two
+            // shapes from here, depending on whether this wrapper's own handler
+            // is present (a plain .then(onFulfilled) leaves on_rejected null,
+            // so ful_wrapper and rej_wrapper often take different ones on the
+            // same call) -- each remembered once, the same shortcut RegExp::exec's
+            // match result construction uses for index/input/groups.
             if (fast_child) {
+                static thread_local Shape* wrap_base_shape = nullptr;
+                static thread_local Shape* wrap_h_shape = nullptr;       // base + [[Handler]]
+                static thread_local Shape* wrap_h_child_shape = nullptr; // + [[Child]]
+                static thread_local Shape* wrap_child_shape = nullptr;   // base + [[Child]] (no handler)
                 Value child_val(static_cast<Object*>(fast_child));
-                ful_wrapper->set_property("[[Child]]", child_val);
-                rej_wrapper->set_property("[[Child]]", child_val);
+                auto set_handler_child = [&](Object* w, Function* handler) {
+                    Shape* s = w->get_shape();
+                    if (handler) {
+                        if (s == wrap_base_shape && wrap_h_shape && wrap_h_child_shape) {
+                            w->add_shape_property_cached("[[Handler]]", Value(handler), wrap_h_shape);
+                            w->add_shape_property_cached("[[Child]]", child_val, wrap_h_child_shape);
+                            return;
+                        }
+                        wrap_base_shape = s;
+                        w->create_own_data_property("[[Handler]]", Value(handler));
+                        wrap_h_shape = w->get_shape();
+                        w->create_own_data_property("[[Child]]", child_val);
+                        wrap_h_child_shape = w->get_shape();
+                    } else {
+                        if (s == wrap_base_shape && wrap_child_shape) {
+                            w->add_shape_property_cached("[[Child]]", child_val, wrap_child_shape);
+                            return;
+                        }
+                        wrap_base_shape = s;
+                        w->create_own_data_property("[[Child]]", child_val);
+                        wrap_child_shape = w->get_shape();
+                    }
+                };
+                set_handler_child(ful_wrapper.get(), on_fulfilled);
+                set_handler_child(rej_wrapper.get(), on_rejected);
             } else {
+                if (on_fulfilled) ful_wrapper->set_property("[[Handler]]", Value(on_fulfilled));
+                if (on_rejected) rej_wrapper->set_property("[[Handler]]", Value(on_rejected));
                 ful_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));
                 ful_wrapper->set_property("[[CapReject]]", Value(cap_reject));
                 rej_wrapper->set_property("[[CapResolve]]", Value(cap_resolve));

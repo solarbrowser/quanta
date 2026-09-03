@@ -4056,6 +4056,17 @@ std::unique_ptr<Object> create_promise(Context* ctx) {
     // %Promise%, not whatever the global binding names now: a promise the
     // engine itself makes -- for `import()`, for an async function -- is the
     // realm's, and replacing globalThis.Promise does not change that.
+    // "prototype" on the intrinsic constructor is {writable:false,
+    // configurable:false} -- it can never be reassigned once set -- so the
+    // species protector's own cached pointer (captured once, from this same
+    // intrinsic, when Promise was registered) answers this exactly as well
+    // as reading the property fresh, without the read: every internally
+    // created promise (one per .then(), among others) paid a property
+    // lookup here for an answer that was always going to be the same value.
+    if (Object* cached_proto = Object::watched_promise_prototype()) {
+        promise_obj->set_prototype(cached_proto);
+        return std::unique_ptr<Object>(promise_obj.release());
+    }
     Function* intrinsic = Context::intrinsic_promise();
     if (intrinsic) {
         Value proto = static_cast<Object*>(intrinsic)->get_property("prototype");
