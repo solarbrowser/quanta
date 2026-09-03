@@ -28,6 +28,7 @@ class PropertyDescriptor;
 class HybridDescriptorMap;
 class ScriptUnit;
 struct RareExtras;
+struct InternalSlots;
 
 // Object::butterfly_'s header, in two parts. The core sits immediately below
 // the butterfly pointer and is always there; the extras sit below the core and
@@ -886,8 +887,8 @@ private:
     std::unordered_set<uint32_t>& ensure_deleted_elements();
     HybridDescriptorMap* descriptors() const;
     HybridDescriptorMap& ensure_descriptors();
-    std::unordered_map<std::string, Value>* internals() const;
-    std::unordered_map<std::string, Value>& ensure_internals();
+    InternalSlots* internals() const;
+    InternalSlots& ensure_internals();
     // Enumeration order for extras-resident (sparse/dictionary-mode)
     // properties only -- shape-resident property order comes from
     // Shape::properties_in_order() instead, see get_own_property_keys.
@@ -1195,6 +1196,55 @@ private:
     uint64_t key_bits_ = 0;
 };
 
+// Internal engine slots parked on an object outside the property table (see
+// Object::set_internal_slot): Date's own [[DateValue]], a class's private-
+// field brand check, an arrow's __arrow_new_target__/__in_cfi__/
+// __contains_eval__ markers. An object that ever reaches for one almost
+// always carries just one or two for its whole life, so a couple of inline
+// (key, value) pairs -- string-compared, not hashed -- answer every read a
+// Date getter makes without ever touching a map; overflow exists only for
+// whatever rarer case needs more than that.
+struct InternalSlots {
+    static constexpr int kInline = 2;
+    struct Entry { std::string key; Value value; };
+    Entry slots[kInline];
+    int count = 0;
+    std::unique_ptr<std::unordered_map<std::string, Value>> overflow;
+
+    Value* find(const std::string& key) {
+        for (int i = 0; i < count; i++) {
+            if (slots[i].key == key) return &slots[i].value;
+        }
+        if (overflow) {
+            auto it = overflow->find(key);
+            if (it != overflow->end()) return &it->second;
+        }
+        return nullptr;
+    }
+    void set(const std::string& key, const Value& value) {
+        if (Value* v = find(key)) { *v = value; return; }
+        if (count < kInline) {
+            slots[count].key = key;
+            slots[count].value = value;
+            count++;
+            return;
+        }
+        if (!overflow) overflow = std::make_unique<std::unordered_map<std::string, Value>>();
+        (*overflow)[key] = value;
+    }
+    bool count_key(const std::string& key) { return find(key) != nullptr; }
+    void erase(const std::string& key) {
+        for (int i = 0; i < count; i++) {
+            if (slots[i].key == key) {
+                slots[i] = std::move(slots[count - 1]);
+                count--;
+                return;
+            }
+        }
+        if (overflow) overflow->erase(key);
+    }
+};
+
 // Everything an object needs only rarely: sparse array-index overflow,
 // deleted-element tombstones, non-default-attribute/accessor descriptors,
 // and the enumeration order of whichever of those a given object actually
@@ -1217,7 +1267,7 @@ struct RareExtras {
     // Object::set_internal_slot. Deliberately outside the property table
     // (and outside extra_property_order), so no reflective surface can
     // reach it and no enumeration has to skip it.
-    std::unique_ptr<std::unordered_map<std::string, Value>> internals;
+    std::unique_ptr<InternalSlots> internals;
 };
 
 // Defined here rather than in the .cpp because the inline caches ask them on

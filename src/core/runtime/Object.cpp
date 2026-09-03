@@ -122,7 +122,10 @@ void Object::trace_default(Visitor& v) {
         for (const auto& entry : *so) v.visit(entry.second);
     }
     if (auto* in = extras->internals.get()) {
-        for (const auto& entry : *in) v.visit(entry.second);
+        for (int i = 0; i < in->count; i++) v.visit(in->slots[i].value);
+        if (auto* ov = in->overflow.get()) {
+            for (const auto& entry : *ov) v.visit(entry.second);
+        }
     }
     if (auto* d = extras->descriptors.get()) {
         for (size_t i = 0; i < d->inline_size(); i++) {
@@ -209,29 +212,28 @@ HybridDescriptorMap& Object::ensure_descriptors() {
     proto_.set_flag(kHasDescriptors);
     return *e.descriptors;
 }
-std::unordered_map<std::string, Value>* Object::internals() const {
+InternalSlots* Object::internals() const {
     RareExtras* e = peek_extras();
     return e ? e->internals.get() : nullptr;
 }
-std::unordered_map<std::string, Value>& Object::ensure_internals() {
+InternalSlots& Object::ensure_internals() {
     RareExtras& e = ensure_extras();
-    if (!e.internals) e.internals = std::make_unique<std::unordered_map<std::string, Value>>();
+    if (!e.internals) e.internals = std::make_unique<InternalSlots>();
     return *e.internals;
 }
 
 void Object::set_internal_slot(const std::string& key, const Value& value) {
-    ensure_internals()[key] = value;
+    ensure_internals().set(key, value);
 }
 Value Object::get_internal_slot(const std::string& key) const {
     if (auto* in = internals()) {
-        auto it = in->find(key);
-        if (it != in->end()) return it->second;
+        if (Value* v = in->find(key)) return *v;
     }
     return Value();
 }
 bool Object::has_internal_slot(const std::string& key) const {
     auto* in = internals();
-    return in && in->count(key) > 0;
+    return in && in->count_key(key);
 }
 void Object::delete_internal_slot(const std::string& key) {
     if (auto* in = internals()) in->erase(key);
