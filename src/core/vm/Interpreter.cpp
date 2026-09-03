@@ -5002,6 +5002,14 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
                         break;
                     }
                 }
+                // The common case is already a string, and to_property_key()
+                // would only copy it byte-for-byte out of the cell it already
+                // sits in -- read its own backing std::string directly instead.
+                if (acc.is_string()) {
+                    acc = get_keyed(ctx, recv, acc.as_string()->str(), &chunk.ic_feedback->keyed_feedback[fb_idx]);
+                    CHECK_EXC();
+                    break;
+                }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
                 acc = get_keyed(ctx, recv, key, &chunk.ic_feedback->keyed_feedback[fb_idx]);
@@ -5046,6 +5054,12 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                         typed->set_element(index, acc);
                         break;
                     }
+                }
+                // Same reasoning as the GetKeyed fast path above.
+                if (regs[key_reg].is_string()) {
+                    set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, &chunk.ic_feedback->keyed_feedback[fb_idx]);
+                    CHECK_EXC();
+                    break;
                 }
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();
