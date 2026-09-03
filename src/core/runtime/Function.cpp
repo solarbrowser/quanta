@@ -1113,8 +1113,19 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
             }
             Context* prev_context = Object::current_context_;
             Object::current_context_ = &function_context;
+            // Same condition vm_register_fast decided above, for the same
+            // reason: a derived constructor's `this` is not fixed for the
+            // call the way every other function's is, since perform_super_call
+            // rebinds it (BindThisValue, possibly to a different object
+            // entirely) partway through. Handing LdaThis a snapshot taken
+            // here, before that runs, would let a post-super() read of `this`
+            // see a stale value forever -- LdaThis caches its first answer
+            // for the rest of the frame and never asks again. nullptr makes
+            // it resolve through the binding this_needs_super() already
+            // required a moment ago, which perform_super_call's own
+            // ctx.set_binding("this", ...) keeps current.
             Value vm_result = VM::run(*executable_->bytecode_chunk, function_context, args,
-                                      executable_->bytecode_chunk->env_mode ? nullptr : &actual_this, this);
+                                      vm_register_fast ? &actual_this : nullptr, this);
             Object::current_context_ = prev_context;
 
             // Propagate super_called flag to parent context (mirrors the

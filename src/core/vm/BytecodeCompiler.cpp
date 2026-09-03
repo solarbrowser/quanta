@@ -3820,9 +3820,6 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
     // Shadowing is covered too: a true duplicate name always has a nested
     // occurrence (a top-level dup is already a parser SyntaxError).
-    // super/private-name access also forces env_mode: those forms delegate
-    // to the tree-walker's own evaluate() and need `this`/`__super__`/brand
-    // bindings and any captured locals resolvable through a real Environment.
     // Suspendable bodies always use env_mode: locals must survive across the
     // fiber suspension that delegated yield/await expressions perform.
     bool has_closures = contains_closure(body);
@@ -3831,16 +3828,21 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // the tree-walker, so they need env_mode like a suspendable's yield/await.
     bool has_delegated_expr = contains_delegated_expr(body);
     // Private access no longer forces env_mode: GetPrivate/SetPrivate resolve
-    // brands through the CallStack, not the env chain. `super` still needs the
-    // env (__super__/__home_object__ bindings); detect it from a whole-body
-    // name sweep, whose opacity flags force full env_mode just like the
-    // selective scan below. Delegated private forms that do need an env
-    // (#x in obj, delete this.#x) were refused by the member guards and
-    // fall back to the tree-walker.
+    // brands through the CallStack, not the env chain. `super` no longer
+    // does either: Op::GetSuper/Op::SuperCall read the calling method's own
+    // class_slots() (the `owner` the VM frame already carries) directly, the
+    // same fix that stopped seeding __super__/__home_object__ for a method
+    // with no arrow inside it (Function.cpp's env_ctx branch). What a super
+    // reference DIRECTLY in this body needs, this body's own opcodes already
+    // supply; what a super reference inside a NESTED ARROW needs -- the
+    // __home_object__ fallback binding, since an arrow's own class_slots()
+    // is never set -- is covered by has_closures below forcing env_mode
+    // regardless of full_env, the same way any other arrow capture is.
+    // an_op is still worth computing here: opaque() (eval/class/unknown)
+    // still forces full env_mode, unrelated to super.
     std::unordered_set<std::string> all_names;
     ScanOpacity an_op;
-    bool an_super = false;
-    collect_closure_names(body, /*inside_closure=*/true, all_names, an_op, suspendable, &an_super);
+    collect_closure_names(body, /*inside_closure=*/true, all_names, an_op, suspendable);
     // A direct eval can name `arguments` from inside its own source, which no
     // scan of this body can read, so mentioning eval is reason enough.
     if (an_op.saw_eval) needs_arguments = true;
@@ -3917,7 +3919,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // A direct eval reads and writes the caller's scope by name, so nothing
     // this function owns may sit in a register.
     bool full_env = has_complex_params || needs_arguments ||
-                    an_op.opaque() || an_super || contains_with(body);
+                    an_op.opaque() || contains_with(body);
 
     // Selective env_mode: only names a closure (or a suspendable body's own
     // yield/await/return delegate) can observe, or that need a runtime
@@ -6789,12 +6791,13 @@ bool BytecodeCompiler::member_is_super(const MemberExpression* mem) {
            static_cast<const Identifier*>(mem->get_object())->get_name() == "super";
 }
 
-// Whether the super opcodes can express this member at all. Checked before any
-// emission so a refusal can still fall back to the tree-walker cleanly. The
-// super bindings live on the context chain, so this needs a real Environment
-// for the same reason the member guards refuse there.
+// Whether the super opcodes can express this member at all. Op::GetSuper and
+// Op::ResolveSuperBase both resolve through resolve_super_base(ctx, owner),
+// which reads the calling method's own class_slots() -- the VM frame's
+// `owner`, set by Function::call_default_impl on every dispatch path alike --
+// before it ever falls back to a context binding, so nothing here needs this
+// chunk's own locals in an Environment.
 bool BytecodeCompiler::super_member_emittable(const MemberExpression* mem) const {
-    if (!env_mode_) return false;
     if (mem->is_computed()) return true;
     if (mem->get_property()->get_type() != ASTNode::Type::IDENTIFIER) return false;
     const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
@@ -9834,7 +9837,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 // over. The super bindings it reads live on the context chain.
                 if (callee->get_type() == ASTNode::Type::IDENTIFIER &&
                     static_cast<const Identifier*>(callee)->get_name() == "super") {
-                    if (!env_mode_) return false;
+                    // Same reasoning as the non-spread super(...) form above:
+                    // the bindings this reads come from ctx, provided by the
+                    // general path a derived constructor always runs
+                    // through, independent of this chunk's own env_mode.
                     int super_arr = emit_spread_array(call_args);
                     if (super_arr < 0) return false;
                     emit(Op::SuperCallSpread);
@@ -10053,9 +10059,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // identifier, so only a named callee can be one of them.
             if (named_callee && callee_name == "super") {
                 // The whole derived-constructor ceremony lives in
-                // perform_super_call; this only marshals the arguments. It needs
-                // the super bindings on the context chain, like the property forms.
-                if (!env_mode_) return false;
+                // perform_super_call, which reads its bindings off ctx --
+                // not off this chunk's own storage layout, so it needs no
+                // term here. A derived constructor (the only body this can
+                // appear in; the parser refuses it anywhere else) is always
+                // excluded from both register-only and per-call-env-only
+                // dispatch and so always runs through the general path,
+                // which creates those bindings regardless of whether THIS
+                // chunk compiled its own locals into registers or slots.
                 int super_args_start = next_register_;
                 {
                     ChainMaskScope mask(chain_shortcircuit_jumps_);
