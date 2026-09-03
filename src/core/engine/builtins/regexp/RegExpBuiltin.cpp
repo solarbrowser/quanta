@@ -928,18 +928,36 @@ void register_regexp_builtins(Context& ctx) {
                     }
                 }
             }
-            // Steps 7-9: read flags string (not global/unicode directly -- fires flags getter which reads them)
-            Value flags_v = this_obj->get_property("flags");
-            if (ctx.has_exception()) return Value();
-            std::string flags_str;
-            if (flags_v.is_object() || flags_v.is_function()) {
-                flags_str = flags_v.to_property_key();
-                if (ctx.has_exception()) return Value();
+            // Steps 7-9: global/unicode, the only two flags this function itself
+            // branches on. The general path reads the "flags" string (which
+            // itself calls all eight per-flag getters) and rescans it for 'g'
+            // and 'u'/'v' -- nine named lookups, none of them cacheable from
+            // C++, for two booleans. The protector guard above already proved
+            // this receiver's flags getter (and each flag accessor it would
+            // call) still answers what its own RegExp impl would -- reading
+            // global/unicode/unicodeSets off that impl directly is the same
+            // answer without the nine lookups.
+            bool is_global, full_unicode;
+            RegExpObject* reo_flags = (Object::regexp_proto_protector_intact() &&
+                                        this_obj->get_prototype() == Object::watched_regexp_prototype() &&
+                                        !regexp_has_shortcut_override(this_obj))
+                                           ? RegExpObject::from(this_obj) : nullptr;
+            if (reo_flags && reo_flags->impl()) {
+                is_global = reo_flags->impl()->get_global();
+                full_unicode = reo_flags->impl()->get_unicode() || reo_flags->impl()->get_unicode_sets();
             } else {
-                flags_str = flags_v.to_string();
+                Value flags_v = this_obj->get_property("flags");
+                if (ctx.has_exception()) return Value();
+                std::string flags_str;
+                if (flags_v.is_object() || flags_v.is_function()) {
+                    flags_str = flags_v.to_property_key();
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    flags_str = flags_v.to_string();
+                }
+                is_global = flags_str.find('g') != std::string::npos;
+                full_unicode = flags_str.find('u') != std::string::npos || flags_str.find('v') != std::string::npos;
             }
-            bool is_global = flags_str.find('g') != std::string::npos;
-            bool full_unicode = flags_str.find('u') != std::string::npos || flags_str.find('v') != std::string::npos;
 
             if (!is_global) {
                 // Non-global: RegExpExec once
