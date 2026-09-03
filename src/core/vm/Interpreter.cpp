@@ -3378,6 +3378,47 @@ Value h_gen_AsyncIteratorClose(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+namespace {
+
+// A for-in key list is decided by the receiver's shape alone (see
+// Object::for_in_cache_shape) plus a prototype chain that reports nothing of
+// its own, so one built list serves every object sharing that shape and every
+// pass of every loop over them -- which is what a loop enumerating the same
+// object ten thousand times was rebuilding, keys, array and all, each time.
+// Direct-mapped and small: a program walking many shapes evicts rather than
+// growing a table the collector would then have to keep alive for good. The
+// arrays are held as Values in one rooted vector, since nothing else refers
+// to them between passes.
+constexpr size_t kForInCacheSlots = 16;
+
+struct ForInKeyCache {
+    Shape* shapes[kForInCacheSlots] = {};
+    std::vector<Value> arrays{kForInCacheSlots};
+    ForInKeyCache() { Collector::push_value_vector(&arrays); }
+    ~ForInKeyCache() { Collector::pop_value_vector(&arrays); }
+};
+
+ForInKeyCache& for_in_key_cache() {
+    static thread_local ForInKeyCache cache;
+    return cache;
+}
+
+size_t for_in_cache_slot(Shape* s) {
+    return (reinterpret_cast<uintptr_t>(s) >> 4) & (kForInCacheSlots - 1);
+}
+
+// Whether anything above `obj` would report a name of its own. The whole
+// shortcut rests on this: with nothing inherited to merge or shadow, the
+// receiver's own shape order is the entire answer.
+bool for_in_proto_chain_silent(Object* obj) {
+    for (Object* p = obj->get_prototype(); p; p = p->get_prototype()) {
+        if (p->any_own_enumerable()) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
 Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -3402,6 +3443,21 @@ Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
                 // it has to be the very object enumerated here rather than the
                 // head's value: a receiver this converts stays converted.
                 regs[obj_out] = obj ? Value(obj) : Value();
+                // Nothing about the list this builds depends on the object
+                // beyond its shape and a silent prototype chain, so a list
+                // built for either is handed back as it is.
+                Shape* cache_shape = obj ? obj->for_in_cache_shape() : nullptr;
+                if (cache_shape && !for_in_proto_chain_silent(obj)) cache_shape = nullptr;
+                size_t cache_slot = 0;
+                if (cache_shape) {
+                    ForInKeyCache& cache = for_in_key_cache();
+                    cache_slot = for_in_cache_slot(cache_shape);
+                    if (cache.shapes[cache_slot] == cache_shape &&
+                        cache.arrays[cache_slot].is_object()) {
+                        acc = cache.arrays[cache_slot];
+                        break;
+                    }
+                }
                 // Collected before the array exists so the array can be built
                 // at its final size: set_element grew the element store one
                 // key at a time, and a loop over a thirty-property object paid
@@ -3417,6 +3473,11 @@ Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
                     for (uint32_t i = 0; i < key_count; i++) {
                         result->set_element(i, Value(keys[i]));
                     }
+                }
+                if (cache_shape) {
+                    ForInKeyCache& cache = for_in_key_cache();
+                    cache.shapes[cache_slot] = cache_shape;
+                    cache.arrays[cache_slot] = Value(result);
                 }
                 acc = Value(result);
                 break;

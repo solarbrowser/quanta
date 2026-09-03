@@ -687,6 +687,20 @@ public:
     // Own enumerable keys of a plain object in insertion order, or false when
     // this object is not one of the shapes this can answer for.
     bool for_in_own_keys_fast(std::vector<std::string>& out) const;
+    // The shape a for-in key list may be remembered under, or null when this
+    // object's own key order is not the shape's alone -- the same three
+    // conditions for_in_own_keys_fast answers by. Every object sharing a
+    // shape enumerates the same names in the same order, so one remembered
+    // list serves all of them, and a property added or deleted moves the
+    // object to another shape (or to dictionary mode) rather than editing
+    // this one. Says nothing about the prototype chain: a caller that
+    // enumerates inherited names has to establish that separately.
+    Shape* for_in_cache_shape() const {
+        if (get_type() != ObjectType::Ordinary) return nullptr;
+        if (elements_length() > 0) return nullptr;
+        if (peek_extras()) return nullptr;
+        return get_shape();
+    }
     const Value* get_shape_slot_unchecked(uint32_t index) const {
         return index < shape_capacity() ? shape_slot_ptr(index) : nullptr;
     }
