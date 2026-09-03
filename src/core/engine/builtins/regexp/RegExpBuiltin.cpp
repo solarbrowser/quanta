@@ -304,9 +304,23 @@ bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& 
 // An own entry under any of these hides what RegExp.prototype would have
 // answered, and the flags getter reads all eight of the flag accessors by
 // name -- so an own `global` is enough to make a global pattern behave as a
-// non-global one, which the shortcut below would never see. Checked per call,
-// not per match, which is what the shortcut is trading away.
+// non-global one, which the shortcut below would never see.
+//
+// Shape identity is a sound shortcut for the ten-name scan: shape fixes an
+// object's whole set of own property names, so once one instance's shape has
+// been walked and found to carry none of the ten, any other instance sharing
+// that exact shape -- the overwhelmingly common case, since almost every
+// RegExp is built the same way -- carries the same guarantee without walking
+// again. Defining any of the ten on a given instance can only ever transition
+// it to a different shape, never mutate this one in place, so a shape proven
+// clean here stays clean for as long as the process runs; the memo is a
+// single slot rather than a small cache because collapsing straight back to
+// one shape after a rarer, differently-shaped instance is the common case
+// too, not a false miss.
+static thread_local Shape* g_regexp_no_override_shape = nullptr;
 static bool regexp_has_shortcut_override(Object* r) {
+    Shape* s = r->get_shape();
+    if (s && s == g_regexp_no_override_shape) return false;
     static const char* const kNames[] = {
         "exec", "flags", "hasIndices", "global", "ignoreCase",
         "multiline", "dotAll", "unicode", "unicodeSets", "sticky",
@@ -314,6 +328,7 @@ static bool regexp_has_shortcut_override(Object* r) {
     for (const char* n : kNames) {
         if (r->has_own_property(n)) return true;
     }
+    if (s) g_regexp_no_override_shape = s;
     return false;
 }
 
@@ -361,6 +376,24 @@ static bool match_result_fast_fields(Object* m, Value& idx_v, Value& grps_v) {
 // subject for every match.
 static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str, Value& out,
                                  const String* cell = nullptr) {
+    // Same guard as the two [Symbol.replace] shortcuts above: a real RegExp
+    // whose prototype is still the one the engine installed, with none of
+    // exec/flags/the flag accessors shadowed anywhere reachable, has "exec"
+    // resolve to exactly the built-in below -- reachable here without ever
+    // reading the property. This call runs once per MATCH (every global
+    // replace/match/matchAll loop calls it in a while loop), so the lookup it
+    // replaces -- a prototype-chain walk ending in RegExp.prototype's own
+    // dictionary, which holds far more than four entries -- was the hottest
+    // one left in a global replace.
+    if (Object::regexp_proto_protector_intact() &&
+        r->get_prototype() == Object::watched_regexp_prototype() &&
+        !regexp_has_shortcut_override(r)) {
+        if (RegExpObject* reo = RegExpObject::from(r); reo && reo->impl()) {
+            out = regexp_builtin_exec(ctx, r, str, cell);
+            if (ctx.has_exception()) return false;
+            return true;
+        }
+    }
     Value exec_fn = r->get_property("exec");
     if (ctx.has_exception()) return false;
     if (!exec_fn.is_function()) {
