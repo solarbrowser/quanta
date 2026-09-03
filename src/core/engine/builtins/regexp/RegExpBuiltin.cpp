@@ -149,6 +149,62 @@ static std::string regexp_escape_string(const std::string& s) {
     return out;
 }
 
+// "lastIndex is the one own property an instance has" (its own construction
+// site's words): a data property whose {writable:true, enumerable:false,
+// configurable:false} attributes live in the descriptor map, but whose VALUE
+// -- like any other data property carrying an attribute override -- still
+// lives in the shape slot; get_own_property reads the slot first and only
+// falls to the descriptor's own copy of the value for a property that has
+// none. Every exec/test call reads "lastIndex" and (global or sticky) writes
+// it back, and both went through the general get_property/set_property
+// dispatch: a multi-way type switch before ever reaching the shape-slot
+// read/write this always was.
+static bool regexp_read_last_index(Object* r, Value& out) {
+    if (r->get_type() != Object::ObjectType::RegExp) return false;
+    Shape* s = r->get_shape();
+    if (!s) return false;
+    int32_t idx = s->find_slot("lastIndex");
+    if (idx < 0 || s->is_accessor_slot("lastIndex")) return false;
+    const Value* slot = r->get_shape_slot_unchecked(static_cast<uint32_t>(idx));
+    if (!slot) return false;
+    out = *slot;
+    return true;
+}
+// *ok reports the outcome (matching set_property's own bool return) once this
+// returns true; false means the general path should handle the write itself
+// -- not a genuine RegExp instance's own "lastIndex" (no shape slot for it,
+// or one turned into an accessor), neither of which this object's own
+// construction ever produces.
+static bool regexp_write_last_index(Object* r, double value, bool& ok) {
+    if (r->get_type() != Object::ObjectType::RegExp) return false;
+    Shape* s = r->get_shape();
+    if (!s) return false;
+    int32_t idx = s->find_slot("lastIndex");
+    if (idx < 0 || s->is_accessor_slot("lastIndex")) return false;
+    Value* slot = r->get_shape_slot_unchecked(static_cast<uint32_t>(idx));
+    if (!slot) return false;
+    // The attribute override -- specifically {writable:false} from a
+    // defineProperty after construction -- lives only in the descriptor;
+    // the shape slot itself carries no notion of it. And when a descriptor
+    // entry exists at all (every RegExp instance's own "lastIndex" has one,
+    // for its non-default enumerable/configurable), it carries its own copy
+    // of the value too -- get_property_descriptor() (Object.getOwnPropertyDescriptor,
+    // propertyIsEnumerable's cousins) reads that copy first, same as
+    // set_property_default's own shape+descriptor sync does. Skipping this
+    // update is exactly the split-brain that made the shape slot alone the
+    // wrong fix the first time around.
+    if (PropertyDescriptor* d = r->find_descriptor_override("lastIndex")) {
+        if (d->has_writable() && !d->is_writable()) { ok = false; return true; }
+        if (d->is_data_descriptor()) {
+            Object::bump_descriptor_epoch();
+            d->set_value(Value(value));
+        }
+    }
+    *slot = Value(value);
+    ok = true;
+    return true;
+}
+
 // RegExpBuiltinExec: the match itself, with lastIndex read and written around
 // it. Shared by RegExp.prototype.exec and by the abstract operation below,
 // which needs it when a user has replaced exec with something uncallable.
@@ -160,7 +216,11 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const
     }
     const std::shared_ptr<RegExp>& re = reo->impl();
 
-    Value lastIndex_val = r->get_property("lastIndex");
+    Value lastIndex_val;
+    if (!regexp_read_last_index(r, lastIndex_val)) {
+        lastIndex_val = r->get_property("lastIndex");
+        if (ctx.has_exception()) return Value();
+    }
     double li = lastIndex_val.to_number();
     if (ctx.has_exception()) return Value();
     if (std::isnan(li) || li < 0) li = 0;
@@ -178,7 +238,10 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const
 
     int new_last = re->get_last_index();
     if (re->get_global() || re->get_sticky()) {
-        bool li_ok = r->set_property("lastIndex", Value(static_cast<double>(new_last)));
+        bool li_ok;
+        if (!regexp_write_last_index(r, static_cast<double>(new_last), li_ok)) {
+            li_ok = r->set_property("lastIndex", Value(static_cast<double>(new_last)));
+        }
         if (!li_ok || ctx.has_exception()) {
             if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
             return Value();
@@ -204,7 +267,11 @@ bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& 
     }
     const std::shared_ptr<RegExp>& re = reo->impl();
 
-    Value lastIndex_val = r->get_property("lastIndex");
+    Value lastIndex_val;
+    if (!regexp_read_last_index(r, lastIndex_val)) {
+        lastIndex_val = r->get_property("lastIndex");
+        if (ctx.has_exception()) return false;
+    }
     double li = lastIndex_val.to_number();
     if (ctx.has_exception()) return false;
     if (std::isnan(li) || li < 0) li = 0;
@@ -218,7 +285,10 @@ bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& 
     }
 
     if (re->get_global() || re->get_sticky()) {
-        bool li_ok = r->set_property("lastIndex", Value(static_cast<double>(re->get_last_index())));
+        bool li_ok;
+        if (!regexp_write_last_index(r, static_cast<double>(re->get_last_index()), li_ok)) {
+            li_ok = r->set_property("lastIndex", Value(static_cast<double>(re->get_last_index())));
+        }
         if (!li_ok || ctx.has_exception()) {
             if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
             return false;

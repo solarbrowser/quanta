@@ -162,8 +162,12 @@ public:
     static Object* watched_promise_prototype();
     static Object* watched_promise_constructor();
     static void watch_promise_species(Object* promise_ctor, Object* promise_proto);
-private:
+    // A direct shape-slot write (bypassing set_property's general
+    // shape+descriptor sync) must still move this or a cached descriptor-side
+    // read (own_desc_value/own_desc_epoch in h_GetNamedRest) can keep
+    // answering the pre-write value.
     static void bump_descriptor_epoch() { ++descriptor_epoch_; }
+private:
 
     // [[Prototype]] + 2 status bits (extensibility, "ever used as a
     // prototype"), tagged into the pointer's own low bits. GC heap cells are
