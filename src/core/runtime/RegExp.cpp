@@ -2805,12 +2805,32 @@ Value RegExp::exec(const std::string& str, const String* cell) {
     result->set_element(0, Value(slice(match_start, match_end)));
     // RegExpBuiltinExec steps 25-26 are CreateDataProperty, not Set: an own data
     // property outright, with no walk up the prototype chain looking for a setter.
-    result->create_own_data_property("index", Value(static_cast<double>(match_start)));
-    // The subject cell itself when there is one: building a fresh string from
-    // the bytes would ask a slice for them, which is the copy this whole path
-    // exists to avoid.
-    result->create_own_data_property(
-        "input", cell ? Value(const_cast<String*>(cell)) : Value(str));
+    // "index" then "input" transition through the same two shapes on every
+    // match a pattern with capture groups or not, subject cell or not ever
+    // produces -- ArrayCreate's own shape never varies with the reserved
+    // element count, since elements never live in shape slots. Remembered
+    // once so the second and every later match skip Shape::transition's own
+    // hash lookup entirely; a shape that does not match (never, in practice,
+    // since nothing between here and the read a session ago could change it)
+    // just falls back to the ordinary hashed path unchanged.
+    static thread_local Shape* mr_from_shape = nullptr;
+    static thread_local Shape* mr_after_index = nullptr;
+    static thread_local Shape* mr_after_input = nullptr;
+    Value index_val(static_cast<double>(match_start));
+    Value input_val = cell ? Value(const_cast<String*>(cell)) : Value(str);
+    if (result->get_shape() == mr_from_shape && mr_after_index && mr_after_input) {
+        result->add_shape_property_cached("index", index_val, mr_after_index);
+        result->add_shape_property_cached("input", input_val, mr_after_input);
+    } else {
+        mr_from_shape = result->get_shape();
+        result->create_own_data_property("index", index_val);
+        mr_after_index = result->get_shape();
+        // The subject cell itself when there is one: building a fresh string
+        // from the bytes would ask a slice for them, which is the copy this
+        // whole path exists to avoid.
+        result->create_own_data_property("input", input_val);
+        mr_after_input = result->get_shape();
+    }
 
     for (uint32_t i = 1; i <= capture_count; ++i) {
         if (saved[2 * i] == PCRE2_UNSET)
@@ -2827,6 +2847,7 @@ Value RegExp::exec(const std::string& str, const String* cell) {
         return -1;
     };
 
+    Value groups_val;
     if (!named_groups_.empty()) {
         // ObjectCreate(null): groups dict has null prototype per spec; property order
         // follows source order of first group occurrence.
@@ -2837,17 +2858,26 @@ Value RegExp::exec(const std::string& str, const String* cell) {
             Value gval = gn >= 0 ? Value(slice(saved[2*gn], saved[2*gn+1])) : Value();
             groups_owner->create_own_data_property(ng.first, gval);
         }
-        // CreateDataProperty: define directly on A, bypassing any inherited
-        // setter on Array.prototype["groups"] -- which is what
-        // create_own_data_property does, without the descriptor a
-        // default-attribute define through set_property_descriptor would
-        // leave behind. That descriptor was on every match result there is,
-        // and it takes the whole object off the shape-slot path for good:
-        // index and input, defined as ordinary properties just above, were
-        // then read back out of a hash map too.
-        result->create_own_data_property("groups", Value(groups_owner.release()));
+        groups_val = Value(groups_owner.release());
     } else {
-        result->create_own_data_property("groups", Value());
+        groups_val = Value();
+    }
+    // CreateDataProperty: define directly on A, bypassing any inherited
+    // setter on Array.prototype["groups"] -- which is what
+    // create_own_data_property does, without the descriptor a
+    // default-attribute define through set_property_descriptor would
+    // leave behind. That descriptor was on every match result there is,
+    // and it takes the whole object off the shape-slot path for good:
+    // index and input, defined as ordinary properties just above, were
+    // then read back out of a hash map too. Same memoized-shape shortcut as
+    // index/input above; the key transitions to the identical shape whether
+    // groups_val ends up an object or undefined.
+    static thread_local Shape* mr_after_groups = nullptr;
+    if (result->get_shape() == mr_after_input && mr_after_groups) {
+        result->add_shape_property_cached("groups", groups_val, mr_after_groups);
+    } else {
+        result->create_own_data_property("groups", groups_val);
+        mr_after_groups = result->get_shape();
     }
 
     if (has_indices_) {
