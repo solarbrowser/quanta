@@ -247,6 +247,43 @@ static bool regexp_has_shortcut_override(Object* r) {
     return false;
 }
 
+// A match result RegExp::exec built (index, then input, then groups added
+// in that order; captures live as elements, never shape-resident) carries
+// the same shape regardless of which pattern or subject produced it, so the
+// slot indices for "index" and "groups" -- read once per match by every
+// global replace/matchAll loop -- are worth remembering instead of hashed
+// by name every time. "length" needs no lookup at all here: for a genuine,
+// unmodified match array it IS the element count.
+// Only trusted for that exact shape on a genuine Array with no descriptor
+// of its own -- RegExpExec is user-overridable and can hand back any object
+// carrying the right property names, which falls through to the caller's
+// own get_property path unchanged.
+static bool match_result_fast_fields(Object* m, Value& idx_v, Value& grps_v) {
+    static thread_local Shape* memo_shape = nullptr;
+    static thread_local uint32_t memo_idx_slot = 0;
+    static thread_local uint32_t memo_groups_slot = 0;
+    if (m->get_type() != Object::ObjectType::Array || m->has_any_descriptor_override()) return false;
+    Shape* s = m->get_shape();
+    if (!s) return false;
+    if (s != memo_shape) {
+        int32_t idx_slot = s->find_slot("index");
+        int32_t groups_slot = s->find_slot("groups");
+        if (idx_slot < 0 || groups_slot < 0 ||
+            s->is_accessor_slot("index") || s->is_accessor_slot("groups")) {
+            return false;
+        }
+        memo_shape = s;
+        memo_idx_slot = static_cast<uint32_t>(idx_slot);
+        memo_groups_slot = static_cast<uint32_t>(groups_slot);
+    }
+    const Value* iv = m->get_shape_slot_unchecked(memo_idx_slot);
+    const Value* gv = m->get_shape_slot_unchecked(memo_groups_slot);
+    if (!iv || !gv) return false;
+    idx_v = *iv;
+    grps_v = *gv;
+    return true;
+}
+
 // `cell` is the subject's own string cell when the caller has one. It matters
 // twice over: a cell rebuilt from the bytes copies the whole subject on every
 // call, and the decoded units are remembered per cell -- so rebuilding one
@@ -924,8 +961,15 @@ void register_regexp_builtins(Context& ctx) {
                 if (!regexp_exec_abstract(ctx, this_obj, str, match, subject_cell)) return Value();
                 if (match.is_null()) break;
                 Object* m = match.is_function() ? static_cast<Object*>(match.as_function()) : match.as_object();
-                Value idx_v = m->get_property("index");
-                if (ctx.has_exception()) return Value();
+                Value idx_v, grps_v;
+                int mlen;
+                bool fast = match_result_fast_fields(m, idx_v, grps_v);
+                if (fast) {
+                    mlen = static_cast<int>(m->element_count());
+                } else {
+                    idx_v = m->get_property("index");
+                    if (ctx.has_exception()) return Value();
+                }
                 double idx_d = idx_v.to_number();
                 if (ctx.has_exception()) return Value();
                 int idx_js = (std::isnan(idx_d) || idx_d < 0) ? 0 : static_cast<int>(idx_d);
@@ -935,11 +979,13 @@ void register_regexp_builtins(Context& ctx) {
                 if (el0.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
                 else if (el0.is_object() || el0.is_function()) { matched_s = el0.to_property_key(); if (ctx.has_exception()) return Value(); }
                 else { matched_s = el0.is_undefined() ? "undefined" : el0.to_string(); }
-                Value len_v = m->get_property("length");
-                if (ctx.has_exception()) return Value();
-                double len_d = len_v.to_number();
-                if (ctx.has_exception()) return Value();
-                int mlen = (std::isnan(len_d) || len_d < 1) ? 1 : static_cast<int>(len_d);
+                if (!fast) {
+                    Value len_v = m->get_property("length");
+                    if (ctx.has_exception()) return Value();
+                    double len_d = len_v.to_number();
+                    if (ctx.has_exception()) return Value();
+                    mlen = (std::isnan(len_d) || len_d < 1) ? 1 : static_cast<int>(len_d);
+                }
                 std::vector<Value> caps;
                 for (int ci = 1; ci < mlen; ci++) {
                     Value cv = m->get_element(ci);
@@ -952,8 +998,10 @@ void register_regexp_builtins(Context& ctx) {
                     }
                     caps.push_back(cv);
                 }
-                Value grps_v = m->get_property("groups");
-                if (ctx.has_exception()) return Value();
+                if (!fast) {
+                    grps_v = m->get_property("groups");
+                    if (ctx.has_exception()) return Value();
+                }
                 matches.push_back({idx_js, matched_s, caps, grps_v});
                 for (const auto& c : caps) matches_values_root_vec.push_back(c);
                 matches_values_root_vec.push_back(grps_v);
