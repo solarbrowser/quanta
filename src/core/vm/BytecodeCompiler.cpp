@@ -4210,6 +4210,33 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     constexpr size_t kEnvSlotPredictMax = 32;
     size_t flat_slot_counter = 0;
     if (env_mode) {
+        // A suspendable body's parameters are bound by the caller, into the
+        // very environment this chunk runs in, before anything here binds
+        // anything -- so they hold the first slots and the body's own names
+        // start after them. Counted here rather than assumed away: leaving
+        // the counter at zero predicted the body's first local onto the slot
+        // a parameter already held, which the read then rejected by name, so
+        // a generator with parameters lost the slot path for its own locals
+        // as well as for them. A generator that also binds `arguments` or a
+        // self-reference puts those in between; the prediction misses and the
+        // read takes the name path, which is what it does today regardless.
+        if (env_bound) {
+            for (const auto& n : *env_bound) {
+                if (n.empty()) continue;
+                // Named here as environment-resident so a read reaches for the
+                // slot at all: the chunk declares no parameters of its own, so
+                // without this the name is not one this compiler knows and
+                // every read of it walked the scope chain by name.
+                compiler.env_names_.insert(n);
+                if (flat_slot_counter < kEnvSlotPredictMax) {
+                    auto cit = compiler.global_decl_count_.find(n);
+                    if (cit == compiler.global_decl_count_.end() || cit->second <= 1) {
+                        compiler.env_slot_info_[n] = {static_cast<uint8_t>(flat_slot_counter), 0};
+                    }
+                }
+                flat_slot_counter++;
+            }
+        }
         for (const auto& p : param_names) {
             bool resident = !selective || env_resident.count(p) > 0;
             if (!resident) continue;
