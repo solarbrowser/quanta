@@ -902,6 +902,36 @@ bool ForOfStatement::iterator_step(Context& ctx, const Value& iterator, Value& n
     static const std::string kDone = "done";
     static const std::string kValue = "value";
 
+    // Every result an iterator hands back carries the same two names in the
+    // same order, so the pair of slot indices is worth remembering across
+    // steps: the lookup above is by name, and a loop of a thousand steps
+    // repeated it a thousand times for a shape that never changed. One entry
+    // is enough -- a loop reads results from one iterator at a time -- and a
+    // shape that does not match simply takes the lookups below.
+    static thread_local Shape* memo_shape = nullptr;
+    static thread_local uint32_t memo_done_slot = 0;
+    static thread_local uint32_t memo_value_slot = 0;
+    Shape* result_shape = result_obj->get_shape();
+    if (result_shape && result_shape == memo_shape &&
+        !result_obj->has_any_descriptor_override()) {
+        if (const Value* d = result_obj->get_shape_slot_unchecked(memo_done_slot)) {
+            if (d->to_boolean()) { out_done = true; return true; }
+            if (const Value* v = result_obj->get_shape_slot_unchecked(memo_value_slot)) {
+                out_done = false;
+                out_value = *v;
+                return true;
+            }
+        }
+    }
+    uint32_t learn_done = 0, learn_value = 0;
+    if (result_shape && !result_obj->has_any_descriptor_override() &&
+        result_obj->cacheable_data_slot(kDone, learn_done) &&
+        result_obj->cacheable_data_slot(kValue, learn_value)) {
+        memo_shape = result_shape;
+        memo_done_slot = learn_done;
+        memo_value_slot = learn_value;
+    }
+
     Value done;
     if (!result_obj->try_read_own_data_slot(kDone, done)) {
         done = result_obj->get_property(kDone);
