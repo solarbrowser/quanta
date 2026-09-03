@@ -692,25 +692,23 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             ExecContextScope gc_frame(&env_ctx);
             env_ctx.set_arrow_function_context(false);
             if (is_strict_ || executable_->fast_strict) env_ctx.set_strict_mode(true);
-            // The same bindings the general path creates, for the same
-            // reason: Op::GetSuper and its siblings resolve the home object
-            // and the superclass by ordinary environment lookup. Written
-            // before VM::run seeds the chunk's own names, which is where the
-            // general path writes them too -- a predicted env slot that these
-            // shift is re-validated by name at the read, so a shifted
-            // prediction costs the slot fast path and nothing else.
+            // __home_object__ is what Op::GetSuper's fallback needs: the gate
+            // above already excludes a constructor, so `owner` (this very
+            // Function, passed through the VM frame) resolves every super.x
+            // in this body's own bytecode straight from class_slots(), no
+            // lookup involved -- this binding exists only for an ARROW
+            // nested inside, whose own frame has no home object of its own
+            // and walks the chain to find this one instead.
             if (slots.home_object) {
                 env_ctx.create_binding("__home_object__", Value(slots.home_object), false);
             }
-            if (slots.super_ctor) {
-                env_ctx.create_binding("__super__", Value(slots.super_ctor), false);
-                if (slots.is_static_method) {
-                    env_ctx.create_binding("__super_is_static__", Value(true), false);
-                }
-            }
-            if (slots.super_is_null) {
-                env_ctx.create_binding("__super_is_null__", Value(true), false);
-            }
+            // __super__/__super_is_static__/__super_is_null__ back a super(...)
+            // CALL, which only Op::SuperCall performs and which the parser
+            // refuses anywhere but a derived class constructor's own body --
+            // impossible here since the gate above already excludes
+            // is_class_constructor_. A nested arrow cannot reach one either,
+            // for the same syntactic reason, so nothing this call makes can
+            // ever read them.
 
             Value actual_this = this_value;
             if (!env_ctx.is_strict_mode()) {
