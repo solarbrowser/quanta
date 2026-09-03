@@ -127,6 +127,20 @@ static PropertyDescriptor own_property_descriptor_for(Object* obj, const std::st
 
 // 7.3.22 SpeciesConstructor ( O, defaultConstructor )
 static Function* species_constructor(Context& ctx, Object* O, Function* default_ctor) {
+    // The ordinary, unsubclassed case: O is a plain Promise instance (no own
+    // "constructor" -- a per-instance override is rare enough to check
+    // directly rather than watch globally) whose prototype is exactly
+    // Promise.prototype, and neither Promise.prototype.constructor nor
+    // Promise[Symbol.species] has been redefined since the realm was set up.
+    // Answering from that avoids two property reads here -- the second an
+    // accessor call -- for what every .then()/.catch()/.finally() call not
+    // touching a subclass already knows the answer to.
+    if (Object::promise_species_protector_intact() &&
+        default_ctor == Context::intrinsic_promise() &&
+        O->get_prototype() == Object::watched_promise_prototype() &&
+        !O->has_own_property("constructor")) {
+        return default_ctor;
+    }
     Value c = O->get_property("constructor");
     if (ctx.has_exception()) return nullptr;
     if (c.is_undefined()) return default_ctor;
@@ -1341,6 +1355,8 @@ void register_promise_builtins(Context& ctx) {
         promise_species_getter.release();
     }
 
+    Object::watch_promise_species(promise_constructor.get(),
+                                   promise_constructor->get_property("prototype").as_object());
     ctx.register_built_in_object("Promise", promise_constructor.release());
 
 }

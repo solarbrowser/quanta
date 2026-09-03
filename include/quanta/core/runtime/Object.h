@@ -150,6 +150,18 @@ public:
     static bool regexp_proto_protector_intact();
     static Object* watched_regexp_prototype();
     static void watch_regexp_prototype(Object* proto);
+    // Same idea for SpeciesConstructor(promise, %Promise%): true while
+    // neither Promise.prototype.constructor nor Promise[Symbol.species] has
+    // been redefined, which is what lets .then()/.catch()/.finally() skip
+    // both property reads (the second an accessor call) for the ordinary,
+    // unsubclassed case. Per-instance overrides (a specific promise's own
+    // "constructor") are cheap enough to check directly instead -- a shape
+    // probe on that one object, not a global watch -- so this only needs to
+    // watch the two shared objects. Armed once, after both are installed.
+    static bool promise_species_protector_intact();
+    static Object* watched_promise_prototype();
+    static Object* watched_promise_constructor();
+    static void watch_promise_species(Object* promise_ctor, Object* promise_proto);
 private:
     static void bump_descriptor_epoch() { ++descriptor_epoch_; }
 

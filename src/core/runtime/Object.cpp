@@ -1245,6 +1245,9 @@ constinit thread_local bool g_regexp_proto_intact = false;
 constinit thread_local Object* g_regexp_prototype = nullptr;
 constinit thread_local bool g_array_iterator_intact = true;
 constinit thread_local Object* g_array_iterator_prototype = nullptr;
+constinit thread_local bool g_promise_species_intact = false;
+constinit thread_local Object* g_promise_prototype = nullptr;
+constinit thread_local Object* g_promise_constructor = nullptr;
 
 // Both checks lead with a length test so the common case costs a compare.
 inline void note_protector_write(const Object* target, const std::string& key) {
@@ -1271,6 +1274,13 @@ inline void note_protector_write(const Object* target, const std::string& key) {
             if (key == w) { g_regexp_proto_intact = false; break; }
         }
     }
+    // Promise.prototype.constructor (species_constructor's first read) or
+    // Promise[Symbol.species] (its second, an accessor call) redefined.
+    if (g_promise_species_intact &&
+        ((target == g_promise_prototype && key == "constructor") ||
+         (target == g_promise_constructor && key == "Symbol.species"))) {
+        g_promise_species_intact = false;
+    }
 }
 }  // namespace
 
@@ -1283,6 +1293,15 @@ void Object::watch_regexp_prototype(Object* proto) {
 }
 void Object::watch_array_iterator_prototype(Object* proto) { g_array_iterator_prototype = proto; }
 void Object::arm_array_iterator_protector() { g_array_iterator_intact = true; }
+
+bool Object::promise_species_protector_intact() { return g_promise_species_intact; }
+Object* Object::watched_promise_prototype() { return g_promise_prototype; }
+Object* Object::watched_promise_constructor() { return g_promise_constructor; }
+void Object::watch_promise_species(Object* promise_ctor, Object* promise_proto) {
+    g_promise_constructor = promise_ctor;
+    g_promise_prototype = promise_proto;
+    g_promise_species_intact = promise_ctor != nullptr && promise_proto != nullptr;
+}
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
     note_protector_write(this, key);
