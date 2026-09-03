@@ -208,7 +208,8 @@ static bool regexp_write_last_index(Object* r, double value, bool& ok) {
 // RegExpBuiltinExec: the match itself, with lastIndex read and written around
 // it. Shared by RegExp.prototype.exec and by the abstract operation below,
 // which needs it when a user has replaced exec with something uncallable.
-Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const String* cell = nullptr) {
+Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const String* cell = nullptr,
+                          const std::u16string* precomputed_units = nullptr) {
     RegExpObject* reo = RegExpObject::from(r);
     if (!reo || !reo->impl()) {
         ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
@@ -227,7 +228,7 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const
     re->set_last_index(li > static_cast<double>(std::numeric_limits<int>::max())
                            ? std::numeric_limits<int>::max() : static_cast<int>(li));
 
-    Value result = re->exec(str, cell);
+    Value result = re->exec(str, cell, precomputed_units);
     // A match that ran out of its budget has no answer, and null would read as
     // one. Every engine has some ceiling here and the spec names none, so the
     // choice is only between a wrong answer and an error.
@@ -375,7 +376,8 @@ static bool match_result_fast_fields(Object* m, Value& idx_v, Value& grps_v) {
 // turned a loop of matches over one subject into a fresh decode of that
 // subject for every match.
 static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str, Value& out,
-                                 const String* cell = nullptr) {
+                                 const String* cell = nullptr,
+                                 const std::u16string* precomputed_units = nullptr) {
     // Same guard as the two [Symbol.replace] shortcuts above: a real RegExp
     // whose prototype is still the one the engine installed, with none of
     // exec/flags/the flag accessors shadowed anywhere reachable, has "exec"
@@ -389,7 +391,7 @@ static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str
         r->get_prototype() == Object::watched_regexp_prototype() &&
         !regexp_has_shortcut_override(r)) {
         if (RegExpObject* reo = RegExpObject::from(r); reo && reo->impl()) {
-            out = regexp_builtin_exec(ctx, r, str, cell);
+            out = regexp_builtin_exec(ctx, r, str, cell, precomputed_units);
             if (ctx.has_exception()) return false;
             return true;
         }
@@ -401,7 +403,7 @@ static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str
             ctx.throw_type_error("RegExpExec requires a RegExp or an object with a callable exec");
             return false;
         }
-        out = regexp_builtin_exec(ctx, r, str, cell);
+        out = regexp_builtin_exec(ctx, r, str, cell, precomputed_units);
         if (ctx.has_exception()) return false;
         return true;
     }
@@ -1075,11 +1077,22 @@ void register_regexp_builtins(Context& ctx) {
             // which may run long after (and allocate a lot, under GC_STRESS).
             std::vector<Value> matches_values_root_vec;
             ValueVectorRoot matches_values_root(&matches_values_root_vec);
+            // Decoded once for the whole call, not once per match: every
+            // iteration below hands this straight to regexp_exec_abstract,
+            // which needs the same units for its own PCRE2 match and would
+            // otherwise decode the subject over again on every one -- a short
+            // subject matched many times, exactly this loop's shape, gets no
+            // help from decode_subject's own cache, which only remembers a
+            // subject past a size floor. A call that never matches still pays
+            // for exactly this one decode either way, since the loop below
+            // always runs at least once and that call decodes the subject
+            // itself when it isn't handed this.
+            std::u16string str16 = wtf8_to_utf16(str);
             size_t safety = 0;
             const size_t max_iter = str.length() + 2;
             while (safety++ < max_iter) {
                 Value match;
-                if (!regexp_exec_abstract(ctx, this_obj, str, match, subject_cell)) return Value();
+                if (!regexp_exec_abstract(ctx, this_obj, str, match, subject_cell, &str16)) return Value();
                 if (match.is_null()) break;
                 Object* m = match.is_function() ? static_cast<Object*>(match.as_function()) : match.as_object();
                 Value idx_v, grps_v;
@@ -1137,8 +1150,7 @@ void register_regexp_builtins(Context& ctx) {
                     size_t thisIdxSz = static_cast<size_t>(thisIdx);
                     size_t nextIdx = thisIdxSz + 1;
                     if (full_unicode) {
-                        std::u16string s16 = wtf8_to_utf16(str);
-                        if (thisIdxSz < s16.size() && s16[thisIdxSz] >= 0xD800 && s16[thisIdxSz] <= 0xDBFF)
+                        if (thisIdxSz < str16.size() && str16[thisIdxSz] >= 0xD800 && str16[thisIdxSz] <= 0xDBFF)
                             nextIdx = thisIdxSz + 2;
                     }
                     bool adv_ok = this_obj->set_property("lastIndex", Value(static_cast<double>(nextIdx)));
@@ -1147,7 +1159,6 @@ void register_regexp_builtins(Context& ctx) {
                 }
             }
             if (matches.empty()) return Value(str);
-            std::u16string str16 = wtf8_to_utf16(str);
             // Every callback gets the same subject S. Rebuilding it per match
             // allocated a second copy of the whole string each time; when the
             // argument arrived as a string its own cell already is S.

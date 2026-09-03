@@ -2707,12 +2707,14 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     return true;
 }
 
-Value RegExp::exec(const std::string& str, const String* cell) {
+Value RegExp::exec(const std::string& str, const String* cell, const std::u16string* precomputed_units) {
     resource_exhausted_ = false;
     // orig holds the unsanitized units so capture text preserves lone surrogates.
     std::u16string decode_scratch;
     uint64_t subject_id = 0;
-    std::u16string_view orig = decode_subject(str, decode_scratch, &subject_id, cell);
+    std::u16string_view orig = precomputed_units
+        ? std::u16string_view(*precomputed_units)
+        : decode_subject(str, decode_scratch, &subject_id, cell);
     std::u16string sanitized;
     if (unicode_ && subject_has_lone_surrogate(cell, orig)) {
         sanitized = std::u16string(orig);

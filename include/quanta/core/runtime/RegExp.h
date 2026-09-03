@@ -76,7 +76,17 @@ public:
     // answer means nothing. The caller has a Context and turns this into a
     // RangeError; RegExp itself has no way to throw.
     [[nodiscard]] bool last_match_exhausted() const { return resource_exhausted_; }
-    Value exec(const std::string& str, const class String* cell = nullptr);
+    // `precomputed_units` lets a caller that already decoded the subject for
+    // its own reasons (a global replace/match/split loop, which needs the
+    // units itself for slicing text between matches) hand that decode
+    // straight in instead of paying for another one: decode_subject's own
+    // cache only remembers a subject past a size floor, so a short subject
+    // matched many times over -- the shape a global loop produces -- gets no
+    // help from it and redecodes every call. Only ever the whole (str, cell)
+    // pair's own units; a mismatched one there is a caller bug, not
+    // something this can detect.
+    Value exec(const std::string& str, const class String* cell = nullptr,
+               const std::u16string* precomputed_units = nullptr);
     // A global replace whose replacement is a literal, done without building
     // anything JS-visible. exec's own matching half is all this needs, and the
     // result array it goes on to build -- one object per match, with index,
