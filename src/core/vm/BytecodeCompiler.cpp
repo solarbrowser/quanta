@@ -3934,6 +3934,17 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     if (!full_env && (has_closures || has_nested_lex || suspendable || has_delegated_expr ||
                       has_destructuring)) {
         ScanOpacity op;
+        // A suspendable body's own yield/await is not a closure boundary for
+        // this walk: the question is which names THIS body's machinery needs
+        // out of the environment, and a register survives the fiber suspend
+        // a yield/await performs exactly as intact as it survives for every
+        // OTHER local the body holds (which already isn't forced env-
+        // resident merely for living across a yield). Only a REAL nested
+        // closure moves a name here, via the unconditional inside_closure
+        // propagation into a nested FUNCTION_EXPRESSION/arrow body below --
+        // unrelated to this flag. Harmless for a non-suspendable body: no
+        // yield/await node exists there to read it.
+        op.yield_transparent = true;
         // The parse works this set out while it reads the body and leaves it
         // on the unit, keyed by where the body opens. Reading it back is what
         // lets a body be compiled without walking it -- which a body kept only
