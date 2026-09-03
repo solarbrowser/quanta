@@ -1718,12 +1718,15 @@ public:
     // Non-virtual: switches on get_function_kind(), same reasoning as
     // trace() above. call_default() is the plain-Function body.
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
-    // Arguments that live in the CALLER'S VM REGISTERS, passed as a view
-    // instead of a fresh vector. Two things follow from that restriction and
-    // neither holds for an arbitrary span, so nothing else may use this:
-    // the values are already GC roots (a register bank is either on the C++
-    // stack, which probe_word scans through NaN-boxing, or in VM::run's
-    // rooted spill vector), and the view stays valid for the whole call.
+    // Arguments passed as a view instead of a fresh vector. Two things have to
+    // hold of that view and neither holds for an arbitrary span, so a caller
+    // has to establish both: the values are already GC roots, and the view
+    // stays valid for the whole call. The caller's VM registers satisfy both
+    // (a register bank is either on the C++ stack, which probe_word scans
+    // through NaN-boxing, or in VM::run's rooted spill vector), and so does an
+    // array a native builtin holds on its own C++ stack frame for the length
+    // of the call -- which is why a comparator does not need a vector built
+    // for every comparison.
     // Inline: the body is a kind test and a forward, but as its own symbol it
     // opened a frame on every call from the interpreter for that one test.
     Value call_register_args(Context& ctx, std::span<const Value> args, Value this_value) {

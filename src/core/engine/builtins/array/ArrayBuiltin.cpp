@@ -2814,8 +2814,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (b.is_undefined()) return -1;
 
                 if (compareFn) {
-                    std::vector<Value> compare_args = { a, b };
-                    Value result = compareFn->call(ctx, compare_args);
+                    // On this frame rather than a fresh vector per comparison:
+                    // sorting a few hundred elements asks this a few thousand
+                    // times, and both values are rooted where they already sit
+                    // (see call_register_args).
+                    const Value compare_args[2] = { a, b };
+                    Value result = compareFn->call_register_args(
+                        ctx, std::span<const Value>(compare_args, 2), Value());
                     if (ctx.has_exception()) return 0;
                     double cmp = result.to_number();
                     if (std::isnan(cmp)) return 0;
