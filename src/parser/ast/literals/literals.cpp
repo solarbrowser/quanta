@@ -26,6 +26,24 @@ static std::string literal_to_property_key(Context& ctx, const Value& val) {
     return val.to_property_key_strict(ctx);
 }
 
+// create_own_data_property's shortcut for an array-index-shaped key routes
+// through set_element, whose storage answers "is index i present" by asking
+// whether the stored value is undefined -- sound for a real hole, wrong for a
+// property whose actual value IS undefined (`{...src}` where src has an index
+// key holding undefined loses it from the spread target's own key list
+// entirely). The spread target here is never an Array, so nothing needs that
+// storage's other behavior; a defineProperty with W|E|C keeps the key on the
+// shape/descriptor path that stores presence and value separately.
+static void spread_create_own_data_property(Object* target, const std::string& key, const Value& value) {
+    uint32_t index;
+    if (target->is_array_index(key, &index)) {
+        PropertyDescriptor desc(value, PropertyAttributes::Default);
+        target->set_property_descriptor(key, desc);
+        return;
+    }
+    target->create_own_data_property(key, value);
+}
+
 // One definition of what an object spread copies, shared by the tree-walker's
 // ObjectLiteral::evaluate and the VM's Op::ObjectSpreadInto so the two cannot
 // drift -- the same reason append_spread_values exists for the array and
@@ -86,7 +104,7 @@ bool object_spread_into(Context& ctx, Object* target, const Value& spread_value)
                     if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
                     if (!desc.is_enumerable()) continue;
                     Value prop_value = proxy->get_trap(key_value);
-                    target->create_own_data_property(prop_name, prop_value);
+                    spread_create_own_data_property(target, prop_name, prop_value);
                 }
             } else {
                 // Names and values both come off the source's shape, so the
@@ -110,13 +128,13 @@ bool object_spread_into(Context& ctx, Object* target, const Value& spread_value)
                     }, /*include_symbols=*/true);
                 if (walked && !bail) {
                     for (uint32_t i = 0; i < fast_n; i++) {
-                        target->create_own_data_property(*fast_names[i], fast_vals[i]);
+                        spread_create_own_data_property(target, *fast_names[i], fast_vals[i]);
                     }
                 } else {
                     auto property_names = spread_obj->get_enumerable_keys();
                     for (const auto& prop_name : property_names) {
                         Value prop_value = spread_obj->get_property(prop_name);
-                        target->create_own_data_property(prop_name, prop_value);
+                        spread_create_own_data_property(target, prop_name, prop_value);
                     }
                 }
             }

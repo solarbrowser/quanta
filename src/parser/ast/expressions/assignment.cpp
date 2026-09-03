@@ -52,6 +52,26 @@ static bool is_anonymous_function_def(const ASTNode* node);
 // NamedEvaluation for a pattern default: an anonymous class has to carry its
 // inferred name before it is evaluated, because a static initializer can read
 // it. Everything else can be renamed afterwards, once the value exists.
+// create_own_data_property's shortcut for an array-index-shaped key routes
+// through set_element, whose storage answers "is index i present" by asking
+// whether the stored value is undefined -- sound for a real hole, wrong for
+// a property whose actual value IS undefined (`{...src}` where src has an
+// index key holding undefined loses it from the rest object's own key list
+// entirely). The rest object here is never an Array, so nothing needs that
+// storage's other behavior (auto length, sparse promotion); a defineProperty
+// with W|E|C keeps the key on the shape/descriptor path that stores presence
+// and value separately, matching what this call already used before the
+// element shortcut existed.
+static void rest_create_own_data_property(Object* target, const std::string& key, const Value& value) {
+    uint32_t index;
+    if (target->is_array_index(key, &index)) {
+        PropertyDescriptor desc(value, PropertyAttributes::Default);
+        target->set_property_descriptor(key, desc);
+        return;
+    }
+    target->create_own_data_property(key, value);
+}
+
 static void stamp_pattern_default_class(ASTNode* rhs, const ASTNode* target) {
     if (!rhs || rhs->get_type() != ASTNode::Type::CLASS_DECLARATION) return;
     if (!target || target->get_type() != ASTNode::Type::IDENTIFIER) return;
@@ -161,7 +181,7 @@ if (source_value.is_string()) {
             for (const auto& ak : assigned_keys) {
                 if (ak == k) { already_assigned = true; break; }
             }
-            if (!already_assigned) rest_obj->create_own_data_property(k, fast_vals[i]);
+            if (!already_assigned) rest_create_own_data_property(rest_obj.get(), k, fast_vals[i]);
         }
     } else {
     auto keys = source_obj->get_enumerable_keys();
@@ -173,7 +193,7 @@ if (source_value.is_string()) {
         if (!already_assigned) {
             Value val = source_obj->get_property(k);
             if (ctx.has_exception()) return Value();
-            rest_obj->create_own_data_property(k, val);
+            rest_create_own_data_property(rest_obj.get(), k, val);
         }
     }
     }

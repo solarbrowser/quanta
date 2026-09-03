@@ -826,12 +826,19 @@ public:
     // one transition per property.
     void reserve_property_slots(size_t count);
 
+    // Public because callers outside Object need to know, ahead of a write,
+    // whether a key would take the element-storage path (create_own_data_
+    // property, set_property, set_element all route an array-index-shaped
+    // key there) -- notably a spread/rest target, which is never an Array
+    // and so needs to route such a key around that storage instead (see
+    // rest_create_own_data_property/spread_create_own_data_property).
+    bool is_array_index(const std::string& key, uint32_t* index = nullptr) const;
+
 private:
 
     static thread_local std::unordered_map<std::string, std::string> interned_keys_;
     static const std::string& intern_key(const std::string& key);
 
-    bool is_array_index(const std::string& key, uint32_t* index = nullptr) const;
     PropertyDescriptor create_data_descriptor(const Value& value, PropertyAttributes attrs) const;
 
     // Would growing the dense elements_ region to cover `index` (from the
