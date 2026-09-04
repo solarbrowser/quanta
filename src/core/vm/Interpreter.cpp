@@ -434,7 +434,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     }
 
     Shape* obj_shape = obj->get_shape();
-    bool ordinary = obj->get_type() == Object::ObjectType::Ordinary;
+    bool fast_type_ok = shape_fast_path_ok(obj->get_type());
     uint64_t cur_epoch = Object::descriptor_epoch();
 
     // An own property answered out of the receiver's descriptor map, learned
@@ -541,7 +541,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // interchangeable: the stamp says "no object had an override when this was
     // learned", the map says "this object has none now", and only the second
     // is safe to re-establish from a single receiver.
-    if (fb && !fb->mega && ordinary && obj_shape) {
+    if (fb && !fb->mega && fast_type_ok && obj_shape) {
         for (uint8_t i = 0; i < fb->count; i++) {
             if (fb->entries[i].shape == obj_shape) {
                 if (!obj->has_any_descriptor_override()) {
@@ -566,7 +566,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // same map for the same key with no mutation in between.
     PropertyDescriptor* override_desc = obj->find_descriptor_override(name);
     const bool own_descriptor = override_desc != nullptr;
-    bool cacheable = fb_slot && !(fb && fb->mega) && ordinary && !override_desc;
+    bool cacheable = fb_slot && !(fb && fb->mega) && fast_type_ok && !override_desc;
     if (cacheable && fb) {
         Shape* shape = obj_shape;
         for (uint8_t i = 0; i < fb->count; i++) {
@@ -604,11 +604,13 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         // did has_own_property+get_own_property internally) -- for the
         // common Ordinary-object case, skip the redundant has_own_property
         // below AND the final get_property() call, both of which would only
-        // re-derive this same answer. Restricted to Ordinary because Array/
-        // TypedArray/etc. have type-specific logic in get_property() (e.g.
-        // Array.length is computed live, not from a descriptor) that this
-        // shortcut must not bypass.
-        if (desc.has_value() && obj->get_type() == Object::ObjectType::Ordinary) {
+        // re-derive this same answer. Gated on shape_fast_path_ok rather than
+        // Ordinary alone because Array/TypedArray/etc. have type-specific
+        // logic in get_property() (e.g. Array.length is computed live, not
+        // from a descriptor) that this shortcut must not bypass -- Date/
+        // RegExp/Error/Promise have none, same reasoning as everywhere else
+        // this helper is used.
+        if (desc.has_value() && fast_type_ok) {
             if (cacheable) {
                 Shape* s = obj->get_shape();
                 int32_t idx = s ? s->find_slot(name) : -1;
@@ -665,8 +667,8 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                     // desc_epoch retires the entry if the accessor is
                     // redefined.
                     if (rooted && fb_slot && !(fb && fb->proto_mega) && getter_fn && obj->get_shape() &&
-                        obj->get_type() == Object::ObjectType::Ordinary &&
-                        proto->get_type() == Object::ObjectType::Ordinary &&
+                        fast_type_ok &&
+                        shape_fast_path_ok(proto->get_type()) &&
                         !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
                         learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), proto, 0,
                                     Object::proto_epoch(), owner, /*from_descriptor=*/false,
@@ -687,12 +689,12 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                     // descriptor and shape-slot branches below each establish
                     // on their own terms.
                     const bool holder_ok =
-                        proto->get_type() == Object::ObjectType::Ordinary ||
+                        shape_fast_path_ok(proto->get_type()) ||
                         (proto->get_type() == Object::ObjectType::Array &&
                          name != "length" &&
                          !(!name.empty() && name[0] >= '0' && name[0] <= '9'));
                     if (rooted && fb_slot && !(fb && fb->proto_mega) &&
-                        (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
+                        (fast_type_ok || exotic_proto_ok) &&
                         holder_ok) {
                         Shape* hs = proto->get_shape();
                         int32_t hidx = proto->has_descriptor_override(name)
@@ -795,7 +797,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     if (!obj) { set_primitive_named(ctx, receiver, name, value); return; }
 
     write_barrier_for(obj, value);
-    bool ordinary_recv = obj->get_type() == Object::ObjectType::Ordinary;
+    bool ordinary_recv = shape_fast_path_ok(obj->get_type());
     // Same epoch-trusting fast path as get_named's own -- skips
     // has_descriptor_override entirely on a hit. See Object::
     // descriptor_epoch_'s doc comment for why a global epoch is safe here
@@ -832,7 +834,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     // walk below -- safe only while proto_epoch() still matches what it was
     // when learned. is_extensible() is checked fresh, not folded into the
     // epoch: a non-extensible object just stops hitting this path.
-    if (fb && !fb->transition_mega && obj->get_type() == Object::ObjectType::Ordinary &&
+    if (fb && !fb->transition_mega && ordinary_recv &&
         !obj->has_descriptor_override(name) && obj->is_extensible()) {
         Shape* shape = obj->get_shape();
         Object* proto0 = obj->get_prototype_raw();
@@ -847,7 +849,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     }
 
     Shape* shape_before = obj->get_shape();
-    bool was_new = fb_slot && obj->get_type() == Object::ObjectType::Ordinary &&
+    bool was_new = fb_slot && ordinary_recv &&
                     !obj->has_descriptor_override(name) &&
                     shape_before && shape_before->find_slot(name) < 0;
 
@@ -862,7 +864,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     // Re-checked fresh, not reusing a pre-call flag: ordinary_set can migrate
     // obj to dictionary mode (shape transition cap hit while adding a new
     // property), which changes has_descriptor_override's answer for `name`.
-    if (fb_slot && !(fb && fb->mega) && obj->get_type() == Object::ObjectType::Ordinary &&
+    if (fb_slot && !(fb && fb->mega) && shape_fast_path_ok(obj->get_type()) &&
         !obj->has_descriptor_override(name)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
@@ -873,7 +875,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
     // obj's shape via set_property_descriptor, always leaving a descriptors_
     // entry behind -- is naturally excluded from being learned here.
     if (was_new && ok && fb_slot && !(fb && fb->transition_mega) &&
-        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(name)) {
+        shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(name)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
         if (idx >= 0) {
@@ -894,7 +896,7 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
     FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (!obj) return;
     write_barrier_for(obj, value);
-    bool plain = obj->get_type() == Object::ObjectType::Ordinary && obj->is_extensible();
+    bool plain = shape_fast_path_ok(obj->get_type()) && obj->is_extensible();
     // from_shape alone is the whole shape-side guard, unlike SetNamed's
     // version: CreateDataProperty never consults the prototype chain, and a
     // matching from_shape already proves the key has no slot there at all --
@@ -954,7 +956,7 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
     if (!obj) return;
     Collector::write_barrier(obj);
     size_t unused_idx;
-    bool fast_path_eligible = obj->get_type() == Object::ObjectType::Ordinary &&
+    bool fast_path_eligible = shape_fast_path_ok(obj->get_type()) &&
         obj->is_extensible() && !obj->has_own_property(key) && !key_is_canonical_index(key, unused_idx);
 
     if (fast_path_eligible) {
@@ -1091,7 +1093,7 @@ inline bool typed_element_slot(const Value& receiver, uint32_t index, TypedArray
 // only, no inherited-property (proto) cache here.
 Value get_keyed(Context& ctx, const Value& receiver, const std::string& key, KeyedFeedback* fb) {
     Object* obj = as_object_like(receiver);
-    if (obj && fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+    if (obj && fb && !fb->mega && shape_fast_path_ok(obj->get_type()) &&
         !obj->has_descriptor_override(key)) {
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
@@ -1104,7 +1106,7 @@ Value get_keyed(Context& ctx, const Value& receiver, const std::string& key, Key
     }
     Value result = get_named(ctx, receiver, key, nullptr, nullptr, false);
     if (!ctx.has_exception() && obj && fb && !fb->mega &&
-        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
+        shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(key)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(key) : -1;
         if (idx >= 0) learn_keyed(fb, s, key, static_cast<uint32_t>(idx));
@@ -1117,7 +1119,7 @@ Value get_keyed(Context& ctx, const Value& receiver, const std::string& key, Key
 void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
                 const Value& value, KeyedFeedback* fb) {
     Object* obj = as_object_like(receiver);
-    if (obj && fb && !fb->mega && obj->get_type() == Object::ObjectType::Ordinary &&
+    if (obj && fb && !fb->mega && shape_fast_path_ok(obj->get_type()) &&
         !obj->has_descriptor_override(key)) {
         Shape* shape = obj->get_shape();
         for (uint8_t i = 0; i < fb->count; i++) {
@@ -1130,7 +1132,7 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
     }
     set_named(ctx, receiver, key, value, nullptr, nullptr);
     if (!ctx.has_exception() && obj && fb && !fb->mega &&
-        obj->get_type() == Object::ObjectType::Ordinary && !obj->has_descriptor_override(key)) {
+        shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(key)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(key) : -1;
         if (idx >= 0) learn_keyed(fb, s, key, static_cast<uint32_t>(idx));
@@ -1904,7 +1906,7 @@ Value h_gen_TestIn(Frame& f, uint32_t pc, Value acc) {
                 // can no longer be found here and falls through unchanged.
                 if (lhs.is_string() && acc.is_object()) {
                     Object* o = acc.as_object();
-                    if (o->get_type() == Object::ObjectType::Ordinary &&
+                    if (shape_fast_path_ok(o->get_type()) &&
                         !o->has_any_descriptor_override()) {
                         if (Shape* s = o->get_shape()) {
                             if (s->find_slot(lhs.as_string()->str()) >= 0) {
