@@ -1015,6 +1015,32 @@ void learn_keyed(KeyedFeedback* fb, Shape* shape, const std::string& key, uint32
     }
 }
 
+// SetKeyed's transition-cache learner, mirroring learn_transition (see its
+// own comment for why `prototype` needs `owner` barriered and why a real
+// GC cell here is safe only when the site's chunk is rooted). Dedups on
+// (from_shape, key), same reasoning as learn_keyed above: a duplicate
+// refreshes proto_epoch/to_shape in place rather than no-opping, since
+// those can go stale between calls to the same (shape, key) pair.
+void learn_keyed_transition(KeyedFeedback* fb, Shape* from_shape, const std::string& key,
+                             Shape* to_shape, Object* prototype, uint32_t slot_index,
+                             uint64_t epoch, Function* owner) {
+    if (prototype) {
+        if (!owner) return;
+        Collector::write_barrier(owner);
+    }
+    for (uint8_t i = 0; i < fb->transition_count; i++) {
+        if (fb->transitions[i].from_shape == from_shape && fb->transitions[i].key == key) {
+            fb->transitions[i] = {from_shape, key, to_shape, prototype, slot_index, epoch};
+            return;
+        }
+    }
+    if (fb->transition_count < KeyedFeedback::kMaxEntries) {
+        fb->transitions[fb->transition_count++] = {from_shape, key, to_shape, prototype, slot_index, epoch};
+    } else {
+        fb->transition_mega = true;
+    }
+}
+
 // A key that is already a number and is exactly a canonical array index.
 // Everything else, including fractions, negatives and the out-of-range
 // doubles, falls through to ToPropertyKey. -0 lands on 0, which is what
@@ -1116,8 +1142,13 @@ Value get_keyed(Context& ctx, const Value& receiver, const std::string& key, Key
 
 // SetKeyed's own cache, symmetric to get_keyed above. Falls through to the
 // ordinary, unmodified set_named() slow path (fb=nullptr) on any miss.
+// `owner` is passed through to the transition-cache learner below on
+// exactly the same terms as SetNamed's own (see learn_transition) -- null
+// for an ownerless chunk (e.g. the top-level script), which simply means
+// that particular site does not learn a transition, not that anything
+// unsafe happens.
 void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
-                const Value& value, KeyedFeedback* fb) {
+                const Value& value, KeyedFeedback* fb, Function* owner) {
     Object* obj = as_object_like(receiver);
     if (obj && fb && !fb->mega && shape_fast_path_ok(obj->get_type()) &&
         !obj->has_descriptor_override(key)) {
@@ -1130,12 +1161,54 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
             }
         }
     }
+    // New-property transition cache: mirrors SetNamed's own (see the
+    // transition-cache block in set_named), keyed additionally on `key`
+    // since a keyed site reads its key from a register instead of carrying
+    // a compile-time-constant name. Without this, `const o = {}; o[k] = v;`
+    // -- a fresh object every time, so `entries` above can never hit --
+    // paid Shape::transition(key)'s hash lookup on every single call.
+    if (obj && fb && !fb->transition_mega && shape_fast_path_ok(obj->get_type()) &&
+        !obj->has_descriptor_override(key) && obj->is_extensible()) {
+        Shape* shape = obj->get_shape();
+        Object* proto0 = obj->get_prototype_raw();
+        uint64_t epoch = Object::proto_epoch();
+        for (uint8_t i = 0; i < fb->transition_count; i++) {
+            const auto& te = fb->transitions[i];
+            if (te.from_shape == shape && te.key == key && te.prototype == proto0 &&
+                te.proto_epoch == epoch) {
+                obj->add_shape_property_cached(key, value, te.to_shape);
+                return;
+            }
+        }
+    }
+    // Once the transition cache has gone mega, computing was_new below buys
+    // nothing (the post-write learn is gated on the same !transition_mega
+    // and would just skip it) but still costs a find_slot hash lookup on
+    // every call -- guarded out here so a site with more distinct (shape,
+    // key) transitions than the cache holds settles back to exactly the
+    // pre-cache cost instead of paying for a lookup no one uses.
+    Shape* shape_before = (obj && fb && !fb->transition_mega) ? obj->get_shape() : nullptr;
+    bool was_new = shape_before && shape_fast_path_ok(obj->get_type()) &&
+                    !obj->has_descriptor_override(key) &&
+                    shape_before->find_slot(key) < 0;
     set_named(ctx, receiver, key, value, nullptr, nullptr);
     if (!ctx.has_exception() && obj && fb && !fb->mega &&
         shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(key)) {
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(key) : -1;
         if (idx >= 0) learn_keyed(fb, s, key, static_cast<uint32_t>(idx));
+    }
+    // Re-checked fresh, not the pre-call `was_new`'s own type/override
+    // reads: set_named's slow path can migrate obj to dictionary mode,
+    // same reasoning as SetNamed's own post-write transition learn.
+    if (was_new && !ctx.has_exception() && fb && !fb->transition_mega &&
+        shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(key)) {
+        Shape* s = obj->get_shape();
+        int32_t idx = s ? s->find_slot(key) : -1;
+        if (idx >= 0) {
+            learn_keyed_transition(fb, shape_before, key, s, obj->get_prototype_raw(),
+                                    static_cast<uint32_t>(idx), Object::proto_epoch(), owner);
+        }
     }
 }
 
@@ -5097,13 +5170,13 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                 }
                 // Same reasoning as the GetKeyed fast path above.
                 if (regs[key_reg].is_string()) {
-                    set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, &chunk.ic_feedback->keyed_feedback[fb_idx]);
+                    set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, &chunk.ic_feedback->keyed_feedback[fb_idx], f.owner);
                     CHECK_EXC();
                     break;
                 }
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();
-                set_keyed(ctx, recv, key, acc, &chunk.ic_feedback->keyed_feedback[fb_idx]);
+                set_keyed(ctx, recv, key, acc, &chunk.ic_feedback->keyed_feedback[fb_idx], f.owner);
                 CHECK_EXC();
                 break;
             }

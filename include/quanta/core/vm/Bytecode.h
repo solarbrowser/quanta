@@ -602,6 +602,29 @@ struct KeyedFeedback {
     std::array<Entry, kMaxEntries> entries{};
     uint8_t count = 0;
     bool mega = false;
+
+    // SetKeyed-only: mirrors FeedbackBody::TransitionEntry (caches adding a
+    // brand-new own property, keyed by the shape BEFORE the add, the
+    // receiver's prototype and proto_epoch -- see that struct's own comment
+    // for why prototype/epoch matter), with `key` added since a keyed site's
+    // key is read from a register and can differ on every execution, unlike
+    // SetNamed's compile-time-constant name. Without this, `obj[k] = v` on a
+    // freshly-shaped object -- the common `const o = {}; o[k] = v;` pattern
+    // -- always missed `entries` above (which only matches a key the shape
+    // already has) and fell all the way to Shape::transition(key)'s hash
+    // lookup on every single call, never able to reuse a previous transition
+    // the way a plain SetNamed site already could.
+    struct TransitionEntry {
+        Shape* from_shape = nullptr;
+        std::string key;
+        Shape* to_shape = nullptr;
+        Object* prototype = nullptr;
+        uint32_t slot_index = 0;
+        uint64_t proto_epoch = 0;
+    };
+    std::array<TransitionEntry, kMaxEntries> transitions{};
+    uint8_t transition_count = 0;
+    bool transition_mega = false;
 };
 
 // One try region: [start_pc, end_pc) -> handler_pc.

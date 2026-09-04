@@ -65,6 +65,13 @@ void BytecodeChunk::trace(Visitor& v) const {
         v.visit_object(fb.own_desc_receiver);
         v.visit(fb.own_desc_value);
     }
+    if (ic_feedback) {
+        for (const auto& kfb : ic_feedback->keyed_feedback) {
+            for (uint8_t i = 0; i < kfb.transition_count; i++) {
+                v.visit_object(kfb.transitions[i].prototype);
+            }
+        }
+    }
 }
 
 namespace {
