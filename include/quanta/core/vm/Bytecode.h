@@ -735,6 +735,21 @@ struct BytecodeChunk {
     // a chunk without it can skip setting one up, including the sloppy-mode
     // substitution that boxes a primitive or reaches for the global object.
     bool uses_this : 1 = false;
+    // Set by emit() when any opcode that can call await_value goes into the
+    // code: Op::Await itself, Op::AsyncIteratorNextOrJump/AsyncIteratorClose
+    // (for-await-of's own per-iteration await, a different opcode entirely
+    // -- it never emits Op::Await), and Op::DisposeScope (an `await using`
+    // resource's disposal is awaited when the scope unwinds; a plain
+    // `using` in the same scope still emits this opcode, so its presence is
+    // a conservative "maybe", not a precise one). These are the only
+    // suspend sources a plain (non-generator) async function's body can
+    // ever reach: SettleReturn's own await bit (set on every
+    // `return <value>` in an async body) only suspends inside an async
+    // GENERATOR (perform_return_completion gates it on
+    // AsyncGenerator::get_current()), so it is not one of them.
+    // AsyncFunction::call uses this to skip the fiber altogether for a body
+    // that provably never awaits.
+    bool has_await : 1 = false;
 
     // Closures/tree-walk escapes/destructuring/try-catch are each
     // independently rare (a chunk can have any one without the others), so

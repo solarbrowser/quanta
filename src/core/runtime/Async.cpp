@@ -108,6 +108,37 @@ AsyncExecutor::~AsyncExecutor() {
     if (fiber_->co) mco_destroy(fiber_->co);
 }
 
+// Shared by fiber_entry's tail (a real fiber, below) and AsyncFunction::
+// call's own fast path for a body proven never to await (no fiber at all --
+// see has_await): once the body has run to whatever completion it reached,
+// this settles the outer promise from ctx's own exception/return-value
+// state the same way either path arrived there.
+static void settle_promise_from_context(Context& ctx, Promise* promise) {
+    if (ctx.has_exception()) {
+        Value exc = ctx.get_exception();
+        ctx.clear_exception();
+        promise->reject(exc);
+    } else if (ctx.has_return_value()) {
+        Value ret = ctx.get_return_value();
+        ctx.clear_return_value();
+        if (AsyncUtils::is_promise(ret)) {
+            Promise* p = static_cast<Promise*>(ret.as_object());
+            if (p->get_state() == PromiseState::FULFILLED) {
+                promise->fulfill(p->take_settled_value());
+            } else if (p->get_state() == PromiseState::REJECTED) {
+                promise->reject(p->take_settled_value());
+            } else {
+                promise->fulfill(ret);
+            }
+        } else {
+            promise->fulfill(ret);
+        }
+    } else {
+        // Falling off the end without a `return` resolves to undefined, not the last statement's value.
+        promise->fulfill(Value());
+    }
+}
+
 void AsyncExecutor::fiber_entry(mco_coro* co) {
     auto* self = static_cast<AsyncExecutor*>(mco_get_user_data(co));
 
@@ -142,29 +173,7 @@ void AsyncExecutor::fiber_entry(mco_coro* co) {
         }
     }
 
-    if (ctx->has_exception()) {
-        Value exc = ctx->get_exception();
-        ctx->clear_exception();
-        self->outer_promise_->reject(exc);
-    } else if (ctx->has_return_value()) {
-        Value ret = ctx->get_return_value();
-        ctx->clear_return_value();
-        if (AsyncUtils::is_promise(ret)) {
-            Promise* p = static_cast<Promise*>(ret.as_object());
-            if (p->get_state() == PromiseState::FULFILLED) {
-                self->outer_promise_->fulfill(p->take_settled_value());
-            } else if (p->get_state() == PromiseState::REJECTED) {
-                self->outer_promise_->reject(p->take_settled_value());
-            } else {
-                self->outer_promise_->fulfill(ret);
-            }
-        } else {
-            self->outer_promise_->fulfill(ret);
-        }
-    } else {
-        // Falling off the end without a `return` resolves to undefined, not the last statement's value.
-        self->outer_promise_->fulfill(Value());
-    }
+    settle_promise_from_context(*ctx, self->outer_promise_);
 
     // Function is fully done and won't be resumed again -- release the retain taken in AsyncFunction::call.
     // A module's context is borrowed and the module keeps it: there is no
@@ -447,6 +456,42 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
         if (ASTNode* body = ast_body(); body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             scan_for_var_declarations(body, *exec_ctx, param_env);
         }
+    }
+
+    // A body with no possible suspend point anywhere in its own compiled
+    // chunk (has_await's own doc comment lists every opcode that counts --
+    // Op::Await itself, for-await-of's own opcodes, and DisposeScope for
+    // `await using`) can never actually yield the fiber it would otherwise
+    // get -- and already runs to completion synchronously inside
+    // AsyncExecutor::run() when it doesn't, per the comment below. Skipping
+    // the fiber altogether for it runs the body directly on the stack
+    // already here instead of a second one mapped just for this call --
+    // what a call like step(v){ return v+1 } costs when many are in flight
+    // at once (Promise.all over many chains, for instance) is one touched
+    // stack per call in flight, not the depth of this one call, however
+    // deep that already is.
+    if (susp_chunk && !susp_chunk->has_await) {
+        Context* prev_context = Object::current_context_;
+        Object::current_context_ = exec_ctx.get();
+        try {
+            Value vm_result = VM::run_suspendable_chunk(*susp_chunk, *exec_ctx, this);
+            if (!vm_result.is_undefined() && !exec_ctx->has_return_value() && !exec_ctx->has_exception()) {
+                exec_ctx->set_return_value(vm_result);
+            }
+        } catch (const std::exception& e) {
+            if (!exec_ctx->has_exception()) exec_ctx->throw_exception(Value(std::string(e.what())));
+        } catch (...) {
+            if (!exec_ctx->has_exception()) exec_ctx->throw_exception(Value(std::string("Unknown error in async function")));
+        }
+        Object::current_context_ = prev_context;
+        settle_promise_from_context(*exec_ctx, promise_raw);
+        // exec_ctx is left to survivor_guard (constructed above, still in
+        // scope) exactly as every early return above this point already
+        // does -- its destructor hands it to the engine's survivor pool
+        // when (and only when) something inside the body actually escaped
+        // it, the same call ContextSurvivorGuard makes for an ordinary
+        // synchronous call.
+        return promise_value;
     }
 
     // Shared with every call, like an ordinary function's body -- no clone.

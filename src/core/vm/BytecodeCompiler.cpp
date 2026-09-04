@@ -5720,6 +5720,10 @@ void BytecodeCompiler::emit(Op op) {
         op == Op::ResolveSuperBase || op == Op::SuperCall || op == Op::SuperCallSpread) {
         chunk_->uses_this = true;
     }
+    if (op == Op::Await || op == Op::AsyncIteratorNextOrJump ||
+        op == Op::AsyncIteratorClose || op == Op::DisposeScope) {
+        chunk_->has_await = true;
+    }
     code_.push_back(static_cast<uint8_t>(op));
 }
 void BytecodeCompiler::emit_u8(uint8_t v) { code_.push_back(v); }
