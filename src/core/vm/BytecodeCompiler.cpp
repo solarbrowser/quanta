@@ -867,6 +867,72 @@ bool contains_closure(const ASTNode* node) {
     return bit;
 }
 
+// Cheap, deliberately incomplete pre-scan for BytecodeCompiler::
+// this_cache_reg_'s reservation decision (see its own comment): true when
+// it can tell, without chasing every AST shape, that a plain `this` reads
+// at least twice within code straight-line enough for a register cache to
+// help. Undercounting only costs the optimization -- unlike contains_
+// closure_by_walk's conservative TRUE, this defaults to false (0) for
+// anything unrecognized, including every construct ThisCacheBarrier
+// guards (if that counted them, reserving the register would be right but
+// pointless: the barrier would immediately suspend the cache on entry).
+// Never descends into a nested function/class -- a closure's own `this`
+// (or, for an arrow, an outer one reached through ITS OWN chunk's LdaThis)
+// is never this chunk's business.
+int count_this_refs(const ASTNode* node) {
+    if (!node) return 0;
+    switch (node->get_type()) {
+        case ASTNode::Type::IDENTIFIER:
+            return static_cast<const Identifier*>(node)->get_name() == "this" ? 1 : 0;
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            int total = 0;
+            for (const auto& s : static_cast<const BlockStatement*>(node)->get_statements()) {
+                total += count_this_refs(s.get());
+            }
+            return total;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return count_this_refs(n->get_test()) + count_this_refs(n->get_consequent()) +
+                   count_this_refs(n->get_alternate());
+        }
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return count_this_refs(static_cast<const ExpressionStatement*>(node)->get_expression());
+        case ASTNode::Type::RETURN_STATEMENT:
+            return count_this_refs(static_cast<const ReturnStatement*>(node)->get_argument());
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            int total = 0;
+            for (const auto& d : static_cast<const VariableDeclaration*>(node)->get_declarations()) {
+                total += count_this_refs(d->get_init());
+            }
+            return total;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return count_this_refs(n->get_left()) + count_this_refs(n->get_right());
+        }
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            return count_this_refs(n->get_left()) + count_this_refs(n->get_right());
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* n = static_cast<const MemberExpression*>(node);
+            return count_this_refs(n->get_object()) +
+                   (n->is_computed() ? count_this_refs(n->get_property()) : 0);
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return count_this_refs(static_cast<const UnaryExpression*>(node)->get_operand());
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            int total = count_this_refs(n->get_callee());
+            for (const auto& a : n->get_arguments()) total += count_this_refs(a.get());
+            return total;
+        }
+        default:
+            return 0;
+    }
+}
+
 bool has_spread(const std::vector<std::unique_ptr<ASTNode>>& nodes) {
     for (const auto& n : nodes) {
         if (n && n->get_type() == ASTNode::Type::SPREAD_ELEMENT) return true;
@@ -3703,6 +3769,31 @@ struct ChainMaskScope {
     ~ChainMaskScope() { slot = saved; }
 };
 
+// Suspends this_cache_valid_ (BytecodeCompiler.h has the full rationale)
+// while compiling a subtree that is not guaranteed to run on every path
+// reaching it, or that can run more than once: the incoming claim "this_
+// cache_reg_ currently holds `this`" is not safe to carry INTO such a
+// subtree, and anything the subtree itself learns is not safe to carry
+// back OUT of it (its own execution was conditional). Restores the
+// caller's value on scope exit, so straight-line code AFTER the subtree
+// -- which the entry state already covered unconditionally -- keeps the
+// benefit. Constructed at the top of every branching/looping/short-
+// circuiting construct's own compile_statement/compile_expression case;
+// mirrors ChainMaskScope's exact shape.
+struct ThisCacheBarrier {
+    bool& valid;
+    bool saved;
+    bool active;
+    // `cond` lets one call site cover several conditionally-risky regions
+    // (e.g. an optional call's args, only risky when the chain can actually
+    // short-circuit) without a differently-scoped guard for each: false
+    // just makes construction and destruction no-ops.
+    explicit ThisCacheBarrier(bool& v, bool cond = true) : valid(v), saved(v), active(cond) {
+        if (active) valid = false;
+    }
+    ~ThisCacheBarrier() { if (active) valid = saved; }
+};
+
 // True if `node`'s object/callee spine contains an optional-chaining link
 // (a?.b, a?.b.c(), ...).
 bool chain_contains_optional(const ASTNode* node) {
@@ -4533,6 +4624,23 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     if (param_eval) {
         compiler.emit(Op::EnterParamEval);
         compiler.emit_u8(0);
+    }
+
+    // this-cache reservation (this_cache_reg_'s own comment has the full
+    // rationale): a register outside the temp pool, for chunks the
+    // pre-scan below judges likely to read `this` more than once.
+    // Register-mode only -- env_mode chunks resolve `this` through a named
+    // environment binding, a different mechanism this caching does not
+    // apply to. Bumped exactly like a local's register would be, right
+    // here: the one point between param binding and body compilation
+    // where next_register_ is guaranteed to still be at its clean,
+    // no-temps-active baseline, so nothing compiled after this can ever
+    // free_temp() back down past it.
+    if (!env_mode && compiler.next_register_ < kMaxRegisters && count_this_refs(body) >= 2) {
+        compiler.this_cache_reg_ = compiler.next_register_++;
+        if (compiler.next_register_ > compiler.temp_watermark_) {
+            compiler.temp_watermark_ = compiler.next_register_;
+        }
     }
 
     if (concise) {
@@ -6545,7 +6653,13 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
                 stamp_inferred_class_name(default_expr,
                                           static_cast<const Identifier*>(target)->get_name());
             }
-            if (!compile_expression(default_expr)) return false;
+            {
+                // A pattern default only runs when the source value was
+                // undefined -- the JumpIfNotUndefined above skips it
+                // otherwise, so it is not straight-line code.
+                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                if (!compile_expression(default_expr)) return false;
+            }
             // NamedEvaluation: an anonymous function on the right of a
             // pattern default takes the name it is being bound to.
             if (target->get_type() == ASTNode::Type::IDENTIFIER &&
@@ -6720,7 +6834,12 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
                 stamp_inferred_class_name(default_expr,
                                           static_cast<const Identifier*>(target)->get_name());
             }
-            if (!compile_expression(default_expr)) return false;
+            {
+                // Same rationale as the object-pattern default above: only
+                // runs when the source element was undefined.
+                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                if (!compile_expression(default_expr)) return false;
+            }
             // NamedEvaluation: an anonymous function on the right of a
             // pattern default takes the name it is being bound to.
             if (target->get_type() == ASTNode::Type::IDENTIFIER &&
@@ -6918,6 +7037,12 @@ int BytecodeCompiler::emit_spread_array(const std::vector<std::unique_ptr<ASTNod
 // accumulator as the expression result, matching the tree-walker.
 bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* expr) {
     using AsOp = AssignmentExpression::Operator;
+    // The RHS is skipped along with the write whenever the old value fails
+    // the operator's test -- covers every LHS-kind branch below at once,
+    // slightly conservative for the LHS's own (unconditional) resolution
+    // but simpler than a separately-scoped guard per branch. See
+    // WHILE_STATEMENT's identical guard.
+    ThisCacheBarrier this_cache_guard(this_cache_valid_);
     Op skip_op = expr->get_operator() == AsOp::LOGICAL_AND_ASSIGN ? Op::JumpIfFalse
                : expr->get_operator() == AsOp::LOGICAL_OR_ASSIGN  ? Op::JumpIfTrue
                : Op::JumpIfNotNullish;
@@ -7499,11 +7624,21 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             const auto* stmt = static_cast<const IfStatement*>(node);
             if (!compile_expression(stmt->get_test())) return false;
             size_t else_jump = emit_jump(Op::JumpIfFalse);
-            if (!compile_if_branch(stmt->get_consequent())) return false;
+            // The test itself runs unconditionally, so whatever this_cache_
+            // valid_ is after compiling it stays trustworthy for code after
+            // the whole if/else -- only each BRANCH, which runs conditionally,
+            // needs its own barrier.
+            {
+                ThisCacheBarrier guard(this_cache_valid_);
+                if (!compile_if_branch(stmt->get_consequent())) return false;
+            }
             if (stmt->has_alternate()) {
                 size_t end_jump = emit_jump(Op::Jump);
                 if (!patch_jump(else_jump)) return false;
-                if (!compile_if_branch(stmt->get_alternate())) return false;
+                {
+                    ThisCacheBarrier guard(this_cache_valid_);
+                    if (!compile_if_branch(stmt->get_alternate())) return false;
+                }
                 if (!patch_jump(end_jump)) return false;
             } else {
                 if (!patch_jump(else_jump)) return false;
@@ -7513,6 +7648,13 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::WHILE_STATEMENT: {
             emit_completion_reset();
+            // The whole construct (test, body, update alike) can run zero or
+            // more times, and the test alone runs again on every iteration --
+            // no part of it is the "runs exactly once, unconditionally"
+            // straight-line code this_cache_valid_ requires. One barrier for
+            // the whole case, restored on every return path via its
+            // destructor.
+            ThisCacheBarrier this_cache_guard(this_cache_valid_);
             const auto* stmt = static_cast<const WhileStatement*>(node);
             int loop_env_idx = setup_loop_env({}, stmt->get_body(), false, {stmt->get_test()});
             if (loop_env_idx >= 0) {
@@ -7554,6 +7696,8 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::DO_WHILE_STATEMENT: {
             emit_completion_reset();
+            // See WHILE_STATEMENT's identical guard.
+            ThisCacheBarrier this_cache_guard(this_cache_valid_);
             const auto* stmt = static_cast<const DoWhileStatement*>(node);
             int loop_env_idx = setup_loop_env({}, stmt->get_body(), false, {stmt->get_test()});
             if (loop_env_idx >= 0) {
@@ -7586,6 +7730,9 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::FOR_STATEMENT: {
             emit_completion_reset();
+            // See WHILE_STATEMENT's identical guard -- init may run once,
+            // unconditionally, but test/update/body all repeat.
+            ThisCacheBarrier this_cache_guard(this_cache_valid_);
             const auto* stmt = static_cast<const ForStatement*>(node);
             // `for (using x = r; ;)` holds the resource for the whole
             // statement, so the scope wraps the loop rather than sitting
@@ -7702,12 +7849,16 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
         }
 
         case ASTNode::Type::FOR_OF_STATEMENT: {
+            // See WHILE_STATEMENT's identical guard.
+            ThisCacheBarrier this_cache_guard(this_cache_valid_);
             const auto* stmt = static_cast<const ForOfStatement*>(node);
             return compile_for_each_loop(stmt->get_left(), stmt->get_right(), stmt->get_body(), false,
                                           stmt->get_left_decl_kind(), stmt->is_await());
         }
 
         case ASTNode::Type::FOR_IN_STATEMENT: {
+            // See WHILE_STATEMENT's identical guard.
+            ThisCacheBarrier this_cache_guard(this_cache_valid_);
             const auto* stmt = static_cast<const ForInStatement*>(node);
             return compile_for_each_loop(stmt->get_left(), stmt->get_right(), stmt->get_body(), true,
                                           stmt->get_left_decl_kind());
@@ -7741,6 +7892,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::TRY_STATEMENT: {
             emit_completion_reset();
+            // A throw can land here from any point inside the try block, so
+            // no code in it -- however straight-line it looks -- provably
+            // ran before the catch/finally handler might be entered. See
+            // WHILE_STATEMENT's identical guard.
+            ThisCacheBarrier this_cache_guard(this_cache_valid_);
             const auto* stmt = static_cast<const TryStatement*>(node);
             const ASTNode* catch_node = stmt->get_catch_clause();
             const ASTNode* finally_node = stmt->get_finally_block();
@@ -7951,6 +8107,11 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
 
         case ASTNode::Type::SWITCH_STATEMENT: {
             emit_completion_reset();
+            // See WHILE_STATEMENT's identical guard -- covers the case
+            // bodies below (each conditionally reached); the discriminant
+            // itself is unconditional but sharing one barrier for the whole
+            // construct keeps this simple.
+            ThisCacheBarrier this_cache_guard(this_cache_valid_);
             const auto* stmt = static_cast<const SwitchStatement*>(node);
             const auto& cases = stmt->get_cases();
 
@@ -8863,9 +9024,25 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         case ASTNode::Type::IDENTIFIER: {
             const std::string& name = static_cast<const Identifier*>(node)->get_name();
             if (name == "this") {
+                // See this_cache_reg_'s own comment: a hit here means every
+                // path reaching this point already ran a successful LdaThis
+                // in this same straight-line run, so the register already
+                // holds the answer -- no TDZ re-check needed either, since
+                // that already passed at the read this register was seeded
+                // from (the TDZ state itself cannot un-clear mid-frame).
+                if (this_cache_reg_ >= 0 && this_cache_valid_) {
+                    emit(Op::Ldar);
+                    emit_u8(static_cast<uint8_t>(this_cache_reg_));
+                    return true;
+                }
                 // Op::LdaThis carries the derived-constructor TDZ check itself, so
                 // a `this` read before super() throws from there.
                 emit(Op::LdaThis);
+                if (this_cache_reg_ >= 0) {
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(this_cache_reg_));
+                    this_cache_valid_ = true;
+                }
                 return true;
             }
             if (with_depth_ > 0) {
@@ -8974,6 +9151,11 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             } else {
                 {
                     ChainMaskScope mask(chain_shortcircuit_jumps_);
+                    // The computed key is skipped along with the rest of the
+                    // chain when the object is nullish -- not the "runs
+                    // unconditionally" straight-line code this_cache_valid_
+                    // requires. See WHILE_STATEMENT's identical guard.
+                    ThisCacheBarrier this_cache_guard(this_cache_valid_);
                     if (!compile_expression(mem->get_property())) return false;
                 }
                 emit(Op::GetKeyed);
@@ -8988,7 +9170,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             const auto* expr = static_cast<const NullishCoalescingExpression*>(node);
             if (!compile_expression(expr->get_left())) return false;
             size_t skip = emit_jump(Op::JumpIfNotNullish);
-            if (!compile_expression(expr->get_right())) return false;
+            // The right operand is short-circuited -- may not run. See
+            // WHILE_STATEMENT's identical guard.
+            {
+                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                if (!compile_expression(expr->get_right())) return false;
+            }
             return patch_jump(skip);
         }
 
@@ -9001,7 +9188,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 if (!compile_expression(expr->get_left())) return false;
                 size_t skip = emit_jump(op == BinOp::LOGICAL_AND ? Op::JumpIfFalse
                                                                  : Op::JumpIfTrue);
-                if (!compile_expression(expr->get_right())) return false;
+                // The right operand is short-circuited -- may not run. See
+                // WHILE_STATEMENT's identical guard.
+                {
+                    ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                    if (!compile_expression(expr->get_right())) return false;
+                }
                 return patch_jump(skip);
             }
             if (op == BinOp::COMMA) {
@@ -9928,6 +10120,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 const ASTNode* mem_prop;
                 bool mem_computed;
                 bool mem_optional = callee->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION;
+                // `a?.b(...)` and `a.b?.(...)` each jump past everything
+                // from here to the call itself (receiver/method resolution
+                // for the computed-key case, and always the arguments) when
+                // the chain short-circuits -- not the "runs unconditionally"
+                // straight-line code this_cache_valid_ requires. See
+                // WHILE_STATEMENT's identical guard; `active` covers both
+                // jump sites at once since either can skip everything below.
+                ThisCacheBarrier this_cache_guard(this_cache_valid_, mem_optional || call->is_optional());
                 bool mem_private = false;
                 const MemberExpression* super_mem = nullptr;
                 if (!mem_optional) {
@@ -10155,6 +10355,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 // f?.(...): callee still in the accumulator after Star.
                 chain_shortcircuit_jumps_->push_back(emit_jump(Op::JumpIfNullish));
             }
+            // The arguments below are skipped along with the call itself
+            // when the callee is nullish. See WHILE_STATEMENT's identical
+            // guard.
+            ThisCacheBarrier this_cache_guard(this_cache_valid_, call->is_optional());
 
             // Arguments occupy consecutive temps: each argument expression
             // balances its own temps, so alloc_temp stays contiguous here.
@@ -10242,10 +10446,18 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             const auto* expr = static_cast<const ConditionalExpression*>(node);
             if (!compile_expression(expr->get_test())) return false;
             size_t else_jump = emit_jump(Op::JumpIfFalse);
-            if (!compile_expression(expr->get_consequent())) return false;
+            // Only one branch ever runs -- each gets its own barrier, same
+            // reasoning as IF_STATEMENT's.
+            {
+                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                if (!compile_expression(expr->get_consequent())) return false;
+            }
             size_t end_jump = emit_jump(Op::Jump);
             if (!patch_jump(else_jump)) return false;
-            if (!compile_expression(expr->get_alternate())) return false;
+            {
+                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                if (!compile_expression(expr->get_alternate())) return false;
+            }
             return patch_jump(end_jump);
         }
 

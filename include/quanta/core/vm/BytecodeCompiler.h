@@ -357,6 +357,17 @@ private:
     bool env_mode_ = false;
     int next_register_ = 0;
     int temp_watermark_ = 0;
+    // Register-mode `this` caching: a register reserved once, outside the
+    // temp allocator's LIFO stack (so no expression's alloc_temp/free_temp
+    // pair can ever reclaim it), for chunks a cheap pre-scan judged likely
+    // to read `this` more than once. -1 means this chunk didn't reserve one
+    // (env_mode chunks never do -- `this` is a named environment binding
+    // there, this caching is register-mode-only). this_cache_valid_ tracks
+    // whether the register CURRENTLY holds `this` on every path reaching
+    // the compiler's current position -- see ThisCacheBarrier, which is
+    // what keeps that claim honest across a branch, loop or short-circuit.
+    int this_cache_reg_ = -1;
+    bool this_cache_valid_ = false;
     std::vector<LoopScope> loop_stack_;
     std::vector<std::string> pending_labels_;  // set by LABELED_STATEMENT, taken by the next loop/switch
     std::unordered_set<const ASTNode*> hoisted_fn_decls_;  // top-level fn decls bound by compile()'s prologue
