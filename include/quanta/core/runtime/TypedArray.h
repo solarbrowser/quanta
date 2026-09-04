@@ -93,7 +93,15 @@ public:
     // leaf's full definition, which comes later in this header.
     Value get_element(size_t index) const;
     bool set_element(size_t index, const Value& value);
-    
+    // Same dispatch as get_element/set_element, but for a caller that has
+    // already bounds-checked index (e.g. Interpreter.cpp's GetKeyed/SetKeyed
+    // fast paths, which run typed_element_slot's own current_length() check
+    // first): skips the checked path's OWN internal check_bounds -- and the
+    // current_length() call inside it, which walks the buffer's detached/
+    // out-of-bounds/length-tracking state -- entirely.
+    Value get_element_unchecked(size_t index) const;
+    bool set_element_unchecked(size_t index, const Value& value);
+
     Value subarray(size_t start, size_t end = SIZE_MAX) const;
     void set_from_array(const std::vector<Value>& source, size_t offset = 0);
     void set_from_typed_array(const TypedArrayBase& source, size_t offset = 0);
@@ -129,6 +137,12 @@ class TypedArray : public TypedArrayBase {
 private:
     static_assert(sizeof(T) <= 8, "TypedArray element size must be <= 8 bytes");
 
+    // IntegerIndexedElementSet's modular-arithmetic conversion (ES6: integer
+    // typed arrays wrap, they don't clamp), shared between set_element and
+    // set_element_unchecked so the two can never drift apart on the actual
+    // math. Only ever instantiated for the non-floating-point specializations.
+    static T wrap_to_element(double num_val);
+
 protected:
     T get_typed_element(size_t index) const;
     bool set_typed_element(size_t index, T value);
@@ -150,6 +164,8 @@ public:
     
     Value get_element(size_t index) const;
     bool set_element(size_t index, const Value& value);
+    Value get_element_unchecked(size_t index) const;
+    bool set_element_unchecked(size_t index, const Value& value);
 
     T at(size_t index) const { return get_typed_element(index); }
     void set(size_t index, T value) { set_typed_element(index, value); }
@@ -182,6 +198,7 @@ public:
         : TypedArray(ArrayType::UINT8_CLAMPED, buffer, byte_offset, length) {}
 
     bool set_element(size_t index, const Value& value);
+    bool set_element_unchecked(size_t index, const Value& value);
 };
 
 class Int16Array : public TypedArray<int16_t> {

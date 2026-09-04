@@ -74,6 +74,44 @@ bool TypedArrayBase::set_element(size_t index, const Value& value) {
     return false;
 }
 
+// BigInt64Array/BigUint64Array fall back to the checked path here -- rare
+// enough (no benchmark or real workload seen this session exercises them on
+// this fast path) that writing them a real unchecked accessor isn't worth
+// it yet; every other leaf skips check_bounds's current_length() walk.
+Value TypedArrayBase::get_element_unchecked(size_t index) const {
+    switch (array_type_) {
+        case ArrayType::INT8: return static_cast<const Int8Array*>(this)->get_element_unchecked(index);
+        case ArrayType::UINT8: return static_cast<const Uint8Array*>(this)->get_element_unchecked(index);
+        case ArrayType::UINT8_CLAMPED: return static_cast<const Uint8ClampedArray*>(this)->get_element_unchecked(index);
+        case ArrayType::INT16: return static_cast<const Int16Array*>(this)->get_element_unchecked(index);
+        case ArrayType::UINT16: return static_cast<const Uint16Array*>(this)->get_element_unchecked(index);
+        case ArrayType::INT32: return static_cast<const Int32Array*>(this)->get_element_unchecked(index);
+        case ArrayType::UINT32: return static_cast<const Uint32Array*>(this)->get_element_unchecked(index);
+        case ArrayType::FLOAT32: return static_cast<const Float32Array*>(this)->get_element_unchecked(index);
+        case ArrayType::FLOAT64: return static_cast<const Float64Array*>(this)->get_element_unchecked(index);
+        case ArrayType::BIGINT64: return static_cast<const BigInt64Array*>(this)->get_element(index);
+        case ArrayType::BIGUINT64: return static_cast<const BigUint64Array*>(this)->get_element(index);
+    }
+    return Value();
+}
+
+bool TypedArrayBase::set_element_unchecked(size_t index, const Value& value) {
+    switch (array_type_) {
+        case ArrayType::INT8: return static_cast<Int8Array*>(this)->set_element_unchecked(index, value);
+        case ArrayType::UINT8: return static_cast<Uint8Array*>(this)->set_element_unchecked(index, value);
+        case ArrayType::UINT8_CLAMPED: return static_cast<Uint8ClampedArray*>(this)->set_element_unchecked(index, value);
+        case ArrayType::INT16: return static_cast<Int16Array*>(this)->set_element_unchecked(index, value);
+        case ArrayType::UINT16: return static_cast<Uint16Array*>(this)->set_element_unchecked(index, value);
+        case ArrayType::INT32: return static_cast<Int32Array*>(this)->set_element_unchecked(index, value);
+        case ArrayType::UINT32: return static_cast<Uint32Array*>(this)->set_element_unchecked(index, value);
+        case ArrayType::FLOAT32: return static_cast<Float32Array*>(this)->set_element_unchecked(index, value);
+        case ArrayType::FLOAT64: return static_cast<Float64Array*>(this)->set_element_unchecked(index, value);
+        case ArrayType::BIGINT64: return static_cast<BigInt64Array*>(this)->set_element(index, value);
+        case ArrayType::BIGUINT64: return static_cast<BigUint64Array*>(this)->set_element(index, value);
+    }
+    return false;
+}
+
 
 
 TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element)
@@ -427,13 +465,33 @@ template<typename T>
 Value TypedArray<T>::get_element(size_t index) const {
     if (!check_bounds(index)) return Value();
     T value = get_typed_element_unchecked(index);
-    if constexpr (std::is_floating_point_v<T>) {
-        return Value(static_cast<double>(value));
-    } else if constexpr (std::is_signed_v<T>) {
-        return Value(static_cast<double>(value));
-    } else {
-        return Value(static_cast<double>(value));
+    return Value(static_cast<double>(value));
+}
+
+template<typename T>
+Value TypedArray<T>::get_element_unchecked(size_t index) const {
+    T value = get_typed_element_unchecked(index);
+    return Value(static_cast<double>(value));
+}
+
+// ES6: Integer typed arrays use modular arithmetic (wrapping), not clamping.
+// Only instantiated for the non-floating-point specializations (set_element/
+// set_element_unchecked branch around it at compile time).
+template<typename T>
+T TypedArray<T>::wrap_to_element(double num_val) {
+    if (std::isnan(num_val) || std::isinf(num_val) || num_val == 0.0) {
+        return T{0};
     }
+    double truncated = std::trunc(num_val);
+    constexpr int bits = sizeof(T) * 8;
+    double mod = std::pow(2.0, bits);
+    double mod_val = std::fmod(truncated, mod);
+    if (mod_val < 0) mod_val += mod;
+    if constexpr (std::is_signed_v<T>) {
+        double half = mod / 2.0;
+        if (mod_val >= half) mod_val -= mod;
+    }
+    return static_cast<T>(static_cast<int64_t>(mod_val));
 }
 
 template<typename T>
@@ -443,25 +501,32 @@ bool TypedArray<T>::set_element(size_t index, const Value& value) {
         if (!check_bounds(index)) return false;
         return set_typed_element_unchecked(index, static_cast<T>(num_val));
     } else {
-        // ES6: Integer typed arrays use modular arithmetic (wrapping), not clamping
         double num_val = value.to_number();
-        T stored;
-        if (std::isnan(num_val) || std::isinf(num_val) || num_val == 0.0) {
-            stored = T{0};
-        } else {
-            double truncated = std::trunc(num_val);
-            constexpr int bits = sizeof(T) * 8;
-            double mod = std::pow(2.0, bits);
-            double mod_val = std::fmod(truncated, mod);
-            if (mod_val < 0) mod_val += mod;
-            if constexpr (std::is_signed_v<T>) {
-                double half = mod / 2.0;
-                if (mod_val >= half) mod_val -= mod;
-            }
-            stored = static_cast<T>(static_cast<int64_t>(mod_val));
-        }
+        T stored = wrap_to_element(num_val);
         if (!check_bounds(index)) return false;
         return set_typed_element_unchecked(index, stored);
+    }
+}
+
+template<typename T>
+bool TypedArray<T>::set_element_unchecked(size_t index, const Value& value) {
+    // to_number() on anything but an already-numeric Value can run
+    // arbitrary JS (valueOf/toString/Symbol.toPrimitive), which can resize
+    // or detach THIS array's own buffer mid-conversion -- the caller's
+    // bounds check (typed_element_slot, run before this call) only says
+    // index was in bounds BEFORE that conversion, not after. set_element's
+    // own check_bounds, run after to_number(), is what catches that; it
+    // isn't the redundant check this fast path exists to skip. Safe to
+    // skip entirely only when the value is already a number: converting a
+    // number to a number never runs script, so nothing can happen between
+    // the caller's check and this write -- exactly the case a hot numeric
+    // array store is. Anything else takes the fully-checked path.
+    if (!value.is_number()) return set_element(index, value);
+    double num_val = value.as_number();
+    if constexpr (std::is_floating_point_v<T>) {
+        return set_typed_element_unchecked(index, static_cast<T>(num_val));
+    } else {
+        return set_typed_element_unchecked(index, wrap_to_element(num_val));
     }
 }
 
@@ -476,21 +541,30 @@ template class TypedArray<float>;
 template class TypedArray<double>;
 
 
+namespace {
+// ClampRound: ties round to the nearest *even* integer, not away from zero --
+// std::nearbyint uses the default (round-to-nearest-even) FP rounding mode.
+// Shared between Uint8ClampedArray's checked and unchecked set_element so
+// the two can never drift apart on the actual clamping math.
+uint8_t clamp_to_u8(double num_val) {
+    if (std::isnan(num_val)) return 0;
+    if (num_val < 0.0) return 0;
+    if (num_val > 255.0) return 255;
+    return static_cast<uint8_t>(std::nearbyint(num_val));
+}
+}  // namespace
+
 bool Uint8ClampedArray::set_element(size_t index, const Value& value) {
-    double num_val = value.to_number();
-    if (std::isnan(num_val)) {
-        return set_typed_element(index, 0);
-    }
-    
-    if (num_val < 0.0) {
-        return set_typed_element(index, 0);
-    } else if (num_val > 255.0) {
-        return set_typed_element(index, 255);
-    } else {
-        // ClampRound: ties round to the nearest *even* integer, not away from zero --
-        // std::nearbyint uses the default (round-to-nearest-even) FP rounding mode.
-        return set_typed_element(index, static_cast<uint8_t>(std::nearbyint(num_val)));
-    }
+    return set_typed_element(index, clamp_to_u8(value.to_number()));
+}
+
+bool Uint8ClampedArray::set_element_unchecked(size_t index, const Value& value) {
+    // Same reasoning as TypedArray<T>::set_element_unchecked: only safe to
+    // skip the post-conversion bounds re-check when the value is already
+    // numeric, since only a non-numeric value's to_number() can run script
+    // that shrinks or detaches the buffer mid-call.
+    if (!value.is_number()) return set_element(index, value);
+    return set_typed_element_unchecked(index, clamp_to_u8(value.as_number()));
 }
 
 

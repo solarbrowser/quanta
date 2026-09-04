@@ -5111,7 +5111,7 @@ Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
             DISPATCH();
         }
         if (typed_element_slot(recv, index, typed)) {
-            acc = typed->get_element(index);
+            acc = typed->get_element_unchecked(index);
             pc += 4;
             DISPATCH();
         }
@@ -5196,7 +5196,7 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
                         break;
                     }
                     if (typed_element_slot(recv, index, typed)) {
-                        acc = typed->get_element(index);
+                        acc = typed->get_element_unchecked(index);
                         break;
                     }
                 }
@@ -5249,7 +5249,7 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                         break;
                     }
                     if (typed_element_slot(recv, index, typed)) {
-                        typed->set_element(index, acc);
+                        typed->set_element_unchecked(index, acc);
                         break;
                     }
                 }
