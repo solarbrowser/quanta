@@ -518,6 +518,10 @@ ClosureTemplate closure_template_for(const ASTNode* literal) {
 Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
     using Form = ClosureTemplate::Form;
     ExecutableRef<FunctionExecutable> exe = tpl.executable;
+    // Decl-site-constant like bytecode_chunk itself, and every instantiation
+    // from this template hands over the identical chain -- so an unconditional
+    // overwrite is idempotent, the same reasoning closure_props_state etc. rely on.
+    exe->outer_scope_chain = tpl.outer_scope_chain;
 
     Function* fn;
     if (tpl.is_async && tpl.is_generator) {

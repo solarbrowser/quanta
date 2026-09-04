@@ -3366,6 +3366,19 @@ bool collect_direct_lexical_decls(const ASTNode* node,
         for (const auto& d : decl->get_declarations()) {
             if (d->get_init() && d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                 needs_own_env = true;
+                // A pattern's own bound names still belong to this scope --
+                // omitting them here left them out of every lexical_scopes_
+                // this feeds, so lexical_out_of_scope() always answered
+                // "out of scope" for one, even from a read written right
+                // after its own declaration. Op::LdaLookup's real chain walk
+                // always found the right answer anyway, which is why this
+                // went unnoticed; only a caller trusting is_local() outright
+                // (a slot-position fast path) can actually be misled by it.
+                std::vector<std::string> bound;
+                static_cast<const DestructuringAssignment*>(d->get_init())->collect_bound_names(bound);
+                for (const auto& name : bound) {
+                    if (!name.empty()) vars.push_back({name, true, is_const, false});
+                }
                 continue;
             }
             if (!d->get_id()) return false;
@@ -3848,7 +3861,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const ASTNode* body, const ParamList& params,
     bool suspendable, bool is_arrow, bool is_strict,
     const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
-    const BodyScopeInfo* scope_info) {
+    const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain) {
     if (!body) return nullptr;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
@@ -4250,6 +4263,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                           suspendable || has_delegated_expr;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
     compiler.outer_with_ = outer_with;
+    // A `with` anywhere between here and whatever chain was handed down
+    // invalidates every hop count in it -- env_depth_ does not count a with's
+    // own object environment, so hops computed without one on the path would
+    // land short once one is actually there at runtime.
+    if (!outer_with) compiler.ancestor_chain_ = std::move(ancestor_chain);
     compiler.annexb_fn_vars_ = std::move(annexb_fn_vars);
     // Every lexically declared name, known before a single instruction is
     // emitted. Learning it while compiling made the answer depend on source
@@ -4263,6 +4281,15 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     if (compiler.failed_) return nullptr;
     compiler.allow_arguments_ = needs_arguments || allow_arguments;
     compiler.eval_in_body_ = an_op.saw_eval;
+    // A direct eval anywhere in this body can introduce a sloppy-mode `var`
+    // this compiler never saw -- is_local's static answer would stay "not
+    // local" for it, same as any genuinely outer name, but the runtime
+    // binding it creates lives in THIS function's own scope, nearer than
+    // any ancestor. Op::LdaLookup's real chain walk finds it first, exactly
+    // as it should; a hop count computed without knowing it exists would
+    // jump straight past it to the wrong (outer) binding. See
+    // find_ancestor_slot's every call site.
+    if (compiler.eval_in_body_) compiler.ancestor_chain_ = nullptr;
     compiler.suspendable_ = suspendable;
     if (has_rest) {
         if (!env_mode || !compiler.env_names_.insert(rest_name).second) return nullptr;
@@ -4654,6 +4681,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         compiler.chunk_->needs_arguments = needs_arguments;
         if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
         if (env_mode) compiler.chunk_->ensure_env().env_slot_total = static_cast<uint16_t>(flat_slot_counter);
+        compiler.finalize_ancestor_chains();
         if (compiler.chunk_->uses_lookup_cache) {
             compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
                 static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
@@ -4681,7 +4709,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         if (!env_mode) return nullptr;
         if (compiler.chunk_->ensure_closures().size() >= 0xFFFF) return nullptr;
         compiler.hoisted_fn_decls_.insert(stmt.get());
-        compiler.chunk_->ensure_closures().push_back(closure_template_for(stmt.get()));
+        compiler.chunk_->ensure_closures().push_back(
+            compiler.with_ancestor_chain(closure_template_for(stmt.get())));
         compiler.emit(Op::DeclareFunction);
         compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_closures().size() - 1));
     }
@@ -4731,6 +4760,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     compiler.chunk_->needs_arguments = needs_arguments;
     if (env_mode && !selective) compiler.chunk_->ensure_env().env_params = param_names;
     if (env_mode) compiler.chunk_->ensure_env().env_slot_total = static_cast<uint16_t>(flat_slot_counter);
+    compiler.finalize_ancestor_chains();
     if (compiler.chunk_->uses_lookup_cache) {
         compiler.chunk_->lookup_cache = FixedArray<BytecodeChunk::LookupCacheEntry>::filled(
             static_cast<uint32_t>(compiler.names_.size()), BytecodeChunk::LookupCacheEntry{});
@@ -5190,6 +5220,128 @@ void BytecodeCompiler::record_env_slot_info(const std::vector<BytecodeChunk::Loo
     }
 }
 
+void BytecodeCompiler::finalize_ancestor_chains() {
+    if (pending_ancestor_chain_sites_.empty()) return;
+    auto slots = std::make_shared<std::unordered_map<std::string, ClosureSlotInfo>>();
+    for (const auto& [name, info] : env_slot_info_) {
+        // sibling_safe_names_ entries are excluded: their (slot, depth) is
+        // only proven valid for reads that stay inside this function (the
+        // disjointness proof is about two regions of THIS body, not about
+        // what a closure escaping it might see) -- see ClosureSlotInfo.
+        auto it = global_decl_count_.find(name);
+        if (it != global_decl_count_.end() && it->second == 1) {
+            (*slots)[name] = ClosureSlotInfo{info.slot, info.depth};
+        }
+    }
+    // Every OTHER name this function itself considers local -- the exact
+    // is_local() union -- minus what just got exposed above. A name found
+    // here has to stop the walk rather than let it continue outward: this
+    // function DOES declare it (ambiguously, or register-resident with no
+    // slot prediction), so a read written inside a nested closure meaning
+    // THIS name has to mean the declaration here, never an unrelated
+    // same-named one further out. See ClosureScopeChain::ambiguous.
+    auto ambiguous = std::make_shared<std::unordered_set<std::string>>();
+    for (const auto& name : env_names_) if (!slots->count(name)) ambiguous->insert(name);
+    for (const auto& [name, reg] : locals_) { (void)reg; if (!slots->count(name)) ambiguous->insert(name); }
+    auto& closures = chunk_->ensure_closures();
+    for (const auto& [index, creation_depth] : pending_ancestor_chain_sites_) {
+        auto layer = std::make_shared<ClosureScopeChain>();
+        layer->outer = ancestor_chain_;
+        layer->slots = slots;
+        layer->ambiguous = ambiguous;
+        layer->entry_hop = 1 + creation_depth;
+        closures[index].outer_scope_chain = std::move(layer);
+    }
+    pending_ancestor_chain_sites_.clear();
+}
+
+ClosureTemplate BytecodeCompiler::with_ancestor_chain(ClosureTemplate tmpl) const {
+    // capture_free walks straight to the outermost environment and holds
+    // none of the intermediate scopes a chain's hop counts assume are there
+    // (see ClosureTemplate::outer_scope_chain). with_depth_ > 0 means this
+    // literal sits inside a `with` block in the CURRENT function -- the
+    // closure's own captured environment would be the with's object
+    // environment, not a declarative scope env_depth_ was counting.
+    if (!tmpl.capture_free && with_depth_ == 0) {
+        pending_ancestor_chain_sites_.push_back({chunk_->ensure_closures().size(), env_depth_});
+    }
+    return tmpl;
+}
+
+bool BytecodeCompiler::find_ancestor_slot(const std::string& name, int& hops, uint8_t& slot) const {
+    // Starts from env_depth_, not 0: entry_hop measures each layer's
+    // distance from a CHILD's own entry_env (the point a fresh closure
+    // starts at), but the read site itself may already be env_depth_ hops
+    // deep in the CURRENT function's own nested blocks/loops -- exactly the
+    // same reason emit_read_local's intra-function hops = env_depth_ -
+    // target_depth subtracts from env_depth_ rather than from 0.
+    int total = env_depth_;
+    bool first_layer = true;
+    for (const ClosureScopeChain* node = ancestor_chain_.get(); node; node = node->outer.get()) {
+        int hop = node->entry_hop;
+        if (first_layer) {
+            // entry_hop was built as "1 + creation_depth" by the function
+            // that made THIS layer's chain -- the 1 assumes crossing from a
+            // fresh entry_env into closure_environment_. That crossing only
+            // exists if THIS (reading) function actually has its own
+            // entry_env: Function::call_default_impl's register-mode fast
+            // path (fast_gate, !env_mode) never allocates one -- it points
+            // ctx's own lexical_environment straight at closure_environment_
+            // -- so for a register-mode reader, hop 0 already IS what the
+            // "+1" was meant to reach. Every layer past the first was built
+            // by an ancestor that already knew ITS OWN env_mode when it
+            // computed the same "+1", so only the first layer needs this
+            // adjustment.
+            if (!env_mode_) hop -= 1;
+            first_layer = false;
+        }
+        total += hop;
+        auto it = node->slots->find(name);
+        if (it != node->slots->end()) {
+            const int h = total - it->second.depth;
+            // h == 0 is valid (a register-mode child's hop 0 already IS an
+            // ancestor's own environment -- see find_ancestor_slot's own
+            // comment on first_layer) and callers emit Op::LdaEnvSlot for
+            // it, the same zero-hop opcode emit_read_local's own intra-
+            // function case uses. Only genuinely too-deep nesting bails.
+            if (h < 0 || h > 255) return false;  // pathological nesting; LdaLookup still answers it
+            hops = h;
+            slot = it->second.slot;
+            return true;
+        }
+        // This layer's own function declares `name` too, just not safely
+        // (ambiguous, or register-only with no predicted slot) -- stopping
+        // here (rather than continuing outward) is what keeps a read from
+        // ever matching an unrelated same-named declaration past it.
+        if (node->ambiguous->count(name)) return false;
+    }
+    return false;
+}
+
+void BytecodeCompiler::emit_ancestor_read(int hops, uint8_t slot, const std::string& name) {
+    if (hops == 0) {
+        emit(Op::LdaEnvSlot);
+        emit_u8(slot);
+    } else {
+        emit(Op::LdaEnvSlotAt);
+        emit_u8(static_cast<uint8_t>(hops));
+        emit_u8(slot);
+    }
+    emit_u16(add_name(name));
+}
+
+void BytecodeCompiler::emit_ancestor_write(int hops, uint8_t slot, const std::string& name) {
+    if (hops == 0) {
+        emit(Op::StaEnvSlot);
+        emit_u8(slot);
+    } else {
+        emit(Op::StaEnvSlotAt);
+        emit_u8(static_cast<uint8_t>(hops));
+        emit_u8(slot);
+    }
+    emit_u16(add_name(name));
+}
+
 std::vector<std::string> BytecodeCompiler::take_pending_labels() {
     std::vector<std::string> labels = std::move(pending_labels_);
     pending_labels_.clear();
@@ -5632,7 +5784,14 @@ void BytecodeCompiler::emit_read_local(const std::string& name) {
     int reg = lookup_local(name);
     // Not register-resident after all: the name lives further out, so read it
     // the way an outer name is read rather than encoding register -1.
-    if (reg < 0) { emit(Op::LdaLookup); emit_u16(add_name(name)); return; }
+    if (reg < 0) {
+        int hops; uint8_t slot;
+        if (ancestor_chain_ && find_ancestor_slot(name, hops, slot)) {
+            emit_ancestor_read(hops, slot, name);
+            return;
+        }
+        emit(Op::LdaLookup); emit_u16(add_name(name)); return;
+    }
     if (lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) {
         emit(Op::LdarChecked);
         emit_u8(static_cast<uint8_t>(reg));
@@ -5672,7 +5831,14 @@ void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declara
         return;
     }
     int reg = lookup_local(name);
-    if (reg < 0) { emit(Op::StaLookup); emit_u16(add_name(name)); return; }
+    if (reg < 0) {
+        int hops; uint8_t slot;
+        if (!is_declaration && ancestor_chain_ && find_ancestor_slot(name, hops, slot)) {
+            emit_ancestor_write(hops, slot, name);
+            return;
+        }
+        emit(Op::StaLookup); emit_u16(add_name(name)); return;
+    }
     if (!is_declaration && lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) {
         emit(Op::StarChecked);
         emit_u8(static_cast<uint8_t>(reg));
@@ -6098,7 +6264,7 @@ bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
     if (!id || id->get_name().empty()) return false;
     const std::string& name = id->get_name();
     if (annexb_fn_vars_.count(name)) {
-        chunk_->ensure_closures().push_back(closure_template_for(branch));
+        chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(branch)));
         emit(Op::CreateClosure);
         emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
         emit_write_local(name, /*is_declaration=*/false);
@@ -6113,7 +6279,7 @@ bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
     emit_u16(static_cast<uint16_t>(chunk_->ensure_env().loop_envs.size() - 1));
     env_depth_++;
     hoisted_fn_decls_.insert(branch);
-    chunk_->ensure_closures().push_back(closure_template_for(branch));
+    chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(branch)));
     emit(Op::DeclareFunction);
     emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
     emit(Op::ExitLoopEnv);
@@ -6494,6 +6660,11 @@ bool BytecodeCompiler::emit_pattern_target_store(const ASTNode* target, bool is_
         }
         if (!env_names_.count(name) && lookup_local(name) < 0) {
             if (is_assignment || !script_mode_) {
+                int hops; uint8_t slot;
+                if (ancestor_chain_ && find_ancestor_slot(name, hops, slot)) {
+                    emit_ancestor_write(hops, slot, name);
+                    return !failed_;
+                }
                 emit(Op::StaLookup);
                 emit_u16(add_name(name));
                 return !failed_;
@@ -7087,6 +7258,20 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
             emit_write_local(name, /*is_declaration=*/false);
             return patch_jump(skip) && !failed_;
         }
+        {
+            int hops; uint8_t slot;
+            if (ancestor_chain_ && find_ancestor_slot(name, hops, slot)) {
+                emit_ancestor_read(hops, slot, name);
+                size_t skip = emit_jump(skip_op);
+                if (!compile_expression(expr->get_right())) return false;
+                if (name_rhs) {
+                    emit(Op::SetFunctionNameIfUnnamed);
+                    emit_u16(add_name(name));
+                }
+                emit_ancestor_write(hops, slot, name);
+                return patch_jump(skip) && !failed_;
+            }
+        }
         emit(Op::LdaLookup);
         emit_u16(add_name(name));
         size_t skip = emit_jump(skip_op);
@@ -7304,7 +7489,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 if (!env_mode_) return false;
                 if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
                 hoisted_fn_decls_.insert(st.get());
-                chunk_->ensure_closures().push_back(closure_template_for(st.get()));
+                chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(st.get())));
                 emit(Op::DeclareFunction);
                 emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             }
@@ -8202,7 +8387,7 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                     if (!env_mode_) return false;
                     if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
                     hoisted_fn_decls_.insert(s.get());
-                    chunk_->ensure_closures().push_back(closure_template_for(s.get()));
+                    chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(s.get())));
                     emit(Op::DeclareFunction);
                     emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
                 }
@@ -8566,7 +8751,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
     {
         ClosureTemplate tmpl;
         if (ctor) {
-            tmpl = closure_template_for(ctor->get_value());
+            tmpl = with_ancestor_chain(closure_template_for(ctor->get_value()));
             // What a class reports for itself is its whole text, not its
             // constructor's. The executable belongs to this one class site, so
             // pointing it at the class's range costs nothing and keeps the
@@ -8683,7 +8868,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 tmpl.body_is_strict = true;
                 tmpl.is_method_shorthand = true;  // no .prototype, not a constructor
                 if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
-                chunk_->ensure_closures().push_back(std::move(tmpl));
+                chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
                 emit(Op::CreateClosure);
                 emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             } else {
@@ -8707,7 +8892,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             // compiler's own keeps_super check).
             const bool keeps_super = method_value_references_super(e.m->get_value());
             {
-                ClosureTemplate tmpl = closure_template_for(e.m->get_value());
+                ClosureTemplate tmpl = with_ancestor_chain(closure_template_for(e.m->get_value()));
                 // A class writes `async m()` as an ordinary function literal
                 // carrying the async flag, whereas everywhere else an async
                 // function arrives as its own node. instantiate_closure reads
@@ -8803,7 +8988,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             tmpl.body_is_strict = true;
             tmpl.is_method_shorthand = true;
             if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
-            chunk_->ensure_closures().push_back(std::move(tmpl));
+            chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
             emit(Op::CreateClosure);
             emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             emit(Op::RunStaticElement);
@@ -9067,6 +9252,13 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             // called indirectly, which runs in global scope anyway.
             if (name == "arguments" && !allow_arguments_) return false;
             if (name == "super" || name == "new") return false;
+            {
+                int hops; uint8_t slot;
+                if (ancestor_chain_ && find_ancestor_slot(name, hops, slot)) {
+                    emit_ancestor_read(hops, slot, name);
+                    return !failed_;
+                }
+            }
             emit(Op::LdaLookup);
             emit_u16(add_name(name));
             return !failed_;
@@ -9502,8 +9694,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         return !failed_;
                     }
                     if (!is_local(name) || lexical_out_of_scope(name)) {
-                        emit(Op::LdaLookup);
-                        emit_u16(add_name(name));
+                        int hops; uint8_t slot;
+                        const bool via_chain = ancestor_chain_ && find_ancestor_slot(name, hops, slot);
+                        if (via_chain) {
+                            emit_ancestor_read(hops, slot, name);
+                        } else {
+                            emit(Op::LdaLookup);
+                            emit_u16(add_name(name));
+                        }
                         if (is_post) {
                             emit(Op::ToNumeric);
                             int temp = alloc_temp();
@@ -9511,15 +9709,23 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             emit(Op::Star);
                             emit_u8(static_cast<uint8_t>(temp));
                             emit(is_inc ? Op::Inc : Op::Dec);
-                            emit(Op::StaLookup);
-                            emit_u16(add_name(name));
+                            if (via_chain) {
+                                emit_ancestor_write(hops, slot, name);
+                            } else {
+                                emit(Op::StaLookup);
+                                emit_u16(add_name(name));
+                            }
                             emit(Op::Ldar);
                             emit_u8(static_cast<uint8_t>(temp));
                             free_temp(temp);
                         } else {
                             emit(is_inc ? Op::Inc : Op::Dec);
-                            emit(Op::StaLookup);
-                            emit_u16(add_name(name));
+                            if (via_chain) {
+                                emit_ancestor_write(hops, slot, name);
+                            } else {
+                                emit(Op::StaLookup);
+                                emit_u16(add_name(name));
+                            }
                         }
                         return !failed_;
                     }
@@ -9750,6 +9956,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     // reference throws) BEFORE the rhs runs.
                     uint8_t eval_slot = 0;
                     const bool park = eval_in_body_;
+                    bool via_chain = false;
+                    int chain_hops = 0;
+                    uint8_t chain_slot = 0;
                     if (park) {
                         // One resolution serves the read and the write, so a
                         // direct eval in the rhs cannot move the target between
@@ -9763,8 +9972,16 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         emit_u8(eval_slot);
                         emit_u16(add_name(name));
                     } else {
-                        emit(Op::LdaLookup);
-                        emit_u16(add_name(name));
+                        int hops; uint8_t slot;
+                        if (ancestor_chain_ && find_ancestor_slot(name, hops, slot)) {
+                            via_chain = true;
+                            chain_hops = hops;
+                            chain_slot = slot;
+                            emit_ancestor_read(hops, slot, name);
+                        } else {
+                            emit(Op::LdaLookup);
+                            emit_u16(add_name(name));
+                        }
                     }
                     int temp = alloc_temp();
                     if (failed_) return false;
@@ -9779,6 +9996,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         emit_u8(eval_slot);
                         emit_u16(add_name(name));
                         resolved_env_slots_--;
+                    } else if (via_chain) {
+                        emit_ancestor_write(chain_hops, chain_slot, name);
                     } else {
                         emit(Op::StaLookup);
                         emit_u16(add_name(name));
@@ -10504,7 +10723,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
             if (!env_mode_) return false;
             if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
-            chunk_->ensure_closures().push_back(closure_template_for(node));
+            chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(node)));
             emit(Op::CreateClosure);
             emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
             return true;

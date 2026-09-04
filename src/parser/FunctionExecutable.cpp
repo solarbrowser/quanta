@@ -26,9 +26,17 @@ namespace Quanta {
 // on. And by where the literal's own text sits, for the same trade again:
 // four bytes each against the copy of that text every declaration used to
 // carry for a toString() almost none of them receives.
-static_assert(sizeof(FunctionExecutable) == 224);
+// Then by outer_scope_chain (a shared_ptr, 16 bytes): unlike the fields
+// above, which are per-executable-instance costs multiplying with a whole
+// program's function count, this one is a much smaller trade -- a decl site
+// only ever gets ONE FunctionExecutable (shared by every instantiation), so
+// the cost scales with source size, not with runtime closure-creation
+// count, the way Function's own byte budget does. 224 and 240 are both exact
+// Heap::kSizeClasses entries, so this lands on the next class cleanly rather
+// than paying for slack an in-between size would waste.
+static_assert(sizeof(FunctionExecutable) == 240);
 #else
-static_assert(sizeof(FunctionExecutable) <= 240);
+static_assert(sizeof(FunctionExecutable) <= 256);
 #endif
 
 constinit thread_local FunctionExecutable* FunctionExecutable::live_head_ = nullptr;

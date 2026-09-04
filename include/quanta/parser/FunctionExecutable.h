@@ -11,11 +11,14 @@
 #include "quanta/lexer/Token.h"
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Quanta {
 
 struct BodyScopeInfo;
+struct ClosureScopeChain;
 
 class ASTNode;
 class ScriptUnit;
@@ -250,6 +253,14 @@ public:
     // Function instances never touch these.
     mutable std::unique_ptr<const BytecodeChunk> suspendable_chunk;
 
+    // Set once, in instantiate_closure, from the ClosureTemplate this
+    // executable was built from -- same decl-site-constant, set-once-
+    // shared-by-every-instance rationale as bytecode_chunk. Read back by
+    // Function::call_default_impl's own lazy BytecodeCompiler::compile call,
+    // which is the only place bytecode_chunk above is actually built. See
+    // ClosureTemplate::outer_scope_chain's own comment.
+    mutable std::shared_ptr<const ClosureScopeChain> outer_scope_chain;
+
 private:
     // Intrusive list of every live executable, walked front-to-back by
     // gc_trace_roots(). Two inline pointers and no allocation, where a hash
@@ -412,6 +423,55 @@ inline ExecutableRef<FunctionExecutable> make_executable_ref() {
     return ExecutableRef<FunctionExecutable>(new FunctionExecutable());
 }
 
+// One name a compiled function exposes to closures nested inside it: the
+// same (slot, depth) BytecodeCompiler::EnvSlotInfo already computes for its
+// own LdaEnvSlot/LdaEnvSlotAt reads, duplicated here (rather than shared
+// with the compiler's private nested type) so this header does not need the
+// compiler class definition. Only names with global_decl_count_ == 1 are
+// ever collected into one of these maps -- sibling_safe_names_ entries are
+// deliberately left out, since their (slot, depth) is only valid for reads
+// that stay inside the one function that proved the disjointness, a proof
+// this header has no way to redo for a nested closure crossing out of it.
+struct ClosureSlotInfo { uint8_t slot; int depth; };
+
+// One function's worth of ClosureSlotInfo, plus how to reach it from a
+// closure nested directly inside it -- one link in the chain a compiled
+// function hands to every closure literal it creates, so that closure's own
+// compile (however much later that runs; see bytecode_chunk above) can
+// resolve an outer read with Op::LdaEnvSlotAt instead of Op::LdaLookup.
+//
+// `outer` is this function's OWN chain (what it was given when it was
+// itself compiled), reused as-is -- an ancestor's `slots` is shared, never
+// copied, so building a child's chain costs exactly one new map (this
+// function's own names) no matter how deep the nesting already is.
+//
+// A read walks the chain accumulating `entry_hop`s until a layer's `slots`
+// has the name, then answers with (running total) - depth. `entry_hop`
+// exists because Function::closure_environment_ captures exactly the
+// Environment active at CreateClosure time -- one hop from a closure's own
+// entry_env always lands exactly there, and from there the ordinary intra-
+// function hop count (that layer's own env_depth_ at creation minus the
+// target's recorded depth) takes over. See BytecodeCompiler::build_child_
+// chain for where `entry_hop` (1 + the creation-time env_depth_) is set.
+//
+// `ambiguous` is every OTHER name this layer's own function declares --
+// present but left out of `slots` because global_decl_count_ found more
+// than one declaration and nothing here re-proves disjointness for a
+// closure escaping the function (see ClosureSlotInfo). A layer whose
+// function declares `x` at all -- exposed or not -- is exactly where a
+// read of `x` written INSIDE that function has to resolve, so finding the
+// name in `ambiguous` has to stop the walk (fall back to Op::LdaLookup),
+// never skip to an unrelated same-named declaration further out. Without
+// this, two functions that happen to reuse a short name (every minifier's
+// output) could make a nested closure's `x` resolve to a completely
+// different `x` several scopes out.
+struct ClosureScopeChain {
+    std::shared_ptr<const ClosureScopeChain> outer;
+    std::shared_ptr<const std::unordered_map<std::string, ClosureSlotInfo>> slots;
+    std::shared_ptr<const std::unordered_set<std::string>> ambiguous;
+    int entry_hop = 0;
+};
+
 // Everything instantiating a function literal needs that is fixed by the
 // literal's own source text: computed once per decl site, cached on the AST
 // node, shared by every instantiation. The other half of instantiation reads
@@ -449,6 +509,16 @@ struct ClosureTemplate {
     bool body_is_strict = false;       // "use strict" directive in the body itself
     bool has_direct_eval = false;
     uint32_t declared_length = 0;
+    // What the enclosing function's own compile pass exposes of its outer-
+    // reachable names, for this literal's own (later, possibly much later --
+    // see bytecode_chunk) compile to resolve captures through LdaEnvSlotAt
+    // instead of LdaLookup. Null for a capture_free template (walks straight
+    // to the outermost environment, so no intermediate layer's slots apply)
+    // or one built somewhere static resolution is not sound (with/eval on
+    // the path -- see the closure_template_for call sites). Copied onto
+    // the executable in instantiate_closure, since that is where compile()
+    // is eventually invoked from.
+    std::shared_ptr<const ClosureScopeChain> outer_scope_chain;
 };
 
 }

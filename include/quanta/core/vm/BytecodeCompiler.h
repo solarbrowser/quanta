@@ -38,6 +38,15 @@ public:
     // (its parameters live in the Context, not in registers), so a `var` that
     // repeats a parameter's name would otherwise be given a register nothing
     // ever fills.
+    // `ancestor_chain`: what the enclosing function's own compile exposed of
+    // its outer-reachable names, for THIS body to resolve a capture through
+    // (see ClosureScopeChain's own comment). Only ever non-null from
+    // Function::call_default_impl's lazy compile, which is the sole call site
+    // that actually has one (an executable's own outer_scope_chain, set once
+    // in instantiate_closure) -- every other caller compiles something that
+    // was never handed to instantiate_closure as a ClosureTemplate (a script,
+    // a suspendable body, a one-off eval'd expression), so it has nothing to
+    // pass and takes the default.
     static std::unique_ptr<BytecodeChunk> compile(
         const ASTNode* body, const ParamList& params,
         bool suspendable = false,
@@ -46,7 +55,8 @@ public:
                                                  const std::vector<std::string>* env_bound = nullptr,
                                                  bool outer_with = false,
                                                  bool allow_arguments = false,
-                                                 const BodyScopeInfo* scope_info = nullptr);
+                                                 const BodyScopeInfo* scope_info = nullptr,
+                                                 std::shared_ptr<const ClosureScopeChain> ancestor_chain = nullptr);
 
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,
@@ -186,6 +196,55 @@ private:
     // the env_depth_ value that will be active once this scope's
     // EnterLoopEnv has run (i.e. after the caller's env_depth_++).
     void record_env_slot_info(const std::vector<BytecodeChunk::LoopEnvVar>& vars, int depth);
+
+    // What THIS function was given, from its own enclosing function's
+    // compile, to resolve ITS OWN outer captures -- see ClosureScopeChain's
+    // own comment. Null for a top-level/script/never-a-closure compile, or
+    // whenever outer_with_ makes the whole chain unsound (see compile()).
+    std::shared_ptr<const ClosureScopeChain> ancestor_chain_;
+    // (closure index in chunk_->ensure_closures(), creation_depth) pairs
+    // recorded by with_ancestor_chain, resolved once by
+    // finalize_ancestor_chains() after this function's whole body has
+    // compiled. env_slot_info_/env_names_/locals_ only ever grow during a
+    // compile (nothing erases from them -- see BytecodeCompiler.cpp), so
+    // building the chain layer's (slots, ambiguous) maps from their final
+    // state and sharing that ONE build across every site in this function is
+    // both cheaper than a fresh O(env size) snapshot per closure literal and
+    // strictly at least as complete as one taken earlier mid-compile would
+    // have been. `mutable` so with_ancestor_chain, which every
+    // closure_template_for call site calls inline while building a
+    // ClosureTemplate to push, can stay const.
+    mutable std::vector<std::pair<size_t, int>> pending_ancestor_chain_sites_;
+    // Builds the (slots, ambiguous) pair once from this function's now-final
+    // env_slot_info_/env_names_/locals_ (see pending_ancestor_chain_sites_'s
+    // comment) and assigns each pending site's own ClosureScopeChain layer
+    // (varying only by its recorded creation_depth) into
+    // chunk_->ensure_closures(). A no-op when nothing is pending, the common
+    // case for a function with no capturing nested closures. Called once, at
+    // the tail of compile(), after body compilation has finished.
+    void finalize_ancestor_chains();
+    // Records (or deliberately withholds) a pending chain site for one
+    // freshly built ClosureTemplate -- the one call every
+    // closure_template_for call site makes right before pushing its result
+    // into chunk_->closures, so the gating (capture_free, with_depth_) lives
+    // in exactly one place. creation_depth is env_depth_ taken right here, at
+    // the closure's own literal position; the actual chain layer is built
+    // later, by finalize_ancestor_chains.
+    ClosureTemplate with_ancestor_chain(ClosureTemplate tmpl) const;
+    // Walks ancestor_chain_ looking for `name`, accumulating entry_hop as it
+    // goes out one function at a time. A hit sets `hops`/`slot` for an
+    // Op::LdaEnvSlotAt/StaEnvSlotAt pair and returns true; used by emit_read_
+    // local/emit_write_local's own outer-name fallback, in place of
+    // Op::LdaLookup/StaLookup, whenever this returns true.
+    bool find_ancestor_slot(const std::string& name, int& hops, uint8_t& slot) const;
+    // Emits the read/write for a find_ancestor_slot hit: Op::LdaEnvSlot/
+    // StaEnvSlot (no hop count, cheaper) when hops == 0 -- a register-mode
+    // closure's own hop 0 already IS the ancestor's environment -- else
+    // Op::LdaEnvSlotAt/StaEnvSlotAt. Every ancestor-chain call site emits
+    // through these instead of hardcoding LdaEnvSlotAt, so the zero-hop case
+    // is never missed.
+    void emit_ancestor_read(int hops, uint8_t slot, const std::string& name);
+    void emit_ancestor_write(int hops, uint8_t slot, const std::string& name);
 
     // Rewrites every "produce into the accumulator, then park it in a
     // register" pair into the single instruction that does both. Run once on
