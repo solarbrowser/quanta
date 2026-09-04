@@ -955,6 +955,34 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
     FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (!obj) return;
     Collector::write_barrier(obj);
+
+    // A getter+setter pair sharing a key reaches here twice: the class/
+    // literal's second accessor for the same name lands on a key that
+    // already owns an accessor-kind shape slot pair from the first (see
+    // is_accessor_slot's doc comment -- getter at find_slot(key), setter at
+    // find_slot(key)+1). Writing directly into the half this call supplies
+    // updates the pair in place, same as set_shape_slot does for a plain
+    // data property. Without this, the second accessor fell to the merge
+    // path below, which calls set_property_descriptor -- and since the
+    // pair already lives in the shape with no descriptors_ entry of its
+    // own, that unconditionally created one (ensure_descriptors +
+    // descs[key] = merged), permanently taking `key` off the shape-slot
+    // fast path for every future get AND set, on every instance sharing
+    // this shape -- for a class declaring both `get x()` and `set x()`,
+    // among the most ordinary patterns there is.
+    if (shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(key)) {
+        Shape* shape = obj->get_shape();
+        int32_t idx = shape ? shape->find_slot(key) : -1;
+        if (idx >= 0 && shape->is_accessor_slot(key)) {
+            Value* getter_slot = obj->get_shape_slot_unchecked(static_cast<uint32_t>(idx));
+            Value* setter_slot = obj->get_shape_slot_unchecked(static_cast<uint32_t>(idx) + 1);
+            if (getter_slot && setter_slot) {
+                if (is_getter) *getter_slot = Value(fn); else *setter_slot = Value(fn);
+                return;
+            }
+        }
+    }
+
     size_t unused_idx;
     bool fast_path_eligible = shape_fast_path_ok(obj->get_type()) &&
         obj->is_extensible() && !obj->has_own_property(key) && !key_is_canonical_index(key, unused_idx);
