@@ -7,7 +7,6 @@
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/parser/AST.h"
-#include <sstream>
 #include <algorithm>
 
 namespace Quanta {
@@ -71,28 +70,25 @@ Position CallStackFrame::position() const {
 }
 
 std::string CallStackFrame::to_string() const {
-    std::ostringstream oss;
     const Position pos = position();
-    oss << "at ";
-    
-    if (!name().empty()) {
-        oss << name();
-    } else {
-        oss << "<anonymous>";
-    }
-    
+    std::string out = "at ";
+    out += name().empty() ? "<anonymous>" : name();
+
     if (filename && !filename->empty()) {
-        oss << " (" << *filename;
+        out += " (";
+        out += *filename;
         if (pos.line > 0) {
-            oss << ":" << pos.line;
+            out += ":";
+            out += std::to_string(pos.line);
             if (pos.column > 0) {
-                oss << ":" << pos.column;
+                out += ":";
+                out += std::to_string(pos.column);
             }
         }
-        oss << ")";
+        out += ")";
     }
 
-    return oss.str();
+    return out;
 }
 
 void CallStack::init_default_instance() {
@@ -132,23 +128,26 @@ std::string CallStack::generate_stack_trace(size_t max_frames) const {
     if (depth_ == 0) {
         return "";
     }
-    
-    std::ostringstream oss;
+
+    std::string trace;
     size_t frame_count = std::min(max_frames, depth_);
-    
+
     for (size_t i = 0; i < frame_count; ++i) {
         size_t frame_idx = depth_ - 1 - i;
-        oss << "    " << format_frame(frames_[frame_idx], i);
+        trace += "    ";
+        trace += format_frame(frames_[frame_idx], i);
         if (i < frame_count - 1) {
-            oss << "\n";
+            trace += "\n";
         }
     }
-    
+
     if (max_frames < depth_) {
-        oss << "\n    ... and " << (depth_ - max_frames) << " more frames";
+        trace += "\n    ... and ";
+        trace += std::to_string(depth_ - max_frames);
+        trace += " more frames";
     }
-    
-    return oss.str();
+
+    return trace;
 }
 
 std::string CallStack::current_function() const {
@@ -182,30 +181,28 @@ bool CallStack::check_stack_overflow() {
 }
 
 std::string CallStack::format_frame(const CallStackFrame& frame, size_t index) const {
-    std::ostringstream oss;
-    oss << "at ";
-    
+    std::string out = "at ";
+
     const Position frame_pos = frame.position();
-    if (!frame.name().empty()) {
-        oss << frame.name();
-    } else {
-        oss << "<anonymous>";
-    }
-    
+    out += frame.name().empty() ? "<anonymous>" : frame.name();
+
     if (frame.filename && !frame.filename->empty()) {
-        oss << " (" << *frame.filename;
+        out += " (";
+        out += *frame.filename;
         if (frame_pos.line > 0) {
-            oss << ":" << frame_pos.line;
+            out += ":";
+            out += std::to_string(frame_pos.line);
             if (frame_pos.column > 0) {
-                oss << ":" << frame_pos.column;
+                out += ":";
+                out += std::to_string(frame_pos.column);
             }
         }
-        oss << ")";
+        out += ")";
     } else {
-        oss << " (<unknown>)";
+        out += " (<unknown>)";
     }
-    
-    return oss.str();
+
+    return out;
 }
 
 }

@@ -7,8 +7,6 @@
 #include "quanta/core/runtime/Error.h"
 #include <span>
 #include "quanta/core/engine/CallStack.h"
-#include <sstream>
-#include <iostream>
 
 namespace Quanta {
 
@@ -83,10 +81,16 @@ void Error::generate_stack_trace() {
     }
 
     try {
-        std::ostringstream oss;
-        oss << type_to_name(error_type_);
+        // Plain string concatenation, not std::ostringstream: an
+        // ostringstream's sentry/locale-cache/streambuf setup ran on every
+        // single Error construction (every throw, including every engine-
+        // internal TypeError/RangeError/etc.) for what is, format-wise,
+        // pure string building -- no field here needs locale-aware
+        // formatting.
+        std::string trace = type_to_name(error_type_);
         if (!message_.empty()) {
-            oss << ": " << message_;
+            trace += ": ";
+            trace += message_;
         }
 
         try {
@@ -94,31 +98,36 @@ void Error::generate_stack_trace() {
             std::string stack_frames = stack.generate_stack_trace(20);
 
             if (!stack_frames.empty()) {
-                oss << "\n" << stack_frames;
-            } else {
-                if (filename_ && !filename_->empty()) {
-                    oss << "\n    at " << *filename_;
-                    if (line_number_ > 0) {
-                        oss << ":" << line_number_;
-                        if (column_number_ > 0) {
-                            oss << ":" << column_number_;
-                        }
+                trace += "\n";
+                trace += stack_frames;
+            } else if (filename_ && !filename_->empty()) {
+                trace += "\n    at ";
+                trace += *filename_;
+                if (line_number_ > 0) {
+                    trace += ":";
+                    trace += std::to_string(line_number_);
+                    if (column_number_ > 0) {
+                        trace += ":";
+                        trace += std::to_string(column_number_);
                     }
                 }
             }
         } catch (...) {
             if (filename_ && !filename_->empty()) {
-                oss << "\n    at " << *filename_;
+                trace += "\n    at ";
+                trace += *filename_;
                 if (line_number_ > 0) {
-                    oss << ":" << line_number_;
+                    trace += ":";
+                    trace += std::to_string(line_number_);
                     if (column_number_ > 0) {
-                        oss << ":" << column_number_;
+                        trace += ":";
+                        trace += std::to_string(column_number_);
                     }
                 }
             }
         }
 
-        stack_trace_ = oss.str();
+        stack_trace_ = std::move(trace);
     } catch (...) {
         stack_trace_ = type_to_name(error_type_) + (message_.empty() ? "" : ": " + message_);
     }
