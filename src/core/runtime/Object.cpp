@@ -662,11 +662,16 @@ void Function::trace_default(Visitor& v) {
     // its owned AST clone alive, no GC pinning needed. Only its compiled
     // chunk holds GC references (constants) that still need tracing.
     if (executable_ && executable_->bytecode_chunk) executable_->bytecode_chunk->trace(v);
-    if (NonNativeInstanceData* d = instance_data(); d && d->class_slots) {
-        v.visit_object(d->class_slots->home_object);
-        v.visit_object(d->class_slots->super_ctor);
-        v.visit_object(d->class_slots->private_brands);
-        v.visit_object(d->class_slots->field_inits);
+    if (NonNativeInstanceData* d = instance_data()) {
+        for (auto& pf : d->feedback.private_feedback) {
+            v.visit_object(pf.cached_receiver);
+        }
+        if (d->class_slots) {
+            v.visit_object(d->class_slots->home_object);
+            v.visit_object(d->class_slots->super_ctor);
+            v.visit_object(d->class_slots->private_brands);
+            v.visit_object(d->class_slots->field_inits);
+        }
     }
 }
 

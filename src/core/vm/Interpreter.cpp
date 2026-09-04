@@ -1302,14 +1302,24 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
 // The IC caches the site's resolved qualified key: private fields live in
 // sparse overflow (not shape slots), and a present qualified slot IS the
 // brand proof, so the fast path is one map lookup with no brand walk.
-Value get_private(Context& ctx, const Value& receiver, const std::string& name, PrivateFeedback* pf) {
+// `owner` barriers the receiver-pointer cache below on exactly the terms
+// learn_transition/learn_proto already use elsewhere in this file.
+Value get_private(Context& ctx, const Value& receiver, const std::string& name, PrivateFeedback* pf, Function* owner) {
     Object* obj = as_object_like(receiver);
     if (!obj) {
         ctx.throw_type_error("Cannot read private member " + name + " from an object whose class did not declare it");
         return Value();
     }
+    // See PrivateFeedback::cached_receiver's own comment: sound with no
+    // epoch, so checked before even touching pf->qualified.
+    if (pf && pf->cached_receiver == obj) return *pf->cached_slot;
     if (pf && !pf->qualified.empty()) {
-        if (const Value* slot = obj->private_field_slot(pf->qualified)) return *slot;
+        if (Value* slot = obj->private_field_slot(pf->qualified)) {
+            if (owner) Collector::write_barrier(owner);
+            pf->cached_receiver = obj;
+            pf->cached_slot = slot;
+            return *slot;
+        }
     }
     if (!private_brand_check(ctx, obj, name)) {
         if (!ctx.has_exception()) {
@@ -1329,8 +1339,11 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
             return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
         }
         if (pf) {
-            if (const Value* slot = obj->private_field_slot(qualified)) {
+            if (Value* slot = obj->private_field_slot(qualified)) {
                 pf->qualified = qualified;
+                if (owner) Collector::write_barrier(owner);
+                pf->cached_receiver = obj;
+                pf->cached_slot = slot;
                 return *slot;
             }
         }
@@ -1374,15 +1387,24 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
 }
 
 void set_private(Context& ctx, const Value& receiver, const std::string& name,
-                 const Value& value, PrivateFeedback* pf) {
+                 const Value& value, PrivateFeedback* pf, Function* owner) {
     Object* obj = as_object_like(receiver);
     if (!obj) {
         ctx.throw_type_error("Cannot write private member " + name + " to an object whose class did not declare it");
         return;
     }
     write_barrier_for(obj, value);
+    // See get_private's identical check and PrivateFeedback::cached_receiver's
+    // own comment.
+    if (pf && pf->cached_receiver == obj) { *pf->cached_slot = value; return; }
     if (pf && !pf->qualified.empty()) {
-        if (Value* slot = obj->private_field_slot(pf->qualified)) { *slot = value; return; }
+        if (Value* slot = obj->private_field_slot(pf->qualified)) {
+            *slot = value;
+            if (owner) Collector::write_barrier(owner);
+            pf->cached_receiver = obj;
+            pf->cached_slot = slot;
+            return;
+        }
     }
     if (!private_brand_check(ctx, obj, name, /*require_exists=*/false)) {
         if (!ctx.has_exception()) {
@@ -1413,6 +1435,9 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
             if (Value* slot = obj->private_field_slot(qualified)) {
                 pf->qualified = qualified;
                 *slot = value;
+                if (owner) Collector::write_barrier(owner);
+                pf->cached_receiver = obj;
+                pf->cached_slot = slot;
                 return;
             }
         }
@@ -5134,7 +5159,7 @@ Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                acc = get_private(ctx, regs[obj_reg], chunk.name_at(name_idx), &private_feedback_data[fb_idx]);
+                acc = get_private(ctx, regs[obj_reg], chunk.name_at(name_idx), &private_feedback_data[fb_idx], f.owner);
                 CHECK_EXC();
                 break;
             }
@@ -5158,7 +5183,7 @@ Value h_gen_SetPrivate(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                set_private(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &private_feedback_data[fb_idx]);
+                set_private(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &private_feedback_data[fb_idx], f.owner);
                 CHECK_EXC();
                 break;
             }

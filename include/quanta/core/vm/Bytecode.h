@@ -594,6 +594,19 @@ struct FeedbackSlot {
 // instance_lookup_cache().
 struct PrivateFeedback {
     std::string qualified;  // empty until the slow path resolves a data field
+    // Monomorphic receiver-pointer cache, one step past `qualified`: skips
+    // even the sparse_overflow_ hash lookup that a qualified-only hit still
+    // pays every time. Sound with no epoch, unlike every other pointer cache
+    // in this file: sparse_overflow_ is a std::unordered_map, whose value
+    // pointers survive rehashing and the insertion/erasure of OTHER keys --
+    // the standard guarantees a pointer to an element is invalidated only by
+    // erasing that SAME element -- and a private field has no delete syntax,
+    // so once learned for a given receiver this pointer is good for the
+    // receiver's whole lifetime. A different receiver at the same call site
+    // (a polymorphic access pattern) just falls back to the qualified-keyed
+    // path below, same cost as before this cache existed.
+    Object* cached_receiver = nullptr;
+    Value* cached_slot = nullptr;
 };
 
 // Inline cache for one GetKeyed/SetKeyed site. FeedbackSlot (GetNamed/

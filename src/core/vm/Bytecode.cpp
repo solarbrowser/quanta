@@ -71,6 +71,9 @@ void BytecodeChunk::trace(Visitor& v) const {
                 v.visit_object(kfb.transitions[i].prototype);
             }
         }
+        for (const auto& pf : ic_feedback->private_feedback) {
+            v.visit_object(pf.cached_receiver);
+        }
     }
 }
 
