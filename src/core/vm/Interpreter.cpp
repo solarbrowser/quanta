@@ -295,6 +295,27 @@ void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index, bo
     }
 }
 
+// GetNamed/SetNamed's shape-slot fast paths below all gate on
+// ObjectType::Ordinary before trusting get_shape_slot_unchecked -- sound for
+// Ordinary since nothing else touches its property storage, but needlessly
+// narrow: Object::get_property/set_property/has_own_property/
+// get_own_property_keys/get_property_descriptor/set_property_descriptor/
+// has_property/delete_property (Object.cpp, one switch each) never carry a
+// case for Date, RegExp, Error or Promise either -- none of the four
+// classes backing them (Error.h, RegExp.h, Promise.h; Date is a plain
+// Object with no subclass at all) overrides any of the eight -- so a shape
+// slot answers a read or write on one of them exactly as soundly as it
+// already does for Ordinary. Every other non-Ordinary tag names a real
+// override somewhere in that list (Array's own length/dense-element path
+// already has its own fast path ahead of this check at every site that
+// needs it, so it stays out of this list on purpose) and must stay off
+// this path.
+inline bool shape_fast_path_ok(Object::ObjectType t) {
+    using OT = Object::ObjectType;
+    return t == OT::Ordinary || t == OT::Date || t == OT::RegExp ||
+           t == OT::Error || t == OT::Promise;
+}
+
 // Like learn_feedback, but a duplicate from_shape REFRESHES the entry rather
 // than no-opping: to_shape/slot_index are deterministic for (from_shape, key),
 // but proto_epoch goes stale and a re-hit needs the current value to trust it.
@@ -435,12 +456,26 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // which names. The question each answers is the same: can anything other
     // than this object's shape and its descriptor map produce an own property
     // under this name? For an Array that is `length` and the indices, and for
-    // a Map or a Set it is `size`; a RegExp has none, since neither
-    // get_property nor get_own_property has a branch for one. The types left
-    // out -- Function, TypedArray, ArrayBuffer, DataView, Proxy, Custom, the
-    // primitive wrappers -- each answer names of their own and belong on the
-    // general path until someone lists theirs too. Date is left out for a
-    // different reason: it was measured and the cache did not pay there.
+    // a Map or a Set it is `size`; RegExp/Date/Error/Promise have none, since
+    // neither get_property nor get_own_property (nor any of the other six
+    // Object.cpp dispatch switches -- has_property, has_own_property,
+    // set_property, delete_property, get_own_property_keys,
+    // get_property_descriptor, set_property_descriptor) carries a case for
+    // any of the four (see shape_fast_path_ok's own comment, which lists the
+    // same four for the same reason on GetNamed/SetNamed's shape-slot fast
+    // path). The types left out -- Function, TypedArray, ArrayBuffer,
+    // DataView, Proxy, Custom, the primitive wrappers -- each answer names
+    // of their own and belong on the general path until someone lists
+    // theirs too.
+    //
+    // Date was excluded here once, measured, and found not to pay -- but
+    // that measurement predates fixing an unconditional proto_epoch bump on
+    // every `new Date(...)` (DateBuiltin.cpp's own constructor used to
+    // reach for set_prototype instead of initialize_prototype), which
+    // invalidated this exact cache -- every ProtoEntry anywhere, not just
+    // Date's own -- on every single construction. A loop creating many
+    // Date instances, which is the common shape for a receiver this
+    // exotic, could never have measured a warm cache under that bug.
     //
     // Array leads because it is far and away the most common receiver here,
     // and a chain of compares beats the jump table a switch would build.
@@ -452,7 +487,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         : (recv_type == Object::ObjectType::Map ||
            recv_type == Object::ObjectType::Set)
             ? name != "size"
-            : recv_type == Object::ObjectType::RegExp;
+            : recv_type == Object::ObjectType::RegExp ||
+              recv_type == Object::ObjectType::Date ||
+              recv_type == Object::ObjectType::Error ||
+              recv_type == Object::ObjectType::Promise;
     if (rooted && fb && !fb->proto_mega &&
         (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
         !obj->has_descriptor_override(name)) {
@@ -676,10 +714,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                     // The walk already has the value. Falling through to
                     // get_property below would start the same walk over from
                     // the receiver and arrive at this descriptor again.
-                    // Ordinary only: an exotic receiver reaches its prototype
-                    // through logic of its own, and this shortcut must not
-                    // stand in for it.
-                    if (obj->get_type() == Object::ObjectType::Ordinary) {
+                    // Ordinary/exotic_proto_ok only: any OTHER exotic receiver
+                    // reaches its prototype through logic of its own, and
+                    // this shortcut must not stand in for it.
+                    if (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) {
                         return proto_desc.get_value();
                     }
                     walked_to_end = false;
@@ -693,7 +731,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             // here -- private storage is deliberately not reported as an own
             // property (Object::has_own_property_default), so an absence
             // observed for one of those keys is not an absence.
-            if (walked_to_end && obj->get_type() == Object::ObjectType::Ordinary &&
+            if (walked_to_end && (obj->get_type() == Object::ObjectType::Ordinary || exotic_proto_ok) &&
                 (name.empty() || name[0] != '#')) {
                 // Record the absence, so the next read of this key on this
                 // shape answers without walking. What the walk just proved --
@@ -4661,7 +4699,7 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
-        if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
+        if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
             const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             const FeedbackSlot::Entry& e = fb.entries[0];
             // A non-null shape here means the site is neither empty nor
@@ -4711,7 +4749,7 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                 acc = Value(static_cast<double>(obj->element_count()));
                 FUSED_TAIL(6);
             }
-        } else if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
+        } else if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
             const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             // Every learned entry, not just the first. The handler above tries
             // that one and hands the rest here, so a site that has seen more
@@ -4844,7 +4882,7 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
-        if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
+        if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
             const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             const FeedbackSlot::Entry& e = fb.entries[0];
             // Same pair of facts as the read side: the stamp is global and
@@ -4876,7 +4914,7 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
     const Value& receiver = f.regs[code[pc + 1]];
     if (LIKELY(receiver.is_object())) {
         Object* obj = receiver.as_object();
-        if (LIKELY(obj->get_type() == Object::ObjectType::Ordinary)) {
+        if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
             const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             Shape* own_shape = obj->get_shape();
             for (uint8_t k = 1; k < fb.count; k++) {
