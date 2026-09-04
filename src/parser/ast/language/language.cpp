@@ -576,7 +576,7 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
         if (!tpl.is_async) {
             Value enclosing_new_target = ctx.get_new_target();
             if (!enclosing_new_target.is_undefined()) {
-                function->set_internal_property("__arrow_new_target__", enclosing_new_target);
+                function->set_internal_slot("__arrow_new_target__", enclosing_new_target);
             }
         }
     }

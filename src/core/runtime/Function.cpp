@@ -596,8 +596,14 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         // context. Overrides the restore above on purpose: an arrow's own
         // captured value, not whatever new.target happens to be active for
         // THIS call, is what a nested `new.target` inside it must see.
-        if (is_arrow_ && this->has_own_property("__arrow_new_target__")) {
-            fast_ctx.set_new_target(this->get_property("__arrow_new_target__"));
+        // has_internal_slot/get_internal_slot rather than has_own_property/
+        // get_property: the latter pair walks the shape and (on a miss, the
+        // overwhelming common case -- most arrows never capture a
+        // constructor's new.target at all) the descriptor map too, on every
+        // single call. An internal slot is a 1-2 entry inline scan behind a
+        // lazily-allocated pointer that a plain arrow never even allocates.
+        if (is_arrow_ && has_internal_slot("__arrow_new_target__")) {
+            fast_ctx.set_new_target(get_internal_slot("__arrow_new_target__"));
         }
         // Mirrors the general path's own seed (function_context.set_super_called
         // from closure_context_): the gate above only lets an arrow in here
@@ -925,8 +931,8 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     }
 
     // Arrow functions capture new.target from enclosing scope
-    if (is_arrow_ && this->has_own_property("__arrow_new_target__")) {
-        function_context.set_new_target(this->get_property("__arrow_new_target__"));
+    if (is_arrow_ && has_internal_slot("__arrow_new_target__")) {
+        function_context.set_new_target(get_internal_slot("__arrow_new_target__"));
     }
     function_context.set_arrow_function_context(is_arrow_);
 
