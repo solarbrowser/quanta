@@ -507,7 +507,15 @@ public:
     Value get_internal_slot(const std::string& key) const;
     bool has_internal_slot(const std::string& key) const;
     void delete_internal_slot(const std::string& key);
-    bool ordinary_set(const std::string& key, const Value& value);
+    // learned_holder/learned_setter: optional, both null by default. When an
+    // inherited accessor's setter is what actually ran (the walk below),
+    // written to report which object holds it and which function it is --
+    // a caller with a feedback slot (see Interpreter.cpp's set_named) uses
+    // this to cache the walk's answer instead of repeating it on every
+    // future write. Every other caller (ArrayBuiltin.cpp's push, etc.)
+    // passes neither and pays nothing for them.
+    bool ordinary_set(const std::string& key, const Value& value,
+                       Object** learned_holder = nullptr, Function** learned_setter = nullptr);
     // CreateDataProperty (spec 7.3.5): installs an own, Default-attrs data
     // property WITHOUT consulting the prototype chain -- unlike set_property()
     // (which implements [[Set]] semantics: inherited accessors, Proxy traps,

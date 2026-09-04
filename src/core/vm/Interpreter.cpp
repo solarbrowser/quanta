@@ -355,7 +355,8 @@ void learn_transition(FeedbackSlot* fb_slot, Shape* from_shape, Shape* to_shape,
 void learn_proto(FeedbackSlot* fb_slot, Shape* receiver_shape, Object* prototype,
                   Object* holder, uint32_t slot_index, uint64_t epoch, Function* owner,
                   bool from_descriptor = false, const Value& cached = Value(),
-                  uint64_t desc_epoch = 0, bool absent = false, bool is_getter = false) {
+                  uint64_t desc_epoch = 0, bool absent = false, bool is_getter = false,
+                  bool is_setter = false) {
     // Reaching here is the site learning something, so the body exists
     // from this point on.
     FeedbackBody& fb = fb_slot->ensure();
@@ -368,6 +369,7 @@ void learn_proto(FeedbackSlot* fb_slot, Shape* receiver_shape, Object* prototype
     fresh.from_descriptor = from_descriptor;
     fresh.absent = absent;
     fresh.is_getter = is_getter;
+    fresh.is_setter = is_setter;
     fresh.desc_epoch = desc_epoch;
     fresh.cached_value = cached;
     for (uint8_t i = 0; i < fb.proto_count; i++) {
@@ -786,7 +788,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
 }
 
 void set_named(Context& ctx, const Value& receiver, const std::string& name,
-               const Value& value, FeedbackSlot* fb_slot, Function* owner) {
+               const Value& value, FeedbackSlot* fb_slot, Function* owner, bool rooted) {
     FeedbackBody* fb = fb_slot ? fb_slot->peek() : nullptr;
     if (receiver.is_null() || receiver.is_undefined()) {
         ctx.throw_type_error(std::string("Cannot set properties of ") +
@@ -848,18 +850,70 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         }
     }
 
+    // Inherited-accessor-setter cache: SetNamed's mirror of GetNamed's own
+    // is_getter ProtoEntry (see get_named). Without it, `b.value = x` where
+    // "value" is a setter inherited from up the chain (the ordinary case
+    // for any class declaring `set x(v) {}`) walks the WHOLE chain via
+    // ordinary_set below -- has_own_property then get_property_descriptor
+    // at every link -- on every single write, with no way to ever warm up;
+    // GetNamed's own cache only ever covered reads. has_descriptor_override
+    // is re-checked fresh here (not folded into proto_epoch) for the same
+    // reason get_named's own hit gate does: an own descriptor added to
+    // `obj` itself (e.g. via defineProperty, which need not touch its
+    // shape) can shadow the inherited setter without moving `shape` at all.
+    if (rooted && fb && !fb->proto_mega && ordinary_recv &&
+        !obj->has_descriptor_override(name)) {
+        Shape* shape = obj->get_shape();
+        Object* proto0 = obj->get_prototype_raw();
+        uint64_t epoch = Object::proto_epoch();
+        for (uint8_t i = 0; i < fb->proto_count; i++) {
+            const auto& pe = fb->proto_entries[i];
+            if (pe.receiver_shape == shape && pe.prototype == proto0 && pe.proto_epoch == epoch) {
+                if (pe.is_setter && pe.desc_epoch == Object::descriptor_epoch()) {
+                    Function* setter_fn = as_function(as_object_like(pe.cached_value));
+                    if (setter_fn) {
+                        const Value setter_args[1] = { value };
+                        setter_fn->call_register_args(ctx, std::span<const Value>(setter_args, 1), receiver);
+                    }
+                    return;
+                }
+                break;
+            }
+        }
+    }
+
     Shape* shape_before = obj->get_shape();
+    Object* proto_before = obj->get_prototype_raw();
+    uint64_t proto_epoch_before = Object::proto_epoch();
     bool was_new = fb_slot && ordinary_recv &&
                     !obj->has_descriptor_override(name) &&
                     shape_before && shape_before->find_slot(name) < 0;
 
     // ordinary_set (not set_property): checks inherited non-writable/Proxy
     // targets first, unlike set_property which would just shadow them.
-    bool ok = obj->ordinary_set(name, value);
+    Object* learned_holder = nullptr;
+    Function* learned_setter = nullptr;
+    bool ok = obj->ordinary_set(name, value, &learned_holder, &learned_setter);
     if (ctx.has_exception()) return;
     if (!ok && ctx.is_strict_mode()) {
         ctx.throw_type_error("Cannot assign to read only property '" + name + "'");
         return;
+    }
+    // Learn the inherited setter this call actually used, so the next write
+    // at this (receiver shape, prototype) pair skips ordinary_set's walk
+    // entirely. shape_before/proto_before/proto_epoch_before describe the
+    // state that led ordinary_set to find this setter, captured before the
+    // call rather than after: the setter's own body is arbitrary JS and may
+    // have mutated obj's prototype, which the fact just learned does not
+    // depend on. descriptor_epoch is read after, deliberately -- it folds
+    // in anything the setter's own body just changed.
+    if (learned_setter && rooted && fb_slot && !(fb && fb->proto_mega) &&
+        ordinary_recv && shape_fast_path_ok(learned_holder->get_type()) &&
+        !(!name.empty() && name[0] >= '0' && name[0] <= '9')) {
+        learn_proto(fb_slot, shape_before, proto_before, learned_holder, 0,
+                    proto_epoch_before, owner, /*from_descriptor=*/false,
+                    Value(learned_setter), Object::descriptor_epoch(),
+                    /*absent=*/false, /*is_getter=*/false, /*is_setter=*/true);
     }
     // Re-checked fresh, not reusing a pre-call flag: ordinary_set can migrate
     // obj to dictionary mode (shape transition cap hit while adding a new
@@ -1219,7 +1273,10 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
     bool was_new = shape_before && shape_fast_path_ok(obj->get_type()) &&
                     !obj->has_descriptor_override(key) &&
                     shape_before->find_slot(key) < 0;
-    set_named(ctx, receiver, key, value, nullptr, nullptr);
+    // rooted is meaningless with fb_slot=nullptr (every rooted-gated branch
+    // in set_named is already unreachable without a FeedbackSlot to learn
+    // into), so false costs nothing here.
+    set_named(ctx, receiver, key, value, nullptr, nullptr, false);
     if (!ctx.has_exception() && obj && fb && !fb->mega &&
         shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(key)) {
         Shape* s = obj->get_shape();
@@ -4965,7 +5022,7 @@ Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 1);
                 uint16_t fb_idx = read_u16(code, pc + 3);
                 pc += 5;
-                set_named(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx], owner);
+                set_named(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx], owner, f.feedback_rooted);
                 CHECK_EXC();
                 break;
             }

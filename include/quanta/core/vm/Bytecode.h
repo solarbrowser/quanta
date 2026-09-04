@@ -499,6 +499,19 @@ struct FeedbackBody {
         // desc_epoch exactly like from_descriptor, since it caches out of the
         // same map. Never set together with from_descriptor or absent.
         bool is_getter = false;
+        // SetNamed-only mirror of is_getter: cached_value is the SETTER of an
+        // inherited accessor, learned from Object::ordinary_set's own
+        // prototype-chain walk (its optional out-params report which
+        // function it invoked, see set_named). A hit still has to call it --
+        // what it skips is ordinary_set's walk itself (has_own_property +
+        // get_property_descriptor at every link) on every single write.
+        // Same desc_epoch guard, same never-together-with-from_descriptor/
+        // absent rule. Never true together with is_getter either: a single
+        // entry caches one function, and a property can be looked up for
+        // reading or writing at a given site, never both from the same
+        // ProtoEntry slot (GetNamed and SetNamed sites never share a
+        // FeedbackSlot).
+        bool is_setter = false;
         uint64_t desc_epoch = 0;
         Value cached_value;
     };

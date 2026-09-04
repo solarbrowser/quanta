@@ -1640,7 +1640,8 @@ bool Object::set_property(const Value& key, const Value& value, PropertyAttribut
 }
 
 // OrdinarySet semantics: if prototype chain has non-writable data property, silently fail
-bool Object::ordinary_set(const std::string& key, const Value& value) {
+bool Object::ordinary_set(const std::string& key, const Value& value,
+                           Object** learned_holder, Function** learned_setter) {
     // A Proxy's [[Set]] is the trap itself, never OrdinarySet. Falling into the
     // own-property probe below would run the `has` trap, which the spec does not
     // call on an assignment at all.
@@ -1686,8 +1687,12 @@ bool Object::ordinary_set(const std::string& key, const Value& value) {
                 if (desc.is_accessor_descriptor()) {
                     Object* setter = desc.get_setter();
                     if (!setter) return false;
+                    Function* setter_fn = as_function(setter);
+                    if (learned_holder && learned_setter && setter_fn) {
+                        *learned_holder = cur;
+                        *learned_setter = setter_fn;
+                    }
                     if (current_context_) {
-                        Function* setter_fn = as_function(setter);
                         if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
                     }
                     return true;
