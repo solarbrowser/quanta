@@ -57,6 +57,13 @@ enum class Op : uint8_t {
     ToNumeric,    // BigInt passes through
     Inc,
     ToTemplateString, // template interpolation's own stringify
+    // r_start count -- acc = the concatenation of count consecutive
+    // registers starting at r_start, each already a string (literal pieces
+    // via LdaConst, interpolated ones via ToTemplateString first). One
+    // allocation for the whole result instead of the count-1 intermediate
+    // Strings a left-to-right chain of Add would build and immediately
+    // discard.
+    BuildTemplateString,
     ToPropertyKey, // acc = ToPropertyKey(acc): once, before the RHS runs
                    // (computed member writes -- toString observably one call)
     CheckObjectCoercible, // throws TypeError if acc is null/undefined; acc

@@ -2297,6 +2297,44 @@ Value h_gen_ToTemplateString(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Template literal, built in one pass: every register in [start, start+count)
+// already holds a String (literal pieces are compile-time constants; each
+// interpolated one already ran through Op::ToTemplateString, which throws
+// before this opcode is ever reached if the value has no string form).
+// Concatenating count-1 times via Op::Add instead -- what a template
+// literal used to compile to -- built and immediately discarded count-1
+// intermediate String cells; this sizes and fills one std::string, then
+// wraps it in exactly one.
+Value h_gen_BuildTemplateString(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t start = code[pc];
+                uint8_t count = code[pc + 1];
+                pc += 2;
+                Value* regs = f.regs;
+                size_t total = 0;
+                for (uint8_t i = 0; i < count; i++) {
+                    total += regs[start + i].as_string()->str().size();
+                }
+                std::string buf;
+                buf.reserve(total);
+                for (uint8_t i = 0; i < count; i++) {
+                    buf += regs[start + i].as_string()->str();
+                }
+                acc = Value(new String(std::move(buf)));
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_ToPropertyKey(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -6255,6 +6293,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::ToNumber)] = &h_gen_ToNumber;
     t[static_cast<uint8_t>(Op::ToNumeric)] = &h_gen_ToNumeric;
     t[static_cast<uint8_t>(Op::ToTemplateString)] = &h_gen_ToTemplateString;
+    t[static_cast<uint8_t>(Op::BuildTemplateString)] = &h_gen_BuildTemplateString;
     t[static_cast<uint8_t>(Op::ToPropertyKey)] = &h_gen_ToPropertyKey;
     t[static_cast<uint8_t>(Op::CheckObjectCoercible)] = &h_gen_CheckObjectCoercible;
     t[static_cast<uint8_t>(Op::LdaLookup)] = &h_LdaLookupFast<false>;

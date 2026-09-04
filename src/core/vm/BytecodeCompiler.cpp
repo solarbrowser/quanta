@@ -8794,38 +8794,46 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         case ASTNode::Type::TEMPLATE_LITERAL: {
             const auto& elements = static_cast<const TemplateLiteral*>(node)->get_elements();
             using Elem = TemplateLiteral::Element;
-            int result_reg = alloc_temp();
-            if (failed_) return false;
-            // The first piece is the result so far -- it does not need adding
-            // to anything. Seeding with an empty string instead cost every
-            // template literal one whole addition, and an addition here is
-            // the general one, with both operands' types to work out first.
-            bool seeded = false;
+            // Each non-empty piece (literal text or an interpolated
+            // expression, the latter run through ToTemplateString) lands in
+            // its own register, consecutively -- same idiom call arguments
+            // use (args_start/argc) -- so the whole literal can be built in
+            // one pass by Op::BuildTemplateString instead of a left-to-right
+            // Add chain that allocates and discards an intermediate String
+            // at every step.
+            int pieces_start = next_register_;
+            uint8_t count = 0;
             for (const auto& el : elements) {
                 if (el.type == Elem::Type::TEXT) {
                     if (el.text.empty()) continue;
+                    int reg = alloc_temp();
+                    if (failed_) return false;
                     emit_load_const(Value(el.text));
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(reg));
                 } else {
+                    int reg = alloc_temp();
+                    if (failed_) return false;
                     if (!compile_expression(el.expression.get())) return false;
                     emit(Op::ToTemplateString);
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(reg));
                 }
-                if (seeded) {
-                    emit(Op::Add);
-                    emit_u8(static_cast<uint8_t>(result_reg));
-                }
-                emit(Op::Star);
-                emit_u8(static_cast<uint8_t>(result_reg));
-                seeded = true;
+                count++;
             }
-            // Nothing but empty text: the result is the empty string.
-            if (!seeded) {
+            if (count == 0) {
+                // Nothing but empty text: the result is the empty string.
                 emit_load_const(Value(std::string()));
-                emit(Op::Star);
-                emit_u8(static_cast<uint8_t>(result_reg));
+            } else if (count == 1) {
+                // A single piece is already the answer.
+                emit(Op::Ldar);
+                emit_u8(static_cast<uint8_t>(pieces_start));
+            } else {
+                emit(Op::BuildTemplateString);
+                emit_u8(static_cast<uint8_t>(pieces_start));
+                emit_u8(count);
             }
-            emit(Op::Ldar);
-            emit_u8(static_cast<uint8_t>(result_reg));
-            free_temp(result_reg);
+            free_temp(pieces_start);
             return !failed_;
         }
 
