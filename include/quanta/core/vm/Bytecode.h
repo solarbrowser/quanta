@@ -611,7 +611,17 @@ struct PrivateFeedback {
 // replicating here yet).
 struct KeyedFeedback {
     struct Entry { Shape* shape = nullptr; std::string key; uint32_t slot_index = 0; };
-    static constexpr uint8_t kMaxEntries = 8;
+    // Bigger budget than FeedbackBody's own kMaxEntries (8): a keyed site's
+    // entries are keyed on (shape, key) instead of shape alone, so a single
+    // site enumerating a wider object (`for (const k in o) sum += o[k]`,
+    // any object with more than 8 own keys) legitimately needs one entry
+    // per key, not per shape -- with 8 it went mega long before a
+    // realistically-sized object's key set fit, and every access after
+    // that paid a full Shape::find_slot hash lookup for keys the site
+    // would otherwise have cached. 16 doubles the per-site footprint
+    // (~976B -> ~1920B, KeyedFeedback is lazily allocated only for chunks
+    // that actually use computed property access) in exchange for that.
+    static constexpr uint8_t kMaxEntries = 32;
     std::array<Entry, kMaxEntries> entries{};
     uint8_t count = 0;
     bool mega = false;
