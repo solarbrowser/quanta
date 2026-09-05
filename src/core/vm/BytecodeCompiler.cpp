@@ -340,148 +340,144 @@ void collect_pattern_target_names(const ASTNode* pattern, std::vector<std::strin
     }
 }
 
-// Runtime const-immutability isn't implemented, so this is the compile-time check.
-// The identifier targets a pattern writes to. Only the shapes
-// pattern_is_emittable accepts need walking: any other leaf refuses to compile
-// before residency can matter.
-bool pattern_writes_identifier(const ASTNode* pattern, const std::string& name) {
-    if (!pattern) return false;
-    switch (pattern->get_type()) {
-        case ASTNode::Type::IDENTIFIER:
-            return static_cast<const Identifier*>(pattern)->get_name() == name;
-        case ASTNode::Type::SPREAD_ELEMENT:
-            return pattern_writes_identifier(
-                static_cast<const SpreadElement*>(pattern)->get_argument(), name);
-        case ASTNode::Type::ASSIGNMENT_EXPRESSION:
-            return pattern_writes_identifier(
-                static_cast<const AssignmentExpression*>(pattern)->get_left(), name);
-        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT:
-            return pattern_writes_identifier(
-                static_cast<const DestructuringAssignment*>(pattern)->get_pattern_literal(), name);
-        case ASTNode::Type::ARRAY_LITERAL:
-            for (const auto& el : static_cast<const ArrayLiteral*>(pattern)->get_elements()) {
-                if (pattern_writes_identifier(el.get(), name)) return true;
-            }
-            return false;
-        case ASTNode::Type::OBJECT_LITERAL:
-            for (const auto& prop : static_cast<const ObjectLiteral*>(pattern)->get_properties()) {
-                if (prop->value && pattern_writes_identifier(prop->value.get(), name)) return true;
-            }
-            return false;
-        default:
-            return false;
-    }
-}
-
-// A for-in/of head without a declaration keyword assigns to its target once
-// per iteration rather than binding it, which is what makes a const there a
-// TypeError. Without this the compiled loop wrote the const's register and
-// the refusal never happened.
-bool head_target_assigns(const ASTNode* left, int decl_kind, const std::string& name) {
-    if (decl_kind >= 0) return false;  // a declaration binds, it does not assign
-    return pattern_writes_identifier(left, name);
-}
-
-bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
-    if (!node) return false;
+// Runtime const-immutability isn't implemented, so this is the compile-time
+// check: which identifiers a subtree ever writes to. Answers every name in
+// `candidates` in one pass instead of walking the whole tree once per name,
+// which is what a per-name predicate here would cost for a body declaring N
+// top-level consts -- O(N * body size), and a large bundled script (thousands
+// of top-level declarations in one scope, e.g. a UMD library) turns that
+// quadratic. An identifier actually written just goes into `out`
+// unconditionally (whether or not it is one of `candidates` costs nothing to
+// check later); the exception is an unrecognized node shape, where -- since
+// answering "no" here would let a const be given a register and then
+// overwritten in silence -- every candidate still being asked about is
+// conservatively marked found, the same guarantee a per-name version would
+// give by returning true for whichever single name it was asked about.
+void collect_assigned_identifiers(const ASTNode* node,
+                                  const std::unordered_set<std::string>& candidates,
+                                  std::unordered_set<std::string>& out) {
+    if (!node || candidates.empty()) return;
     switch (node->get_type()) {
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
-            for (const auto& stmt : n->get_statements()) {
-                if (assigns_to_identifier(stmt.get(), name)) return true;
-            }
-            return false;
+            for (const auto& stmt : n->get_statements()) collect_assigned_identifiers(stmt.get(), candidates, out);
+            return;
         }
         case ASTNode::Type::IF_STATEMENT: {
             const auto* n = static_cast<const IfStatement*>(node);
-            return assigns_to_identifier(n->get_test(), name) ||
-                   assigns_to_identifier(n->get_consequent(), name) ||
-                   assigns_to_identifier(n->get_alternate(), name);
+            collect_assigned_identifiers(n->get_test(), candidates, out);
+            collect_assigned_identifiers(n->get_consequent(), candidates, out);
+            collect_assigned_identifiers(n->get_alternate(), candidates, out);
+            return;
         }
         case ASTNode::Type::WHILE_STATEMENT: {
             const auto* n = static_cast<const WhileStatement*>(node);
-            return assigns_to_identifier(n->get_test(), name) ||
-                   assigns_to_identifier(n->get_body(), name);
+            collect_assigned_identifiers(n->get_test(), candidates, out);
+            collect_assigned_identifiers(n->get_body(), candidates, out);
+            return;
         }
         case ASTNode::Type::DO_WHILE_STATEMENT: {
             const auto* n = static_cast<const DoWhileStatement*>(node);
-            return assigns_to_identifier(n->get_body(), name) ||
-                   assigns_to_identifier(n->get_test(), name);
+            collect_assigned_identifiers(n->get_body(), candidates, out);
+            collect_assigned_identifiers(n->get_test(), candidates, out);
+            return;
         }
         case ASTNode::Type::FOR_STATEMENT: {
             const auto* n = static_cast<const ForStatement*>(node);
-            return assigns_to_identifier(n->get_init(), name) ||
-                   assigns_to_identifier(n->get_test(), name) ||
-                   assigns_to_identifier(n->get_update(), name) ||
-                   assigns_to_identifier(n->get_body(), name);
+            collect_assigned_identifiers(n->get_init(), candidates, out);
+            collect_assigned_identifiers(n->get_test(), candidates, out);
+            collect_assigned_identifiers(n->get_update(), candidates, out);
+            collect_assigned_identifiers(n->get_body(), candidates, out);
+            return;
         }
         case ASTNode::Type::FOR_OF_STATEMENT: {
             const auto* n = static_cast<const ForOfStatement*>(node);
-            return head_target_assigns(n->get_left(), n->get_left_decl_kind(), name) ||
-                   assigns_to_identifier(n->get_right(), name) ||
-                   assigns_to_identifier(n->get_body(), name);
+            if (n->get_left_decl_kind() < 0) {
+                const ASTNode* left = n->get_left();
+                // collect_pattern_target_names only descends into an object/array
+                // literal's own properties/elements -- a bare identifier target
+                // (the common case, `for (x of iterable)`) is not itself one of
+                // those containers, so it needs its own check here first.
+                if (left->get_type() == ASTNode::Type::IDENTIFIER) {
+                    out.insert(static_cast<const Identifier*>(left)->get_name());
+                } else {
+                    std::vector<std::string> targets;
+                    collect_pattern_target_names(left, targets);
+                    for (const auto& t : targets) out.insert(t);
+                }
+            }
+            collect_assigned_identifiers(n->get_right(), candidates, out);
+            collect_assigned_identifiers(n->get_body(), candidates, out);
+            return;
         }
         case ASTNode::Type::FOR_IN_STATEMENT: {
             const auto* n = static_cast<const ForInStatement*>(node);
-            return head_target_assigns(n->get_left(), n->get_left_decl_kind(), name) ||
-                   assigns_to_identifier(n->get_right(), name) ||
-                   assigns_to_identifier(n->get_body(), name);
+            if (n->get_left_decl_kind() < 0) {
+                const ASTNode* left = n->get_left();
+                if (left->get_type() == ASTNode::Type::IDENTIFIER) {
+                    out.insert(static_cast<const Identifier*>(left)->get_name());
+                } else {
+                    std::vector<std::string> targets;
+                    collect_pattern_target_names(left, targets);
+                    for (const auto& t : targets) out.insert(t);
+                }
+            }
+            collect_assigned_identifiers(n->get_right(), candidates, out);
+            collect_assigned_identifiers(n->get_body(), candidates, out);
+            return;
         }
         case ASTNode::Type::TRY_STATEMENT: {
             const auto* n = static_cast<const TryStatement*>(node);
-            if (assigns_to_identifier(n->get_try_block(), name)) return true;
+            collect_assigned_identifiers(n->get_try_block(), candidates, out);
             if (const ASTNode* cc = n->get_catch_clause()) {
-                if (assigns_to_identifier(static_cast<const CatchClause*>(cc)->get_body(), name)) return true;
+                collect_assigned_identifiers(static_cast<const CatchClause*>(cc)->get_body(), candidates, out);
             }
-            return assigns_to_identifier(n->get_finally_block(), name);
+            collect_assigned_identifiers(n->get_finally_block(), candidates, out);
+            return;
         }
         case ASTNode::Type::SWITCH_STATEMENT: {
             const auto* n = static_cast<const SwitchStatement*>(node);
-            if (assigns_to_identifier(n->get_discriminant(), name)) return true;
+            collect_assigned_identifiers(n->get_discriminant(), candidates, out);
             for (const auto& c : n->get_cases()) {
                 const auto* cc = static_cast<const CaseClause*>(c.get());
-                if (cc->get_test() && assigns_to_identifier(cc->get_test(), name)) return true;
-                for (const auto& s : cc->get_consequent()) {
-                    if (assigns_to_identifier(s.get(), name)) return true;
-                }
+                if (cc->get_test()) collect_assigned_identifiers(cc->get_test(), candidates, out);
+                for (const auto& s : cc->get_consequent()) collect_assigned_identifiers(s.get(), candidates, out);
             }
-            return false;
+            return;
         }
         case ASTNode::Type::LABELED_STATEMENT:
-            return assigns_to_identifier(
-                static_cast<const LabeledStatement*>(node)->get_statement(), name);
+            collect_assigned_identifiers(static_cast<const LabeledStatement*>(node)->get_statement(), candidates, out);
+            return;
         case ASTNode::Type::EXPRESSION_STATEMENT:
-            return assigns_to_identifier(
-                static_cast<const ExpressionStatement*>(node)->get_expression(), name);
+            collect_assigned_identifiers(static_cast<const ExpressionStatement*>(node)->get_expression(), candidates, out);
+            return;
         case ASTNode::Type::RETURN_STATEMENT: {
             const auto* n = static_cast<const ReturnStatement*>(node);
-            return n->get_argument() && assigns_to_identifier(n->get_argument(), name);
+            if (n->get_argument()) collect_assigned_identifiers(n->get_argument(), candidates, out);
+            return;
         }
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations()) {
-                if (d->get_init() && assigns_to_identifier(d->get_init(), name)) return true;
+                if (d->get_init()) collect_assigned_identifiers(d->get_init(), candidates, out);
             }
-            return false;
+            return;
         }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
             const ASTNode* left = n->get_left();
-            if (left->get_type() == ASTNode::Type::IDENTIFIER &&
-                static_cast<const Identifier*>(left)->get_name() == name) {
-                return true;
-            }
-            // A pattern on the left writes to every name it holds, and those
-            // sit where an ordinary literal's values do -- walking the left as
-            // an expression would read them as mere mentions.
-            if (left->get_type() == ASTNode::Type::ARRAY_LITERAL ||
-                left->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+            if (left->get_type() == ASTNode::Type::IDENTIFIER) {
+                out.insert(static_cast<const Identifier*>(left)->get_name());
+            } else if (left->get_type() == ASTNode::Type::ARRAY_LITERAL ||
+                       left->get_type() == ASTNode::Type::OBJECT_LITERAL) {
                 std::vector<std::string> targets;
                 collect_pattern_target_names(left, targets);
-                for (const auto& t : targets) if (t == name) return true;
+                for (const auto& t : targets) out.insert(t);
+            } else {
+                collect_assigned_identifiers(left, candidates, out);
             }
-            return assigns_to_identifier(left, name) ||
-                   assigns_to_identifier(n->get_right(), name);
+            collect_assigned_identifiers(n->get_right(), candidates, out);
+            return;
         }
         case ASTNode::Type::UNARY_EXPRESSION: {
             const auto* n = static_cast<const UnaryExpression*>(node);
@@ -489,115 +485,117 @@ bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
             auto op = n->get_operator();
             if ((op == UnOp::PRE_INCREMENT || op == UnOp::PRE_DECREMENT ||
                  op == UnOp::POST_INCREMENT || op == UnOp::POST_DECREMENT) &&
-                n->get_operand()->get_type() == ASTNode::Type::IDENTIFIER &&
-                static_cast<const Identifier*>(n->get_operand())->get_name() == name) {
-                return true;
+                n->get_operand()->get_type() == ASTNode::Type::IDENTIFIER) {
+                out.insert(static_cast<const Identifier*>(n->get_operand())->get_name());
+                return;
             }
-            return assigns_to_identifier(n->get_operand(), name);
+            collect_assigned_identifiers(n->get_operand(), candidates, out);
+            return;
         }
         case ASTNode::Type::BINARY_EXPRESSION: {
             const auto* n = static_cast<const BinaryExpression*>(node);
-            return assigns_to_identifier(n->get_left(), name) ||
-                   assigns_to_identifier(n->get_right(), name);
+            collect_assigned_identifiers(n->get_left(), candidates, out);
+            collect_assigned_identifiers(n->get_right(), candidates, out);
+            return;
         }
         case ASTNode::Type::CONDITIONAL_EXPRESSION: {
             const auto* n = static_cast<const ConditionalExpression*>(node);
-            return assigns_to_identifier(n->get_test(), name) ||
-                   assigns_to_identifier(n->get_consequent(), name) ||
-                   assigns_to_identifier(n->get_alternate(), name);
+            collect_assigned_identifiers(n->get_test(), candidates, out);
+            collect_assigned_identifiers(n->get_consequent(), candidates, out);
+            collect_assigned_identifiers(n->get_alternate(), candidates, out);
+            return;
         }
         case ASTNode::Type::CALL_EXPRESSION: {
             const auto* n = static_cast<const CallExpression*>(node);
-            if (assigns_to_identifier(n->get_callee(), name)) return true;
-            for (const auto& arg : n->get_arguments()) {
-                if (assigns_to_identifier(arg.get(), name)) return true;
-            }
-            return false;
+            collect_assigned_identifiers(n->get_callee(), candidates, out);
+            for (const auto& arg : n->get_arguments()) collect_assigned_identifiers(arg.get(), candidates, out);
+            return;
         }
         case ASTNode::Type::MEMBER_EXPRESSION: {
             const auto* n = static_cast<const MemberExpression*>(node);
-            return assigns_to_identifier(n->get_object(), name) ||
-                   (n->is_computed() && assigns_to_identifier(n->get_property(), name));
+            collect_assigned_identifiers(n->get_object(), candidates, out);
+            if (n->is_computed()) collect_assigned_identifiers(n->get_property(), candidates, out);
+            return;
         }
         case ASTNode::Type::OBJECT_LITERAL: {
             const auto* n = static_cast<const ObjectLiteral*>(node);
             for (const auto& prop : n->get_properties()) {
-                if (prop->value && assigns_to_identifier(prop->value.get(), name)) return true;
+                if (prop->value) collect_assigned_identifiers(prop->value.get(), candidates, out);
             }
-            return false;
+            return;
         }
         case ASTNode::Type::ARRAY_LITERAL: {
             const auto* n = static_cast<const ArrayLiteral*>(node);
             for (const auto& el : n->get_elements()) {
-                if (el && assigns_to_identifier(el.get(), name)) return true;
+                if (el) collect_assigned_identifiers(el.get(), candidates, out);
             }
-            return false;
+            return;
         }
-        case ASTNode::Type::FUNCTION_EXPRESSION: {
-            const auto* n = static_cast<const FunctionExpression*>(node);
-            return assigns_to_identifier(n->get_body(), name);
-        }
-        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
-            const auto* n = static_cast<const ArrowFunctionExpression*>(node);
-            return assigns_to_identifier(n->get_body(), name);
-        }
-        case ASTNode::Type::FUNCTION_DECLARATION: {
-            const auto* n = static_cast<const FunctionDeclaration*>(node);
-            return assigns_to_identifier(n->get_body(), name);
-        }
-        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
-            const auto* n = static_cast<const AsyncFunctionExpression*>(node);
-            return assigns_to_identifier(n->get_body(), name);
-        }
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+            collect_assigned_identifiers(static_cast<const FunctionExpression*>(node)->get_body(), candidates, out);
+            return;
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+            collect_assigned_identifiers(static_cast<const ArrowFunctionExpression*>(node)->get_body(), candidates, out);
+            return;
+        case ASTNode::Type::FUNCTION_DECLARATION:
+            collect_assigned_identifiers(static_cast<const FunctionDeclaration*>(node)->get_body(), candidates, out);
+            return;
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
+            collect_assigned_identifiers(static_cast<const AsyncFunctionExpression*>(node)->get_body(), candidates, out);
+            return;
         case ASTNode::Type::CLASS_DECLARATION: {
             const auto* n = static_cast<const ClassDeclaration*>(node);
-            return assigns_to_identifier(n->get_superclass(), name) ||
-                   assigns_to_identifier(n->get_body(), name);
+            collect_assigned_identifiers(n->get_superclass(), candidates, out);
+            collect_assigned_identifiers(n->get_body(), candidates, out);
+            return;
         }
         case ASTNode::Type::METHOD_DEFINITION: {
             const auto* n = static_cast<const MethodDefinition*>(node);
-            return (n->is_computed() && assigns_to_identifier(n->get_key(), name)) ||
-                   assigns_to_identifier(n->get_value(), name);
+            if (n->is_computed()) collect_assigned_identifiers(n->get_key(), candidates, out);
+            collect_assigned_identifiers(n->get_value(), candidates, out);
+            return;
         }
         case ASTNode::Type::CLASS_FIELD: {
             const auto* n = static_cast<const ClassField*>(node);
-            return (n->is_computed() && assigns_to_identifier(n->get_key(), name)) ||
-                   assigns_to_identifier(n->get_value(), name);
+            if (n->is_computed()) collect_assigned_identifiers(n->get_key(), candidates, out);
+            collect_assigned_identifiers(n->get_value(), candidates, out);
+            return;
         }
         case ASTNode::Type::CLASS_STATIC_BLOCK:
-            return assigns_to_identifier(static_cast<const ClassStaticBlock*>(node)->get_body(), name);
+            collect_assigned_identifiers(static_cast<const ClassStaticBlock*>(node)->get_body(), candidates, out);
+            return;
         case ASTNode::Type::TEMPLATE_LITERAL: {
             const auto* n = static_cast<const TemplateLiteral*>(node);
             for (const auto& el : n->get_elements()) {
-                if (el.expression && assigns_to_identifier(el.expression.get(), name)) return true;
+                if (el.expression) collect_assigned_identifiers(el.expression.get(), candidates, out);
             }
-            return false;
+            return;
         }
         case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
             const auto* n = static_cast<const NullishCoalescingExpression*>(node);
-            return assigns_to_identifier(n->get_left(), name) ||
-                   assigns_to_identifier(n->get_right(), name);
+            collect_assigned_identifiers(n->get_left(), candidates, out);
+            collect_assigned_identifiers(n->get_right(), candidates, out);
+            return;
         }
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* n = static_cast<const NewExpression*>(node);
-            if (assigns_to_identifier(n->get_constructor(), name)) return true;
-            for (const auto& arg : n->get_arguments()) {
-                if (assigns_to_identifier(arg.get(), name)) return true;
-            }
-            return false;
+            collect_assigned_identifiers(n->get_constructor(), candidates, out);
+            for (const auto& arg : n->get_arguments()) collect_assigned_identifiers(arg.get(), candidates, out);
+            return;
         }
         case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
             const auto* n = static_cast<const OptionalChainingExpression*>(node);
-            return assigns_to_identifier(n->get_object(), name) ||
-                   assigns_to_identifier(n->get_property(), name);
+            collect_assigned_identifiers(n->get_object(), candidates, out);
+            collect_assigned_identifiers(n->get_property(), candidates, out);
+            return;
         }
         case ASTNode::Type::SPREAD_ELEMENT:
-            return assigns_to_identifier(static_cast<const SpreadElement*>(node)->get_argument(), name);
+            collect_assigned_identifiers(static_cast<const SpreadElement*>(node)->get_argument(), candidates, out);
+            return;
         case ASTNode::Type::THROW_STATEMENT:
-            return assigns_to_identifier(static_cast<const ThrowStatement*>(node)->get_expression(), name);
+            collect_assigned_identifiers(static_cast<const ThrowStatement*>(node)->get_expression(), candidates, out);
+            return;
 
-        // Leaves: nothing inside them to assign through. Everything else falls
-        // to the answer below.
         case ASTNode::Type::NUMBER_LITERAL:
         case ASTNode::Type::STRING_LITERAL:
         case ASTNode::Type::BOOLEAN_LITERAL:
@@ -611,14 +609,15 @@ bool assigns_to_identifier(const ASTNode* node, const std::string& name) {
         case ASTNode::Type::EMPTY_STATEMENT:
         case ASTNode::Type::BREAK_STATEMENT:
         case ASTNode::Type::CONTINUE_STATEMENT:
-            return false;
+            return;
 
         default:
-            // A node shape this walk does not know could hold an assignment
-            // anywhere inside it, and answering "no" would let a const be given
-            // a register and then overwritten in silence. The callers all treat
-            // "yes" as a reason to be careful, so an unknown shape says yes.
-            return true;
+            // Mirrors assigns_to_identifier's own default: an unrecognized
+            // shape could hold an assignment to anything, so every candidate
+            // still being asked about here is marked found rather than risk
+            // one being handed a register it can be silently overwritten in.
+            out.insert(candidates.begin(), candidates.end());
+            return;
     }
 }
 
@@ -4150,6 +4149,17 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     std::unordered_set<std::string> annexb_fn_vars;
     drop_shadowed_annexb_fn_vars(declared, param_names, annexb_fn_vars);
 
+    // Every const in `declared` that is assigned somewhere in `body`, computed
+    // once instead of walking the whole body again per name below (a body
+    // declaring thousands of top-level consts -- a large bundled UMD library
+    // is exactly this shape -- made that quadratic).
+    std::unordered_set<std::string> assigned_consts_declared;
+    {
+        std::unordered_set<std::string> const_candidates;
+        for (const auto& info : declared) if (info.is_const) const_candidates.insert(info.name);
+        collect_assigned_identifiers(body, const_candidates, assigned_consts_declared);
+    }
+
     // `arguments` forces env_mode too: its mapped accessors (sloppy mode,
     // simple params) read/write the parameter bindings through the context,
     // which register-mode parameters don't have. A default/destructuring
@@ -4432,8 +4442,14 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // A const that is assigned somewhere cannot live in a register: the
         // refusal that assignment has to raise is carried by the environment
         // binding's mutable flag, and a register has nowhere to put it.
+        std::unordered_set<std::string> assigned_consts_pre;
+        {
+            std::unordered_set<std::string> const_candidates_pre;
+            for (const auto& info : declared_pre) if (info.is_const) const_candidates_pre.insert(info.name);
+            collect_assigned_identifiers(body, const_candidates_pre, assigned_consts_pre);
+        }
         for (const auto& info : declared_pre) {
-            if (info.is_const && assigns_to_identifier(body, info.name)) {
+            if (info.is_const && assigned_consts_pre.count(info.name)) {
                 env_resident.insert(info.name);
             }
         }
@@ -4449,7 +4465,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // has nowhere to put it. Wanting one is itself a reason to have an
     // environment, so this is settled before env_mode is.
     for (const auto& info : declared) {
-        if (info.is_const && assigns_to_identifier(body, info.name)) {
+        if (info.is_const && assigned_consts_declared.count(info.name)) {
             env_resident.insert(info.name);
         }
     }
@@ -4499,7 +4515,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // throw. Refusing instead handed the whole body to the tree-walker.
     for (const auto& info : declared) {
         if (!info.is_const || env_resident.count(info.name)) continue;
-        if (!assigns_to_identifier(body, info.name)) continue;
+        if (!assigned_consts_declared.count(info.name)) continue;
         env_resident.insert(info.name);
         selective = true;
     }
@@ -4682,7 +4698,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // cannot, so an assigned const that did not become resident still
         // refuses rather than compile as mutable.
         // Made resident above precisely so this cannot happen.
-        if (info.is_const && !resident && assigns_to_identifier(body, info.name)) return nullptr;
+        if (info.is_const && !resident && assigned_consts_declared.count(info.name)) return nullptr;
         if (resident) {
             // A repeat declare_local (shadowed name) is fine -- the Environment
             // chain resolves each occurrence to its own scope at runtime.
@@ -5185,11 +5201,20 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
     }
     // Same reason as compile(): an assigned const needs the Environment's
     // mutability flag, so it becomes resident rather than refusing the chunk.
+    // Computed once across every top-level statement instead of per name --
+    // see collect_assigned_identifiers's own doc comment; a script with many
+    // top-level consts (a bundled UMD library, again) made this quadratic.
+    std::unordered_set<std::string> assigned_consts_script;
+    {
+        std::unordered_set<std::string> const_candidates;
+        for (const auto& info : declared) if (info.is_const) const_candidates.insert(info.name);
+        for (const auto& st : statements) {
+            collect_assigned_identifiers(st.get(), const_candidates, assigned_consts_script);
+        }
+    }
     for (const auto& info : declared) {
         if (!info.is_const || env_resident.count(info.name)) continue;
-        for (const auto& st : statements) {
-            if (assigns_to_identifier(st.get(), info.name)) { env_resident.insert(info.name); break; }
-        }
+        if (assigned_consts_script.count(info.name)) env_resident.insert(info.name);
     }
     BytecodeCompiler compiler({}, /*env_mode=*/true,
                               script_has_with ? nullptr : &env_resident);
@@ -5245,10 +5270,9 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_script(
         // so a const that is ever assigned would compile to a plain Star and
         // be overwritten in silence. compile_script was missing this, which
         // left `{ const c = 1; c = 2; }` at script level writing through.
-        if (info.is_const && !env_resident.count(info.name)) {
-            for (const auto& st : statements) {
-                if (assigns_to_identifier(st.get(), info.name)) return nullptr;
-            }
+        if (info.is_const && !env_resident.count(info.name) &&
+            assigned_consts_script.count(info.name)) {
+            return nullptr;
         }
         if (env_resident.count(info.name)) {
             compiler.declare_local(info.name);
