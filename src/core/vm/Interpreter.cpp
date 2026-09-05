@@ -4653,8 +4653,19 @@ Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
                                     pe.cached_value.as_function() == ObjectFactory::get_pristine_function_apply()) {
                                     const Value& this_arg = regs[args_start];
                                     const Value& args_array = regs[args_start + 1];
-                                    std::vector<Value> call_args;
-                                    ValueVectorRoot call_args_root(&call_args);
+                                    // Most .apply() calls pass a handful of
+                                    // arguments -- a stack array is scanned as
+                                    // a GC root the same way this frame's own
+                                    // locals are, so call_register_args's
+                                    // Plain-function path takes it with no
+                                    // allocation and no vector to root. Only
+                                    // an argArray longer than this falls back
+                                    // to one, same as before.
+                                    constexpr uint32_t kInlineApplyArgs = 8;
+                                    Value stack_args[kInlineApplyArgs];
+                                    uint32_t inline_count = 0;
+                                    std::vector<Value> heap_args;
+                                    bool use_heap = false;
                                     if (!args_array.is_undefined() && !args_array.is_null()) {
                                         if (!args_array.is_object() && !args_array.is_function()) {
                                             ctx.throw_type_error(
@@ -4665,15 +4676,29 @@ Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
                                             CHECK_EXC();
                                             if (length_val.is_number()) {
                                                 uint32_t length = static_cast<uint32_t>(length_val.to_number());
-                                                call_args.reserve(length);
-                                                for (uint32_t i = 0; i < length; i++) {
-                                                    call_args.push_back(arr_obj->get_element(i));
+                                                if (length <= kInlineApplyArgs) {
+                                                    for (uint32_t i = 0; i < length; i++) {
+                                                        stack_args[i] = arr_obj->get_element(i);
+                                                    }
+                                                    inline_count = length;
+                                                } else {
+                                                    use_heap = true;
+                                                    heap_args.reserve(length);
+                                                    for (uint32_t i = 0; i < length; i++) {
+                                                        heap_args.push_back(arr_obj->get_element(i));
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                     CHECK_EXC();
-                                    acc = target.as_function()->call(ctx, call_args, this_arg);
+                                    if (use_heap) {
+                                        ValueVectorRoot heap_args_root(&heap_args);
+                                        acc = target.as_function()->call_register_args(ctx, heap_args, this_arg);
+                                    } else {
+                                        acc = target.as_function()->call_register_args(
+                                            ctx, std::span<const Value>(stack_args, inline_count), this_arg);
+                                    }
                                     handled = true;
                                 }
                                 break;
