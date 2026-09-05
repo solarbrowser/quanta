@@ -316,6 +316,21 @@ inline bool shape_fast_path_ok(Object::ObjectType t) {
            t == OT::Error || t == OT::Promise;
 }
 
+// Function::get_property intercepts exactly these five names before an
+// own-or-prototype lookup would ever run (arguments/caller: poison-pilled
+// or legacy-undefined on a strict/non-native function; name/length:
+// live-computed, not a stable descriptor; prototype: lazily materialized).
+// Every other name -- every builtin on Function.prototype (call/apply/
+// bind/toString/constructor/Symbol.hasInstance) and any user-added one --
+// falls through Function::get_property exactly like Object::get_property
+// would, so a read of it is as cacheable as an Ordinary receiver's. Shared
+// by get_named's exotic_proto_ok/holder_ok and h_GetNamedRest's own inline
+// copy of the same check, so the one list stays the one source of truth.
+inline bool function_proto_read_cacheable(const std::string& name) {
+    return name != "arguments" && name != "caller" && name != "name" &&
+           name != "length" && name != "prototype";
+}
+
 // Like learn_feedback, but a duplicate from_shape REFRESHES the entry rather
 // than no-opping: to_shape/slot_index are deterministic for (from_shape, key),
 // but proto_epoch goes stale and a re-hit needs the current value to trust it.
@@ -501,8 +516,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
            recv_type == Object::ObjectType::Set)
             ? name != "size"
         : recv_type == Object::ObjectType::Function
-            ? (name != "arguments" && name != "caller" && name != "name" &&
-               name != "length" && name != "prototype")
+            ? function_proto_read_cacheable(name)
             : recv_type == Object::ObjectType::RegExp ||
               recv_type == Object::ObjectType::Date ||
               recv_type == Object::ObjectType::Error ||
@@ -710,8 +724,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                          name != "length" &&
                          !(!name.empty() && name[0] >= '0' && name[0] <= '9')) ||
                         (proto->get_type() == Object::ObjectType::Function &&
-                         name != "arguments" && name != "caller" && name != "name" &&
-                         name != "length" && name != "prototype");
+                         function_proto_read_cacheable(name));
                     if (rooted && fb_slot && !(fb && fb->proto_mega) &&
                         (fast_type_ok || exotic_proto_ok) &&
                         holder_ok) {
@@ -5054,7 +5067,50 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                 }
             }
         }
-    } else if (!receiver.is_function()) {
+    } else if (receiver.is_function()) {
+        // A function is not is_object() (see Value's own tag split), so it
+        // never reaches the branch above -- but Function IS-A Object in the
+        // C++ hierarchy, and as_object() reads the same payload bits
+        // regardless of which of the two tags produced them. The own-shape
+        // scan above is skipped here on purpose: call/apply/bind and every
+        // other Function.prototype builtin are (barring a rare, deliberate
+        // shadow) never an own property, so only the inherited-property
+        // scan -- the exact copy of get_named's own, restricted to the same
+        // five names function_proto_read_cacheable excludes -- is worth
+        // hoisting here. Anything this scan does not resolve still falls
+        // through to get_named below, which is unconditionally correct for
+        // an own "call" a shadow would create (a different shape than any
+        // entry learned here could match).
+        Object* obj = receiver.as_object();
+        const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
+        if (f.feedback_rooted && !fb.proto_mega && fb.proto_count > 0 &&
+            !obj->has_any_descriptor_override() &&
+            function_proto_read_cacheable(f.chunk.name_at(read_u16(code, pc + 2)))) {
+            Shape* rs = obj->get_shape();
+            Object* p0 = obj->get_prototype();
+            uint64_t pep = Object::proto_epoch();
+            for (uint8_t k = 0; k < fb.proto_count; k++) {
+                const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+                if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep) {
+                    if (pe.absent) {
+                        acc = Value();
+                        FUSED_TAIL(6);
+                    }
+                    if (pe.is_getter) break;
+                    if (pe.from_descriptor) {
+                        if (pe.desc_epoch == Object::descriptor_epoch()) {
+                            acc = pe.cached_value;
+                            FUSED_TAIL(6);
+                        }
+                    } else if (const Value* hs = pe.holder->get_shape_slot_unchecked(pe.slot_index)) {
+                        acc = *hs;
+                        FUSED_TAIL(6);
+                    }
+                    break;
+                }
+            }
+        }
+    } else {
         // Primitive receiver. get_primitive_named already caches the resolved
         // value per site (prim_*), but only after get_named's entry checks, its
         // own `length`/index early-outs and the kind dispatch have all run --
