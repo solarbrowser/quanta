@@ -10380,6 +10380,45 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     mem_computed = opt->is_computed();
                 }
 
+                // `X.call(thisArg, ...args)`, non-computed, non-optional,
+                // non-spread, non-private, not `super.call(...)`: the shape
+                // this session's profiling found paying for both a property
+                // read of "call" AND an extra native-function dispatch
+                // through Function.prototype.call on every single
+                // invocation. Compiled as CallViaFunctionCall instead of
+                // GetNamed+CallResolved -- see its own doc comment in
+                // Bytecode.h for the runtime guard that keeps a shadowed or
+                // monkeypatched `.call` exactly as correct as the two-opcode
+                // form, just slower on that (rare) path.
+                if (!super_mem && !mem_optional && !call->is_optional() && !mem_computed &&
+                    !mem_private && !spread_args && !call->is_tagged_template() &&
+                    static_cast<const Identifier*>(mem_prop)->get_name() == "call") {
+                    if (!compile_expression(mem_obj)) return false;
+                    int obj_reg = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    int args_start = next_register_;
+                    uint8_t argc = static_cast<uint8_t>(call_args.size());
+                    {
+                        ChainMaskScope mask(chain_shortcircuit_jumps_);
+                        for (const auto& arg : call_args) {
+                            int arg_reg = alloc_temp();
+                            if (failed_) return false;
+                            if (!compile_expression(arg.get())) return false;
+                            emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(arg_reg));
+                        }
+                    }
+                    emit(Op::CallViaFunctionCall);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    emit_u8(static_cast<uint8_t>(args_start));
+                    emit_u8(argc);
+                    emit_u16(alloc_feedback_slot());
+                    free_temp(obj_reg);
+                    return !failed_;
+                }
+
                 // super.m(...) calls the method found on the super base, but with
                 // the current `this` as receiver, so the two differ here where
                 // every other form uses one object for both.

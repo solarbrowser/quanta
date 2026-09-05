@@ -124,6 +124,10 @@ enum class Op : uint8_t {
 
     Call,         // r_callee r_args_start argc n
     CallResolved, // r_func r_this r_args_start argc n -- func already resolved (spec: before args)
+    // r_obj r_args_start argc fb -- `X.call(thisArg, ...rest)`; skips
+    // Function.prototype.call itself when fb proves X's inherited "call"
+    // still is it, else falls back through get_named like GetNamed+CallResolved.
+    CallViaFunctionCall, // r_obj r_args_start argc fb
     Construct,    // r_callee r_args_start argc n -- new.target = callee, calls Function::construct
     // Spread forms: argument count is only known at runtime, so the operand
     // is a spread SOURCE (the original iterable when the whole list is one

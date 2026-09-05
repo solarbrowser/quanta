@@ -3949,6 +3949,16 @@ Object* get_function_prototype() {
     return function_prototype_object;
 }
 
+static thread_local Function* pristine_function_call_object = nullptr;
+
+void set_pristine_function_call(Function* fn) {
+    pristine_function_call_object = fn;
+}
+
+Function* get_pristine_function_call() {
+    return pristine_function_call_object;
+}
+
 Value box_primitive_this_sloppy(Context& ctx, const Value& this_value) {
     if (!this_value.is_number() && !this_value.is_string() && !this_value.is_boolean() &&
         !this_value.is_symbol() && !this_value.is_bigint()) {

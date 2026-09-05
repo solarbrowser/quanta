@@ -277,8 +277,12 @@ void register_function_builtins(Context& ctx) {
 
     call_fn->set_property("name", Value(std::string("call")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
+    // Remembered so a call site that has proven (via the ordinary ProtoEntry
+    // cache) that some receiver's inherited "call" still resolves to this
+    // exact object can skip invoking it -- see h_gen_CallViaFunctionCall.
+    ObjectFactory::set_pristine_function_call(call_fn.get());
     function_prototype->set_property("call", Value(call_fn.release()), PropertyAttributes::BuiltinFunction);
-    
+
     auto apply_fn = ObjectFactory::create_native_function("apply",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* function_obj = receiver.as_object_or_null();

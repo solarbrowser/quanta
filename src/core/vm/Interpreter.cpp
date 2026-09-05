@@ -4486,6 +4486,85 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// `X.call(thisArg, ...rest)`, compiled as if "call" were an ordinary method
+// (args_start/argc count the WHOLE original argument list, thisArg
+// included -- see Bytecode.h's own comment). The fast path below answers
+// the exact same question get_named's ProtoEntry cache would for a plain
+// `GetNamed 'call'` on X (same shape/prototype/epoch keys, same
+// from_descriptor shape), just without ever materializing the read: a hit
+// only needs to know the cached value IS the pristine Function.prototype.call,
+// not what it equals, so nothing here is skipped that a real read would
+// have had to do to stay correct. A miss -- shadowed, monkeypatched,
+// absent, or X not a function at all -- resolves "call" for real through
+// get_named (which, on the way, is what actually populates the cache the
+// next call at this site checks) and invokes whatever that yields exactly
+// like CallResolved would.
+Value h_gen_CallViaFunctionCall(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Function* owner = f.owner;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t obj_reg = code[pc];
+                uint8_t args_start = code[pc + 1];
+                uint8_t argc = code[pc + 2];
+                uint16_t fb_idx = read_u16(code, pc + 3);
+                pc += 5;
+                const Value& target = regs[obj_reg];
+                FeedbackSlot& fb_slot = chunk.feedback[fb_idx];
+                bool handled = false;
+                if (target.is_function()) {
+                    Object* obj = target.as_object();
+                    const FeedbackBody& fb = fb_slot.read();
+                    if (f.feedback_rooted && !fb.proto_mega && !obj->has_any_descriptor_override()) {
+                        Shape* rs = obj->get_shape();
+                        Object* p0 = obj->get_prototype();
+                        uint64_t pep = Object::proto_epoch();
+                        for (uint8_t k = 0; k < fb.proto_count; k++) {
+                            const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+                            if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep) {
+                                if (pe.from_descriptor && pe.desc_epoch == Object::descriptor_epoch() &&
+                                    pe.cached_value.is_function() &&
+                                    pe.cached_value.as_function() == ObjectFactory::get_pristine_function_call()) {
+                                    Value this_arg = argc > 0 ? regs[args_start] : Value();
+                                    std::span<const Value> call_args(
+                                        regs + args_start + (argc > 0 ? 1 : 0), argc > 0 ? argc - 1 : 0);
+                                    acc = target.as_function()->call_register_args(ctx, call_args, this_arg);
+                                    handled = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!handled) {
+                    Value method = get_named(ctx, target, "call", &fb_slot, owner, f.feedback_rooted);
+                    CHECK_EXC();
+                    std::span<const Value> call_args(regs + args_start, argc);
+                    if (method.is_function()) {
+                        acc = method.as_function()->call_register_args(ctx, call_args, target);
+                    } else if (method.is_object() &&
+                               method.as_object()->get_type() == Object::ObjectType::Proxy) {
+                        std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                        acc = static_cast<Proxy*>(method.as_object())->apply_trap(trap_args, target);
+                    } else {
+                        ctx.throw_type_error("value.call is not a function");
+                    }
+                }
+                CHECK_EXC();
+                Collector::safepoint();
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -6436,6 +6515,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CopyRestProperties)] = &h_gen_CopyRestProperties;
     t[static_cast<uint8_t>(Op::Call)] = &h_gen_Call;
     t[static_cast<uint8_t>(Op::CallResolved)] = &h_gen_CallResolved;
+    t[static_cast<uint8_t>(Op::CallViaFunctionCall)] = &h_gen_CallViaFunctionCall;
     t[static_cast<uint8_t>(Op::Construct)] = &h_gen_Construct;
     t[static_cast<uint8_t>(Op::CallSpread)] = &h_gen_CallSpread;
     t[static_cast<uint8_t>(Op::ConstructSpread)] = &h_gen_ConstructSpread;

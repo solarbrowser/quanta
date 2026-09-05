@@ -1967,6 +1967,16 @@ namespace ObjectFactory {
     Object* get_array_prototype();
     void set_function_prototype(Object* prototype);
     Object* get_function_prototype();
+    // The exact native Function object installed as Function.prototype.call
+    // at startup. A call site that has proven (via the ordinary GetNamed
+    // ProtoEntry cache) that a receiver's inherited "call" resolves to
+    // exactly this pointer can skip invoking it and invoke the receiver
+    // directly instead -- see h_gen_CallViaFunctionCall in Interpreter.cpp.
+    // Reassigning or deleting Function.prototype.call moves the same global
+    // descriptor epoch that ProtoEntry's from_descriptor entries already
+    // check, so a stale comparison against this pointer cannot survive that.
+    void set_pristine_function_call(class Function* fn);
+    class Function* get_pristine_function_call();
     std::unique_ptr<Function> create_js_function(const std::string& name,
                                                  const std::vector<std::string>& params,
                                                  std::unique_ptr<class ASTNode> body,
