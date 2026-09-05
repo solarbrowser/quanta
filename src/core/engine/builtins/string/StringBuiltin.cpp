@@ -86,6 +86,50 @@ static size_t is_unicode_whitespace(const std::string& str, size_t i) {
     return 0;
 }
 
+// Exactly `pad_need` UTF-16 code units of `pad_string` repeated. An ASCII
+// pad_string -- padStart()/padEnd()'s own default of " " included -- needs no
+// code-unit decoding at all: byte length and UTF-16 length coincide, so this
+// is a plain byte repeat+truncate instead of decoding one unit at a time out
+// of a buffer that used to be rescanned from byte 0 on every repetition and
+// every unit read.
+static std::string build_pad_string(const std::string& pad_string, size_t pad_need) {
+    if (pad_string.empty() || pad_need == 0) return {};
+    if (utf8_is_ascii(pad_string)) {
+        std::string result;
+        result.reserve(pad_need);
+        while (result.size() < pad_need) result += pad_string;
+        result.resize(pad_need);
+        return result;
+    }
+    std::string repeated;
+    size_t repeated_units = 0;
+    const size_t pad_string_units = utf16_length(pad_string);
+    while (repeated_units < pad_need) {
+        repeated += pad_string;
+        repeated_units += pad_string_units;
+    }
+    std::string padding;
+    for (size_t i = 0; i < pad_need; i++) {
+        int32_t unit = utf16_code_unit_at(repeated, i);
+        if (unit < 0) break;
+        uint32_t u = static_cast<uint32_t>(unit);
+        if (u >= 0xD800 && u <= 0xDBFF && i + 1 < pad_need) {
+            int32_t low = utf16_code_unit_at(repeated, i + 1);
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                uint32_t cp = 0x10000 + ((u - 0xD800) << 10) + (static_cast<uint32_t>(low) - 0xDC00);
+                padding += static_cast<char>(0xF0 | (cp >> 18));
+                padding += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                padding += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                padding += static_cast<char>(0x80 | (cp & 0x3F));
+                i++;
+                continue;
+            }
+        }
+        padding += encode_utf16_unit(u);
+    }
+    return padding;
+}
+
 static std::string unicode_trim(const std::string& str) {
     size_t start = 0, end = str.size();
     while (start < end) { size_t n = is_unicode_whitespace(str, start); if (!n) break; start += n; }
@@ -234,6 +278,9 @@ static String* try_slice(String* self, size_t start, size_t end) {
 static size_t bytes_index_of_byte(const Value& v, const std::string& s, size_t b) {
     return v.is_string() ? v.as_string()->index_of_byte(b) : utf16_index_from_byte_pos(s, b);
 }
+static std::string bytes_substring(const Value& v, const std::string& s, size_t start, size_t end) {
+    return v.is_string() ? v.as_string()->substring_utf16(start, end) : utf16_substring(s, start, end);
+}
 
 static const std::string& borrow_to_string_this(Context& ctx, const Value& this_value,
                                                 std::string& scratch) {
@@ -339,31 +386,7 @@ void register_string_builtins(Context& ctx) {
             size_t str_len = bytes_utf16_length(receiver, str), target = static_cast<size_t>(tl);
             if (target <= str_len) return Value(str);
             size_t pad_need = target - str_len;
-            std::string padding;
-            if (!pad_string.empty()) {
-                // Truncate by UTF-16 code unit; combine surrogate pairs into proper 4-byte
-                // UTF-8 supplementary chars so the result compares equal to the original string.
-                std::string repeated;
-                while (utf16_length(repeated) < pad_need) repeated += pad_string;
-                for (size_t i = 0; i < pad_need; i++) {
-                    int32_t unit = utf16_code_unit_at(repeated, i);
-                    if (unit < 0) break;
-                    uint32_t u = static_cast<uint32_t>(unit);
-                    if (u >= 0xD800 && u <= 0xDBFF && i + 1 < pad_need) {
-                        int32_t low = utf16_code_unit_at(repeated, i + 1);
-                        if (low >= 0xDC00 && low <= 0xDFFF) {
-                            uint32_t cp = 0x10000 + ((u - 0xD800) << 10) + (static_cast<uint32_t>(low) - 0xDC00);
-                            padding += static_cast<char>(0xF0 | (cp >> 18));
-                            padding += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-                            padding += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-                            padding += static_cast<char>(0x80 | (cp & 0x3F));
-                            i++;
-                            continue;
-                        }
-                    }
-                    padding += encode_utf16_unit(u);
-                }
-            }
+            std::string padding = build_pad_string(pad_string, pad_need);
             return Value(padding + str);
         }, 1);
     PropertyDescriptor padStart_desc(Value(padStart_fn.release()),
@@ -393,29 +416,7 @@ void register_string_builtins(Context& ctx) {
             size_t str_len = bytes_utf16_length(receiver, str), target = static_cast<size_t>(tl);
             if (target <= str_len) return Value(str);
             size_t pad_need = target - str_len;
-            std::string padding;
-            if (!pad_string.empty()) {
-                std::string repeated;
-                while (utf16_length(repeated) < pad_need) repeated += pad_string;
-                for (size_t i = 0; i < pad_need; i++) {
-                    int32_t unit = utf16_code_unit_at(repeated, i);
-                    if (unit < 0) break;
-                    uint32_t u = static_cast<uint32_t>(unit);
-                    if (u >= 0xD800 && u <= 0xDBFF && i + 1 < pad_need) {
-                        int32_t low = utf16_code_unit_at(repeated, i + 1);
-                        if (low >= 0xDC00 && low <= 0xDFFF) {
-                            uint32_t cp = 0x10000 + ((u - 0xD800) << 10) + (static_cast<uint32_t>(low) - 0xDC00);
-                            padding += static_cast<char>(0xF0 | (cp >> 18));
-                            padding += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-                            padding += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-                            padding += static_cast<char>(0x80 | (cp & 0x3F));
-                            i++;
-                            continue;
-                        }
-                    }
-                    padding += encode_utf16_unit(u);
-                }
-            }
+            std::string padding = build_pad_string(pad_string, pad_need);
             return Value(str + padding);
         }, 1);
     PropertyDescriptor padEnd_desc(Value(padEnd_fn.release()),
@@ -578,7 +579,7 @@ void register_string_builtins(Context& ctx) {
             // byte length is past the end -- and this keeps the sum below from
             // overflowing on a position like 1e21.
             if (position > str.size()) return Value(false);
-            return Value(utf16_substring(str, position, position + search_units) == search_string);
+            return Value(bytes_substring(receiver, str, position, position + search_units) == search_string);
         });
     PropertyDescriptor startsWith_length_desc(Value(1.0), PropertyAttributes::Configurable);
     startsWith_length_desc.set_enumerable(false);
@@ -632,7 +633,7 @@ void register_string_builtins(Context& ctx) {
             size_t search_units = utf16_length(search_string);
             if (search_units == 0) return Value(true);
             if (search_units > end) return Value(false);
-            return Value(utf16_substring(str, end - search_units, end) == search_string);
+            return Value(bytes_substring(receiver, str, end - search_units, end) == search_string);
         });
     PropertyDescriptor endsWith_length_desc(Value(1.0), PropertyAttributes::Configurable);
     endsWith_length_desc.set_enumerable(false);
