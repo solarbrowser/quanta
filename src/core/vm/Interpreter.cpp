@@ -465,10 +465,21 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // get_property_descriptor, set_property_descriptor) carries a case for
     // any of the four (see shape_fast_path_ok's own comment, which lists the
     // same four for the same reason on GetNamed/SetNamed's shape-slot fast
-    // path). The types left out -- Function, TypedArray, ArrayBuffer,
-    // DataView, Proxy, Custom, the primitive wrappers -- each answer names
-    // of their own and belong on the general path until someone lists
-    // theirs too.
+    // path). The types left out -- TypedArray, ArrayBuffer, DataView, Proxy,
+    // Custom, the primitive wrappers -- each answer names of their own and
+    // belong on the general path until someone lists theirs too.
+    //
+    // Function is listed below for every name except the five
+    // Function::get_property intercepts before ever reaching an own-or-
+    // prototype lookup (arguments/caller: poison-pilled or legacy-undefined
+    // on a strict/non-native function; name/length: live-computed, not a
+    // stable descriptor; prototype: lazily materialized). Every other name
+    // -- call/apply/bind/toString/constructor/Symbol.hasInstance and any
+    // user-added one -- falls through Function::get_property exactly like
+    // Object::get_property would, so it is as cacheable as any Ordinary
+    // receiver's. This is what a plain function's `.call`/`.apply` (inherited
+    // from Function.prototype, never an own property) needs to stop paying a
+    // fresh, uncached prototype-chain walk on every single invocation.
     //
     // Date was excluded here once, measured, and found not to pay -- but
     // that measurement predates fixing an unconditional proto_epoch bump on
@@ -489,6 +500,9 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         : (recv_type == Object::ObjectType::Map ||
            recv_type == Object::ObjectType::Set)
             ? name != "size"
+        : recv_type == Object::ObjectType::Function
+            ? (name != "arguments" && name != "caller" && name != "name" &&
+               name != "length" && name != "prototype")
             : recv_type == Object::ObjectType::RegExp ||
               recv_type == Object::ObjectType::Date ||
               recv_type == Object::ObjectType::Error ||
@@ -694,7 +708,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                         shape_fast_path_ok(proto->get_type()) ||
                         (proto->get_type() == Object::ObjectType::Array &&
                          name != "length" &&
-                         !(!name.empty() && name[0] >= '0' && name[0] <= '9'));
+                         !(!name.empty() && name[0] >= '0' && name[0] <= '9')) ||
+                        (proto->get_type() == Object::ObjectType::Function &&
+                         name != "arguments" && name != "caller" && name != "name" &&
+                         name != "length" && name != "prototype");
                     if (rooted && fb_slot && !(fb && fb->proto_mega) &&
                         (fast_type_ok || exotic_proto_ok) &&
                         holder_ok) {

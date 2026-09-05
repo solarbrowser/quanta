@@ -251,8 +251,11 @@ void register_function_builtins(Context& ctx) {
             Object* function_obj = receiver.as_object_or_null();
             Value this_arg = args.size() > 0 ? args[0] : Value();
             std::vector<Value> call_args;
-            for (size_t i = 1; i < args.size(); i++) {
-                call_args.push_back(args[i]);
+            if (args.size() > 1) {
+                call_args.reserve(args.size() - 1);
+                for (size_t i = 1; i < args.size(); i++) {
+                    call_args.push_back(args[i]);
+                }
             }
 
             if (function_obj && function_obj->get_type() == Object::ObjectType::Proxy) {
@@ -299,10 +302,16 @@ void register_function_builtins(Context& ctx) {
                     Value length_val = args_array->get_property("length");
                     if (length_val.is_number()) {
                         uint32_t length = static_cast<uint32_t>(length_val.to_number());
+                        call_args.reserve(length);
+                        // get_element already dispatches per-type (Proxy trap,
+                        // TypedArray backing store, Arguments live bindings,
+                        // dense-array direct index, generic descriptor/prototype
+                        // fallback) without building a fresh std::string key for
+                        // every index the way get_property(std::to_string(i))
+                        // does -- see its own doc comment, which names .apply()
+                        // as one of the callers this matters for.
                         for (uint32_t i = 0; i < length; i++) {
-                            // Use get_property for array-like objects (not just arrays)
-                            Value element = args_array->get_property(std::to_string(i));
-                            call_args.push_back(element);
+                            call_args.push_back(args_array->get_element(i));
                         }
                     }
                 }
