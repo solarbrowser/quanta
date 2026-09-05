@@ -108,6 +108,17 @@ private:
     struct NameScope {
         std::unordered_set<std::string> all;
         std::unordered_set<std::string> captured;
+        // This function's own simple (non-destructured) parameter names --
+        // subtracted from `all` when it folds into the enclosing scope's
+        // `captured` (see FunctionNames::~FunctionNames). `all` itself
+        // still keeps them: a plain read of its own parameter inside this
+        // function's body is recorded exactly like any other identifier
+        // (note_name does not know the difference), which is correct for
+        // `all`'s own job of answering "does this function mention X
+        // anywhere", but wrong for `captured`'s -- a parameter is never a
+        // name the enclosing function needs to keep alive in an
+        // Environment for this function to reach.
+        std::unordered_set<std::string> own_names;
         bool eval_in_nested = false;
         bool class_expression = false;
     };
@@ -160,6 +171,28 @@ private:
         // Only the forms that can act on it bother to work this out; the rest
         // leave the safe default standing.
         void record_capture(bool captures) { captures_outer = captures; }
+        // Called once the parameter list is fully parsed, before the body:
+        // a simple (non-destructured) parameter's own name is never one
+        // this function needs FROM its enclosing scope, however many times
+        // its own body reads it -- see NameScope::own_names' own comment.
+        // A destructured parameter's synthetic name is skipped: nothing in
+        // the body ever reads it by that name, so there is nothing to
+        // exclude, and the names the pattern itself binds are its own,
+        // separate declarations (not parameters), out of scope for this.
+        void record_params(const std::vector<std::unique_ptr<Parameter>>& params) {
+            if (p.name_scopes_.empty()) return;
+            NameScope& mine = p.name_scopes_.back();
+            for (const auto& param : params) {
+                if (param->has_destructuring()) continue;
+                if (const Identifier* id = param->get_name()) mine.own_names.insert(id->get_name());
+            }
+        }
+        // Single-identifier arrow form (`x => ...`), which never builds a
+        // Parameter vector at all.
+        void record_param(const std::string& name) {
+            if (p.name_scopes_.empty()) return;
+            p.name_scopes_.back().own_names.insert(name);
+        }
         BodyScopeInfo take() const {
             BodyScopeInfo info;
             const NameScope& mine = p.name_scopes_.back();
@@ -191,7 +224,9 @@ private:
             NameScope& parent = p.name_scopes_.back();
             const bool eval_here = mine.all.count("eval") != 0 || mine.eval_in_nested;
             for (auto& n : mine.all) {
-                parent.captured.insert(n);
+                // `all` keeps every name regardless -- see NameScope::
+                // own_names' own comment for why `captured` must not.
+                if (!mine.own_names.count(n)) parent.captured.insert(n);
                 parent.all.insert(std::move(n));
             }
             parent.eval_in_nested = parent.eval_in_nested || eval_here;

@@ -927,7 +927,6 @@ std::unique_ptr<ASTNode> Parser::parse_logical_or_expression() {
             add_error("SyntaxError: Nullish coalescing operator cannot be mixed with || operator");
             return nullptr;
         }
-        Position op_start = current_token().get_start();
         advance();
         size_t right_start_idx = current_token_index_;
         auto right = parse_nullish_coalescing_expression();
@@ -942,10 +941,11 @@ std::unique_ptr<ASTNode> Parser::parse_logical_or_expression() {
             add_error("SyntaxError: Nullish coalescing operator cannot be mixed with || operator");
             return nullptr;
         }
+        Position full_start = left->get_start();
         Position end = right->get_end();
         left_start_idx = current_token_index_;
         left = std::make_unique<BinaryExpression>(
-            std::move(left), BinaryExpression::Operator::LOGICAL_OR, std::move(right), op_start, end);
+            std::move(left), BinaryExpression::Operator::LOGICAL_OR, std::move(right), full_start, end);
     }
     return left;
 }
@@ -1064,7 +1064,6 @@ std::unique_ptr<ASTNode> Parser::parse_binary_chain(int min_precedence) {
         const int precedence = binary_precedence(op_token);
         if (precedence == 0 || precedence < min_precedence) break;
 
-        const Position op_start = current_token().get_start();
         advance();
 
         const bool saved_in_binary = options_.in_binary_expr;
@@ -1085,10 +1084,11 @@ std::unique_ptr<ASTNode> Parser::parse_binary_chain(int min_precedence) {
             return nullptr;
         }
 
+        const Position full_start = left->get_start();
         const Position end = right->get_end();
         left = std::make_unique<BinaryExpression>(
             std::move(left), token_to_binary_operator(op_token), std::move(right),
-            op_start, end);
+            full_start, end);
     }
 
     return left;
@@ -1114,20 +1114,20 @@ std::unique_ptr<ASTNode> Parser::parse_exponentiation_expression() {
                 return left;
             }
         }
-        Position op_start = current_token().get_start();
         advance();
-        
+
         auto right = parse_exponentiation_expression();
         if (!right) {
             add_error("Expected expression after ** operator");
             return left;
         }
-        
+
         BinaryExpression::Operator op = BinaryExpression::Operator::EXPONENT;
+        Position full_start = left->get_start();
         Position end = right->get_end();
-        
+
         return std::make_unique<BinaryExpression>(
-            std::move(left), op, std::move(right), op_start, end
+            std::move(left), op, std::move(right), full_start, end
         );
     }
     
@@ -5552,6 +5552,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
+    fn_names.record_params(params);
 
     if (is_generator) {
         std::string forbidden = find_forbidden_expr_in_params(params, true, false);
@@ -6983,6 +6984,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
+    fn_names.record_params(params);
     advance();
 
     // Getter: no params. Setter: exactly one simple param.
@@ -7290,6 +7292,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
+    fn_names.record_params(params);
 
     if (is_generator) {
         std::string forbidden = find_forbidden_expr_in_params(params, true, false);
@@ -7674,6 +7677,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
+    fn_names.record_params(params);
 
     {
         std::string forbidden = find_forbidden_expr_in_params(params, is_generator, true);
@@ -7986,6 +7990,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
+    fn_names.record_params(params);
 
     {
         std::string forbidden = find_forbidden_expr_in_params(params, is_generator, true);
@@ -8241,7 +8246,8 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             return nullptr;
         }
     }
-    
+    fn_names.record_params(params);
+
     // Arrow functions always use UniqueFormalParameters — duplicates are always SyntaxError
     {
         std::unordered_set<std::string> seen_params;
@@ -9205,6 +9211,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 SubtreeScope method_scope(*this, ~static_cast<uint32_t>(
                     kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
                 FunctionNames method_names(*this);
+                method_names.record_params(params);
                 body = parse_block_statement(true);
                 if (!last_body_skipped_) method_names.record_body(last_body_src_first_);
                 method_names.record_body_span(last_body_src_last_, last_body_strict_);
@@ -10998,6 +11005,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
+    fn_names.record_params(params);
 
     options_.in_async_body = saved_async_aaf_params;
 
@@ -11124,6 +11132,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
 
     auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, start, param_end);
     params.push_back(std::move(param));
+    fn_names.record_params(params);
 
     if (!consume(TokenType::ARROW)) {
         add_error("Expected '=>' for async arrow function");
