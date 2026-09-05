@@ -105,6 +105,16 @@ enum class Op : uint8_t {
     IteratorNextOrJump, // r_iter r_next_fn o
     IteratorClose,      // r_iter mode (0=validate, 1=re-raise pending)
     CreateForInKeys,
+    // r_dst r_iter r_next_fn o -- a `[..., ...rest]` pattern's rest element.
+    // r_next_fn holding a number (GetIterator's array fast-path marker) means
+    // r_iter IS the source array; the rest of it, from the number's index
+    // onward, is copied into r_dst in one call instead of one
+    // IteratorNextOrJump+DefineElement pair per element, and o is taken.
+    // Anything else about the source (not that fast form, or the array
+    // stopped being dense mid-loop) falls through to pc+size unchanged, for
+    // the ordinary per-element loop right after this to run exactly as if
+    // this opcode were never there.
+    TryCollectRestArray,
 
     JumpIfNotNullish, // o
     JumpIfNullish,    // o

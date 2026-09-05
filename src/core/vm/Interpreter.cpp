@@ -3817,6 +3817,54 @@ Value h_gen_CreateForInKeys(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+Value h_gen_TryCollectRestArray(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t dst_reg = code[pc];
+                uint8_t iter_reg = code[pc + 1];
+                uint8_t next_fn_reg = code[pc + 2];
+                int16_t off = read_i16(code, pc + 3);
+                pc += 5;
+                // The number form is GetIterator's array fast-path marker
+                // (see ForOfStatement::get_iterator): r_iter IS the source
+                // array, and the number is the next index the per-element
+                // loop would have read. Re-checked here for the same reason
+                // iterator_step re-checks it -- a body earlier in this same
+                // pattern's binding could have made the array sparse.
+                const Value& next_fn = regs[next_fn_reg];
+                if (next_fn.is_number()) {
+                    Object* src = regs[iter_reg].is_object() ? regs[iter_reg].as_object() : nullptr;
+                    if (src && src->get_type() == Object::ObjectType::Array &&
+                        src->has_only_dense_elements()) {
+                        const uint32_t start = static_cast<uint32_t>(next_fn.as_number());
+                        const uint32_t len = src->element_count();
+                        if (len > start) {
+                            Object* dst = regs[dst_reg].as_object();
+                            dst->copy_elements_from(*src, start, 0, len - start);
+                            dst->set_length(len - start);
+                        }
+                        // Marks the source exhausted, same as iterator_step
+                        // does when i reaches element_count() -- a stray
+                        // re-read of this iterator (there is none today, a
+                        // rest element is always last) would see done too.
+                        regs[next_fn_reg] = Value(static_cast<double>(len));
+                        pc += off;
+                    }
+                }
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_JumpIfNotNullish(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -6584,6 +6632,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::EnterParamEval)] = &h_gen_EnterParamEval;
     t[static_cast<uint8_t>(Op::SetDirectEval)] = &h_gen_SetDirectEval;
     t[static_cast<uint8_t>(Op::CreateForInKeys)] = &h_gen_CreateForInKeys;
+    t[static_cast<uint8_t>(Op::TryCollectRestArray)] = &h_gen_TryCollectRestArray;
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;
     t[static_cast<uint8_t>(Op::JumpIfNotUndefined)] = &h_gen_JumpIfNotUndefined;

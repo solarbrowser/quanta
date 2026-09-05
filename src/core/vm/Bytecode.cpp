@@ -112,6 +112,7 @@ const OpInfo& op_info(Op op) {
         {"SaveEnv", 0, '-'}, {"RestoreEnv", 0, '-'}, {"PopEnvSave", 0, '-'},
         {"GetIterator", 1, 'r'}, {"IteratorNextOrJump", 4, 'j'}, {"IteratorClose", 2, 'C'},
         {"CreateForInKeys", 1, 'r'},
+        {"TryCollectRestArray", 5, 'R'},
         {"JumpIfNotNullish", 2, 'o'}, {"JumpIfNullish", 2, 'o'}, {"JumpIfNotUndefined", 2, 'o'},
         {"CreateClosure", 2, 'z'},
         {"DeclareFunction", 2, 'z'},
@@ -243,7 +244,7 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'P': check(0, "reads"); check(1, "reads"); break;
             case 'C': check(0, "closes the iterator in"); break;
             case 'x': case 'j': check(0, "reads"); check(1, "reads"); break;
-            case 'J': check(0, "reads"); check(1, "reads"); check(2, "reads"); break;
+            case 'J': case 'R': check(0, "reads"); check(1, "reads"); check(2, "reads"); break;
             case 'I': check(1, "stores into"); break;
             case 'K': check(2, "stores into"); break;
             case 'N': check(2, "stores into"); break;
@@ -576,6 +577,16 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
                     << " r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " sync=r" << static_cast<int>(chunk.code[operand_pc + 2])
+                    << " -> " << (operand_pc + 5 + off);
+                break;
+            }
+            case 'R': {
+                uint16_t raw = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
+                               (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
+                int16_t off = static_cast<int16_t>(raw);
+                out << " dst=r" << static_cast<int>(chunk.code[operand_pc])
+                    << " iter=r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " next=r" << static_cast<int>(chunk.code[operand_pc + 2])
                     << " -> " << (operand_pc + 5 + off);
                 break;
             }

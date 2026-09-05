@@ -7184,6 +7184,17 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             emit(Op::Ldar);
             emit_u8(static_cast<uint8_t>(done_reg));
             size_t rest_skip = emit_jump(Op::JumpIfTrue);
+            // A plain Array source (GetIterator's own fast-path form, see
+            // ForOfStatement::get_iterator) can hand the rest of it to
+            // arr_reg in one copy instead of one IteratorNextOrJump+
+            // DefineElement pair per element -- falls through, iter_reg/
+            // next_fn_reg untouched, when the source isn't that shape.
+            emit(Op::TryCollectRestArray);
+            emit_u8(static_cast<uint8_t>(arr_reg));
+            emit_u8(static_cast<uint8_t>(iter_reg));
+            emit_u8(static_cast<uint8_t>(next_fn_reg));
+            size_t rest_fast_done = code_.size();
+            emit_u16(0);
             size_t loop_top = code_.size();
             emit(Op::IteratorNextOrJump);
             emit_u8(static_cast<uint8_t>(iter_reg));
@@ -7200,6 +7211,7 @@ bool BytecodeCompiler::emit_array_pattern_bind(const ASTNode* pattern, bool is_l
             emit_u8(static_cast<uint8_t>(idx_reg));
             emit_jump_back(Op::Jump, loop_top);
             if (!patch_jump(rest_exit)) return false;
+            if (!patch_jump(rest_fast_done)) return false;
             // A rest element always drains the iterator, so nothing may step it again.
             emit(Op::LdaTrue);
             emit(Op::Star);
