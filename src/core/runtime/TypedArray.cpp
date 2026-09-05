@@ -184,6 +184,10 @@ uint8_t* TypedArrayBase::get_data_ptr() const {
 
 bool TypedArrayBase::is_out_of_bounds() const {
     if (!buffer_ || buffer_->is_detached()) return true;
+    // A non-resizable buffer's byte_length() never changes after construction
+    // (only detach can invalidate a view over it, already handled above), so
+    // the offset/length window validated at construction time still fits.
+    if (!buffer_->is_resizable()) return false;
     if (byte_offset_ > buffer_->byte_length()) return true;
     if (!is_length_tracking_ && byte_offset_ + length_ * bytes_per_element_ > buffer_->byte_length()) return true;
     return false;
