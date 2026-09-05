@@ -1385,9 +1385,17 @@ void register_iterator_constructor(Context& ctx) {
     // WrapForValidIteratorPrototype.next: delegates to stored __wfvi_next__ called with __wfvi_iter__.
     {
         auto wfvi_next = ObjectFactory::create_native_function("next",
-            [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+            [wrap_proto_raw](Context& ctx, std::span<const Value>, Value receiver) -> Value {
                 Object* self = receiver.as_object_or_null();
-                if (!self) { ctx.throw_type_error("next on non-object"); return Value(); }
+                // Validate receiver: must be an instance whose prototype IS
+                // %WrapForValidIteratorPrototype% -- anything else (including
+                // an ordinary object, or one with the same shape but built by
+                // other means) has no __wfvi_next__ slot to call, same check
+                // "return" below already makes.
+                if (!self || self->get_prototype() != wrap_proto_raw) {
+                    ctx.throw_type_error("Iterator.from next: incompatible receiver");
+                    return Value();
+                }
                 Value iter = self->get_internal_slot("__wfvi_iter__");
                 Value nxt = self->get_internal_slot("__wfvi_next__");
                 Value result = nxt.as_function()->call(ctx, {}, iter);
