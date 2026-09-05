@@ -210,7 +210,7 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
                 return Value(result);
             }
             case Operator::MODULO: {
-                double result = std::fmod(left_num, right_num);
+                double result = js_modulo(left_num, right_num);
                 if (std::isnan(result)) return Value::nan();
                 return Value(result);
             }

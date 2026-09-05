@@ -2042,7 +2042,7 @@ Value h_gen_Mod(Frame& f, uint32_t pc, Value acc) {
                 const Value& lhs = regs[code[pc]];
                 pc += 1;
                 if (LIKELY(lhs.is_number() && acc.is_number())) {
-                    acc = Value(std::fmod(lhs.as_number(), acc.as_number()));
+                    acc = Value(js_modulo(lhs.as_number(), acc.as_number()));
                 } else {
                     acc = binary_slow(ctx, BinOp::MODULO, lhs, acc);
                     CHECK_EXC();

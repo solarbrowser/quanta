@@ -463,6 +463,30 @@ inline uint32_t js_to_uint32(double number) {
     return static_cast<uint32_t>(js_to_int32(number));
 }
 
+// JS `%` (ES 6.1.6.1.6 Number::remainder), for two operands already known to
+// be numbers. Inline and shared for the same reason as js_to_int32 above:
+// the interpreter's Mod opcode takes a direct path while
+// BinaryExpression::apply_operator handles everything else, and the two must
+// not drift. When both operands are exact integers that fit in int32 and the
+// divisor isn't 0 or -1 (the one signed-division input pair that can
+// overflow: INT32_MIN / -1), a hardware integer remainder answers exactly
+// what fmod's general argument-reduction algorithm would -- except that an
+// exact-multiple result loses the dividend's sign (int has no negative zero,
+// so plain `-6 % 3` would come back 0 instead of the -0 JS requires), which
+// the same-sign check below restores.
+inline double js_modulo(double l, double r) {
+    if (r != 0.0 && r != -1.0 && l == std::trunc(l) && r == std::trunc(r) &&
+        l >= -2147483648.0 && l <= 2147483647.0 &&
+        r >= -2147483648.0 && r <= 2147483647.0) {
+        int32_t li = static_cast<int32_t>(l);
+        int32_t ri = static_cast<int32_t>(r);
+        int32_t rem = li % ri;
+        if (rem != 0) return static_cast<double>(rem);
+        return std::signbit(l) ? -0.0 : 0.0;
+    }
+    return std::fmod(l, r);
+}
+
 namespace ValueFactory {
     inline Value undefined() { return Value(); }
     inline Value null() { return Value::null(); }

@@ -782,13 +782,11 @@ Value Value::modulo(const Value& other) const {
         return Value(new BigInt(*a % *b));
     }
     if (is_number() && other.is_number()) {
-        double a = as_number();
-        double b = other.as_number();
-        double result = std::fmod(a, b);
+        double result = js_modulo(as_number(), other.as_number());
         if (std::isnan(result)) return Value::nan();
         return Value(result);
     }
-    double result = std::fmod(to_number(), other.to_number());
+    double result = js_modulo(to_number(), other.to_number());
     if (std::isnan(result)) return Value::nan();
     return Value(result);
 }
