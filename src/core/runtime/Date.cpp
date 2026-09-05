@@ -150,6 +150,17 @@ bool local_tm_at(double utc_ms, std::tm& out) {
 
 double tz_offset_ms(double utc_ms) {
     if (std::isnan(utc_ms)) return 0.0;
+    // A single Date's own getters (getFullYear/getMonth/getDate/...) each
+    // independently reduce to local_time() on the SAME underlying timestamp,
+    // so back-to-back getter calls ask this for the identical input several
+    // times over -- and localtime_r() is not cheap (glibc re-applies the
+    // zone's DST rule on every call). A one-entry cache turns those repeats
+    // into a single localtime_r(); any different input still recomputes
+    // exactly as before, so a real zone or DST change is never stale.
+    static thread_local double cached_input = std::numeric_limits<double>::quiet_NaN();
+    static thread_local double cached_offset = 0.0;
+    if (utc_ms == cached_input) return cached_offset;
+
     std::tm tmv{};
     if (!local_tm_at(utc_ms, tmv)) return 0.0;
     double q = utc_ms;
@@ -157,7 +168,10 @@ double tz_offset_ms(double utc_ms) {
     if (q < -kMaxTimeValue) q = -kMaxTimeValue;
     double d = make_day(tmv.tm_year + 1900.0, tmv.tm_mon, tmv.tm_mday);
     double local = make_date(d, make_time(tmv.tm_hour, tmv.tm_min, tmv.tm_sec, 0.0));
-    return local - std::floor(q / 1000.0) * 1000.0;
+    double offset = local - std::floor(q / 1000.0) * 1000.0;
+    cached_input = utc_ms;
+    cached_offset = offset;
+    return offset;
 }
 
 double local_time(double t) { return t + tz_offset_ms(t); }
