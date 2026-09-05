@@ -105,6 +105,26 @@ inline Object* as_object_like(const Value& v) {
     return nullptr;
 }
 
+// Mirrors append_spread_values' own fast-path condition (a plain Array
+// while the iterator protector holds, see call.cpp): when the spread
+// source is that shape and no longer than `max`, fills buf directly with
+// get_element and returns true, so a caller with a stack array can skip
+// the heap vector append_spread_values' general path needs for anything
+// else. False leaves buf untouched -- every other shape (a real iterable,
+// an array past max, or one the protector no longer covers) is exactly
+// what that general path is for.
+inline bool try_spread_small_array(const Value& source, Value* buf, uint32_t max, uint32_t& out_count) {
+    if (!source.is_object() && !source.is_function()) return false;
+    if (!Object::array_iterator_protector_intact()) return false;
+    Object* obj = source.is_function() ? static_cast<Object*>(source.as_function()) : source.as_object();
+    if (!obj->is_array()) return false;
+    const uint32_t length = obj->get_length();
+    if (length > max) return false;
+    for (uint32_t i = 0; i < length; i++) buf[i] = obj->get_element(i);
+    out_count = length;
+    return true;
+}
+
 // A canonical array-index string per spec 6.1.7 (CanonicalNumericIndexString-ish
 // for strings): no leading zero (except "0" itself), digits only, round-trips.
 bool key_is_canonical_index(const std::string& s, size_t& out_index) {
@@ -4790,18 +4810,34 @@ Value h_gen_CallSpread(Frame& f, uint32_t pc, Value acc) {
                 // original iterable straight through, so nothing is
                 // allocated. Mixed lists still arrive as a prebuilt Array,
                 // which append_spread_values bulk-copies.
-                std::vector<Value> call_args;
-                ValueVectorRoot call_args_root(&call_args);
-                append_spread_values(ctx, regs[args_reg], call_args);
-                CHECK_EXC();
-                if (callee.is_function()) {
-                    acc = callee.as_function()->call(ctx, call_args, regs[this_reg]);
-                } else if (callee.is_object() &&
-                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    std::vector<Value> trap_args(call_args.begin(), call_args.end());
-                    acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, regs[this_reg]);
+                constexpr uint32_t kInlineSpreadArgs = 8;
+                Value stack_args[kInlineSpreadArgs];
+                uint32_t inline_count = 0;
+                if (try_spread_small_array(regs[args_reg], stack_args, kInlineSpreadArgs, inline_count)) {
+                    std::span<const Value> call_args(stack_args, inline_count);
+                    if (callee.is_function()) {
+                        acc = callee.as_function()->call_register_args(ctx, call_args, regs[this_reg]);
+                    } else if (callee.is_object() &&
+                               callee.as_object()->get_type() == Object::ObjectType::Proxy) {
+                        std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                        acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, regs[this_reg]);
+                    } else {
+                        ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
+                    }
                 } else {
-                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
+                    std::vector<Value> call_args;
+                    ValueVectorRoot call_args_root(&call_args);
+                    append_spread_values(ctx, regs[args_reg], call_args);
+                    CHECK_EXC();
+                    if (callee.is_function()) {
+                        acc = callee.as_function()->call(ctx, call_args, regs[this_reg]);
+                    } else if (callee.is_object() &&
+                               callee.as_object()->get_type() == Object::ObjectType::Proxy) {
+                        std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                        acc = static_cast<Proxy*>(callee.as_object())->apply_trap(trap_args, regs[this_reg]);
+                    } else {
+                        ctx.throw_type_error(chunk.name_at(name_idx) + " is not a function");
+                    }
                 }
                 CHECK_EXC();
                 Collector::safepoint();
@@ -4827,20 +4863,40 @@ Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
                 uint16_t name_idx = read_u16(code, pc + 2);
                 pc += 4;
                 const Value& callee = regs[callee_reg];
-                std::vector<Value> call_args;   // see CallSpread: a spread source, not always an array
-                ValueVectorRoot call_args_root(&call_args);
-                append_spread_values(ctx, regs[args_reg], call_args);
-                CHECK_EXC();
-                if (callee.is_function()) {
-                    Value old_new_target = ctx.get_new_target();
-                    ctx.set_new_target(callee);
-                    acc = callee.as_function()->construct(ctx, call_args);
-                    ctx.set_new_target(old_new_target);
-                } else if (callee.is_object() &&
-                           callee.as_object()->get_type() == Object::ObjectType::Proxy) {
-                    acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
+                // See CallSpread: a spread source, not always an array.
+                constexpr uint32_t kInlineSpreadArgs = 8;
+                Value stack_args[kInlineSpreadArgs];
+                uint32_t inline_count = 0;
+                if (try_spread_small_array(regs[args_reg], stack_args, kInlineSpreadArgs, inline_count)) {
+                    std::span<const Value> call_args(stack_args, inline_count);
+                    if (callee.is_function()) {
+                        Value old_new_target = ctx.get_new_target();
+                        ctx.set_new_target(callee);
+                        acc = callee.as_function()->construct(ctx, call_args);
+                        ctx.set_new_target(old_new_target);
+                    } else if (callee.is_object() &&
+                               callee.as_object()->get_type() == Object::ObjectType::Proxy) {
+                        std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                        acc = static_cast<Proxy*>(callee.as_object())->construct_trap(trap_args);
+                    } else {
+                        ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
+                    }
                 } else {
-                    ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
+                    std::vector<Value> call_args;
+                    ValueVectorRoot call_args_root(&call_args);
+                    append_spread_values(ctx, regs[args_reg], call_args);
+                    CHECK_EXC();
+                    if (callee.is_function()) {
+                        Value old_new_target = ctx.get_new_target();
+                        ctx.set_new_target(callee);
+                        acc = callee.as_function()->construct(ctx, call_args);
+                        ctx.set_new_target(old_new_target);
+                    } else if (callee.is_object() &&
+                               callee.as_object()->get_type() == Object::ObjectType::Proxy) {
+                        acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
+                    } else {
+                        ctx.throw_type_error(chunk.name_at(name_idx) + " is not a constructor");
+                    }
                 }
                 CHECK_EXC();
                 Collector::safepoint();
