@@ -574,8 +574,18 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         Environment* outer_env = get_closure_environment();
         if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
         if (!outer_env) outer_env = ctx.get_lexical_environment();
-        // The chain can outlive this call for the same reason the context can.
-        if (outer_env) outer_env->mark_escaped();
+        // The chain can outlive this call for the same reason the context
+        // can -- but only if something in THIS call's own execution could
+        // hand out a reference to it that survives the call, which is
+        // exactly what creating a closure does (capture_closure_environment).
+        // A chunk that never emits Op::CreateClosure on any branch cannot do
+        // that no matter which branch runs, so the mark (and the outer-chain
+        // walk it can trigger the first time) is skipped entirely. Most
+        // closures already had this same chain marked once, at their OWN
+        // creation, via this same mechanism -- so even the common case where
+        // this executable's chunk isn't closure-free only ever repeats an
+        // already-amortized O(1) check here, never redoes real work.
+        if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
         fast_ctx.set_lexical_environment(outer_env);
         fast_ctx.set_variable_environment(outer_env);
         fast_ctx.set_arrow_function_context(is_arrow_);
@@ -727,8 +737,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 if (walk && walk->get_type() != Environment::Type::Declarative) outer_env = walk;
             }
             // The chain can outlive this call: a closure made inside it keeps
-            // pointing here after the call returns.
-            if (outer_env) outer_env->mark_escaped();
+            // pointing here after the call returns -- but only a chunk that
+            // actually emits Op::CreateClosure on some branch can ever make
+            // that happen (see the identical reasoning on the fast_ctx path
+            // above). call_env below is a fresh, per-call Environment either
+            // way; its own escape is decided separately, at whichever
+            // Op::CreateClosure execution (if any) captures it.
+            if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
             Environment* call_env = new Environment(Environment::Type::Function, outer_env);
             env_ctx.set_lexical_environment(call_env);
             env_ctx.set_variable_environment(call_env);

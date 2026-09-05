@@ -6238,6 +6238,7 @@ void BytecodeCompiler::fuse_store_pairs() {
 
 void BytecodeCompiler::emit(Op op) {
     if (op == Op::LdaLookup || op == Op::StaLookup) chunk_->uses_lookup_cache = true;
+    if (op == Op::CreateClosure) chunk_->has_nested_closures = true;
     // super.x/super.x=/super[expr] all read `this` too, as the receiver an
     // accessor they find is called with (or, for ResolveSuperBase, as the
     // fallback resolve_super_base(ctx, owner) reads when owner has no home

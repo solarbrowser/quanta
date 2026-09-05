@@ -808,6 +808,14 @@ struct BytecodeChunk {
     // and .data() is then null, so a missed emission site faults on the spot
     // instead of silently sharing one instance's resolved slots with another.
     bool uses_lookup_cache : 1 = false;
+    // Set by emit() when an Op::CreateClosure goes into the code -- the only
+    // opcode that instantiates a new Function (plain, arrow, async,
+    // generator or class method/constructor all go through it, distinguished
+    // by operand data rather than a separate opcode). A chunk without one can
+    // never call capture_closure_context/capture_closure_environment during
+    // its own execution, on any branch, so nothing it does can ever need its
+    // own outer environment chain to survive past the call that's running it.
+    bool has_nested_closures : 1 = false;
     // Set when the body can observe `this`, which is exactly when it emits
     // Op::LdaThis -- the only opcode that reads the frame's this. A call into
     // a chunk without it can skip setting one up, including the sloppy-mode

@@ -400,6 +400,13 @@ public:
     // mutable bools just above rather than beside outer_scope_chain, where
     // it would pad the struct out past its own heap size class.
     mutable bool needs_self_binding = false;
+    // Mirrors bytecode_chunk->has_nested_closures, cached beside the other
+    // per-chunk bits this executable already answers from one line instead
+    // of chasing the chunk pointer at every call. Read by call_default_impl's
+    // fast_ctx/env_ctx paths to skip marking the outer environment chain
+    // escaped: a chunk that never emits Op::CreateClosure on any branch can
+    // never make that chain outlive the call, no matter which branch runs.
+    mutable bool fast_no_closures = false;
     void recompute_fast_gate() const {
         fast_gate = !vm_incompatible && bytecode_chunk && !bytecode_chunk->env_mode &&
                     strict_directive_state >= 0 && closure_props_state == 0;
@@ -408,6 +415,7 @@ public:
                         closure_props_state == 0;
         fast_strict = strict_directive_state == 1;
         fast_uses_this = bytecode_chunk && bytecode_chunk->uses_this;
+        fast_no_closures = bytecode_chunk && !bytecode_chunk->has_nested_closures;
     }
 
     // GC-roots every live executable's compiled chunk, every cycle (minor
