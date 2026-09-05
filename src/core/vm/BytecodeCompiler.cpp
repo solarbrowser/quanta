@@ -866,6 +866,243 @@ bool contains_closure(const ASTNode* node) {
 #endif
     return bit;
 }
+// Narrower than contains_closure: true only for a hoisted function
+// declaration or a class declaration, the two shapes that bind their
+// own name directly into an Environment with no register-mode variant
+// (Op::DeclareFunction, ClassDeclaration::evaluate's ctx.create_
+// lexical_binding()). A closure created in EXPRESSION position (arrow,
+// function/async-function expression) is excluded: Op::CreateClosure
+// just produces a Value, with no binding step of its own, so it never
+// needed env_mode purely for existing -- see env_mode's own formula in
+// compile(), which uses this instead of has_closures for exactly that
+// reason. No cached subtree bit backs this one; it is only asked once
+// per compile, when has_closures already said yes.
+bool contains_hoisted_decl_by_walk(const ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
+            return false;
+        case ASTNode::Type::FUNCTION_DECLARATION:
+        case ASTNode::Type::CLASS_DECLARATION:  // conservative: a class EXPRESSION also lands here
+            return true;
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            const auto* n = static_cast<const BlockStatement*>(node);
+            for (const auto& stmt : n->get_statements()) {
+                if (contains_hoisted_decl_by_walk(stmt.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            const auto* n = static_cast<const IfStatement*>(node);
+            return contains_hoisted_decl_by_walk(n->get_test()) || contains_hoisted_decl_by_walk(n->get_consequent()) ||
+                   contains_hoisted_decl_by_walk(n->get_alternate());
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            const auto* n = static_cast<const WhileStatement*>(node);
+            return contains_hoisted_decl_by_walk(n->get_test()) || contains_hoisted_decl_by_walk(n->get_body());
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            const auto* n = static_cast<const DoWhileStatement*>(node);
+            return contains_hoisted_decl_by_walk(n->get_body()) || contains_hoisted_decl_by_walk(n->get_test());
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            const auto* n = static_cast<const ForStatement*>(node);
+            return contains_hoisted_decl_by_walk(n->get_init()) || contains_hoisted_decl_by_walk(n->get_test()) ||
+                   contains_hoisted_decl_by_walk(n->get_update()) || contains_hoisted_decl_by_walk(n->get_body());
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            const auto* n = static_cast<const ForOfStatement*>(node);
+            return contains_hoisted_decl_by_walk(n->get_right()) || contains_hoisted_decl_by_walk(n->get_body());
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            const auto* n = static_cast<const ForInStatement*>(node);
+            return contains_hoisted_decl_by_walk(n->get_right()) || contains_hoisted_decl_by_walk(n->get_body());
+        }
+        case ASTNode::Type::TRY_STATEMENT: {
+            const auto* n = static_cast<const TryStatement*>(node);
+            if (contains_hoisted_decl_by_walk(n->get_try_block())) return true;
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                if (contains_hoisted_decl_by_walk(static_cast<const CatchClause*>(cc)->get_body())) return true;
+            }
+            return contains_hoisted_decl_by_walk(n->get_finally_block());
+        }
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            const auto* n = static_cast<const SwitchStatement*>(node);
+            if (contains_hoisted_decl_by_walk(n->get_discriminant())) return true;
+            for (const auto& c : n->get_cases()) {
+                const auto* cc = static_cast<const CaseClause*>(c.get());
+                if (cc->get_test() && contains_hoisted_decl_by_walk(cc->get_test())) return true;
+                for (const auto& s : cc->get_consequent()) {
+                    if (contains_hoisted_decl_by_walk(s.get())) return true;
+                }
+            }
+            return false;
+        }
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_hoisted_decl_by_walk(static_cast<const LabeledStatement*>(node)->get_statement());
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return contains_hoisted_decl_by_walk(static_cast<const ExpressionStatement*>(node)->get_expression());
+        case ASTNode::Type::RETURN_STATEMENT: {
+            const auto* n = static_cast<const ReturnStatement*>(node);
+            return n->get_argument() && contains_hoisted_decl_by_walk(n->get_argument());
+        }
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            const auto* n = static_cast<const VariableDeclaration*>(node);
+            for (const auto& d : n->get_declarations()) {
+                if (d->get_init() && contains_hoisted_decl_by_walk(d->get_init())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            const auto* n = static_cast<const AssignmentExpression*>(node);
+            return contains_hoisted_decl_by_walk(n->get_left()) || contains_hoisted_decl_by_walk(n->get_right());
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return contains_hoisted_decl_by_walk(static_cast<const UnaryExpression*>(node)->get_operand());
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            const auto* n = static_cast<const BinaryExpression*>(node);
+            return contains_hoisted_decl_by_walk(n->get_left()) || contains_hoisted_decl_by_walk(n->get_right());
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            const auto* n = static_cast<const ConditionalExpression*>(node);
+            return contains_hoisted_decl_by_walk(n->get_test()) || contains_hoisted_decl_by_walk(n->get_consequent()) ||
+                   contains_hoisted_decl_by_walk(n->get_alternate());
+        }
+        case ASTNode::Type::CALL_EXPRESSION: {
+            const auto* n = static_cast<const CallExpression*>(node);
+            if (contains_hoisted_decl_by_walk(n->get_callee())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (contains_hoisted_decl_by_walk(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            const auto* n = static_cast<const MemberExpression*>(node);
+            return contains_hoisted_decl_by_walk(n->get_object()) ||
+                   (n->is_computed() && contains_hoisted_decl_by_walk(n->get_property()));
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            const auto* n = static_cast<const ObjectLiteral*>(node);
+            for (const auto& prop : n->get_properties()) {
+                // Rare: a closure used AS a computed key (e.g. an IIFE),
+                // independent of whether the property's own value is one.
+                if (prop->computed && prop->key && contains_hoisted_decl_by_walk(prop->key.get())) return true;
+                if (prop->value && contains_hoisted_decl_by_walk(prop->value.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            const auto* n = static_cast<const ArrayLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el && contains_hoisted_decl_by_walk(el.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            const auto* n = static_cast<const TemplateLiteral*>(node);
+            for (const auto& el : n->get_elements()) {
+                if (el.expression && contains_hoisted_decl_by_walk(el.expression.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            const auto* n = static_cast<const NullishCoalescingExpression*>(node);
+            return contains_hoisted_decl_by_walk(n->get_left()) || contains_hoisted_decl_by_walk(n->get_right());
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            const auto* n = static_cast<const NewExpression*>(node);
+            if (contains_hoisted_decl_by_walk(n->get_constructor())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (contains_hoisted_decl_by_walk(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            const auto* n = static_cast<const OptionalChainingExpression*>(node);
+            return contains_hoisted_decl_by_walk(n->get_object()) || contains_hoisted_decl_by_walk(n->get_property());
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return contains_hoisted_decl_by_walk(static_cast<const SpreadElement*>(node)->get_argument());
+        case ASTNode::Type::THROW_STATEMENT:
+            return contains_hoisted_decl_by_walk(static_cast<const ThrowStatement*>(node)->get_expression());
+
+        // Leaves: nothing inside them to hold a closure.
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::BIGINT_LITERAL:
+        case ASTNode::Type::UNDEFINED_LITERAL:
+        case ASTNode::Type::REGEX_LITERAL:
+        case ASTNode::Type::IDENTIFIER:
+        case ASTNode::Type::META_PROPERTY:
+        case ASTNode::Type::ENGINE_HELPER:
+        case ASTNode::Type::EMPTY_STATEMENT:
+        case ASTNode::Type::BREAK_STATEMENT:
+        case ASTNode::Type::CONTINUE_STATEMENT:
+            return false;
+
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            // The pattern literal is the whole pattern: every default and every
+            // computed key sits in it, at any depth, as an ordinary expression.
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            return contains_hoisted_decl_by_walk(n->get_source()) ||
+                   contains_hoisted_decl_by_walk(n->get_pattern_literal());
+        }
+        case ASTNode::Type::PARAMETER: {
+            const auto* n = static_cast<const Parameter*>(node);
+            return contains_hoisted_decl_by_walk(n->get_default_value()) ||
+                   contains_hoisted_decl_by_walk(n->get_destructuring_pattern());
+        }
+        case ASTNode::Type::VARIABLE_DECLARATOR:
+            return contains_hoisted_decl_by_walk(static_cast<const VariableDeclarator*>(node)->get_init());
+        case ASTNode::Type::AWAIT_EXPRESSION:
+            return contains_hoisted_decl_by_walk(static_cast<const AwaitExpression*>(node)->get_argument());
+        case ASTNode::Type::YIELD_EXPRESSION:
+            return contains_hoisted_decl_by_walk(static_cast<const YieldExpression*>(node)->get_argument());
+        case ASTNode::Type::WITH_STATEMENT: {
+            const auto* n = static_cast<const WithStatement*>(node);
+            return contains_hoisted_decl_by_walk(n->get_object()) || contains_hoisted_decl_by_walk(n->get_body());
+        }
+        case ASTNode::Type::CATCH_CLAUSE: {
+            const auto* n = static_cast<const CatchClause*>(node);
+            return contains_hoisted_decl_by_walk(n->get_destructuring_pattern()) ||
+                   contains_hoisted_decl_by_walk(n->get_body());
+        }
+        case ASTNode::Type::CASE_CLAUSE: {
+            const auto* n = static_cast<const CaseClause*>(node);
+            if (contains_hoisted_decl_by_walk(n->get_test())) return true;
+            for (const auto& st : n->get_consequent()) {
+                if (contains_hoisted_decl_by_walk(st.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::USING_DECLARATION: {
+            const auto* n = static_cast<const UsingDeclaration*>(node);
+            for (const auto& b : n->get_bindings()) {
+                if (contains_hoisted_decl_by_walk(b.initializer.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::PROGRAM: {
+            for (const auto& st : static_cast<const Program*>(node)->get_statements()) {
+                if (contains_hoisted_decl_by_walk(st.get())) return true;
+            }
+            return false;
+        }
+
+        default:
+            // An unknown shape could hold a hoisted declaration, and
+            // answering "no" would let Op::DeclareFunction/a class's lexical
+            // binding run with no Environment to bind into. Saying yes only
+            // costs env_mode.
+            return true;
+    }
+}
+
+
 
 // Cheap, deliberately incomplete pre-scan for BytecodeCompiler::
 // this_cache_reg_'s reservation decision (see its own comment): true when
@@ -3927,6 +4164,12 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // Suspendable bodies always use env_mode: locals must survive across the
     // fiber suspension that delegated yield/await expressions perform.
     bool has_closures = contains_closure(body);
+    // Whether env_mode's OWN formula needs to force it just because a
+    // closure exists, as opposed to has_closures above (still used
+    // unchanged to trigger the selective-residency scan below, which finds
+    // what a closure actually captures): see contains_hoisted_decl_by_walk's
+    // own doc comment.
+    bool has_hoisted_decl = has_closures && contains_hoisted_decl_by_walk(body);
     bool has_nested_lex = !concise && contains_nested_lexical_decl(static_cast<const BlockStatement*>(body));
     // Bare destructuring assignments and complex object literals delegate to
     // the tree-walker, so they need env_mode like a suspendable's yield/await.
@@ -4259,7 +4502,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         env_resident.insert(info.name);
         selective = true;
     }
-    const bool env_mode = full_env || has_closures || !env_resident.empty() ||
+    const bool env_mode = full_env || has_hoisted_decl || !env_resident.empty() ||
                           suspendable || has_delegated_expr;
     BytecodeCompiler compiler(param_names, env_mode, selective ? &env_resident : nullptr);
     compiler.outer_with_ = outer_with;
@@ -10783,16 +11026,20 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             return !failed_;
         }
 
-        // Delegates to the tree-walker's own evaluate() (Op::CreateClosure) --
-        // correct since env_mode guarantees every local this closure could
-        // reference lives in ctx.get_lexical_environment(). CLASS_DECLARATION
-        // here is the expression form (`const C = class {}`): evaluate()
-        // returns the class without binding a name. Generator forms ride the
-        // FUNCTION_EXPRESSION node; async fns/arrows have their own type.
+        // instantiate_closure (Op::CreateClosure's handler) captures
+        // ctx.get_lexical_environment() as-is regardless of this function's
+        // own env_mode -- a register-mode function's is whatever it was
+        // itself given, not a fresh one of its own, which is exactly what a
+        // capture_free template (see with_ancestor_chain) needs nothing
+        // from. A non-capture_free one needs a real name out of THIS
+        // function's own scope, which env_resident already guarantees an
+        // Environment for on its own (forcing env_mode via !env_resident.
+        // empty() below), independent of a closure merely existing here.
+        // Generator forms ride the FUNCTION_EXPRESSION node; async fns/
+        // arrows have their own type.
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
-            if (!env_mode_) return false;
             if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
             chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(node)));
             emit(Op::CreateClosure);
