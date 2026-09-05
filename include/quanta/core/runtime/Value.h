@@ -432,6 +432,13 @@ private:
     static std::string number_to_string(double num);
 };
 
+// OrdinaryHasInstance(C, V) -- what Function.prototype[Symbol.hasInstance]
+// itself runs. Shared so the builtin and `instanceof`'s own fast path (taken
+// when Object::has_instance_protector_intact() says nothing anywhere has
+// shadowed Symbol.hasInstance, so resolving and calling it would only ever
+// reach this) can't drift.
+bool ordinary_has_instance(Context& ctx, const Value& c, const Value& v);
+
 // ToInt32 / ToUint32 (ES 7.1.6, 7.1.7) for an operand already known to be a
 // number. Inline and shared: the interpreter's bitwise opcodes take a direct
 // path for two numbers while Value::bitwise_* handles everything else, and

@@ -485,25 +485,8 @@ void register_function_builtins(Context& ctx) {
         if (has_inst_sym) {
             auto has_inst_fn = ObjectFactory::create_native_function("[Symbol.hasInstance]",
                 [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                    Value raw_this = receiver;
-                    // OrdinaryHasInstance step 1: IsCallable(C) == false → return false
-                    if (!raw_this.is_function() && !raw_this.is_object()) return Value(false);
                     if (args.empty()) return Value(false);
-                    Value v = args[0];
-                    if (!v.is_object() && !v.is_function()) return Value(false);
-                    Object* f_obj = raw_this.is_function() ? static_cast<Object*>(raw_this.as_function()) : raw_this.as_object();
-                    static const std::string kBoundTarget = "__bound_target__";
-                    Value bound_target = f_obj->get_internal_slot(kBoundTarget);
-                    if (!bound_target.is_undefined()) {
-                        return Value(v.instanceof_check(bound_target));
-                    }
-                    Value prot = f_obj->get_property("prototype");
-                    if (ctx.has_exception()) return Value();
-                    if (!prot.is_object() && !prot.is_function()) {
-                        ctx.throw_type_error("Function has non-object prototype in Symbol.hasInstance check");
-                        return Value();
-                    }
-                    return Value(v.instanceof_check(raw_this));
+                    return Value(ordinary_has_instance(ctx, receiver, args[0]));
                 }, 1);
             has_inst_fn->set_property("name", Value(std::string("[Symbol.hasInstance]")), PropertyAttributes::Configurable);
             PropertyDescriptor has_inst_desc;

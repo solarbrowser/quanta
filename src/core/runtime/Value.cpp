@@ -1054,6 +1054,26 @@ bool Value::instanceof_check(const Value& constructor) const {
 
 }
 
+bool ordinary_has_instance(Context& ctx, const Value& c, const Value& v) {
+    // OrdinaryHasInstance step 1: IsCallable(C) == false -> false.
+    if (!c.is_function() && !c.is_object()) return false;
+    if (!v.is_object() && !v.is_function()) return false;
+    Object* c_obj = c.is_function() ? static_cast<Object*>(c.as_function()) : c.as_object();
+    // A bound function has no "prototype" of its own to check against --
+    // instanceof defers to [[BoundTargetFunction]] instead (step 2).
+    static const std::string kBoundTarget = "__bound_target__";
+    Value bound_target = c_obj->get_internal_slot(kBoundTarget);
+    if (!bound_target.is_undefined()) {
+        return v.instanceof_check(bound_target);
+    }
+    Value prot = c_obj->get_property("prototype");
+    if (ctx.has_exception()) return false;
+    if (!prot.is_object() && !prot.is_function()) {
+        ctx.throw_type_error("Function has non-object prototype in Symbol.hasInstance check");
+        return false;
+    }
+    return v.instanceof_check(c);
+}
 
 namespace ValueFactory {
 

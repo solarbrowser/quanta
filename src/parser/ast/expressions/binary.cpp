@@ -415,6 +415,16 @@ Value BinaryExpression::apply_operator(Context& ctx, Operator op, const Value& l
         }
             
         case Operator::INSTANCEOF: {
+            // While nothing anywhere has its own Symbol.hasInstance, resolving
+            // and calling Function.prototype[Symbol.hasInstance] on a function
+            // right-hand side could only ever reach that same builtin -- run
+            // its algorithm directly instead of the property lookup and the
+            // native call to get there.
+            if (right_value.is_function() && Object::has_instance_protector_intact()) {
+                bool result = ordinary_has_instance(ctx, right_value, left_value);
+                if (ctx.has_exception()) return Value();
+                return Value(result);
+            }
             // ES6: Check Symbol.hasInstance
             if (right_value.is_function() || right_value.is_object()) {
                 Object* rhs = right_value.is_function()

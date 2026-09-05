@@ -1255,6 +1255,7 @@ constinit thread_local Object* g_array_iterator_prototype = nullptr;
 constinit thread_local bool g_promise_species_intact = false;
 constinit thread_local Object* g_promise_prototype = nullptr;
 constinit thread_local Object* g_promise_constructor = nullptr;
+constinit thread_local bool g_has_instance_intact = true;
 
 // Both checks lead with a length test so the common case costs a compare.
 inline void note_protector_write(const Object* target, const std::string& key) {
@@ -1288,6 +1289,12 @@ inline void note_protector_write(const Object* target, const std::string& key) {
          (target == g_promise_constructor && key == "Symbol.species"))) {
         g_promise_species_intact = false;
     }
+    // Symbol.hasInstance written anywhere -- own a specific function
+    // (per-instance shadowing) or Function.prototype itself.
+    if (g_has_instance_intact && key.size() == 18 && key[0] == 'S' &&
+        key == "Symbol.hasInstance") {
+        g_has_instance_intact = false;
+    }
 }
 }  // namespace
 
@@ -1300,6 +1307,9 @@ void Object::watch_regexp_prototype(Object* proto) {
 }
 void Object::watch_array_iterator_prototype(Object* proto) { g_array_iterator_prototype = proto; }
 void Object::arm_array_iterator_protector() { g_array_iterator_intact = true; }
+
+bool Object::has_instance_protector_intact() { return g_has_instance_intact; }
+void Object::arm_has_instance_protector() { g_has_instance_intact = true; }
 
 bool Object::promise_species_protector_intact() { return g_promise_species_intact; }
 Object* Object::watched_promise_prototype() { return g_promise_prototype; }

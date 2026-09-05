@@ -813,6 +813,10 @@ void Context::initialize_global_context() {
     // clears the array-spread protector. Arm it here, once everything is in
     // place, so only genuine user mutations can clear it afterwards.
     Object::arm_array_iterator_protector();
+    // Same reasoning: installing Function.prototype[Symbol.hasInstance]
+    // itself is the one write note_protector_write cannot tell apart from a
+    // user's own override.
+    Object::arm_has_instance_protector();
 }
 
 namespace {

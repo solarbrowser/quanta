@@ -163,6 +163,16 @@ public:
     static Object* watched_promise_prototype();
     static Object* watched_promise_constructor();
     static void watch_promise_species(Object* promise_ctor, Object* promise_proto);
+    // Same idea for `instanceof`: true while nothing anywhere has its own
+    // Symbol.hasInstance, which is what lets `instanceof` skip resolving and
+    // calling Function.prototype[Symbol.hasInstance] and run its algorithm
+    // (ordinary_has_instance) directly. Broad like the array-iterator
+    // protector rather than target-specific like RegExp/Promise's, since
+    // Symbol.hasInstance can be shadowed on any individual function, not just
+    // redefined on the one shared prototype. Armed once after Function's own
+    // is installed.
+    static bool has_instance_protector_intact();
+    static void arm_has_instance_protector();
     // A direct shape-slot write (bypassing set_property's general
     // shape+descriptor sync) must still move this or a cached descriptor-side
     // read (own_desc_value/own_desc_epoch in h_GetNamedRest) can keep
