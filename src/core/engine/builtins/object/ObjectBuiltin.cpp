@@ -577,14 +577,21 @@ void register_object_builtins(Context& ctx) {
                 }
                 Object* pair = entry.is_function()
                     ? static_cast<Object*>(entry.as_function()) : entry.as_object();
-                Value key_val = pair->get_property("0");
+                // Get(entry, "0")/Get(entry, "1") per spec -- get_element is the
+                // same read (own elements, descriptors, then the prototype chain)
+                // without going through a string-keyed shape/descriptor lookup.
+                Value key_val = pair->get_element(0);
                 if (ctx.has_exception()) { if (iterator) close_on_entry_failure(iterator); return false; }
-                Value val = pair->get_property("1");
+                Value val = pair->get_element(1);
                 if (ctx.has_exception()) { if (iterator) close_on_entry_failure(iterator); return false; }
                 std::string key = key_val.to_property_key();
                 if (ctx.has_exception()) { if (iterator) close_on_entry_failure(iterator); return false; }
-                PropertyDescriptor pd(val, PropertyAttributes::Default);
-                result_obj->set_property_descriptor(key, pd);
+                // result_obj is fresh and every key here is written with the
+                // default attributes -- create_own_data_property is the same
+                // define, without set_property_descriptor's permanent switch
+                // to descriptor-map storage (see the RegExp exec/rest-
+                // destructuring fix this mirrors).
+                result_obj->create_own_data_property(key, val);
                 if (ctx.has_exception()) return false;
                 return true;
             };
@@ -592,6 +599,18 @@ void register_object_builtins(Context& ctx) {
             Value target = args[0];
             Object* iterable = target.is_function()
                 ? static_cast<Object*>(target.as_function()) : target.as_object();
+
+            // A plain Array skips the iterator protocol only while the
+            // protector holds, same fast path as spread (append_spread_values).
+            if (iterable->is_array() && Object::array_iterator_protector_intact()) {
+                uint32_t length = iterable->get_length();
+                for (uint32_t i = 0; i < length; i++) {
+                    Value entry = iterable->get_element(i);
+                    if (!add_entry(entry, nullptr)) return Value();
+                }
+                return Value(result_obj.release());
+            }
+
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
             if (!iter_sym) return Value(result_obj.release());
             Value iter_method = iterable->get_property(iter_sym->to_property_key());
@@ -768,6 +787,12 @@ void register_object_builtins(Context& ctx) {
                 if (!source_obj) return Value();
 
                 bool source_is_proxy = (source_obj->get_type() == Object::ObjectType::Proxy);
+                // No descriptor map at all means no key on this object can
+                // carry non-default attributes, so a plain-data-slot hit below
+                // is guaranteed enumerable -- skip building a PropertyDescriptor
+                // and the separate get_property just to learn what this already
+                // tells us in one shape probe.
+                bool source_no_overrides = !source_is_proxy && !source_obj->has_any_descriptor_override();
                 std::vector<std::string> all_keys;
                 if (source_is_proxy) {
                     all_keys = static_cast<Proxy*>(source_obj)->own_keys_trap();
@@ -805,6 +830,8 @@ void register_object_builtins(Context& ctx) {
                         if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
                         if (!desc.is_enumerable()) continue;
                         value = source_proxy->get_trap(prop_key);
+                    } else if (source_no_overrides && source_obj->try_read_own_data_slot(prop, value)) {
+                        // Falls through with is_enumerable left true.
                     } else {
                         PropertyDescriptor desc = source_obj->get_property_descriptor(prop);
                         if (!desc.is_enumerable() && desc.has_value()) {
