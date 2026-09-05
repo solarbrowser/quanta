@@ -1170,6 +1170,23 @@ static void append_unicode_escape(std::string& result, uint32_t cp) {
 }
 
 std::string JSON::Stringifier::escape_string(const std::string& str) {
+    // Fast pre-scan: an identifier, a short numeric-ish value, or any UTF-8
+    // text with no quote/backslash/control byte and no encoded surrogate
+    // needs no transformation at all -- the common case for real-world
+    // property keys and values -- so it copies through in one shot instead
+    // of paying the byte-at-a-time loop below just to re-emit every byte
+    // unchanged. 0xED is every 3-byte sequence's leading byte for the
+    // U+D000..U+DFFF block, which is where an unpaired surrogate (the one
+    // case this pre-scan must not wave through unescaped) always encodes to;
+    // it also catches the ordinary U+D000..U+D7FF Hangul range, which just
+    // falls through to the byte-at-a-time loop below and comes out unescaped
+    // same as always.
+    bool needs_escape = false;
+    for (unsigned char b : str) {
+        if (b == '"' || b == '\\' || b < 0x20 || b == 0xED) { needs_escape = true; break; }
+    }
+    if (!needs_escape) return str;
+
     std::string result;
     result.reserve(str.length());
 
