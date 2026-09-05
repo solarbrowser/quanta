@@ -387,6 +387,19 @@ public:
     // general path does around that is decl-site constant, so it is answered
     // here once instead of per call.
     mutable bool fast_env_gate = false;
+    // Set once, in instantiate_closure, from the ClosureTemplate this
+    // executable was built from -- same decl-site-constant, set-once-
+    // shared-by-every-instance rationale as outer_scope_chain above, and
+    // read back by the same lazy BytecodeCompiler::compile call: a named
+    // function expression's own instantiate_closure gives it a fresh
+    // Environment holding only its own name (NamedEvaluation, spec 15.2.5),
+    // set as its closure_environment_ in place of the scope it actually
+    // closed over -- so a body compiled for this executable that reads an
+    // outer name through the ancestor chain has one more hop to cross than
+    // find_ancestor_slot's default math assumes. Grouped with the other
+    // mutable bools just above rather than beside outer_scope_chain, where
+    // it would pad the struct out past its own heap size class.
+    mutable bool needs_self_binding = false;
     void recompute_fast_gate() const {
         fast_gate = !vm_incompatible && bytecode_chunk && !bytecode_chunk->env_mode &&
                     strict_directive_state >= 0 && closure_props_state == 0;

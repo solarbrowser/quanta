@@ -522,6 +522,11 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
     // from this template hands over the identical chain -- so an unconditional
     // overwrite is idempotent, the same reasoning closure_props_state etc. rely on.
     exe->outer_scope_chain = tpl.outer_scope_chain;
+    // Same idempotent overwrite, for the same reason: fe->is_named() &&
+    // !fe->is_decl_form() (or its async-function-expression equivalent) is a
+    // property of the literal this executable was built from, identical on
+    // every instantiation.
+    exe->needs_self_binding = tpl.needs_self_binding;
 
     Function* fn;
     if (tpl.is_async && tpl.is_generator) {

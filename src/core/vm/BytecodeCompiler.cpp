@@ -4098,7 +4098,8 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const ASTNode* body, const ParamList& params,
     bool suspendable, bool is_arrow, bool is_strict,
     const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
-    const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain) {
+    const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain,
+    bool needs_self_binding) {
     if (!body) return nullptr;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
@@ -4511,6 +4512,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // own object environment, so hops computed without one on the path would
     // land short once one is actually there at runtime.
     if (!outer_with) compiler.ancestor_chain_ = std::move(ancestor_chain);
+    compiler.has_self_name_wrapper_ = needs_self_binding;
     compiler.annexb_fn_vars_ = std::move(annexb_fn_vars);
     // Every lexically declared name, known before a single instruction is
     // emitted. Learning it while compiling made the answer depend on source
@@ -5536,6 +5538,16 @@ bool BytecodeCompiler::find_ancestor_slot(const std::string& name, int& hops, ui
             // computed the same "+1", so only the first layer needs this
             // adjustment.
             if (!env_mode_) hop -= 1;
+            // has_self_name_wrapper_ undoes exactly that adjustment, on top
+            // of it rather than instead of it: closure_environment_ is a
+            // NamedEvaluation wrapper holding only this function's own name
+            // (instantiate_closure, language.cpp), not the scope entry_hop's
+            // "+1" was built to reach, so crossing it costs a real hop
+            // regardless of which of the two forms above got here -- a
+            // register-mode reader's "already there" and an env-mode
+            // reader's "+1" both land ON the wrapper, one hop short either
+            // way.
+            if (has_self_name_wrapper_) hop += 1;
             first_layer = false;
         }
         total += hop;

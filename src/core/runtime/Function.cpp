@@ -1089,7 +1089,8 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                                           /*env_bound=*/nullptr, outer_with,
                                           /*allow_arguments=*/false,
                                           executable_->body_scope_info(),
-                                          executable_->outer_scope_chain);
+                                          executable_->outer_scope_chain,
+                                          executable_->needs_self_binding);
             executable_->recompute_fast_gate();
             if (executable_->bytecode_chunk) {
                 // The chunk's constants (new, unmarked cells) are only reachable

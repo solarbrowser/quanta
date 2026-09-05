@@ -56,7 +56,16 @@ public:
                                                  bool outer_with = false,
                                                  bool allow_arguments = false,
                                                  const BodyScopeInfo* scope_info = nullptr,
-                                                 std::shared_ptr<const ClosureScopeChain> ancestor_chain = nullptr);
+                                                 std::shared_ptr<const ClosureScopeChain> ancestor_chain = nullptr,
+                                                 // Mirrors FunctionExecutable::needs_self_binding: this
+                                                 // body's own closure_environment_ (what ancestor_chain's
+                                                 // first layer is reached through) is a NamedEvaluation
+                                                 // wrapper holding only this function's own name, not the
+                                                 // scope it actually closed over -- one more hop to any
+                                                 // real ancestor than the chain's own hop count assumes.
+                                                 // Only ever true from Function::call_default_impl, same
+                                                 // as ancestor_chain itself.
+                                                 bool needs_self_binding = false);
 
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,
@@ -202,6 +211,12 @@ private:
     // own comment. Null for a top-level/script/never-a-closure compile, or
     // whenever outer_with_ makes the whole chain unsound (see compile()).
     std::shared_ptr<const ClosureScopeChain> ancestor_chain_;
+    // Whether THIS function's own closure_environment_ -- what
+    // ancestor_chain_'s first layer is reached through -- is a
+    // NamedEvaluation self-reference wrapper rather than the scope it
+    // actually closed over. See compile()'s own parameter and
+    // find_ancestor_slot's use of it.
+    bool has_self_name_wrapper_ = false;
     // (closure index in chunk_->ensure_closures(), creation_depth) pairs
     // recorded by with_ancestor_chain, resolved once by
     // finalize_ancestor_chains() after this function's whole body has
