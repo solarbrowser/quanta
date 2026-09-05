@@ -332,6 +332,7 @@ void register_function_builtins(Context& ctx) {
 
     apply_fn->set_property("name", Value(std::string("apply")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
+    ObjectFactory::set_pristine_function_apply(apply_fn.get());
     function_prototype->set_property("apply", Value(apply_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto bind_fn = ObjectFactory::create_native_function("bind",

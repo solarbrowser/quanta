@@ -10419,6 +10419,38 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     return !failed_;
                 }
 
+                // `X.apply(thisArg, argsArray)`, the same shape as above for
+                // "apply" -- restricted to exactly two arguments (any other
+                // count is rare enough to leave on the general path rather
+                // than teach CallViaFunctionApply a variable-length form).
+                if (!super_mem && !mem_optional && !call->is_optional() && !mem_computed &&
+                    !mem_private && !spread_args && !call->is_tagged_template() &&
+                    call_args.size() == 2 &&
+                    static_cast<const Identifier*>(mem_prop)->get_name() == "apply") {
+                    if (!compile_expression(mem_obj)) return false;
+                    int obj_reg = alloc_temp();
+                    if (failed_) return false;
+                    emit(Op::Star);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    int args_start = next_register_;
+                    {
+                        ChainMaskScope mask(chain_shortcircuit_jumps_);
+                        for (const auto& arg : call_args) {
+                            int arg_reg = alloc_temp();
+                            if (failed_) return false;
+                            if (!compile_expression(arg.get())) return false;
+                            emit(Op::Star);
+                            emit_u8(static_cast<uint8_t>(arg_reg));
+                        }
+                    }
+                    emit(Op::CallViaFunctionApply);
+                    emit_u8(static_cast<uint8_t>(obj_reg));
+                    emit_u8(static_cast<uint8_t>(args_start));
+                    emit_u16(alloc_feedback_slot());
+                    free_temp(obj_reg);
+                    return !failed_;
+                }
+
                 // super.m(...) calls the method found on the super base, but with
                 // the current `this` as receiver, so the two differ here where
                 // every other form uses one object for both.

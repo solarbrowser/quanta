@@ -4565,6 +4565,97 @@ Value h_gen_CallViaFunctionCall(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// `X.apply(thisArg, argsArray)`, exactly two arguments (any other count
+// takes the plain GetNamed+CallResolved path). Same idea as
+// CallViaFunctionCall but for "apply": the fast path unpacks argsArray via
+// Object::get_element (CreateListFromArrayLike, matching Function.
+// prototype.apply's own native body) instead of the iterator-protocol
+// spread CallSpread uses, since apply's argsArray only has to be
+// array-like, never iterable.
+Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Function* owner = f.owner;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                uint8_t obj_reg = code[pc];
+                uint8_t args_start = code[pc + 1];
+                uint16_t fb_idx = read_u16(code, pc + 2);
+                pc += 4;
+                const Value& target = regs[obj_reg];
+                FeedbackSlot& fb_slot = chunk.feedback[fb_idx];
+                bool handled = false;
+                if (target.is_function()) {
+                    Object* obj = target.as_object();
+                    const FeedbackBody& fb = fb_slot.read();
+                    if (f.feedback_rooted && !fb.proto_mega && !obj->has_any_descriptor_override()) {
+                        Shape* rs = obj->get_shape();
+                        Object* p0 = obj->get_prototype();
+                        uint64_t pep = Object::proto_epoch();
+                        for (uint8_t k = 0; k < fb.proto_count; k++) {
+                            const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+                            if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep) {
+                                if (pe.from_descriptor && pe.desc_epoch == Object::descriptor_epoch() &&
+                                    pe.cached_value.is_function() &&
+                                    pe.cached_value.as_function() == ObjectFactory::get_pristine_function_apply()) {
+                                    const Value& this_arg = regs[args_start];
+                                    const Value& args_array = regs[args_start + 1];
+                                    std::vector<Value> call_args;
+                                    ValueVectorRoot call_args_root(&call_args);
+                                    if (!args_array.is_undefined() && !args_array.is_null()) {
+                                        if (!args_array.is_object() && !args_array.is_function()) {
+                                            ctx.throw_type_error(
+                                                "CreateListFromArrayLike: argArray must be an object");
+                                        } else if (args_array.is_object()) {
+                                            Object* arr_obj = args_array.as_object();
+                                            Value length_val = arr_obj->get_property("length");
+                                            CHECK_EXC();
+                                            if (length_val.is_number()) {
+                                                uint32_t length = static_cast<uint32_t>(length_val.to_number());
+                                                call_args.reserve(length);
+                                                for (uint32_t i = 0; i < length; i++) {
+                                                    call_args.push_back(arr_obj->get_element(i));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    CHECK_EXC();
+                                    acc = target.as_function()->call(ctx, call_args, this_arg);
+                                    handled = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!handled) {
+                    Value method = get_named(ctx, target, "apply", &fb_slot, owner, f.feedback_rooted);
+                    CHECK_EXC();
+                    std::span<const Value> call_args(regs + args_start, 2);
+                    if (method.is_function()) {
+                        acc = method.as_function()->call_register_args(ctx, call_args, target);
+                    } else if (method.is_object() &&
+                               method.as_object()->get_type() == Object::ObjectType::Proxy) {
+                        std::vector<Value> trap_args(call_args.begin(), call_args.end());
+                        acc = static_cast<Proxy*>(method.as_object())->apply_trap(trap_args, target);
+                    } else {
+                        ctx.throw_type_error("value.apply is not a function");
+                    }
+                }
+                CHECK_EXC();
+                Collector::safepoint();
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -6516,6 +6607,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::Call)] = &h_gen_Call;
     t[static_cast<uint8_t>(Op::CallResolved)] = &h_gen_CallResolved;
     t[static_cast<uint8_t>(Op::CallViaFunctionCall)] = &h_gen_CallViaFunctionCall;
+    t[static_cast<uint8_t>(Op::CallViaFunctionApply)] = &h_gen_CallViaFunctionApply;
     t[static_cast<uint8_t>(Op::Construct)] = &h_gen_Construct;
     t[static_cast<uint8_t>(Op::CallSpread)] = &h_gen_CallSpread;
     t[static_cast<uint8_t>(Op::ConstructSpread)] = &h_gen_ConstructSpread;

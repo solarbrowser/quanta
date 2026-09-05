@@ -117,7 +117,8 @@ const OpInfo& op_info(Op op) {
         {"DeclareFunction", 2, 'z'},
         {"CopyRestProperties", 2, 'r'},
         {"CreateRestArray", 1, 'A'},
-        {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"CallViaFunctionCall", 5, 'y'}, {"Construct", 5, 'c'},
+        {"Call", 5, 'c'}, {"CallResolved", 6, 'v'}, {"CallViaFunctionCall", 5, 'y'},
+        {"CallViaFunctionApply", 4, 'Z'}, {"Construct", 5, 'c'},
         {"CallSpread", 5, 'w'}, {"ConstructSpread", 4, 'W'}, {"SpreadInto", 2, 'r'}, {"ObjectSpreadInto", 1, 'r'}, {"HasPrivate", 2, 'n'},
         {"LdaEngineHelper", 1, 'E'},
         {"CreateRegExp", 4, 'X'},
@@ -224,6 +225,15 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'S': check_run(0, 1); break;
             case 'c': check(0, "calls"); check_run(1, 2); break;
             case 'y': check(0, "calls"); check_run(1, 2); break;
+            // Fixed 2-register run (thisArg, argsArray) with no separate
+            // count operand -- args_start is always followed by exactly
+            // one more register, unlike check_run's variable-length list.
+            case 'Z': {
+                check(0, "calls");
+                const unsigned first = reg_at(1);
+                if (first + 2 > limit) bad(pc, info.name, "argument list ends past", first + 1);
+                break;
+            }
             case 'v': check(0, "calls"); check(1, "receiver"); check_run(2, 3); break;
             case 'w': check(0, "calls"); check(1, "receiver"); check(2, "spread array"); break;
             case 'W': check(0, "constructs"); check(1, "spread array"); break;
@@ -372,6 +382,16 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " this=r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " args[]=r" << static_cast<int>(chunk.code[operand_pc + 2])
                     << " '" << chunk.name_at(name_idx) << "'";
+                break;
+            }
+            case 'Z': {
+                uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
+                                   (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
+                int args_start = static_cast<int>(chunk.code[operand_pc + 1]);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " this=r" << args_start
+                    << " argsArray=r" << (args_start + 1)
+                    << " fb=" << fb_idx;
                 break;
             }
             case 'W': {

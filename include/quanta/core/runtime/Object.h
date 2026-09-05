@@ -1977,6 +1977,10 @@ namespace ObjectFactory {
     // check, so a stale comparison against this pointer cannot survive that.
     void set_pristine_function_call(class Function* fn);
     class Function* get_pristine_function_call();
+    // Same idea as get_pristine_function_call, for Function.prototype.apply
+    // -- see h_gen_CallViaFunctionApply.
+    void set_pristine_function_apply(class Function* fn);
+    class Function* get_pristine_function_apply();
     std::unique_ptr<Function> create_js_function(const std::string& name,
                                                  const std::vector<std::string>& params,
                                                  std::unique_ptr<class ASTNode> body,
