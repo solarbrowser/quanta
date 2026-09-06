@@ -17,6 +17,7 @@
 #include <fstream>
 #include <cstdio>
 #include <chrono>
+#include <mimalloc.h>
 
 #ifdef _WIN32
 #include <conio.h>
@@ -331,6 +332,17 @@ static struct AstArenaStats {
                      st.chunks, st.live_nodes, st.bytes_reserved);
     }
 } g_ast_arena_stats;
+
+// Runs ahead of ordinary static initializers (and so ahead of mimalloc's own
+// lazy arena setup on whichever allocation happens to come first): a CLI
+// process runs one script and exits, so committing an arena up front on the
+// chance more of it is needed never gets to pay that back the way a
+// long-lived server would. Setting this once main() had already started
+// measured no effect at all -- the arena was already up by then.
+__attribute__((constructor(101)))
+static void configure_mimalloc_early() {
+    mi_option_set(mi_option_arena_eager_commit, 0);
+}
 
 int main(int argc, char* argv[]) {
     try {
