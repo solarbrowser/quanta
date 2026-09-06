@@ -491,6 +491,18 @@ void collect_assigned_identifiers(const ASTNode* node,
             }
             return;
         }
+        case ASTNode::Type::USING_DECLARATION: {
+            // Never reassignable (prescan_declarations treats it exactly
+            // like const), so -- same reasoning as the destructuring
+            // declarator above -- only its initializer can hold an
+            // assignment to something else; the binding's own name isn't
+            // one.
+            const auto* n = static_cast<const UsingDeclaration*>(node);
+            for (const auto& b : n->get_bindings()) {
+                collect_assigned_identifiers(b.initializer.get(), candidates, out);
+            }
+            return;
+        }
         case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
             const auto* n = static_cast<const AssignmentExpression*>(node);
             const ASTNode* left = n->get_left();
@@ -587,6 +599,18 @@ void collect_assigned_identifiers(const ASTNode* node,
             return;
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
             collect_assigned_identifiers(static_cast<const AsyncFunctionExpression*>(node)->get_body(), candidates, out);
+            return;
+        // Neither suspends into a binding of its own -- just an expression
+        // evaluated before the pause -- so only its argument can hold an
+        // assignment. Every other scan in this file already pairs these two
+        // (see e.g. references_outside's own YIELD_EXPRESSION case); this
+        // one had no case for either and fell to the catch-all default,
+        // which marks every candidate found on sight.
+        case ASTNode::Type::AWAIT_EXPRESSION:
+            collect_assigned_identifiers(static_cast<const AwaitExpression*>(node)->get_argument(), candidates, out);
+            return;
+        case ASTNode::Type::YIELD_EXPRESSION:
+            collect_assigned_identifiers(static_cast<const YieldExpression*>(node)->get_argument(), candidates, out);
             return;
         case ASTNode::Type::CLASS_DECLARATION: {
             const auto* n = static_cast<const ClassDeclaration*>(node);
@@ -2706,6 +2730,18 @@ bool references_outside(const ASTNode* node, const std::unordered_set<const ASTN
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations())
                 if (references_outside(d->get_init(), regions, name)) return true;
+            return false;
+        }
+        case ASTNode::Type::USING_DECLARATION: {
+            // No case at all here used to fall to the catch-all default,
+            // which conservatively says "yes, references outside" -- so a
+            // `using` declaration ANYWHERE in a function made every OTHER
+            // nested-block let/const in it look like it escapes too, since
+            // this function's own BLOCK_STATEMENT case short-circuits its
+            // whole sibling-statement walk on the first `true` it sees.
+            const auto* n = static_cast<const UsingDeclaration*>(node);
+            for (const auto& b : n->get_bindings())
+                if (references_outside(b.initializer.get(), regions, name)) return true;
             return false;
         }
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
