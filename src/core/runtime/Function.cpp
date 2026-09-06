@@ -1617,7 +1617,12 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     uint32_t construct_slot_hint = get_construct_slot_hint();
     std::unique_ptr<Object> new_object;
     if (construct_slot_hint <= 4) {
-        new_object = ObjectFactory::create_object_with_slots(4);
+        // Rounded to the cell size class the hint actually needs, not
+        // straight to 4 -- see Op::CreateObject's own version of this for
+        // the size-class math (this hint is adaptive, learned from the
+        // previous construction, so it undershoots even less often than a
+        // literal's static count does).
+        new_object = ObjectFactory::create_object_with_slots((construct_slot_hint + 1) & ~1u);
     } else {
         new_object = ObjectFactory::create_object();
         new_object->reserve_property_slots(construct_slot_hint);
