@@ -2203,7 +2203,24 @@ void collect_direct_lexical_names(const BlockStatement* block, std::unordered_se
             const auto* decl = static_cast<const VariableDeclaration*>(stmt.get());
             if (decl->get_kind() == VariableDeclarator::Kind::VAR) continue;
             for (const auto& d : decl->get_declarations()) {
-                if (d->get_id() && !d->get_id()->get_name().empty()) out.insert(d->get_id()->get_name());
+                if (d->get_id() && !d->get_id()->get_name().empty()) {
+                    out.insert(d->get_id()->get_name());
+                } else if (d->get_init() && d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    // Same empty-name marker as everywhere else in this file --
+                    // the declarator's real names live in its DestructuringAssignment
+                    // init. Without this, collect_free_names below never finds
+                    // them bound anywhere, so any read of them later in this
+                    // SAME block looks like a free variable reaching outside.
+                    std::vector<std::string> bound;
+                    static_cast<const DestructuringAssignment*>(d->get_init())->collect_bound_names(bound);
+                    for (const auto& n : bound) {
+                        if (!n.empty()) out.insert(n);
+                    }
+                }
+            }
+        } else if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) {
+            for (const auto& b : static_cast<const UsingDeclaration*>(stmt.get())->get_bindings()) {
+                if (!b.name.empty()) out.insert(b.name);
             }
         }
     }
@@ -2244,14 +2261,42 @@ void collect_free_names(const ASTNode* node,
     // beneath, a real closure chain) plus this new frame on top.
     auto recurse_into_function = [&](const std::vector<std::unique_ptr<Parameter>>& params,
                                       const ASTNode* body, bool nested_is_arrow) {
+        // A parameter's own bound names (plain or destructured) never look
+        // outside -- they're seeded into `frame` below. Only a default
+        // value or a pattern's own default/computed-key expression can
+        // name something actually free; those are walked here against the
+        // OUTER scope_stack (this function's own frame isn't pushed yet),
+        // the same convention references_outside's walk_params already
+        // uses for the identical question.
         for (const auto& p : params) {
-            if (p && (p->has_destructuring() || p->has_default())) { op.unknown = true; return; }
+            if (!p) continue;
+            if (p->has_destructuring()) {
+                const ASTNode* pat = p->get_destructuring_pattern();
+                if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    op.unknown = true;
+                    return;
+                }
+                static_cast<const DestructuringAssignment*>(pat)->for_each_expression(
+                    [&](const ASTNode* e) { collect_free_names(e, scope_stack, in_arrow, free_out, op); });
+            } else if (p->has_default()) {
+                collect_free_names(p->get_default_value(), scope_stack, in_arrow, free_out, op);
+            }
         }
         std::vector<DeclInfo> declared;
         if (!prescan_declarations(body, declared)) { op.unknown = true; return; }
         std::unordered_set<std::string> frame;
         for (const auto& p : params) {
-            if (p && p->get_name()) frame.insert(p->get_name()->get_name());
+            if (!p) continue;
+            if (p->has_destructuring()) {
+                std::vector<std::string> bound;
+                static_cast<const DestructuringAssignment*>(p->get_destructuring_pattern())
+                    ->collect_bound_names(bound);
+                for (const auto& n : bound) {
+                    if (!n.empty()) frame.insert(n);
+                }
+            } else if (p->get_name()) {
+                frame.insert(p->get_name()->get_name());
+            }
         }
         for (const auto& info : declared) {
             if (!info.is_lexical) frame.insert(info.name);  // var/function: function-wide
@@ -2383,8 +2428,23 @@ void collect_free_names(const ASTNode* node,
                 for (const auto& b : static_cast<const UsingDeclaration*>(left)->get_bindings())
                     frame.insert(b.name);
             } else if (left->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
-                op.unknown = true;
-                return;
+                // `for (const {a, b} of xs)` -- the header's own pattern
+                // binds a/b fresh each iteration, same declaring-not-
+                // escaping distinction as the VARIABLE_DECLARATION case
+                // above. Only a default/computed-key expression inside the
+                // pattern can name something reaching outside (the pattern
+                // has no separate source of its own here -- it binds
+                // straight from each iteration's value).
+                has_frame = true;
+                const auto* da = static_cast<const DestructuringAssignment*>(left);
+                std::vector<std::string> bound;
+                da->collect_bound_names(bound);
+                for (const auto& n : bound) {
+                    if (!n.empty()) frame.insert(n);
+                }
+                da->for_each_expression([&](const ASTNode* e) {
+                    collect_free_names(e, scope_stack, in_arrow, free_out, op);
+                });
             } else {
                 // Not a declaration: the head ASSIGNS to something that already
                 // exists, and the parser allows an identifier, a member
@@ -2461,8 +2521,23 @@ void collect_free_names(const ASTNode* node,
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations()) {
-                if (!d->get_id()) { op.unknown = true; return; }  // destructuring declarator
-                collect_free_names(d->get_init(), scope_stack, in_arrow, free_out, op);
+                const ASTNode* init = d->get_init();
+                // A destructuring declarator's own id is never null -- it's
+                // an empty-name Identifier marker (see Parser.cpp), so the
+                // real dispatch is on init's type, not on get_id() itself.
+                if (init && init->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    // Its own bound names are not free (collect_direct_
+                    // lexical_names already seeded them into this block's
+                    // frame) -- only its source and any default/computed-
+                    // key expression can name something reaching outside.
+                    const auto* da = static_cast<const DestructuringAssignment*>(init);
+                    collect_free_names(da->get_source(), scope_stack, in_arrow, free_out, op);
+                    da->for_each_expression([&](const ASTNode* e) {
+                        collect_free_names(e, scope_stack, in_arrow, free_out, op);
+                    });
+                    continue;
+                }
+                collect_free_names(init, scope_stack, in_arrow, free_out, op);
             }
             return;
         }
