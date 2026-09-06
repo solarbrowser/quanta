@@ -2391,9 +2391,29 @@ PropertyDescriptor Object::get_property_descriptor_default(const std::string& ke
         return PropertyDescriptor(getter, setter);
     }
 
-    // Property not in descriptor map but exists (e.g. plain overflow-stored data property):
-    // default attrs.
+    // Property not in descriptor map but exists (e.g. array index or
+    // sparse-overflow-stored data property, or a plain shape data slot):
+    // default attrs. has_own_property() decides existence -- its own type
+    // dispatch and private-key/array-index rules must run unconditionally,
+    // so it is never skipped here even though the Ordinary+shape-slot case
+    // below could answer that question by itself.
     if (has_own_property(key)) {
+        // The is_accessor_slot() check above already ruled out an accessor,
+        // so a shape hit here can only be a plain data slot -- read it
+        // directly instead of paying get_own_property()'s own repeat of
+        // is_array_index/descriptors_/is_accessor_slot/find_shape_slot to
+        // re-derive the exact same slot has_own_property() just found.
+        // Scoped to Ordinary (Function/TypedArray/Custom have their own
+        // has_own_property()/get_own_property() semantics beyond shape_)
+        // and to a non-array-index key (never shape-resident regardless).
+        uint32_t array_index;
+        if (get_type() == ObjectType::Ordinary && shape_ && !is_array_index(key, &array_index)) {
+            int32_t idx = shape_->find_data_slot(key);
+            if (idx >= 0) {
+                return PropertyDescriptor(*shape_slot_ptr(static_cast<uint32_t>(idx)),
+                                           PropertyAttributes::Default);
+            }
+        }
         Value value = get_own_property(key);
         return PropertyDescriptor(value, PropertyAttributes::Default);
     }
