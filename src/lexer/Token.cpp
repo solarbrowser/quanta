@@ -24,15 +24,18 @@ std::string Position::to_string() const {
 
 
 Token::Token()
-    : numeric_value_(0), value_off_(0), value_len_(0), type_(TokenType::EOF_TOKEN), flags_(0) {
+    : end_line_(0), end_offset_(0), value_off_(0), value_len_(0),
+      type_(TokenType::EOF_TOKEN), flags_(0) {
 }
 
 Token::Token(TokenType type, const Position& pos)
-    : numeric_value_(0), start_(pos), end_(pos), value_off_(0), value_len_(0), type_(type), flags_(0) {
+    : start_(pos), end_line_(pos.line), end_offset_(pos.offset),
+      value_off_(0), value_len_(0), type_(type), flags_(0) {
 }
 
 Token::Token(TokenType type, const Position& start, const Position& end)
-    : numeric_value_(0), start_(start), end_(end), value_off_(0), value_len_(0), type_(type), flags_(0) {
+    : start_(start), end_line_(end.line), end_offset_(end.offset),
+      value_off_(0), value_len_(0), type_(type), flags_(0) {
 }
 
 bool Token::is_keyword() const {
@@ -300,8 +303,10 @@ TokenSequence::TokenSequence() : position_(0) {
 
 TokenSequence::TokenSequence(std::vector<Token> tokens,
                              std::shared_ptr<const std::string> source,
-                             std::vector<std::string> owned_values)
-    : source_(std::move(source)), owned_values_(std::move(owned_values)), position_(0) {
+                             std::vector<std::string> owned_values,
+                             std::vector<double> numeric_values)
+    : source_(std::move(source)), owned_values_(std::move(owned_values)),
+      numeric_values_(std::move(numeric_values)), position_(0) {
     for (const Token& t : tokens) push_back(t);
 }
 
@@ -320,6 +325,16 @@ std::string_view token_value_text(const Token& token, const std::string& source,
         size_t index = token.value_offset();
         if (index >= owned_values.size()) return std::string_view();
         return std::string_view(owned_values[index]);
+    }
+    // A NUMBER token's value_off_ is a numeric-value table index, not a span
+    // -- its text is never a rewrite, so it is exactly [start, end) the same
+    // as any other unrewritten token, just answered from the two Positions
+    // already on the token instead of a second copy of the same range.
+    if (token.has_numeric_value()) {
+        size_t offset = token.get_start().offset;
+        size_t length = token.get_end().offset - offset;
+        if (length == 0 || offset + length > source.size()) return std::string_view();
+        return std::string_view(source.data() + offset, length);
     }
     if (token.value_length() == 0) return std::string_view();
     size_t offset = token.value_offset();
@@ -397,6 +412,10 @@ void TokenSequence::pump_to(size_t index) {
         const std::vector<std::string>& owned = lexer_->owned_values();
         for (size_t i = owned_values_.size(); i < owned.size(); i++) {
             owned_values_.push_back(owned[i]);
+        }
+        const std::vector<double>& numerics = lexer_->numeric_values();
+        for (size_t i = numeric_values_.size(); i < numerics.size(); i++) {
+            numeric_values_.push_back(numerics[i]);
         }
         const TokenType type = token.get_type();
         if (type != TokenType::WHITESPACE && type != TokenType::COMMENT &&

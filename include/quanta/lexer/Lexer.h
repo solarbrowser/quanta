@@ -45,6 +45,9 @@ private:
     // Values that are not a slice of the source -- cooked string literals with
     // escapes, template literals, identifiers written with unicode escapes.
     std::vector<std::string> owned_values_;
+    // A NUMBER token's cooked value -- see Token::numeric_value_index's doc
+    // comment for why this lives here instead of on the token.
+    std::vector<double> numeric_values_;
     TokenType last_token_type_;
     // The tokens produced so far, for the two look-backs that decide whether a
     // `/` opens a regular expression. Reads size() and operator[], which the
@@ -75,6 +78,7 @@ public:
     // taking them all at once (see TokenSequence's streaming mode).
     const LexerOptions& options() const { return options_; }
     const std::vector<std::string>& owned_values() const { return owned_values_; }
+    const std::vector<double>& numeric_values() const { return numeric_values_; }
     void set_last_token_type(TokenType t) { last_token_type_ = t; }
     // A leading "use strict" changes how the rest is lexed, and a streamed
     // sequence finds it as it pulls rather than in one pass up front.
@@ -126,7 +130,7 @@ private:
     
     Token create_token(TokenType type, const Position& start) const;
     Token create_token(TokenType type, const std::string& value, const Position& start);
-    Token create_token(TokenType type, double numeric_value, const Position& start) const;
+    Token create_token(TokenType type, double numeric_value, const Position& start);
     
     Token read_identifier();
     Token read_number();

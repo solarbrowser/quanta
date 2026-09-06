@@ -2044,7 +2044,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
 
 std::unique_ptr<ASTNode> Parser::parse_number_literal() {
     const Token& token = current_token();
-    double value = token.has_numeric_value() ? token.get_numeric_value() : 0.0;
+    double value = token.has_numeric_value() ? tokens_.numeric_value_of(token) : 0.0;
     
     Position start = token.get_start();
     Position end = token.get_end();

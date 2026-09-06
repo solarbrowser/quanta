@@ -146,6 +146,7 @@ TokenSequence Lexer::tokenize_range(const Position& from, size_t end_offset) {
         tokens.push_back(Token(TokenType::EOF_TOKEN, current_position_));
     }
     tokens.set_owned_values(std::move(owned_values_));
+    tokens.set_numeric_values(std::move(numeric_values_));
     return tokens;
 }
 
@@ -205,6 +206,7 @@ TokenSequence Lexer::tokenize() {
         tokens.push_back(Token(TokenType::EOF_TOKEN, current_position_));
     }
     tokens.set_owned_values(std::move(owned_values_));
+    tokens.set_numeric_values(std::move(numeric_values_));
     return tokens;
 }
 
@@ -427,14 +429,17 @@ Token Lexer::create_token(TokenType type, const std::string& value, const Positi
     return token;
 }
 
-Token Lexer::create_token(TokenType type, double numeric_value, const Position& start) const {
+Token Lexer::create_token(TokenType type, double numeric_value, const Position& start) {
     Token token(type, start, current_position_);
-    token.set_numeric_value(numeric_value);
-    // A numeric literal's text is the literal as written. It used to be the
-    // double formatted back out, which is a different string for anything but
-    // a plain decimal, and nothing reads it except the "unexpected token"
-    // message -- which is better off quoting what the program actually says.
-    token.set_source_value(start.offset, current_position_.offset - start.offset);
+    // The literal's own text is exactly [start, end) -- token_value_text
+    // answers it straight from these two Positions for a has_numeric_value
+    // token, so nothing else needs recording here (see Token::numeric_value_
+    // index's doc comment). It used to be the double formatted back out,
+    // which is a different string for anything but a plain decimal, and
+    // nothing read it except the "unexpected token" message -- which is
+    // better off quoting what the program actually wrote regardless.
+    numeric_values_.push_back(numeric_value);
+    token.set_numeric_value_index(static_cast<uint32_t>(numeric_values_.size() - 1));
     return token;
 }
 

@@ -15,7 +15,10 @@
 
 namespace Quanta {
 
-enum class TokenType {
+// uint8_t: comfortably under 256 values, and every Token carries one --
+// the four bytes a plain-int enum defaults to are paid a few million times
+// over for a large script.
+enum class TokenType : uint8_t {
     EOF_TOKEN = 0,
     IDENTIFIER,
     NUMBER,
@@ -184,11 +187,21 @@ struct Position {
 // came from: see TokenSequence::text_of.
 class Token {
 private:
-    double numeric_value_;
     Position start_;
-    Position end_;
-    // Byte range in the source, or (index, 0) into the sequence's side table
-    // when kValueIsOwned is set.
+    // end_'s column is never read anywhere (grep-verified) -- every reader of
+    // a position's column asks a token's own start_, or a function's
+    // body-start position, never an end. end_'s line IS read, frequently
+    // (same-line restrictions like `async`/`function`, `let`/`[`), so only
+    // column drops here, saving 4 bytes without touching either.
+    uint32_t end_line_;
+    uint32_t end_offset_;
+    // Byte range in the source, (index, 0) into the sequence's owned-value
+    // side table when kValueIsOwned is set, or (index, 0) into its
+    // numeric-value side table when kHasNumericValue is set. A NUMBER
+    // token's own text is never a rewrite -- it is always exactly
+    // [start_.offset, end_.offset), which the two Positions above already
+    // carry -- so value_off_ holding a table index instead of a span costs
+    // this class nothing it was not already storing.
     uint32_t value_off_;
     uint32_t value_len_;
     TokenType type_;
@@ -211,7 +224,13 @@ public:
 
     TokenType get_type() const { return type_; }
     const Position& get_start() const { return start_; }
-    const Position& get_end() const { return end_; }
+    // By value, not by reference: end_ no longer stores a full Position, so
+    // this rebuilds one on the fly (column always 0 -- see end_line_'s doc
+    // comment, nothing reads it). Every existing caller already binds this to
+    // a value or a const&, both of which work identically against a
+    // temporary; only taking its address would not, and nothing does
+    // (grep-verified).
+    Position get_end() const { return Position(end_line_, 0, end_offset_); }
 
     uint32_t value_offset() const { return value_off_; }
     uint32_t value_length() const { return value_len_; }
@@ -227,9 +246,17 @@ public:
         set_flag(kValueIsOwned, true);
     }
 
-    double get_numeric_value() const { return numeric_value_; }
+    // The value itself lives in whichever TokenSequence's numeric-value side
+    // table this index names -- see TokenSequence::numeric_value_of, the
+    // counterpart to text_of. A Token alone cannot answer this, the same way
+    // it cannot answer text_of an owned value alone.
+    uint32_t numeric_value_index() const { return value_off_; }
     bool has_numeric_value() const { return (flags_ & kHasNumericValue) != 0; }
-    void set_numeric_value(double v) { numeric_value_ = v; set_flag(kHasNumericValue, true); }
+    void set_numeric_value_index(uint32_t index) {
+        value_off_ = index;
+        value_len_ = 0;
+        set_flag(kHasNumericValue, true);
+    }
     bool has_escaped_keyword() const { return (flags_ & kEscapedKeyword) != 0; }
     void set_escaped_keyword(bool v) { set_flag(kEscapedKeyword, v); }
     bool string_has_escapes() const { return (flags_ & kStringHasEscapes) != 0; }
@@ -246,7 +273,7 @@ public:
     
     std::string to_string() const;
     std::string type_name() const;
-    size_t length() const { return end_.offset - start_.offset; }
+    size_t length() const { return end_offset_ - start_.offset; }
     
     static std::string token_type_name(TokenType type);
     static bool is_assignment_operator(TokenType type);
@@ -345,6 +372,13 @@ private:
     }
     std::shared_ptr<const std::string> source_;
     std::vector<std::string> owned_values_;
+    // A NUMBER token's cooked value, keyed by Token::numeric_value_index() --
+    // moved here rather than kept on the token itself so every OTHER token
+    // (the overwhelming majority) does not pay for a field it never uses.
+    // Same shape as owned_values_, filled the same way (appended as the
+    // lexer produces tokens, streamed in incrementally by pump_to for a
+    // streaming sequence).
+    std::vector<double> numeric_values_;
     size_t position_;
 
 public:
@@ -354,11 +388,21 @@ public:
     // they address.
     TokenSequence(std::vector<Token> tokens,
                   std::shared_ptr<const std::string> source,
-                  std::vector<std::string> owned_values);
+                  std::vector<std::string> owned_values,
+                  std::vector<double> numeric_values = {});
     // The form the lexer uses: it pushes tokens in as it reads them, so they
     // are never gathered into an array first only to be moved out of it.
     TokenSequence(std::shared_ptr<const std::string> source);
     void set_owned_values(std::vector<std::string> v) { owned_values_ = std::move(v); }
+    void set_numeric_values(std::vector<double> v) { numeric_values_ = std::move(v); }
+
+    // The cooked value of a NUMBER token -- see Token::numeric_value_index's
+    // own doc comment. 0.0 for an out-of-range index, which cannot happen
+    // for a token this sequence actually produced.
+    double numeric_value_of(const Token& token) const {
+        uint32_t index = token.numeric_value_index();
+        return index < numeric_values_.size() ? numeric_values_[index] : 0.0;
+    }
 
     // The text of a token, which is either a slice of the source or, for the
     // handful the lexer had to rewrite, an entry in the side table.
