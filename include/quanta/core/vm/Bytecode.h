@@ -119,6 +119,8 @@ enum class Op : uint8_t {
     JumpIfNotNullish, // o
     JumpIfNullish,    // o
     JumpIfNotUndefined, // o -- default-parameter check (spec: explicit undefined too, not just omitted)
+    JumpIfNotNumber, // o -- switch binary-search dispatch: type guard before any ordering compare
+    JumpIfNotString, // o -- same, for an all-string-literal switch
 
     CreateClosure,   // k -- instantiates a function literal (index into
                      // BytecodeChunk::closures); still runs the literal's own

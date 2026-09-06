@@ -288,6 +288,30 @@ private:
                            bool is_assignment = false);
     bool pattern_is_emittable(const ASTNode* pattern, bool is_lexical,
                               bool is_assignment = false) const;
+
+    // A switch whose every non-default case test is a compile-time literal
+    // (number or string, not mixed, no repeated value) can dispatch by
+    // ordered comparison instead of testing each one in turn -- see
+    // classify_switch_literals/emit_switch_binary_search in the .cpp for the
+    // full reasoning. `None` means the linear TestStrictEq chain runs as it
+    // always has; nothing about that path changes.
+    enum class SwitchFastKind : uint8_t { None, Number, String };
+    struct SwitchLiteralCase {
+        double num_value = 0.0;
+        const std::string* str_value = nullptr;
+        size_t original_index = 0;   // index into the switch's full cases vector
+        const ASTNode* test_node = nullptr;  // reused verbatim for codegen
+    };
+    SwitchFastKind classify_switch_literals(
+        const std::vector<std::unique_ptr<ASTNode>>& cases,
+        std::vector<SwitchLiteralCase>& out_sorted) const;
+    // Emits the binary-search tree over out_sorted[lo..hi] (inclusive),
+    // recording each leaf's case-body jump site into test_jumps at that
+    // case's ORIGINAL index -- the same array the existing linear path
+    // fills, so the body-emission pass after this needs no changes at all.
+    bool emit_switch_binary_search(const std::vector<SwitchLiteralCase>& sorted,
+                                   size_t lo, size_t hi, int disc_reg,
+                                   std::vector<size_t>& test_jumps);
     bool emit_array_pattern_bind(const ASTNode* pattern, bool is_lexical, bool is_const,
                                  bool is_assignment = false);
     int emit_with_target_resolve(const ASTNode* target, bool is_lexical);

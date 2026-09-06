@@ -34,6 +34,12 @@ namespace {
 
 constexpr int kMaxRegisters = 255;
 
+// Below this many eligible cases, a binary-search switch's own fixed
+// overhead (the type guard plus a comparison at each tree level) outweighs
+// the comparisons it saves over the plain linear chain -- measured, not
+// guessed; see SWITCH_STATEMENT's own compile for where this is read.
+constexpr size_t kSwitchBinarySearchMinCases = 9;
+
 // Freezes the compiler's name pool into the chunk's interned form. This is the
 // one place a name's text is hashed; from here on every reader holds the
 // canonical pointer, which is what lets a binding lookup compare pointers
@@ -6468,6 +6474,121 @@ bool BytecodeCompiler::pattern_is_emittable(const ASTNode* pattern, bool is_lexi
     return false;
 }
 
+namespace {
+// `case -1:`/`case +1:` parse as a UnaryExpression wrapping a NumberLiteral,
+// never as a NumberLiteral itself (the lexer has no negative-number token) --
+// recognizing the fold here is what keeps negative sentinel values (error
+// codes and the like) from silently missing the fast path below. Only the
+// VALUE is read out, for sorting and duplicate detection; the original node
+// is still what compiles at runtime, so the fold changes nothing observable.
+bool as_folded_number_literal(const ASTNode* node, double* out) {
+    if (node->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+        *out = static_cast<const NumberLiteral*>(node)->get_value();
+        return true;
+    }
+    if (node->get_type() != ASTNode::Type::UNARY_EXPRESSION) return false;
+    const auto* u = static_cast<const UnaryExpression*>(node);
+    const ASTNode* operand = u->get_operand();
+    if (!operand || operand->get_type() != ASTNode::Type::NUMBER_LITERAL) return false;
+    double v = static_cast<const NumberLiteral*>(operand)->get_value();
+    if (u->get_operator() == UnaryExpression::Operator::MINUS) { *out = -v; return true; }
+    if (u->get_operator() == UnaryExpression::Operator::PLUS) { *out = v; return true; }
+    return false;
+}
+}  // namespace
+
+// A switch dispatches by ordered comparison instead of a linear TestStrictEq
+// chain only when every non-default case test is a literal of the SAME
+// primitive type -- mixed types, a non-literal test (a variable, a call,
+// anything with a possible side effect), or a repeated value all fall back
+// to the existing chain untouched. Literal evaluation has no observable
+// side effect, so reordering these into sorted order (done by the caller,
+// via out_sorted) cannot violate the spec's source-order evaluation rule --
+// there is nothing observable left to reorder past.
+BytecodeCompiler::SwitchFastKind BytecodeCompiler::classify_switch_literals(
+    const std::vector<std::unique_ptr<ASTNode>>& cases,
+    std::vector<SwitchLiteralCase>& out_sorted) const {
+    out_sorted.clear();
+    SwitchFastKind kind = SwitchFastKind::None;
+    for (size_t i = 0; i < cases.size(); i++) {
+        const auto* cc = static_cast<const CaseClause*>(cases[i].get());
+        if (cc->is_default()) continue;
+        const ASTNode* test = cc->get_test();
+        double num_value;
+        if (as_folded_number_literal(test, &num_value)) {
+            if (kind == SwitchFastKind::String) return SwitchFastKind::None;
+            kind = SwitchFastKind::Number;
+            out_sorted.push_back({num_value, nullptr, i, test});
+        } else if (test->get_type() == ASTNode::Type::STRING_LITERAL) {
+            if (kind == SwitchFastKind::Number) return SwitchFastKind::None;
+            kind = SwitchFastKind::String;
+            out_sorted.push_back({0.0, &static_cast<const StringLiteral*>(test)->get_value(), i, test});
+        } else {
+            return SwitchFastKind::None;
+        }
+    }
+    if (kind == SwitchFastKind::None || out_sorted.size() < kSwitchBinarySearchMinCases) {
+        return SwitchFastKind::None;
+    }
+    // Case values are never NaN (no JS literal token syntax produces NaN --
+    // `NaN` is a global identifier, never a NumberLiteral), so a plain `<`/
+    // `==` sort and adjacent-duplicate scan is exactly equivalent to the
+    // runtime strict-equality semantics being mirrored.
+    if (kind == SwitchFastKind::Number) {
+        std::sort(out_sorted.begin(), out_sorted.end(),
+                  [](const SwitchLiteralCase& a, const SwitchLiteralCase& b) {
+                      return a.num_value < b.num_value;
+                  });
+        for (size_t i = 1; i < out_sorted.size(); i++) {
+            if (out_sorted[i].num_value == out_sorted[i - 1].num_value) return SwitchFastKind::None;
+        }
+    } else {
+        std::sort(out_sorted.begin(), out_sorted.end(),
+                  [](const SwitchLiteralCase& a, const SwitchLiteralCase& b) {
+                      return *a.str_value < *b.str_value;
+                  });
+        for (size_t i = 1; i < out_sorted.size(); i++) {
+            if (*out_sorted[i].str_value == *out_sorted[i - 1].str_value) return SwitchFastKind::None;
+        }
+    }
+    return kind;
+}
+
+// Ordinary sorted-array binary search, compiled rather than run: `<` alone
+// narrows the range at each internal node (one comparison, not two -- `>`
+// is never needed, since "not less than the low half's pivot" already means
+// "somewhere in the high half"), and strict equality is verified exactly
+// once, at the leaf the range narrows to. This holds even for a NaN
+// discriminant reaching this code (only the discriminant can ever be NaN at
+// runtime -- case values can't): NaN's `<` is false in both directions, so
+// it simply walks to some leaf, whose real TestStrictEq then correctly
+// fails -- nothing here ever infers equality from a failed ordering
+// comparison. `test_jumps` is the SAME array and SAME per-case indexing the
+// existing linear chain fills; the body-emission pass that reads it back
+// afterward needs no changes for this to plug in unchanged.
+bool BytecodeCompiler::emit_switch_binary_search(const std::vector<SwitchLiteralCase>& sorted,
+                                                 size_t lo, size_t hi, int disc_reg,
+                                                 std::vector<size_t>& test_jumps) {
+    if (lo == hi) {
+        if (!compile_expression(sorted[lo].test_node)) return false;
+        emit(Op::TestStrictEq);
+        emit_u8(static_cast<uint8_t>(disc_reg));
+        test_jumps[sorted[lo].original_index] = emit_jump(Op::JumpIfTrue);
+        return true;
+    }
+    const size_t mid = lo + (hi - lo + 1) / 2;
+    if (!compile_expression(sorted[mid].test_node)) return false;
+    emit(Op::TestLt);
+    emit_u8(static_cast<uint8_t>(disc_reg));
+    const size_t jump_to_low_half = emit_jump(Op::JumpIfTrue);
+    if (!emit_switch_binary_search(sorted, mid, hi, disc_reg, test_jumps)) return false;
+    const size_t skip_low_half = emit_jump(Op::Jump);
+    if (!patch_jump(jump_to_low_half)) return false;
+    if (!emit_switch_binary_search(sorted, lo, mid - 1, disc_reg, test_jumps)) return false;
+    if (!patch_jump(skip_low_half)) return false;
+    return true;
+}
+
 // A tag's arguments: the template object first, then each substitution. The
 // object is a compile-time constant because the site has exactly one, however
 // often it runs.
@@ -8688,12 +8809,30 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             std::vector<size_t> test_jumps(cases.size(), 0);
             int default_index = -1;
             for (size_t i = 0; i < cases.size(); i++) {
-                const auto* cc = static_cast<const CaseClause*>(cases[i].get());
-                if (cc->is_default()) { default_index = static_cast<int>(i); continue; }
-                if (!compile_expression(cc->get_test())) return false;
-                emit(Op::TestStrictEq);
+                if (static_cast<const CaseClause*>(cases[i].get())->is_default()) {
+                    default_index = static_cast<int>(i);
+                    break;
+                }
+            }
+            std::vector<SwitchLiteralCase> sorted_literals;
+            const SwitchFastKind fast_kind = classify_switch_literals(cases, sorted_literals);
+            if (fast_kind != SwitchFastKind::None) {
+                emit(Op::Ldar);
                 emit_u8(static_cast<uint8_t>(disc_reg));
-                test_jumps[i] = emit_jump(Op::JumpIfTrue);
+                const size_t guard_jump = emit_jump(fast_kind == SwitchFastKind::Number
+                                                    ? Op::JumpIfNotNumber : Op::JumpIfNotString);
+                if (!emit_switch_binary_search(sorted_literals, 0, sorted_literals.size() - 1,
+                                               disc_reg, test_jumps)) return false;
+                if (!patch_jump(guard_jump)) return false;
+            } else {
+                for (size_t i = 0; i < cases.size(); i++) {
+                    const auto* cc = static_cast<const CaseClause*>(cases[i].get());
+                    if (cc->is_default()) continue;
+                    if (!compile_expression(cc->get_test())) return false;
+                    emit(Op::TestStrictEq);
+                    emit_u8(static_cast<uint8_t>(disc_reg));
+                    test_jumps[i] = emit_jump(Op::JumpIfTrue);
+                }
             }
             size_t jump_to_default_or_end = emit_jump(Op::Jump);
             free_temp(disc_reg);

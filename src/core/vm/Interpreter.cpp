@@ -3942,6 +3942,49 @@ Value h_gen_JumpIfNotUndefined(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Switch binary-search dispatch's type guard: acc holds the discriminant,
+// jumps to the linear chain's own default-or-end target the moment it isn't
+// the same primitive type as the switch's (all-number or all-string) case
+// literals, so no ordering comparison ever runs against a mismatched type --
+// see BytecodeCompiler.cpp's SWITCH_STATEMENT case for why that matters.
+Value h_gen_JumpIfNotNumber(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                int16_t off = read_i16(code, pc);
+                pc += 2;
+                if (!acc.is_number()) pc += off;
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+Value h_gen_JumpIfNotString(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+                {
+                int16_t off = read_i16(code, pc);
+                pc += 2;
+                if (!acc.is_string()) pc += off;
+                break;
+            }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_CreateClosure(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -6724,6 +6767,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::JumpIfNotNullish)] = &h_gen_JumpIfNotNullish;
     t[static_cast<uint8_t>(Op::JumpIfNullish)] = &h_gen_JumpIfNullish;
     t[static_cast<uint8_t>(Op::JumpIfNotUndefined)] = &h_gen_JumpIfNotUndefined;
+    t[static_cast<uint8_t>(Op::JumpIfNotNumber)] = &h_gen_JumpIfNotNumber;
+    t[static_cast<uint8_t>(Op::JumpIfNotString)] = &h_gen_JumpIfNotString;
     t[static_cast<uint8_t>(Op::CreateClosure)] = &h_gen_CreateClosure;
     t[static_cast<uint8_t>(Op::DeclareFunction)] = &h_gen_DeclareFunction;
     t[static_cast<uint8_t>(Op::DefineClass)] = &h_gen_DefineClass;

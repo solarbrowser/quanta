@@ -114,6 +114,7 @@ const OpInfo& op_info(Op op) {
         {"CreateForInKeys", 1, 'r'},
         {"TryCollectRestArray", 5, 'R'},
         {"JumpIfNotNullish", 2, 'o'}, {"JumpIfNullish", 2, 'o'}, {"JumpIfNotUndefined", 2, 'o'},
+        {"JumpIfNotNumber", 2, 'o'}, {"JumpIfNotString", 2, 'o'},
         {"CreateClosure", 2, 'z'},
         {"DeclareFunction", 2, 'z'},
         {"CopyRestProperties", 2, 'r'},
