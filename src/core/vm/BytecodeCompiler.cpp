@@ -1755,7 +1755,7 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             // for, since collect_closure_names just walked in from outside
             // it. A direct `return i;` is exactly that case: nothing nested
             // in this function captures `i`, but the function itself does.
-            for (const auto& name : info->all_names) out.insert(name);
+            for (uint32_t name_id : info->all_names) out.insert(NamePool::text(name_id));
         }
         if (info->eval_anywhere) op.saw_eval = true;
         if (info->class_expression) op.saw_class = true;
@@ -4313,7 +4313,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // QUANTA_SCOPE_CHECK reports where the two disagree.
         const bool use_parse = scope_info != nullptr;
         if (use_parse) {
-            env_resident = scope_info->captured;
+            for (uint32_t name_id : scope_info->captured) env_resident.insert(NamePool::text(name_id));
             if (scope_info->eval_in_nested) op.saw_eval = true;
             if (scope_info->class_expression) op.saw_class = true;
         } else {
@@ -4328,15 +4328,15 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 collect_closure_names(body, /*inside_closure=*/false, walked,
                                       walked_op, suspendable);
                 for (const auto& n : walked) {
-                    if (!scope_info->captured.count(n)) {
+                    if (!scope_info->captured.count(NamePool::intern(n))) {
                         std::fprintf(stderr, "[scope] eksik isim '%s' satir=%u\n",
                                      n.c_str(), body->get_start().line);
                     }
                 }
-                for (const auto& n : scope_info->captured) {
-                    if (!walked.count(n)) {
+                for (uint32_t name_id : scope_info->captured) {
+                    if (!walked.count(NamePool::text(name_id))) {
                         std::fprintf(stderr, "[scope] fazla isim '%s' satir=%u\n",
-                                     n.c_str(), body->get_start().line);
+                                     NamePool::text(name_id).c_str(), body->get_start().line);
                     }
                 }
             }

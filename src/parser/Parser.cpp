@@ -2215,8 +2215,8 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
                 NameScope& mine = name_scopes_.back();
                 NameScope& theirs = expr_parser.name_scopes_.back();
                 mine.class_expression = mine.class_expression || theirs.class_expression;
-                for (auto& n : theirs.captured) mine.captured.insert(n);
-                for (auto& n : theirs.all) mine.all.insert(std::move(n));
+                for (auto n : theirs.captured) mine.captured.insert(n);
+                for (auto n : theirs.all) mine.all.insert(n);
                 mine.eval_in_nested = mine.eval_in_nested || theirs.eval_in_nested;
             }
             expressions.push_back(std::move(expression));

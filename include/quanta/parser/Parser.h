@@ -106,8 +106,13 @@ private:
     // because from the parent's side every one of those names is inside a
     // closure.
     struct NameScope {
-        std::unordered_set<std::string> all;
-        std::unordered_set<std::string> captured;
+        // Interned (NamePool) ids, not text: a bundle-sized file closes
+        // tens of thousands of these, and the same few thousand names
+        // recur across nearly all of them -- an id set dedupes that for
+        // free and costs 4 bytes a name instead of a whole string plus a
+        // hash-set node.
+        std::unordered_set<uint32_t> all;
+        std::unordered_set<uint32_t> captured;
         // This function's own simple (non-destructured) parameter names --
         // subtracted from `all` when it folds into the enclosing scope's
         // `captured` (see FunctionNames::~FunctionNames). `all` itself
@@ -118,7 +123,7 @@ private:
         // anywhere", but wrong for `captured`'s -- a parameter is never a
         // name the enclosing function needs to keep alive in an
         // Environment for this function to reach.
-        std::unordered_set<std::string> own_names;
+        std::unordered_set<uint32_t> own_names;
         bool eval_in_nested = false;
         bool class_expression = false;
     };
@@ -144,7 +149,7 @@ private:
     void note_name(const std::string& n) {
         if (!recording_names_) return;
         if (name_scopes_.empty()) return;
-        name_scopes_.back().all.insert(n);
+        name_scopes_.back().all.insert(NamePool::intern(n));
     }
     // Opens the scope of a function literal; closing it hands what the
     // function mentioned to whatever encloses it.
@@ -184,27 +189,27 @@ private:
             NameScope& mine = p.name_scopes_.back();
             for (const auto& param : params) {
                 if (param->has_destructuring()) continue;
-                if (const Identifier* id = param->get_name()) mine.own_names.insert(id->get_name());
+                if (const Identifier* id = param->get_name()) mine.own_names.insert(NamePool::intern(id->get_name()));
             }
         }
         // Single-identifier arrow form (`x => ...`), which never builds a
         // Parameter vector at all.
         void record_param(const std::string& name) {
             if (p.name_scopes_.empty()) return;
-            p.name_scopes_.back().own_names.insert(name);
+            p.name_scopes_.back().own_names.insert(NamePool::intern(name));
         }
         BodyScopeInfo take() const {
             BodyScopeInfo info;
             const NameScope& mine = p.name_scopes_.back();
             info.captured = mine.captured;
             info.all_names = mine.all;
-            info.eval_anywhere = mine.all.count("eval") != 0;
+            info.eval_anywhere = mine.all.count(NamePool::intern("eval")) != 0;
             // Folds up through every nested scope (arrow or not) the same way
             // all_names does, so it sees a `super` however deep an arrow
             // chain carries it -- unlike captures_outer, this needs no
             // separate per-form opt-in: whatever named `super` at all is
             // already in `mine.all` before this reads it.
-            info.super_anywhere = mine.all.count("super") != 0;
+            info.super_anywhere = mine.all.count(NamePool::intern("super")) != 0;
             info.eval_in_nested = mine.eval_in_nested;
             info.class_expression = mine.class_expression;
             info.body_end = body_end;
@@ -222,12 +227,12 @@ private:
             p.name_scopes_.pop_back();
             if (p.name_scopes_.empty()) return;
             NameScope& parent = p.name_scopes_.back();
-            const bool eval_here = mine.all.count("eval") != 0 || mine.eval_in_nested;
-            for (auto& n : mine.all) {
+            const bool eval_here = mine.all.count(NamePool::intern("eval")) != 0 || mine.eval_in_nested;
+            for (auto n : mine.all) {
                 // `all` keeps every name regardless -- see NameScope::
                 // own_names' own comment for why `captured` must not.
                 if (!mine.own_names.count(n)) parent.captured.insert(n);
-                parent.all.insert(std::move(n));
+                parent.all.insert(n);
             }
             parent.eval_in_nested = parent.eval_in_nested || eval_here;
             parent.class_expression = parent.class_expression || mine.class_expression;

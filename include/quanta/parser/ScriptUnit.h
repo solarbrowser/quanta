@@ -38,14 +38,19 @@ struct BodyScopeInfo {
     // the environment rather than take a register. Collecting a name that no
     // closure actually reads only costs it a register; missing one that a
     // closure does read would be wrong.
-    std::unordered_set<std::string> captured;
+    //
+    // Interned (NamePool) ids, not text -- a bundle-sized file keeps one of
+    // these per function, tens of thousands of them, all pulling from the
+    // same few thousand names, so an id set both dedupes across bodies and
+    // costs a quarter the bytes per entry of a string in a hash set.
+    std::unordered_set<uint32_t> captured;
     // Every identifier this body itself names, at its own top level or
     // nested inside it -- the superset `captured` folds into a caller's own
     // set when THIS body is the thing found nested (see collect_closure_names'
     // dropped-body fallback): a direct `return i;` here is not "captured"
     // from this body's own perspective (nothing nested in it reads `i`), but
     // it is exactly the reference a scan of an enclosing scope needs to see.
-    std::unordered_set<std::string> all_names;
+    std::unordered_set<uint32_t> all_names;
     // `eval` named anywhere in the body, nested or not: its text can reach any
     // binding here, so nothing may take a register.
     bool eval_anywhere = false;
