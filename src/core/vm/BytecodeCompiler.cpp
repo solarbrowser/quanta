@@ -4740,6 +4740,19 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         for (const auto& info : declared) compiler.global_decl_count_[info.name]++;
         for (const auto& p : param_names) compiler.global_decl_count_[p]++;
         if (has_rest) compiler.global_decl_count_[rest_name]++;
+        // A destructuring parameter's own bound names never appear as `p`
+        // above -- param_names only carries one (synthetic-placeholder)
+        // entry per PARAMETER POSITION. Counted here too, once per real
+        // bound name, so the declared-exactly-once eligibility check below
+        // can recognize them the same way it recognizes everything else.
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (!params.has_pattern(pidx)) continue;
+            const ASTNode* pat = params.pattern(pidx);
+            if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) continue;
+            std::vector<std::string> bound;
+            static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+            for (const auto& bn : bound) compiler.global_decl_count_[bn]++;
+        }
         compiler.sibling_safe_names_ = compute_sibling_safe_names({body});
     }
     // flat_slot_counter mirrors the actual runtime seeding order of the
@@ -4812,6 +4825,37 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 }
             }
             flat_slot_counter++;
+        }
+        // A pattern position's own tick above accounts for the one
+        // (permanently uninitialized) slot its param_names placeholder
+        // reserves via VM::run's upfront env-param seeding. Its bound
+        // names get no slot there -- they don't exist yet at that point.
+        // At runtime they're first created only once this position's own
+        // emit_pattern_bind call runs, which for the whole fixed parameter
+        // list happens after EVERY position above (pattern or not) has
+        // already claimed its pre-seeded slot -- so they start counting
+        // right where the loop above finished, never interleaved with a
+        // later fixed parameter's own (already-correct) slot. A second
+        // pass over every pattern position, in `collect_bound_names`'
+        // order (the same order emit_pattern_bind itself writes them in).
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (params.is_rest(pidx)) continue;
+            if (!params.has_pattern(pidx)) continue;
+            const ASTNode* pat = params.pattern(pidx);
+            if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) continue;
+            std::vector<std::string> bound;
+            static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+            for (const auto& bn : bound) {
+                bool resident = !selective || env_resident.count(bn) > 0;
+                if (!resident) continue;
+                if (flat_slot_counter < kEnvSlotPredictMax) {
+                    auto cit = compiler.global_decl_count_.find(bn);
+                    if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
+                        compiler.env_slot_info_[bn] = {static_cast<uint8_t>(flat_slot_counter), 0};
+                    }
+                }
+                flat_slot_counter++;
+            }
         }
     }
 
@@ -4974,6 +5018,28 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             }
         }
         flat_slot_counter++;
+        // A destructured rest parameter (`function(...{a,b})`) has the same
+        // gap as a destructured fixed parameter -- its own bound names are
+        // created only after `rest_name`'s own slot above is already
+        // reserved, same reasoning as the fixed-position second pass.
+        if (params.has_pattern(params.size() - 1)) {
+            const ASTNode* pat = params.pattern(params.size() - 1);
+            if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                std::vector<std::string> bound;
+                static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+                for (const auto& bn : bound) {
+                    bool resident = !selective || env_resident.count(bn) > 0;
+                    if (!resident) continue;
+                    if (flat_slot_counter < kEnvSlotPredictMax) {
+                        auto cit = compiler.global_decl_count_.find(bn);
+                        if (cit != compiler.global_decl_count_.end() && cit->second == 1) {
+                            compiler.env_slot_info_[bn] = {static_cast<uint8_t>(flat_slot_counter), 0};
+                        }
+                    }
+                    flat_slot_counter++;
+                }
+            }
+        }
     }
 
     // Parameter lists with initializers follow spec FDI ordering (see
