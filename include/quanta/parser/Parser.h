@@ -111,8 +111,8 @@ private:
         // recur across nearly all of them -- an id set dedupes that for
         // free and costs 4 bytes a name instead of a whole string plus a
         // hash-set node.
-        std::unordered_set<uint32_t> all;
-        std::unordered_set<uint32_t> captured;
+        IdSet all;
+        IdSet captured;
         // This function's own simple (non-destructured) parameter names --
         // subtracted from `all` when it folds into the enclosing scope's
         // `captured` (see FunctionNames::~FunctionNames). `all` itself
@@ -123,7 +123,7 @@ private:
         // anywhere", but wrong for `captured`'s -- a parameter is never a
         // name the enclosing function needs to keep alive in an
         // Environment for this function to reach.
-        std::unordered_set<uint32_t> own_names;
+        IdSet own_names;
         bool eval_in_nested = false;
         bool class_expression = false;
     };

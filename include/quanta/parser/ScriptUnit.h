@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "quanta/lexer/Token.h"
 
@@ -13,6 +14,85 @@ namespace Quanta {
 
 class ASTNode;
 class Parser;
+
+// A set of NamePool ids, backed by a flat vector up to a small inline
+// capacity and only then by a hash set. NameScope/BodyScopeInfo instances
+// are built by the tens of thousands for a bundle-sized file and hold a
+// handful of names each -- an unordered_set's bucket array plus a heap node
+// per entry is overhead with nothing to amortize at that scale. But a
+// script's OUTERMOST scope is a different animal: it accumulates every name
+// any closure anywhere reaches for, which for a bundled file can run to
+// tens of thousands -- a linear scan there is quadratic in the number of
+// distinct names, measured to cost far more than the hash table it was
+// trying to avoid. The threshold makes both ends of that range cheap.
+class IdSet {
+public:
+    // Dispatches to whichever of the two backings is live, so a range-for
+    // over an IdSet costs nothing extra once past the small-set case: the
+    // branch predicts the same way every iteration of one loop.
+    class const_iterator {
+    public:
+        using VecIt = std::vector<uint32_t>::const_iterator;
+        using SetIt = std::unordered_set<uint32_t>::const_iterator;
+        const_iterator() : is_vec_(true) {}
+        explicit const_iterator(VecIt it) : vec_it_(it), is_vec_(true) {}
+        explicit const_iterator(SetIt it) : set_it_(it), is_vec_(false) {}
+        uint32_t operator*() const { return is_vec_ ? *vec_it_ : *set_it_; }
+        const_iterator& operator++() { if (is_vec_) ++vec_it_; else ++set_it_; return *this; }
+        bool operator!=(const const_iterator& o) const {
+            return is_vec_ ? (vec_it_ != o.vec_it_) : (set_it_ != o.set_it_);
+        }
+    private:
+        VecIt vec_it_{};
+        SetIt set_it_{};
+        bool is_vec_;
+    };
+
+    void insert(uint32_t id) {
+        if (overflow_) { overflow_->insert(id); return; }
+        for (uint32_t v : small_) { if (v == id) return; }
+        small_.push_back(id);
+        if (small_.size() > kInlineCapacity) {
+            // Moves in, not copies: past this point small_ holds nothing --
+            // the whole reason for the cutover is to stop paying for both
+            // representations of the same names at once.
+            overflow_ = std::make_unique<std::unordered_set<uint32_t>>(small_.begin(), small_.end());
+            small_.clear();
+            small_.shrink_to_fit();
+        }
+    }
+    size_t count(uint32_t id) const {
+        if (overflow_) return overflow_->count(id);
+        for (uint32_t v : small_) { if (v == id) return 1; }
+        return 0;
+    }
+    const_iterator begin() const {
+        return overflow_ ? const_iterator(overflow_->begin()) : const_iterator(small_.begin());
+    }
+    const_iterator end() const {
+        return overflow_ ? const_iterator(overflow_->end()) : const_iterator(small_.end());
+    }
+    bool empty() const { return overflow_ ? overflow_->empty() : small_.empty(); }
+    size_t size() const { return overflow_ ? overflow_->size() : small_.size(); }
+
+    IdSet() = default;
+    IdSet(const IdSet& other) : small_(other.small_) {
+        if (other.overflow_) overflow_ = std::make_unique<std::unordered_set<uint32_t>>(*other.overflow_);
+    }
+    IdSet& operator=(const IdSet& other) {
+        if (this == &other) return *this;
+        small_ = other.small_;
+        overflow_ = other.overflow_ ? std::make_unique<std::unordered_set<uint32_t>>(*other.overflow_) : nullptr;
+        return *this;
+    }
+    IdSet(IdSet&&) = default;
+    IdSet& operator=(IdSet&&) = default;
+
+private:
+    static constexpr size_t kInlineCapacity = 32;
+    std::vector<uint32_t> small_;
+    std::unique_ptr<std::unordered_set<uint32_t>> overflow_;
+};
 
 // Owns one parse tree and keeps it alive for exactly as long as anything still
 // points into it.
@@ -43,14 +123,14 @@ struct BodyScopeInfo {
     // these per function, tens of thousands of them, all pulling from the
     // same few thousand names, so an id set both dedupes across bodies and
     // costs a quarter the bytes per entry of a string in a hash set.
-    std::unordered_set<uint32_t> captured;
+    IdSet captured;
     // Every identifier this body itself names, at its own top level or
     // nested inside it -- the superset `captured` folds into a caller's own
     // set when THIS body is the thing found nested (see collect_closure_names'
     // dropped-body fallback): a direct `return i;` here is not "captured"
     // from this body's own perspective (nothing nested in it reads `i`), but
     // it is exactly the reference a scan of an enclosing scope needs to see.
-    std::unordered_set<uint32_t> all_names;
+    IdSet all_names;
     // `eval` named anywhere in the body, nested or not: its text can reach any
     // binding here, so nothing may take a register.
     bool eval_anywhere = false;
