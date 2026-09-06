@@ -465,7 +465,29 @@ void collect_assigned_identifiers(const ASTNode* node,
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* n = static_cast<const VariableDeclaration*>(node);
             for (const auto& d : n->get_declarations()) {
-                if (d->get_init()) collect_assigned_identifiers(d->get_init(), candidates, out);
+                const ASTNode* init = d->get_init();
+                if (!init) continue;
+                // A destructuring declarator's own pattern is a fresh binding,
+                // not a later store to anything it binds -- recursing into it
+                // generically below (as any other DESTRUCTURING_ASSIGNMENT)
+                // would mark every one of its names "assigned" on sight, and
+                // with no explicit case at all this used to fall to the
+                // catch-all default, which conservatively marks EVERY
+                // candidate found -- so any const anywhere in the function
+                // got swept in by an unrelated destructuring declaration
+                // elsewhere. Walk only what this declarator actually
+                // evaluates (the source, plus any default/computed-key
+                // expression) -- the same declaring-vs-reassigning split
+                // collect_lexical_regions/references_outside already draw.
+                if (init->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    const auto* da = static_cast<const DestructuringAssignment*>(init);
+                    collect_assigned_identifiers(da->get_source(), candidates, out);
+                    da->for_each_expression([&](const ASTNode* e) {
+                        collect_assigned_identifiers(e, candidates, out);
+                    });
+                    continue;
+                }
+                collect_assigned_identifiers(init, candidates, out);
             }
             return;
         }
@@ -483,6 +505,23 @@ void collect_assigned_identifiers(const ASTNode* node,
                 collect_assigned_identifiers(left, candidates, out);
             }
             collect_assigned_identifiers(n->get_right(), candidates, out);
+            return;
+        }
+        case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
+            // Reached as a real assignment target (`({a, b} = x)` -- the
+            // VARIABLE_DECLARATION case above intercepts the declaring form
+            // before it ever gets here), so every bound name really is a
+            // store, same as ARRAY_LITERAL/OBJECT_LITERAL's own pattern-
+            // target handling above -- plus whatever the source/default/
+            // computed-key expressions assign on top of that.
+            const auto* n = static_cast<const DestructuringAssignment*>(node);
+            std::vector<std::string> bound;
+            n->collect_bound_names(bound);
+            for (const auto& bn : bound) out.insert(bn);
+            collect_assigned_identifiers(n->get_source(), candidates, out);
+            n->for_each_expression([&](const ASTNode* e) {
+                collect_assigned_identifiers(e, candidates, out);
+            });
             return;
         }
         case ASTNode::Type::UNARY_EXPRESSION: {
@@ -3771,6 +3810,29 @@ void stamp_inferred_class_name(const ASTNode* init, const std::string& name) {
 void collect_lexical_regions(const ASTNode* node, const ASTNode* current_region,
                               std::unordered_map<std::string, const ASTNode*>& out) {
     if (!node) return;
+    // Binds every name `d` introduces (source order, any pattern depth) to
+    // `region` -- an ordinary declarator has exactly one name of its own,
+    // but a destructuring declarator's get_id() is only the empty-name
+    // marker Parser.cpp uses to flag it as one (see its "declarator as
+    // destructuring" comment); the names it actually binds live in its
+    // DestructuringAssignment init instead. Without this, those names never
+    // got a region at all, so the env-residency check below (region_of.find
+    // failing) always treated them as escaping -- forcing every function
+    // that merely destructures a parameter into full env_mode even when
+    // nothing it binds is ever captured by a nested closure.
+    auto bind_declarator = [&](const VariableDeclarator* d, const ASTNode* region) {
+        if (d->get_id() && !d->get_id()->get_name().empty()) {
+            out.emplace(d->get_id()->get_name(), region);
+            return;
+        }
+        if (d->get_init() && d->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+            std::vector<std::string> bound;
+            static_cast<const DestructuringAssignment*>(d->get_init())->collect_bound_names(bound);
+            for (const auto& name : bound) {
+                if (!name.empty()) out.emplace(name, region);
+            }
+        }
+    };
     switch (node->get_type()) {
         case ASTNode::Type::CLASS_DECLARATION: {
             const auto* cd = static_cast<const ClassDeclaration*>(node);
@@ -3782,11 +3844,7 @@ void collect_lexical_regions(const ASTNode* node, const ASTNode* current_region,
         case ASTNode::Type::VARIABLE_DECLARATION: {
             const auto* decl = static_cast<const VariableDeclaration*>(node);
             if (decl->get_kind() == VariableDeclarator::Kind::VAR) return;
-            for (const auto& d : decl->get_declarations()) {
-                if (d->get_id() && !d->get_id()->get_name().empty()) {
-                    out.emplace(d->get_id()->get_name(), current_region);
-                }
-            }
+            for (const auto& d : decl->get_declarations()) bind_declarator(d.get(), current_region);
             return;
         }
         case ASTNode::Type::BLOCK_STATEMENT: {
@@ -3811,9 +3869,7 @@ void collect_lexical_regions(const ASTNode* node, const ASTNode* current_region,
             if (n->get_init() && n->get_init()->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
                 const auto* vd = static_cast<const VariableDeclaration*>(n->get_init());
                 if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
-                    for (const auto& d : vd->get_declarations()) {
-                        if (d->get_id()) out.emplace(d->get_id()->get_name(), node);
-                    }
+                    for (const auto& d : vd->get_declarations()) bind_declarator(d.get(), node);
                 }
             }
             collect_lexical_regions(n->get_body(), current_region, out);
