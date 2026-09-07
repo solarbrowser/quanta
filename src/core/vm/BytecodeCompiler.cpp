@@ -4320,6 +4320,15 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     bool has_rest = !params.empty() && params.is_rest(params.size() - 1);
     size_t fixed_param_count = has_rest ? params.size() - 1 : params.size();
 
+    // Parameter lists with initializers follow spec FDI ordering (see
+    // BytecodeChunk::env_params_tdz): params seed uninitialized, and each
+    // one initializes left to right from its register-held raw argument.
+    bool params_tdz = false;
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (params.is_rest(pidx)) continue;
+        if (params.has_default(pidx) || params.has_pattern(pidx)) params_tdz = true;
+    }
+
     std::vector<std::string> param_names;  // excludes rest -- see CreateRestArray below
     std::string rest_name;
     bool arguments_is_param = false;
@@ -4374,6 +4383,18 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // Suspendable bodies always use env_mode: locals must survive across the
     // fiber suspension that delegated yield/await expressions perform.
     bool has_closures = contains_closure(body);
+    // A closure living inside a parameter default/pattern is invisible to
+    // has_closures above (that only walks body), but still needs the
+    // selective-residency scan to run so the name it captures can be found.
+    bool has_param_closures = false;
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (params.is_rest(pidx)) continue;
+        if ((params.has_default(pidx) && contains_closure(params.default_value(pidx))) ||
+            (params.has_pattern(pidx) && contains_closure(params.pattern(pidx)))) {
+            has_param_closures = true;
+            break;
+        }
+    }
     // Whether env_mode's OWN formula needs to force it just because a
     // closure exists, as opposed to has_closures above (still used
     // unchanged to trigger the selective-residency scan below, which finds
@@ -4427,6 +4448,20 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         ScanOpacity pe_op;
         collect_closure_names(pe, /*inside_closure=*/true, pn, pe_op);
         if (pe_op.saw_eval) param_eval = true;
+        // An eval, a class expression, or an AST shape this scanner doesn't
+        // know, seen anywhere in a param default/pattern, forces full_env
+        // exactly like seeing one in the body does -- merged into an_op so
+        // the formula below still catches it now that has_complex_params
+        // alone no longer does. saw_eval specifically: compile_expression's
+        // direct-eval case (see its own doc comment) refuses to compile a
+        // direct eval call at all outside full_env/script_mode, since eval
+        // reads and writes the calling scope by name -- param_eval alone
+        // (which only forces needs_arguments) is not enough on its own, a
+        // parameter literally named `arguments` resets needs_arguments back
+        // to false regardless of any eval present.
+        an_op.saw_eval = an_op.saw_eval || pe_op.saw_eval;
+        an_op.saw_class = an_op.saw_class || pe_op.saw_class;
+        an_op.unknown = an_op.unknown || pe_op.unknown;
     }
     if (param_eval) needs_arguments = true;
     // Whether a `var arguments` inside such an eval collides. A non-arrow always
@@ -4475,7 +4510,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // to resolve by walking that chain -- no register, no slot index.
     // A direct eval reads and writes the caller's scope by name, so nothing
     // this function owns may sit in a register.
-    bool full_env = has_complex_params || needs_arguments ||
+    // Rest still forces a full environment unconditionally (CreateRestArray's
+    // target is hard-wired to an env slot below); a default/pattern parameter
+    // no longer does on its own -- the selective scan below now covers the
+    // parameter list too, the same way it already covers the body.
+    bool full_env = has_rest || needs_arguments ||
                     an_op.opaque() || contains_with(body);
 
     // Selective env_mode: only names a closure (or a suspendable body's own
@@ -4491,7 +4530,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     std::unordered_set<std::string> sibling_safe;
     bool selective = false;
     if (!full_env && (has_closures || has_nested_lex || suspendable || has_delegated_expr ||
-                      has_destructuring)) {
+                      has_destructuring || has_param_closures)) {
         ScanOpacity op;
         // A suspendable body's own yield/await is not a closure boundary for
         // this walk: the question is which names THIS body's machinery needs
@@ -4519,6 +4558,29 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             collect_closure_names(body, /*inside_closure=*/false, env_resident,
                                   op, suspendable);
         }
+        // A closure living inside a parameter default/pattern captures a
+        // name the same way one in the body does. Run this regardless of
+        // which branch above ran: scope_info->captured is expected to
+        // already include these (the parser opens this function's own
+        // NameScope before it parses the parameter list), but this is a
+        // newly-exercised consumption path for it, so re-deriving the same
+        // answer here is cheap insurance -- a duplicate insert into a set
+        // costs nothing. inside_closure starts false: a directly-referenced
+        // name in a default/pattern (no nested closure at all) is not a
+        // capture, only a name a REAL nested closure reads is (see the
+        // FUNCTION_EXPRESSION/ARROW_FUNCTION_EXPRESSION cases below, which
+        // unconditionally flip inside_closure to true on the way in).
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (params.is_rest(pidx)) continue;
+            if (params.has_default(pidx)) {
+                collect_closure_names(params.default_value(pidx), /*inside_closure=*/false,
+                                      env_resident, op, suspendable);
+            }
+            if (params.has_pattern(pidx)) {
+                collect_closure_names(params.pattern(pidx), /*inside_closure=*/false,
+                                      env_resident, op, suspendable);
+            }
+        }
         if (scope_info) {
 #ifdef QUANTA_VALIDATE_BYTECODE
             if (std::getenv("QUANTA_SCOPE_CHECK")) {
@@ -4526,6 +4588,17 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 ScanOpacity walked_op;
                 collect_closure_names(body, /*inside_closure=*/false, walked,
                                       walked_op, suspendable);
+                for (size_t pidx = 0; pidx < params.size(); pidx++) {
+                    if (params.is_rest(pidx)) continue;
+                    if (params.has_default(pidx)) {
+                        collect_closure_names(params.default_value(pidx), /*inside_closure=*/false,
+                                              walked, walked_op, suspendable);
+                    }
+                    if (params.has_pattern(pidx)) {
+                        collect_closure_names(params.pattern(pidx), /*inside_closure=*/false,
+                                              walked, walked_op, suspendable);
+                    }
+                }
                 for (const auto& n : walked) {
                     if (!scope_info->captured.count(NamePool::intern(n))) {
                         std::fprintf(stderr, "[scope] eksik isim '%s' satir=%u\n",
@@ -4631,12 +4704,29 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         // in a register: a read inside that block would find the register
         // instead of the binding that shadows it. Keeping the name in the
         // environment lets the chain tell the two apart, which is what the
-        // shadow-duplicated case above already relies on.
+        // shadow-duplicated case above already relies on. A destructuring
+        // parameter's own bound names are just as shadowable as a plain
+        // parameter's, even though they never appear in param_names itself.
+        std::vector<std::string> pattern_leaf_names;
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (params.is_rest(pidx) || !params.has_pattern(pidx)) continue;
+            const ASTNode* pat = params.pattern(pidx);
+            if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(pattern_leaf_names);
+            }
+        }
         for (const auto& info : declared_pre) {
             if (!info.is_lexical) continue;
+            bool collides = false;
             for (const auto& p : param_names) {
-                if (p == info.name) { env_resident.insert(info.name); break; }
+                if (p == info.name) { collides = true; break; }
             }
+            if (!collides) {
+                for (const auto& pl : pattern_leaf_names) {
+                    if (pl == info.name) { collides = true; break; }
+                }
+            }
+            if (collides) env_resident.insert(info.name);
         }
         // A const that is assigned somewhere cannot live in a register: the
         // refusal that assignment has to raise is carried by the environment
@@ -4996,15 +5086,17 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // what lets emit_pattern_bind write them. They are deliberately NOT pushed
     // into env_locals: BindEnvLocals runs after the parameter patterns have
     // bound and would reset them to undefined; StaEnvInit creates the binding.
-    if (env_mode) {
-        for (size_t pidx = 0; pidx < params.size(); pidx++) {
-            if (!params.has_pattern(pidx)) continue;
-            const ASTNode* pat = params.pattern(pidx);
-            if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) continue;
-            std::vector<std::string> bound;
-            static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
-            for (const auto& bn : bound) compiler.declare_local(bn);
-        }
+    // declare_local already dispatches env vs register correctly on its own
+    // (env_mode_/full_env_/env_resident_), so this no longer needs its own
+    // env_mode gate -- a register-mode pattern parameter's bound names get
+    // fresh registers here the same way.
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (!params.has_pattern(pidx)) continue;
+        const ASTNode* pat = params.pattern(pidx);
+        if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) continue;
+        std::vector<std::string> bound;
+        static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+        for (const auto& bn : bound) compiler.declare_local(bn);
     }
 
     compiler.temp_watermark_ = compiler.next_register_;
@@ -5021,7 +5113,54 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             compiler.emit_u8(static_cast<uint8_t>(reg));
         }
     }
-    if (selective) {
+    // A default/pattern parameter needs its own TDZ-checked storage,
+    // distinct from the register that still holds its raw argument: spec FDI
+    // requires `function(a = x, x) {}` to throw on a's forward reference to
+    // x, which only holds if x's declared binding starts out unreadable
+    // until x's own position in the loop below runs. There is no
+    // cross-parameter reference analysis anywhere in this compiler to prove
+    // a given name safe to skip, so every register-resident non-rest name is
+    // seeded uniformly whenever any parameter in this list is complex.
+    // Env-resident names are untouched here -- the params_tdz loop below
+    // seeds and initializes them in the correct order via emit_write_local,
+    // which already dispatches to the env branch for a name in env_names_.
+    if (params_tdz && (!env_mode || selective)) {
+        for (size_t pidx = 0; pidx < params.size(); pidx++) {
+            if (params.is_rest(pidx)) continue;
+            if (params.has_pattern(pidx)) {
+                const ASTNode* pat = params.pattern(pidx);
+                if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    std::vector<std::string> bound;
+                    static_cast<const DestructuringAssignment*>(pat)->collect_bound_names(bound);
+                    for (const auto& bn : bound) {
+                        if (compiler.env_names_.count(bn)) continue;
+                        int reg = compiler.lookup_local(bn);
+                        if (reg < 0) continue;
+                        compiler.emit(Op::LdaTdz);
+                        compiler.emit(Op::Star);
+                        compiler.emit_u8(static_cast<uint8_t>(reg));
+                        compiler.lexical_registers_.insert(reg);
+                    }
+                }
+            } else {
+                const std::string& pname = params.name(pidx);
+                if (compiler.env_names_.count(pname)) continue;
+                // The raw argument is read by literal register index
+                // (param_index) below, not through locals_, so remapping
+                // the name away from that register here is safe -- the raw
+                // value stays reachable, and the name's own declared
+                // binding becomes a fresh register that starts in TDZ.
+                compiler.locals_.erase(pname);
+                if (!compiler.declare_local(pname)) continue;
+                int reg = compiler.lookup_local(pname);
+                compiler.emit(Op::LdaTdz);
+                compiler.emit(Op::Star);
+                compiler.emit_u8(static_cast<uint8_t>(reg));
+                compiler.lexical_registers_.insert(reg);
+            }
+        }
+    }
+    if (selective && !params_tdz) {
         // Captured params: registers hold the raw arguments (run() fills
         // them); seed the env binding every read/write will resolve to.
         for (size_t i = 0; i < param_names.size(); i++) {
@@ -5068,14 +5207,6 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
         }
     }
 
-    // Parameter lists with initializers follow spec FDI ordering (see
-    // BytecodeChunk::env_params_tdz): params seed uninitialized, and each
-    // one initializes left to right from its register-held raw argument.
-    bool params_tdz = false;
-    for (size_t pidx = 0; pidx < params.size(); pidx++) {
-        if (params.is_rest(pidx)) continue;
-        if (params.has_default(pidx) || params.has_pattern(pidx)) params_tdz = true;
-    }
     // Op::BindEnvLocals already decides where the body's bindings go, and it
     // makes one scope for all of them; the lexicals-only split is the entry
     // path's, so the two do not combine.
@@ -5166,7 +5297,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             compiler.emit_write_local(rest_name, /*is_declaration=*/true);
         }
     }
-    if (params_tdz) {
+    if (params_tdz && env_mode) {
         compiler.emit(Op::BindEnvLocals);
         compiler.emit_u8(split_param_scope ? 1 : 0);
         if (split_param_scope) compiler.env_depth_++;
