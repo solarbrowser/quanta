@@ -4126,18 +4126,18 @@ std::unique_ptr<Object> create_promise(Context* ctx) {
     // created promise (one per .then(), among others) paid a property
     // lookup here for an answer that was always going to be the same value.
     if (Object* cached_proto = Object::watched_promise_prototype()) {
-        promise_obj->set_prototype(cached_proto);
+        promise_obj->initialize_prototype(cached_proto);
         return std::unique_ptr<Object>(promise_obj.release());
     }
     Function* intrinsic = Context::intrinsic_promise();
     if (intrinsic) {
         Value proto = static_cast<Object*>(intrinsic)->get_property("prototype");
-        if (proto.is_object()) promise_obj->set_prototype(proto.as_object());
+        if (proto.is_object()) promise_obj->initialize_prototype(proto.as_object());
     } else if (ctx) {
         Value promise_ctor = ctx->get_binding("Promise");
         if (promise_ctor.is_function()) {
             Value proto = static_cast<Object*>(promise_ctor.as_function())->get_property("prototype");
-            if (proto.is_object()) promise_obj->set_prototype(proto.as_object());
+            if (proto.is_object()) promise_obj->initialize_prototype(proto.as_object());
         }
     }
     return std::unique_ptr<Object>(promise_obj.release());

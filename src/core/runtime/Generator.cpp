@@ -100,9 +100,9 @@ Generator::Generator(Function* gen_func, Context* ctx, Context* outer_ctx)
     if (gen_func) {
         Value fn_proto = gen_func->get_property("prototype");
         if (fn_proto.is_object()) {
-            set_prototype(fn_proto.as_object());
+            initialize_prototype(fn_proto.as_object());
         } else if (s_generator_prototype_) {
-            set_prototype(s_generator_prototype_);
+            initialize_prototype(s_generator_prototype_);
         }
     }
 

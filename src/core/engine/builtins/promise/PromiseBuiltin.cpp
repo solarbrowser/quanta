@@ -259,7 +259,7 @@ void register_promise_builtins(Context& ctx) {
                     if (promise_ctor.is_function())
                         proto = static_cast<Object*>(promise_ctor.as_function())->get_property("prototype");
                 }
-                if (proto.is_object()) promise->set_prototype(proto.as_object());
+                if (proto.is_object()) promise->initialize_prototype(proto.as_object());
             }
 
             Function* executor = args[0].as_function();

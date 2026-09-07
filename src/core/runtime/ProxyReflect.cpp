@@ -812,9 +812,9 @@ Value Proxy::construct_trap(std::span<const Value> args, Object* new_target) {
     Value target_proto = nt->get_property("prototype");
     if (ctx->has_exception()) return Value();
     if (target_proto.is_object()) {
-        new_object->set_prototype(target_proto.as_object());
+        new_object->initialize_prototype(target_proto.as_object());
     } else if (target_proto.is_function()) {
-        new_object->set_prototype(static_cast<Object*>(target_proto.as_function()));
+        new_object->initialize_prototype(static_cast<Object*>(target_proto.as_function()));
     } else if (nt == this && is_revoked()) {
         // GetFunctionRealm(constructor): a revoked proxy has no [[ProxyHandler]] to find a realm through.
         ctx->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
@@ -1481,7 +1481,7 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
         // Spec fallback: if newTarget.prototype isn't an object, use target's own
         // intrinsic default prototype rather than leaving the bare Object.prototype.
         if (!nt_proto.is_object()) nt_proto = target->get_property("prototype");
-        if (nt_proto.is_object()) new_object->set_prototype(nt_proto.as_object());
+        if (nt_proto.is_object()) new_object->initialize_prototype(nt_proto.as_object());
     }
 
     bool was_in_constructor = ctx.is_in_constructor_call();
@@ -1505,7 +1505,7 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
                 if (ctx.has_exception()) return Value();
                 if (!nt_proto.is_object()) nt_proto = target->get_property("prototype");
             }
-            if (nt_proto.is_object()) result_obj->set_prototype(nt_proto.as_object());
+            if (nt_proto.is_object()) result_obj->initialize_prototype(nt_proto.as_object());
         }
         return result;
     }

@@ -275,12 +275,12 @@ Value Map::map_constructor(Context& ctx, std::span<const Value> args, Value rece
     if (new_target.is_function()) {
         Value nt_proto = new_target.as_function()->get_property("prototype");
         if (nt_proto.is_object()) {
-            map->set_prototype(nt_proto.as_object());
+            map->initialize_prototype(nt_proto.as_object());
         } else if (Map::prototype_object) {
-            map->set_prototype(Map::prototype_object);
+            map->initialize_prototype(Map::prototype_object);
         }
     } else if (Map::prototype_object) {
-        map->set_prototype(Map::prototype_object);
+        map->initialize_prototype(Map::prototype_object);
     }
 
     Map* map_ptr = map.get();
@@ -619,7 +619,7 @@ void Map::setup_map_prototype(Context& ctx) {
             Function* callback = args[1].as_function();
 
             auto result_map = std::make_unique<Map>();
-            if (Map::prototype_object) result_map->set_prototype(Map::prototype_object);
+            if (Map::prototype_object) result_map->initialize_prototype(Map::prototype_object);
             Map* result = result_map.get();
 
             // Map keys preserve SameValueZero identity -- no property-key stringification.
@@ -824,12 +824,12 @@ Value Set::set_constructor(Context& ctx, std::span<const Value> args, Value rece
     if (new_target_s.is_function()) {
         Value nt_proto = new_target_s.as_function()->get_property("prototype");
         if (nt_proto.is_object()) {
-            set->set_prototype(nt_proto.as_object());
+            set->initialize_prototype(nt_proto.as_object());
         } else if (Set::prototype_object) {
-            set->set_prototype(Set::prototype_object);
+            set->initialize_prototype(Set::prototype_object);
         }
     } else if (Set::prototype_object) {
-        set->set_prototype(Set::prototype_object);
+        set->initialize_prototype(Set::prototype_object);
     }
 
     Set* set_ptr = set.get();
@@ -1201,7 +1201,7 @@ void Set::setup_set_prototype(Context& ctx) {
                 result->add(normalize_zero(v));
             }
             if (ctx.has_exception()) return Value();
-            if (Set::prototype_object) result->set_prototype(Set::prototype_object);
+            if (Set::prototype_object) result->initialize_prototype(Set::prototype_object);
             return Value(result.release());
         }, 1);
     set_prototype->set_property("union", Value(union_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1231,7 +1231,7 @@ void Set::setup_set_prototype(Context& ctx) {
                 }
             }
             if (ctx.has_exception()) return Value();
-            if (Set::prototype_object) result->set_prototype(Set::prototype_object);
+            if (Set::prototype_object) result->initialize_prototype(Set::prototype_object);
             return Value(result.release());
         }, 1);
     set_prototype->set_property("intersection", Value(intersection_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1261,7 +1261,7 @@ void Set::setup_set_prototype(Context& ctx) {
                 }
             }
             if (ctx.has_exception()) return Value();
-            if (Set::prototype_object) result->set_prototype(Set::prototype_object);
+            if (Set::prototype_object) result->initialize_prototype(Set::prototype_object);
             return Value(result.release());
         }, 1);
     set_prototype->set_property("difference", Value(difference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1287,7 +1287,7 @@ void Set::setup_set_prototype(Context& ctx) {
                 else { if (!in_result) result->add(v); }
             }
             if (ctx.has_exception()) return Value();
-            if (Set::prototype_object) result->set_prototype(Set::prototype_object);
+            if (Set::prototype_object) result->initialize_prototype(Set::prototype_object);
             return Value(result.release());
         }, 1);
     set_prototype->set_property("symmetricDifference", Value(symmetricDifference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1622,7 +1622,7 @@ Value WeakMap::weakmap_constructor(Context& ctx, std::span<const Value> args, Va
     auto weakmap = std::make_unique<WeakMap>();
 
     if (WeakMap::prototype_object) {
-        weakmap->set_prototype(WeakMap::prototype_object);
+        weakmap->initialize_prototype(WeakMap::prototype_object);
     }
 
     Object* wm_obj = weakmap.release();
@@ -1783,7 +1783,7 @@ Value WeakSet::weakset_constructor(Context& ctx, std::span<const Value> args, Va
     auto weakset = std::make_unique<WeakSet>();
 
     if (WeakSet::prototype_object) {
-        weakset->set_prototype(WeakSet::prototype_object);
+        weakset->initialize_prototype(WeakSet::prototype_object);
     }
 
     Object* ws_obj = weakset.release();
@@ -1945,7 +1945,7 @@ Value WeakRef::weakref_constructor(Context& ctx, std::span<const Value> args, Va
         if (p.is_object()) proto = p.as_object();
         else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
     }
-    if (proto) weakref->set_prototype(proto);
+    if (proto) weakref->initialize_prototype(proto);
     return Value(weakref.release());
 }
 
@@ -2057,7 +2057,7 @@ Value FinalizationRegistry::fr_constructor(Context& ctx, std::span<const Value> 
         if (p.is_object()) proto = p.as_object();
         else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
     }
-    if (proto) registry->set_prototype(proto);
+    if (proto) registry->initialize_prototype(proto);
     return Value(registry.release());
 }
 
