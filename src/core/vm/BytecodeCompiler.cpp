@@ -2932,20 +2932,46 @@ bool BytecodeCompiler::references_identifier(const ASTNode* node, const std::str
 // on every instantiation.
 bool closure_needs_outer_environment(const ParamList& params,
                                       const ASTNode* body, bool is_arrow) {
+    std::vector<std::unordered_set<std::string>> scope_stack;
+    ScanOpacity op;
+    std::unordered_set<std::string> free_names;
+    // A parameter's own default/pattern expression is walked against
+    // whatever's in scope so far (nothing of THIS function's own yet --
+    // mirrors recurse_into_function's identical ordering for a nested
+    // function's parameter list, BytecodeCompiler.cpp's collect_free_names).
+    // Its own bound names are never free; they're seeded into `frame` below.
     for (size_t pidx = 0; pidx < params.size(); pidx++) {
-        if (params.has_pattern(pidx) || params.has_default(pidx)) return true;
+        if (params.has_pattern(pidx)) {
+            const ASTNode* pat = params.pattern(pidx);
+            if (!pat || pat->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                op.unknown = true;
+                break;
+            }
+            static_cast<const DestructuringAssignment*>(pat)->for_each_expression(
+                [&](const ASTNode* e) { collect_free_names(e, scope_stack, is_arrow, free_names, op); });
+        } else if (params.has_default(pidx)) {
+            collect_free_names(params.default_value(pidx), scope_stack, is_arrow, free_names, op);
+        }
     }
+    if (op.unknown) return true;
     std::vector<DeclInfo> declared;
     if (!prescan_declarations(body, declared)) return true;
-    std::vector<std::unordered_set<std::string>> scope_stack;
     std::unordered_set<std::string> frame;
-    for (size_t pidx = 0; pidx < params.size(); pidx++) frame.insert(params.name(pidx));
+    for (size_t pidx = 0; pidx < params.size(); pidx++) {
+        if (params.has_pattern(pidx)) {
+            std::vector<std::string> bound;
+            static_cast<const DestructuringAssignment*>(params.pattern(pidx))->collect_bound_names(bound);
+            for (const auto& n : bound) {
+                if (!n.empty()) frame.insert(n);
+            }
+        } else {
+            frame.insert(params.name(pidx));
+        }
+    }
     for (const auto& info : declared) {
         if (!info.is_lexical) frame.insert(info.name);
     }
     scope_stack.push_back(std::move(frame));
-    std::unordered_set<std::string> free_names;
-    ScanOpacity op;
     collect_free_names(body, scope_stack, is_arrow, free_names, op);
     return op.saw_eval || op.saw_class || op.unknown || !free_names.empty();
 }
