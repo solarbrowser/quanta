@@ -82,7 +82,7 @@ void register_number_builtins(Context& ctx) {
             Object* this_obj = receiver.as_object_or_null();
             if (this_obj) {
                 auto number_obj = std::make_unique<Object>(Object::ObjectType::Number);
-                number_obj->set_prototype(this_obj->get_prototype());
+                number_obj->initialize_prototype(this_obj->get_prototype());
                 number_obj->set_property("[[PrimitiveValue]]", Value(num_value), PropertyAttributes::Writable);
                 return Value(number_obj.release());
             }

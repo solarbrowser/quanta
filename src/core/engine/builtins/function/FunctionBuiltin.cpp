@@ -170,7 +170,7 @@ void register_function_builtins(Context& ctx) {
                             : new_target.is_object() ? new_target.as_object() : nullptr;
                         if (nt_obj) {
                             Value nt_proto = nt_obj->get_property("prototype");
-                            if (nt_proto.is_object()) raw_func->set_prototype(nt_proto.as_object());
+                            if (nt_proto.is_object()) raw_func->initialize_prototype(nt_proto.as_object());
                         }
                     }
                     return Value{raw_func};
@@ -212,14 +212,14 @@ void register_function_builtins(Context& ctx) {
             if (d.is_data_descriptor()) {
                 Value v = d.get_value();
                 if (v.is_function() && v.as_function()->get_prototype() == nullptr) {
-                    v.as_function()->set_prototype(function_proto_ptr);
+                    v.as_function()->initialize_prototype(function_proto_ptr);
                 }
             } else if (d.is_accessor_descriptor()) {
                 if (d.has_getter() && d.get_getter() && d.get_getter()->get_prototype() == nullptr) {
-                    d.get_getter()->set_prototype(function_proto_ptr);
+                    d.get_getter()->initialize_prototype(function_proto_ptr);
                 }
                 if (d.has_setter() && d.get_setter() && d.get_setter()->get_prototype() == nullptr) {
-                    d.get_setter()->set_prototype(function_proto_ptr);
+                    d.get_setter()->initialize_prototype(function_proto_ptr);
                 }
             }
         }
@@ -230,7 +230,7 @@ void register_function_builtins(Context& ctx) {
         if (object_ctor.is_function()) {
             patch_null_function_protos(static_cast<Object*>(object_ctor.as_function()));
             if (object_ctor.as_function()->get_prototype() == nullptr) {
-                object_ctor.as_function()->set_prototype(function_proto_ptr);
+                object_ctor.as_function()->initialize_prototype(function_proto_ptr);
             }
         }
     }
@@ -241,7 +241,7 @@ void register_function_builtins(Context& ctx) {
         if (array_ctor.is_function()) {
             patch_null_function_protos(static_cast<Object*>(array_ctor.as_function()));
             if (array_ctor.as_function()->get_prototype() == nullptr) {
-                array_ctor.as_function()->set_prototype(function_proto_ptr);
+                array_ctor.as_function()->initialize_prototype(function_proto_ptr);
             }
         }
     }
@@ -411,7 +411,7 @@ void register_function_builtins(Context& ctx) {
                 }, bound_arity);
             *self_ptr = bound_function.get();
 
-            bound_function->set_prototype(target_func->get_prototype());
+            bound_function->initialize_prototype(target_func->get_prototype());
             bound_function->set_internal_slot("__bound_target__", Value(static_cast<Object*>(target_func)));
             // The closure also captures bound_this/bound_args invisibly;
             // mirror them as traced hidden properties.
@@ -556,7 +556,7 @@ void register_function_builtins(Context& ctx) {
 
     Object* object_proto = ObjectFactory::get_object_prototype();
     if (object_proto) {
-        function_prototype->set_prototype(object_proto);
+        function_prototype->initialize_prototype(object_proto);
     }
 
     PropertyDescriptor function_proto_ctor_desc(Value(function_constructor.get()),
@@ -570,7 +570,7 @@ void register_function_builtins(Context& ctx) {
         function_constructor->set_property_descriptor("prototype", fp_desc);
     }
 
-    static_cast<Object*>(function_constructor.get())->set_prototype(function_proto_ptr);
+    static_cast<Object*>(function_constructor.get())->initialize_prototype(function_proto_ptr);
 
     ctx.register_built_in_object("Function", function_constructor.release());
 

@@ -546,7 +546,7 @@ void Context::throw_exception(const Value& exception, bool raw) {
 
         // Set the prototype for proper toString inheritance
         if (prototype) {
-            error_obj->set_prototype(prototype);
+            error_obj->initialize_prototype(prototype);
         }
 
         current_exception_ = Value(error_obj.release());
@@ -580,7 +580,7 @@ void Context::throw_error(const std::string& message) {
     Value error_ctor = intrinsic_error_constructor("Error");
     if (error_ctor.is_function()) {
         Value proto = error_ctor.as_function()->get_property("prototype");
-        if (proto.is_object()) error->set_prototype(proto.as_object());
+        if (proto.is_object()) error->initialize_prototype(proto.as_object());
     }
     throw_exception(Value(error.release()));
 }
@@ -615,7 +615,7 @@ void Context::throw_type_error(const std::string& message) {
         Function* ctor_fn = type_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
         if (proto.is_object()) {
-            error->set_prototype(proto.as_object());
+            error->initialize_prototype(proto.as_object());
         }
     }
 
@@ -631,7 +631,7 @@ void Context::throw_reference_error(const std::string& message) {
         Function* ctor_fn = ref_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
         if (proto.is_object()) {
-            error->set_prototype(proto.as_object());
+            error->initialize_prototype(proto.as_object());
         }
     }
 
@@ -647,7 +647,7 @@ void Context::throw_syntax_error(const std::string& message) {
         Function* ctor_fn = syntax_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
         if (proto.is_object()) {
-            error->set_prototype(proto.as_object());
+            error->initialize_prototype(proto.as_object());
         }
     }
 
@@ -663,7 +663,7 @@ void Context::throw_range_error(const std::string& message) {
         Function* ctor_fn = range_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
         if (proto.is_object()) {
-            error->set_prototype(proto.as_object());
+            error->initialize_prototype(proto.as_object());
         }
     }
 
@@ -679,7 +679,7 @@ void Context::throw_uri_error(const std::string& message) {
         Function* ctor_fn = uri_error_ctor.as_function();
         Value proto = ctor_fn->get_property("prototype");
         if (proto.is_object()) {
-            error->set_prototype(proto.as_object());
+            error->initialize_prototype(proto.as_object());
         }
     }
 
@@ -803,7 +803,7 @@ void Context::initialize_global_context() {
     // global_object_ predates Object.prototype's setup above; patch it now.
     if (!global_object_->get_prototype()) {
         Object* object_proto = ObjectFactory::get_object_prototype();
-        if (object_proto) global_object_->set_prototype(object_proto);
+        if (object_proto) global_object_->initialize_prototype(object_proto);
     }
 
     setup_global_bindings();

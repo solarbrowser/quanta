@@ -4121,7 +4121,7 @@ Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
         if (acc.is_null()) {
             // `extends null`: still a derived class, but super() can never
             // succeed, so the constructor is marked rather than linked.
-            if (proto) proto->set_prototype(nullptr);
+            if (proto) proto->initialize_prototype(nullptr);
             ctor->set_super_is_null();
             break;
         }
@@ -4148,7 +4148,7 @@ Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
             CHECK_EXC();
             break;
         }
-        ctor->set_prototype(super_fn);
+        ctor->initialize_prototype(super_fn);
         ctor->set_super_constructor(super_fn);
         // `super.x` in a member resolves against the class's own superclass, so
         // every member installed above is told which one that is. Descriptors
@@ -4179,7 +4179,7 @@ Value h_gen_LinkClassHeritage(Frame& f, uint32_t pc, Value acc) {
             Object* super_proto_obj = super_proto.is_object()   ? super_proto.as_object()
                                     : super_proto.is_function() ? super_proto.as_function()
                                                                 : nullptr;
-            if (super_proto_obj) proto->set_prototype(super_proto_obj);
+            if (super_proto_obj) proto->initialize_prototype(super_proto_obj);
         }
     } while (0);
     CHECK_EXC_TAIL();
@@ -6428,9 +6428,9 @@ Value h_gen_SetLiteralProto(Frame& f, uint32_t pc, Value acc) {
     if (Object* obj = as_object_like(regs[obj_reg])) {
         // Anything that is neither an object nor null is ignored, not an error.
         if (acc.is_object()) {
-            obj->set_prototype(acc.as_object());
+            obj->initialize_prototype(acc.as_object());
         } else if (acc.is_null()) {
-            obj->set_prototype(nullptr);
+            obj->initialize_prototype(nullptr);
         }
     }
     DISPATCH();

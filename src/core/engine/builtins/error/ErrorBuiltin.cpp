@@ -152,7 +152,7 @@ void register_error_builtins(Context& ctx) {
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
 
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, error_prototype_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, error_prototype_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -268,7 +268,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::TypeError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, type_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, type_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -299,7 +299,7 @@ void register_error_builtins(Context& ctx) {
     type_error_constructor->set_property("name", Value(std::string("TypeError")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     if (error_ctor) {
-        type_error_constructor->set_prototype(error_ctor);
+        type_error_constructor->initialize_prototype(error_ctor);
     }
 
     ctx.register_built_in_object("TypeError", type_error_constructor.release());
@@ -317,7 +317,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::ReferenceError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, reference_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, reference_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -347,7 +347,7 @@ void register_error_builtins(Context& ctx) {
     reference_error_constructor->set_property("name", Value(std::string("ReferenceError")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     if (error_ctor) {
-        reference_error_constructor->set_prototype(error_ctor);
+        reference_error_constructor->initialize_prototype(error_ctor);
     }
 
     ctx.register_built_in_object("ReferenceError", reference_error_constructor.release());
@@ -365,7 +365,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::SyntaxError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, syntax_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, syntax_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -395,7 +395,7 @@ void register_error_builtins(Context& ctx) {
     syntax_error_constructor->set_property("name", Value(std::string("SyntaxError")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     if (error_ctor) {
-        syntax_error_constructor->set_prototype(error_ctor);
+        syntax_error_constructor->initialize_prototype(error_ctor);
     }
 
     ctx.register_built_in_object("SyntaxError", syntax_error_constructor.release());
@@ -413,7 +413,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::RangeError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, range_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, range_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -444,7 +444,7 @@ void register_error_builtins(Context& ctx) {
     range_error_constructor->set_property("name", Value(std::string("RangeError")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     if (error_ctor) {
-        range_error_constructor->set_prototype(error_ctor);
+        range_error_constructor->initialize_prototype(error_ctor);
     }
 
     ctx.register_built_in_object("RangeError", range_error_constructor.release());
@@ -462,7 +462,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::URIError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, uri_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, uri_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -485,7 +485,7 @@ void register_error_builtins(Context& ctx) {
     uri_error_constructor->set_property("prototype", Value(uri_error_prototype.release()), PropertyAttributes::None);
 
     if (error_ctor) {
-        uri_error_constructor->set_prototype(error_ctor);
+        uri_error_constructor->initialize_prototype(error_ctor);
     }
 
     ctx.register_built_in_object("URIError", uri_error_constructor.release());
@@ -503,7 +503,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::EvalError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, eval_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, eval_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -526,7 +526,7 @@ void register_error_builtins(Context& ctx) {
     eval_error_constructor->set_property("prototype", Value(eval_error_prototype.release()), PropertyAttributes::None);
 
     if (error_ctor) {
-        eval_error_constructor->set_prototype(error_ctor);
+        eval_error_constructor->initialize_prototype(error_ctor);
     }
 
     ctx.register_built_in_object("EvalError", eval_error_constructor.release());
@@ -550,7 +550,7 @@ void register_error_builtins(Context& ctx) {
 
             auto error_obj = std::make_unique<Error>(Error::Type::AggregateError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, agg_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, agg_error_proto_ptr));
 
             if (has_message) {
                 error_obj->set_property_descriptor("message",
@@ -596,7 +596,7 @@ void register_error_builtins(Context& ctx) {
     aggregate_error_constructor->set_property("prototype", Value(aggregate_error_prototype.release()), PropertyAttributes::None);
 
     if (error_ctor) {
-        aggregate_error_constructor->set_prototype(error_ctor);
+        aggregate_error_constructor->initialize_prototype(error_ctor);
     }
 
     ctx.register_built_in_object("AggregateError", aggregate_error_constructor.release());
@@ -626,7 +626,7 @@ void register_error_builtins(Context& ctx) {
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_property("name", Value(std::string("SuppressedError")));
-            error_obj->set_prototype(resolve_error_prototype(ctx, receiver, suppressed_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, suppressed_proto_ptr));
             // Insertion order matters (order-of-args-evaluation): message, then error, then suppressed.
             if (has_message) {
                 error_obj->set_property("message", Value(message), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -645,7 +645,7 @@ void register_error_builtins(Context& ctx) {
         Value ep = ctx.get_global_object()->get_property("Error");
         if (ep.is_function()) error_ctor2 = static_cast<Object*>(ep.as_function());
     }
-    if (error_ctor2) suppressed_error_constructor->set_prototype(error_ctor2);
+    if (error_ctor2) suppressed_error_constructor->initialize_prototype(error_ctor2);
 
     ctx.register_built_in_object("SuppressedError", suppressed_error_constructor.release());
 }

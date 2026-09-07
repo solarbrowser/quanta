@@ -190,7 +190,7 @@ Value TemporalInstant::constructor(Context& ctx, std::span<const Value> args, Va
     Object* instant = new Object();
 
     if (g_instant_prototype) {
-        instant->set_prototype(g_instant_prototype);
+        instant->initialize_prototype(g_instant_prototype);
     }
 
     instant->set_property("_nanoseconds", Value(static_cast<double>(nanos)));
@@ -452,7 +452,7 @@ Value TemporalPlainDate::constructor(Context& ctx, std::span<const Value> args, 
     Object* date = new Object();
 
     if (g_plainDate_prototype) {
-        date->set_prototype(g_plainDate_prototype);
+        date->initialize_prototype(g_plainDate_prototype);
     }
 
     date->set_property("_year", Value(year));
@@ -793,7 +793,7 @@ Value TemporalPlainTime::constructor(Context& ctx, std::span<const Value> args, 
     Object* time = new Object();
 
     if (g_plainTime_prototype) {
-        time->set_prototype(g_plainTime_prototype);
+        time->initialize_prototype(g_plainTime_prototype);
     }
 
     time->set_property("_hour", Value(hour));
@@ -1010,7 +1010,7 @@ Value TemporalPlainDateTime::constructor(Context& ctx, std::span<const Value> ar
     Object* dt = new Object();
 
     if (g_plainDateTime_prototype) {
-        dt->set_prototype(g_plainDateTime_prototype);
+        dt->initialize_prototype(g_plainDateTime_prototype);
     }
 
     dt->set_property("_year", Value(year));
@@ -1107,7 +1107,7 @@ Value TemporalDuration::constructor(Context& ctx, std::span<const Value> args, V
     Object* duration = new Object();
 
     if (g_duration_prototype) {
-        duration->set_prototype(g_duration_prototype);
+        duration->initialize_prototype(g_duration_prototype);
     }
 
     duration->set_property("_years", args.size() > 0 ? args[0] : Value(0));
@@ -1212,7 +1212,7 @@ Value TemporalZonedDateTime::constructor(Context& ctx, std::span<const Value> ar
     Object* zdt = new Object();
 
     if (g_zonedDateTime_prototype) {
-        zdt->set_prototype(g_zonedDateTime_prototype);
+        zdt->initialize_prototype(g_zonedDateTime_prototype);
     }
 
     zdt->set_property("_nanoseconds", args.size() > 0 ? args[0] : Value(0));
@@ -1257,7 +1257,7 @@ Value TemporalPlainYearMonth::constructor(Context& ctx, std::span<const Value> a
     Object* ym = new Object();
 
     if (g_plainYearMonth_prototype) {
-        ym->set_prototype(g_plainYearMonth_prototype);
+        ym->initialize_prototype(g_plainYearMonth_prototype);
     }
 
     ym->set_property("_year", args.size() > 0 ? args[0] : Value(1970));
@@ -1292,7 +1292,7 @@ Value TemporalPlainMonthDay::constructor(Context& ctx, std::span<const Value> ar
     Object* md = new Object();
 
     if (g_plainMonthDay_prototype) {
-        md->set_prototype(g_plainMonthDay_prototype);
+        md->initialize_prototype(g_plainMonthDay_prototype);
     }
 
     md->set_property("_month", args.size() > 0 ? args[0] : Value(1));
@@ -1319,7 +1319,7 @@ Value TemporalCalendar::constructor(Context& ctx, std::span<const Value> args, V
     Object* cal = new Object();
 
     if (g_calendar_prototype) {
-        cal->set_prototype(g_calendar_prototype);
+        cal->initialize_prototype(g_calendar_prototype);
     }
 
     cal->set_property("_id", args.size() > 0 ? args[0] : Value(std::string("iso8601")));
@@ -1339,7 +1339,7 @@ Value TemporalTimeZone::constructor(Context& ctx, std::span<const Value> args, V
     Object* tz = new Object();
 
     if (g_timeZone_prototype) {
-        tz->set_prototype(g_timeZone_prototype);
+        tz->initialize_prototype(g_timeZone_prototype);
     }
 
     tz->set_property("_id", args.size() > 0 ? args[0] : Value(std::string("UTC")));

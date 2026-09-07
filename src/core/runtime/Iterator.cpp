@@ -214,7 +214,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 
     // %ArrayIteratorPrototype%
     auto arr_iter_proto = ObjectFactory::create_object();
-    arr_iter_proto->set_prototype(s_iterator_prototype_);
+    arr_iter_proto->initialize_prototype(s_iterator_prototype_);
     if (tag_sym) {
         PropertyDescriptor tag_desc(Value(std::string("Array Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         arr_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
@@ -228,7 +228,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 
     // %StringIteratorPrototype%
     auto str_iter_proto = ObjectFactory::create_object();
-    str_iter_proto->set_prototype(s_iterator_prototype_);
+    str_iter_proto->initialize_prototype(s_iterator_prototype_);
     if (tag_sym) {
         PropertyDescriptor tag_desc(Value(std::string("String Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         str_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
@@ -239,7 +239,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 
     // %MapIteratorPrototype%
     auto map_iter_proto = ObjectFactory::create_object();
-    map_iter_proto->set_prototype(s_iterator_prototype_);
+    map_iter_proto->initialize_prototype(s_iterator_prototype_);
     if (tag_sym) {
         PropertyDescriptor tag_desc(Value(std::string("Map Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         map_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
@@ -250,7 +250,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 
     // %SetIteratorPrototype%
     auto set_iter_proto = ObjectFactory::create_object();
-    set_iter_proto->set_prototype(s_iterator_prototype_);
+    set_iter_proto->initialize_prototype(s_iterator_prototype_);
     if (tag_sym) {
         PropertyDescriptor tag_desc(Value(std::string("Set Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         set_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
@@ -295,7 +295,7 @@ ArrayIterator::ArrayIterator(Object* array, Kind kind)
     : Iterator([this]() { return this->next_impl(); }), array_(array), kind_(kind), index_(0) {
     set_custom_kind(CustomKind::ArrayIterator);
     if (s_array_iterator_prototype_) {
-        set_prototype(s_array_iterator_prototype_);
+        initialize_prototype(s_array_iterator_prototype_);
     }
 }
 
@@ -343,7 +343,7 @@ StringIterator::StringIterator(const std::string& str)
     : Iterator(), string_(str), position_(0) {
     set_custom_kind(CustomKind::StringIterator);
     if (s_string_iterator_prototype_) {
-        set_prototype(s_string_iterator_prototype_);
+        initialize_prototype(s_string_iterator_prototype_);
     }
 }
 
@@ -384,7 +384,7 @@ MapIterator::MapIterator(Map* map, Kind kind)
     : Iterator(), map_(map), kind_(kind), index_(0) {
     set_custom_kind(CustomKind::MapIterator);
     if (s_map_iterator_prototype_) {
-        set_prototype(s_map_iterator_prototype_);
+        initialize_prototype(s_map_iterator_prototype_);
     }
 }
 
@@ -429,7 +429,7 @@ SetIterator::SetIterator(Set* set, Kind kind)
     : Iterator(), set_(set), kind_(kind), index_(0) {
     set_custom_kind(CustomKind::SetIterator);
     if (s_set_iterator_prototype_) {
-        set_prototype(s_set_iterator_prototype_);
+        initialize_prototype(s_set_iterator_prototype_);
     }
 }
 

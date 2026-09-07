@@ -54,7 +54,7 @@ static Object* array_to_object(Context& ctx, const Value& receiver) {
     if (ctor_name) {
         if (Object* ctor = ctx.get_built_in_object(ctor_name)) {
             Value proto = ctor->get_property("prototype");
-            if (proto.is_object()) boxed->set_prototype(proto.as_object());
+            if (proto.is_object()) boxed->initialize_prototype(proto.as_object());
         }
     }
     Object* raw = boxed.release();
@@ -546,12 +546,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (new_target.is_function()) {
                 Value nt_proto = new_target.as_function()->get_property("prototype");
                 if (nt_proto.is_object()) {
-                    array->set_prototype(nt_proto.as_object());
+                    array->initialize_prototype(nt_proto.as_object());
                 }
             } else if (new_target.is_object()) {
                 Value nt_proto = new_target.as_object()->get_property("prototype");
                 if (nt_proto.is_object()) {
-                    array->set_prototype(nt_proto.as_object());
+                    array->initialize_prototype(nt_proto.as_object());
                 }
             }
             return Value(array.release());
@@ -993,7 +993,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     Value object_ctor = ctx.get_binding("Object");
     if (object_ctor.is_function()) {
         Value object_proto = object_ctor.as_function()->get_property("prototype");
-        if (object_proto.is_object()) array_prototype->set_prototype(object_proto.as_object());
+        if (object_proto.is_object()) array_prototype->initialize_prototype(object_proto.as_object());
     }
 
     auto find_fn = ObjectFactory::create_native_function("find",
@@ -3140,7 +3140,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 }, 0);
             iterator->set_property("next", Value(next_fn.release()));
             if (Iterator::s_array_iterator_prototype_) {
-                iterator->set_prototype(Iterator::s_array_iterator_prototype_);
+                iterator->initialize_prototype(Iterator::s_array_iterator_prototype_);
             }
             return Value(iterator.release());
         }, 0);
@@ -3149,7 +3149,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     Symbol* unscopables_symbol = Symbol::get_well_known(Symbol::UNSCOPABLES);
     if (unscopables_symbol) {
         auto unscopables_obj = ObjectFactory::create_object();
-        unscopables_obj->set_prototype(nullptr);
+        unscopables_obj->initialize_prototype(nullptr);
         unscopables_obj->set_property("at", Value(true));
         unscopables_obj->set_property("copyWithin", Value(true));
         unscopables_obj->set_property("entries", Value(true));
@@ -3195,7 +3195,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     ObjectFactory::set_array_prototype(array_proto_ptr);
 
-    if (function_prototype) array_constructor->set_prototype(function_prototype);
+    if (function_prototype) array_constructor->initialize_prototype(function_prototype);
     all_array_intrinsics().insert(array_constructor.get());
     ctx.register_built_in_object("Array", array_constructor.release());
 }

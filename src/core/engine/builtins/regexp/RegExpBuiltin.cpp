@@ -557,13 +557,13 @@ void register_regexp_builtins(Context& ctx) {
                         : new_target.is_object() ? new_target.as_object() : nullptr;
                     if (nt_obj) {
                         Value nt_proto = nt_obj->get_property("prototype");
-                        if (nt_proto.is_object()) regex_raw->set_prototype(nt_proto.as_object());
+                        if (nt_proto.is_object()) regex_raw->initialize_prototype(nt_proto.as_object());
                     }
                 } else {
                     Value regexp_ctor = ctx.get_binding("RegExp");
                     if (regexp_ctor.is_function()) {
                         Value proto = regexp_ctor.as_function()->get_property("prototype");
-                        if (proto.is_object()) regex_raw->set_prototype(proto.as_object());
+                        if (proto.is_object()) regex_raw->initialize_prototype(proto.as_object());
                     }
                 }
                 return Value(regex_raw);
@@ -1462,7 +1462,7 @@ void register_regexp_builtins(Context& ctx) {
     Object* regexp_string_iter_proto = nullptr;
     {
         auto proto = ObjectFactory::create_object();
-        proto->set_prototype(Iterator::s_iterator_prototype_);
+        proto->initialize_prototype(Iterator::s_iterator_prototype_);
         Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
         if (tag_sym) {
             PropertyDescriptor tag_desc(Value(std::string("RegExp String Iterator")),
@@ -1620,7 +1620,7 @@ void register_regexp_builtins(Context& ctx) {
                 }
 
                 auto iterator = ObjectFactory::create_object();
-                iterator->set_prototype(regexp_string_iter_proto);
+                iterator->initialize_prototype(regexp_string_iter_proto);
                 iterator->set_property_descriptor("[[RegExpStringIteratorRegExp]]", PropertyDescriptor(matcher_obj_v, PropertyAttributes::None));
                 iterator->set_property_descriptor("[[RegExpStringIteratorString]]", PropertyDescriptor(Value(str), PropertyAttributes::None));
                 iterator->set_property_descriptor("[[RegExpStringIteratorGlobal]]", PropertyDescriptor(Value(global_ma), PropertyAttributes::None));

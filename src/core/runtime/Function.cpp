@@ -368,7 +368,7 @@ void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> a
     // Arguments should inherit from Object.prototype, not Array.prototype
     Object* obj_proto = ObjectFactory::get_object_prototype();
     if (obj_proto) {
-        arguments_obj->set_prototype(obj_proto);
+        arguments_obj->initialize_prototype(obj_proto);
     }
 
     // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] must be %ArrayPrototype%.values.

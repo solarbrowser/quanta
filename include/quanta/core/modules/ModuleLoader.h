@@ -226,7 +226,7 @@ public:
         : CustomObjectBase(ObjectType::Custom), module_(module),
           export_name_(std::move(export_name)) {
         set_custom_kind(CustomKind::ImportBinding);
-        set_prototype(nullptr);
+        initialize_prototype(nullptr);
     }
 
     Module* module() const { return module_; }
@@ -246,7 +246,7 @@ public:
     explicit ModuleNamespaceObject(Module* module)
         : CustomObjectBase(ObjectType::Custom), module_(module) {
         set_custom_kind(CustomKind::ModuleNamespace);
-        set_prototype(nullptr);
+        initialize_prototype(nullptr);
     }
 
     // A binding the module declared but has not reached yet is in its dead

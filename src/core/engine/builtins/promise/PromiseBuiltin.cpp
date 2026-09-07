@@ -1043,7 +1043,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             auto results_obj = ObjectFactory::create_object();
-            results_obj->set_prototype(nullptr);
+            results_obj->initialize_prototype(nullptr);
             // Pre-populate every key (in dict's own enumeration order) before any element
             // settles asynchronously, so the result's key order matches the source object's
             // -- not arbitrary, settlement-dependent order.
@@ -1157,7 +1157,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             auto results_obj = ObjectFactory::create_object();
-            results_obj->set_prototype(nullptr);
+            results_obj->initialize_prototype(nullptr);
             for (const auto& k : keys) results_obj->set_property(k, Value());
             Object* results_raw = results_obj.release();
 

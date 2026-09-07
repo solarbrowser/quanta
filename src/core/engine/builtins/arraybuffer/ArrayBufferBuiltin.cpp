@@ -190,7 +190,7 @@ void register_arraybuffer_builtins(Context& ctx) {
                     buffer_obj = std::make_unique<ArrayBuffer>(static_cast<size_t>(byte_length_d));
                 }
                 buffer_obj->set_property("_isArrayBuffer", Value(true));
-                buffer_obj->set_prototype(proto);
+                buffer_obj->initialize_prototype(proto);
                 return Value(buffer_obj.release());
             } catch (const std::exception&) {
                 ctx.throw_range_error("ArrayBuffer allocation failed: out of memory");
@@ -481,7 +481,7 @@ void register_arraybuffer_builtins(Context& ctx) {
                     } else {
                         buf = std::make_unique<SharedArrayBuffer>(static_cast<size_t>(byte_length_d));
                     }
-                    buf->set_prototype(proto);
+                    buf->initialize_prototype(proto);
                     return Value(buf.release());
                 } catch (const std::exception&) {
                     ctx.throw_range_error("SharedArrayBuffer allocation failed: out of memory");

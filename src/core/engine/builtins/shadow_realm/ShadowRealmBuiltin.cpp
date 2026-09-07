@@ -176,7 +176,7 @@ void register_shadow_realm_builtins(Context& ctx) {
             Object* self = receiver.as_object_or_null();
             std::unique_ptr<Object> made;
             if (!self) { made = ObjectFactory::create_object(); self = made.get(); }
-            self->set_prototype(proto_ptr);
+            self->initialize_prototype(proto_ptr);
             self->set_internal_slot("__shadowrealm__",
                                     Value(static_cast<double>(realms.size() - 1)));
             if (made) return Value(made.release());

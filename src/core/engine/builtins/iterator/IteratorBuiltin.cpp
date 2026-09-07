@@ -90,7 +90,7 @@ static Object* make_iter_result(const Value& value, bool done) {
 // calls while one is already running).
 static Object* create_iterator_helper_base(Object* iterator_proto, const Value& iter_val, const Value& next_method) {
     auto helper = ObjectFactory::create_object();
-    helper->set_prototype(iterator_proto);
+    helper->initialize_prototype(iterator_proto);
     helper->set_internal_slot("__ih_iter__", iter_val);
     helper->set_internal_slot("__ih_next__", next_method);
     helper->set_internal_slot("__ih_running__", Value(false));
@@ -193,7 +193,7 @@ static Value iterator_zip_step(Context& ctx, std::span<const Value>, Value recei
     if (count == 0) return finish_done();
 
     auto results = keyed ? ObjectFactory::create_object() : ObjectFactory::create_array();
-    if (keyed) results->set_prototype(nullptr);
+    if (keyed) results->initialize_prototype(nullptr);
 
     for (uint32_t i = 0; i < count; i++) {
         std::string out_key = keyed ? keys_arr->get_property(std::to_string(i)).to_string() : std::to_string(i);
@@ -586,7 +586,7 @@ void register_iterator_constructor(Context& ctx) {
             if (constructor && constructor->is_function()) {
                 Value prototype_val = constructor->get_property("prototype");
                 if (prototype_val.is_object()) {
-                    iterator_obj->set_prototype(prototype_val.as_object());
+                    iterator_obj->initialize_prototype(prototype_val.as_object());
                 }
             }
 
@@ -1379,7 +1379,7 @@ void register_iterator_constructor(Context& ctx) {
     // %WrapForValidIteratorPrototype%: shared prototype for all non-Iterator-instance from() results.
     // Its [[Prototype]] is Iterator.prototype; it holds "next" and "return" delegating to the inner iter.
     auto wrap_proto = ObjectFactory::create_object();
-    wrap_proto->set_prototype(iterator_proto_ptr);
+    wrap_proto->initialize_prototype(iterator_proto_ptr);
     Object* wrap_proto_raw = wrap_proto.get();
 
     // WrapForValidIteratorPrototype.next: delegates to stored __wfvi_next__ called with __wfvi_iter__.
@@ -1534,7 +1534,7 @@ void register_iterator_constructor(Context& ctx) {
 
             // Wrap in a WrapForValidIteratorPrototype instance.
             auto wrapper = ObjectFactory::create_object();
-            wrapper->set_prototype(wrap_proto_raw);
+            wrapper->initialize_prototype(wrap_proto_raw);
             wrapper->set_internal_slot("__wfvi_iter__", inner_iter);
             wrapper->set_internal_slot("__wfvi_next__", inner_next);
             return Value(wrapper.release());
@@ -1567,7 +1567,7 @@ void register_iterator_constructor(Context& ctx) {
             methods->set_property("length", Value((double)n));
 
             auto helper = ObjectFactory::create_object();
-            helper->set_prototype(Iterator::s_iterator_prototype_);
+            helper->initialize_prototype(Iterator::s_iterator_prototype_);
             helper->set_internal_slot("__ic_items__", Value(items.release()));
             helper->set_internal_slot("__ic_methods__", Value(methods.release()));
             helper->set_internal_slot("__ic_index__", Value(0.0));
@@ -1779,7 +1779,7 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             auto helper = ObjectFactory::create_object();
-            helper->set_prototype(Iterator::s_iterator_prototype_);
+            helper->initialize_prototype(Iterator::s_iterator_prototype_);
             auto iters_arr = ObjectFactory::create_array();
             auto nexts_arr = ObjectFactory::create_array();
             auto padding_arr = ObjectFactory::create_array();
@@ -1923,7 +1923,7 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             auto helper = ObjectFactory::create_object();
-            helper->set_prototype(Iterator::s_iterator_prototype_);
+            helper->initialize_prototype(Iterator::s_iterator_prototype_);
             auto iters_arr = ObjectFactory::create_array();
             auto nexts_arr = ObjectFactory::create_array();
             auto padding_arr = ObjectFactory::create_array();
@@ -1975,7 +1975,7 @@ void register_iterator_constructor(Context& ctx) {
     ctx.register_built_in_object("Iterator", iterator_constructor.release());
 
     if (Iterator::s_iterator_prototype_ && Iterator::s_iterator_prototype_ != iter_proto_raw) {
-        Iterator::s_iterator_prototype_->set_prototype(iter_proto_raw);
+        Iterator::s_iterator_prototype_->initialize_prototype(iter_proto_raw);
     }
 }
 

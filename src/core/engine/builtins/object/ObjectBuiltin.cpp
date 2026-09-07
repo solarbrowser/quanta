@@ -195,7 +195,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
         Value str_ctor = ctx.get_binding("String");
         if (str_ctor.is_function()) {
             Value str_proto = static_cast<Object*>(str_ctor.as_function())->get_property("prototype");
-            if (str_proto.is_object()) string_obj->set_prototype(str_proto.as_object());
+            if (str_proto.is_object()) string_obj->initialize_prototype(str_proto.as_object());
         }
         return Value(string_obj.release());
     } else if (value.is_number()) {
@@ -205,7 +205,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
         if (num_ctor.is_function()) {
             Value num_proto = static_cast<Object*>(num_ctor.as_function())->get_property("prototype");
             if (num_proto.is_object()) {
-                number_obj->set_prototype(num_proto.as_object());
+                number_obj->initialize_prototype(num_proto.as_object());
             }
         }
         return Value(number_obj.release());
@@ -214,7 +214,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
         Value bool_ctor = ctx.get_binding("Boolean");
         if (bool_ctor.is_function()) {
             Value bool_proto = static_cast<Object*>(bool_ctor.as_function())->get_property("prototype");
-            if (bool_proto.is_object()) boolean_obj->set_prototype(bool_proto.as_object());
+            if (bool_proto.is_object()) boolean_obj->initialize_prototype(bool_proto.as_object());
         }
         return Value(boolean_obj.release());
     } else if (value.is_symbol()) {
@@ -223,7 +223,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
         if (sym_ctor.is_function()) {
             Value sym_proto = static_cast<Object*>(sym_ctor.as_function())->get_property("prototype");
             if (sym_proto.is_object()) {
-                symbol_obj->set_prototype(sym_proto.as_object());
+                symbol_obj->initialize_prototype(sym_proto.as_object());
             }
         }
         symbol_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
@@ -235,7 +235,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
         Value bigint_ctor = ctx.get_binding("BigInt");
         if (bigint_ctor.is_function()) {
             Value bigint_proto = static_cast<Object*>(bigint_ctor.as_function())->get_property("prototype");
-            if (bigint_proto.is_object()) bigint_obj->set_prototype(bigint_proto.as_object());
+            if (bigint_proto.is_object()) bigint_obj->initialize_prototype(bigint_proto.as_object());
         }
         bigint_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
         return Value(bigint_obj.release());
@@ -268,8 +268,8 @@ void register_object_builtins(Context& ctx) {
                 Object* nt_obj = new_target.is_function() ? static_cast<Object*>(new_target.as_function()) : new_target.as_object();
                 if (nt_obj) {
                     Value proto = nt_obj->get_property("prototype");
-                    if (proto.is_object()) new_obj->set_prototype(proto.as_object());
-                    else if (proto.is_function()) new_obj->set_prototype(static_cast<Object*>(proto.as_function()));
+                    if (proto.is_object()) new_obj->initialize_prototype(proto.as_object());
+                    else if (proto.is_function()) new_obj->initialize_prototype(static_cast<Object*>(proto.as_function()));
                 }
                 return Value(new_obj.release());
             }
@@ -668,7 +668,7 @@ void register_object_builtins(Context& ctx) {
                     ctx.throw_exception(Value(std::string("Error: Failed to create object")));
                     return Value();
                 }
-                new_obj->set_prototype(nullptr);  // Set prototype to null
+                new_obj->initialize_prototype(nullptr);  // Set prototype to null
                 new_obj_ptr = new_obj.release();
             }
             else if (args[0].is_object()) {
@@ -1676,7 +1676,7 @@ void register_object_builtins(Context& ctx) {
 
             // Result has null prototype per spec.
             auto result = ObjectFactory::create_object();
-            result->set_prototype(nullptr);
+            result->initialize_prototype(nullptr);
 
             // Iterate via Symbol.iterator if available, else array-like.
             auto add_to_group = [&](const Value& element, double idx) -> bool {

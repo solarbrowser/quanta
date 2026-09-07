@@ -318,7 +318,7 @@ void register_string_builtins(Context& ctx) {
             Object* old_this = receiver.as_object_or_null();
             if (old_this) {
                 auto this_obj = std::make_unique<Object>(Object::ObjectType::String);
-                this_obj->set_prototype(old_this->get_prototype());
+                this_obj->initialize_prototype(old_this->get_prototype());
                 this_obj->set_property("[[PrimitiveValue]]", Value(str_value), PropertyAttributes::Writable);
                 size_t str_utf16_len = utf16_length(str_value);
                 PropertyDescriptor length_desc(Value(static_cast<double>(str_utf16_len)),
@@ -2106,7 +2106,7 @@ void register_string_builtins(Context& ctx) {
             if (!this_ok) return Value();
             auto iterator = ObjectFactory::create_object();
             if (Iterator::s_string_iterator_prototype_) {
-                iterator->set_prototype(Iterator::s_string_iterator_prototype_);
+                iterator->initialize_prototype(Iterator::s_string_iterator_prototype_);
             }
             struct StringIterState { std::string str; size_t index = 0; };
             auto state = std::make_shared<StringIterState>(StringIterState{str, 0});

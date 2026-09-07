@@ -347,7 +347,7 @@ static TypedArrayBase* create_same_type_typed_array(Context& ctx, TypedArrayBase
     Object* ctor = ctx.get_built_in_object(TypedArrayBase::array_type_to_string(ta->get_array_type()));
     if (ctor) {
         Value proto = ctor->get_property("prototype");
-        if (proto.is_object()) result->set_prototype(proto.as_object());
+        if (proto.is_object()) result->initialize_prototype(proto.as_object());
     }
     return result;
 }
@@ -593,7 +593,7 @@ void register_typed_array_builtins(Context& ctx) {
             for (size_t j = 0; j < bytes.size(); j++) ta->set_element(j, Value(static_cast<double>(bytes[j])));
             Object* u8ctor = ctx.get_built_in_object("Uint8Array");
             Value proto = u8ctor ? u8ctor->get_property("prototype") : Value();
-            if (proto.is_object()) ta->set_prototype(proto.as_object());
+            if (proto.is_object()) ta->initialize_prototype(proto.as_object());
             return Value(ta.release());
         };
 
@@ -712,7 +712,7 @@ void register_typed_array_builtins(Context& ctx) {
             if (buf && !buf->get_prototype_raw()) {
                 Object* ab_ctor = ctx.get_built_in_object("ArrayBuffer");
                 Value proto = ab_ctor ? ab_ctor->get_property("prototype") : Value();
-                if (proto.is_object()) buf->set_prototype(proto.as_object());
+                if (proto.is_object()) buf->initialize_prototype(proto.as_object());
             }
             return Value(buf);
         }, 0);
@@ -1435,7 +1435,7 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
-            if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
+            if (Iterator::s_array_iterator_prototype_) iter->initialize_prototype(Iterator::s_array_iterator_prototype_);
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
@@ -1462,7 +1462,7 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
-            if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
+            if (Iterator::s_array_iterator_prototype_) iter->initialize_prototype(Iterator::s_array_iterator_prototype_);
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
@@ -1487,7 +1487,7 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
-            if (Iterator::s_array_iterator_prototype_) iter->set_prototype(Iterator::s_array_iterator_prototype_);
+            if (Iterator::s_array_iterator_prototype_) iter->initialize_prototype(Iterator::s_array_iterator_prototype_);
             iter->set_internal_property("__idx", Value(0.0)); iter->set_internal_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, std::span<const Value> a, Value receiver) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
@@ -1908,7 +1908,7 @@ void register_typed_array_builtins(Context& ctx) {
         Object* ctor = ctx.get_built_in_object(info.name);
         if (ctor) {
             if (typedarray_ctor_ptr) {
-                ctor->set_prototype(typedarray_ctor_ptr);
+                ctor->initialize_prototype(typedarray_ctor_ptr);
             }
             if (ta_species_sym) {
                 auto getter = ObjectFactory::create_native_function("get [Symbol.species]",
@@ -1924,7 +1924,7 @@ void register_typed_array_builtins(Context& ctx) {
             Value proto_val = ctor->get_property("prototype");
             if (proto_val.is_object_like() && proto_val.as_object()) {
                 Object* proto = proto_val.as_object();
-                proto->set_prototype(typedarray_proto_ptr);
+                proto->initialize_prototype(typedarray_proto_ptr);
                 PropertyDescriptor bpe_desc(Value(static_cast<double>(info.bytes)), PropertyAttributes::None);
                 bpe_desc.set_enumerable(false);
                 bpe_desc.set_writable(false);
@@ -1983,7 +1983,7 @@ void register_typed_array_builtins(Context& ctx) {
                 }
             }
 
-            result.as_object()->set_prototype(proto);
+            result.as_object()->initialize_prototype(proto);
             return result;
         });
 
@@ -2124,7 +2124,7 @@ void register_typed_array_builtins(Context& ctx) {
                 Value ctor = ctx.get_global_object()->get_property(name);
                 if (ctor.is_function()) {
                     Function* func = ctor.as_function();
-                    static_cast<Object*>(func)->set_prototype(function_proto_ptr);
+                    static_cast<Object*>(func)->initialize_prototype(function_proto_ptr);
                 }
             }
 
@@ -2135,7 +2135,7 @@ void register_typed_array_builtins(Context& ctx) {
                 for (const char* name : ta_names) {
                     Value ctor = ctx.get_global_object()->get_property(name);
                     if (ctor.is_function()) {
-                        static_cast<Object*>(ctor.as_function())->set_prototype(ta_ctor);
+                        static_cast<Object*>(ctor.as_function())->initialize_prototype(ta_ctor);
                     }
                 }
             }

@@ -1118,11 +1118,11 @@ bool ModuleLoader::prepare_typed_module(Module* module, const std::string& filen
         if (Context* realm = engine_ ? engine_->get_global_context() : nullptr) {
             if (Object* ctor = realm->get_built_in_object("Uint8Array")) {
                 Value proto = ctor->get_property("prototype");
-                if (proto.is_object()) view->set_prototype(proto.as_object());
+                if (proto.is_object()) view->initialize_prototype(proto.as_object());
             }
             if (Object* ctor = realm->get_built_in_object("ArrayBuffer")) {
                 Value proto = ctor->get_property("prototype");
-                if (proto.is_object()) raw->set_prototype(proto.as_object());
+                if (proto.is_object()) raw->initialize_prototype(proto.as_object());
             }
         }
         exported = Value(view.release());

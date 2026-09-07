@@ -268,7 +268,7 @@ void register_stack(Context& ctx, bool async) {
 
     auto make_stack_object = [state_key, stack_key](Object* proto) -> Object* {
         auto obj = ObjectFactory::create_object();
-        obj->set_prototype(proto);
+        obj->initialize_prototype(proto);
         obj->set_property(state_key, Value(std::string("pending")), PropertyAttributes::Writable);
         obj->set_property(stack_key, Value(ObjectFactory::create_array(0).release()), PropertyAttributes::Writable);
         return obj.release();

@@ -400,7 +400,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
     // %GeneratorPrototype% inherits from %IteratorPrototype%, has own next/return/throw
     auto gen_prototype = ObjectFactory::create_object();
     if (Iterator::s_iterator_prototype_) {
-        gen_prototype->set_prototype(Iterator::s_iterator_prototype_);
+        gen_prototype->initialize_prototype(Iterator::s_iterator_prototype_);
     }
 
     auto next_fn = ObjectFactory::create_native_function("next", generator_next, 1);
@@ -437,7 +437,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
     // Per spec: %GeneratorFunction.prototype%.[[Prototype]] = %Function.prototype%
     auto gen_fn_proto = ObjectFactory::create_object();
     Object* func_proto = ObjectFactory::get_function_prototype();
-    gen_fn_proto->set_prototype(func_proto ? func_proto : s_generator_prototype_);
+    gen_fn_proto->initialize_prototype(func_proto ? func_proto : s_generator_prototype_);
     if (tag_sym) {
         PropertyDescriptor gf_tag(Value(std::string("GeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), gf_tag);
@@ -558,12 +558,12 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     set_is_constructor(false);
     if (Generator::s_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->set_prototype(Generator::s_generator_prototype_);
+        fn_proto->initialize_prototype(Generator::s_generator_prototype_);
         // Spec 25.2.4.2: no own properties; 25.2.4.3: writable, non-enumerable, non-configurable
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
         if (Generator::s_generator_function_prototype_) {
-            this->set_prototype(Generator::s_generator_function_prototype_);
+            this->initialize_prototype(Generator::s_generator_function_prototype_);
         }
     }
 }
@@ -578,13 +578,13 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     // Each generator function gets a unique 'prototype' object inheriting from %GeneratorPrototype%
     if (Generator::s_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->set_prototype(Generator::s_generator_prototype_);
+        fn_proto->initialize_prototype(Generator::s_generator_prototype_);
         // Spec 25.2.4.2: no own properties; 25.2.4.3: writable, non-enumerable, non-configurable
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
 
         if (Generator::s_generator_function_prototype_) {
-            this->set_prototype(Generator::s_generator_function_prototype_);
+            this->initialize_prototype(Generator::s_generator_function_prototype_);
         }
     }
 }
@@ -601,11 +601,11 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     set_is_constructor(false);
     if (Generator::s_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->set_prototype(Generator::s_generator_prototype_);
+        fn_proto->initialize_prototype(Generator::s_generator_prototype_);
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
         if (Generator::s_generator_function_prototype_) {
-            this->set_prototype(Generator::s_generator_function_prototype_);
+            this->initialize_prototype(Generator::s_generator_function_prototype_);
         }
     }
 }

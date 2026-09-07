@@ -26,7 +26,7 @@ void register_boolean_builtins(Context& ctx) {
             Object* this_obj = receiver.as_object_or_null();
             if (this_obj) {
                 auto bool_obj = ObjectFactory::create_boolean(value);
-                bool_obj->set_prototype(this_obj->get_prototype());
+                bool_obj->initialize_prototype(this_obj->get_prototype());
                 return Value(bool_obj.release());
             }
 

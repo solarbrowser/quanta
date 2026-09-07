@@ -73,7 +73,7 @@ void register_json_builtins(Context& ctx) {
             }
 
             auto obj = ObjectFactory::create_object();
-            obj->set_prototype(nullptr);
+            obj->initialize_prototype(nullptr);
             PropertyDescriptor raw_desc(Value(json_string),
                 static_cast<PropertyAttributes>(PropertyAttributes::Enumerable | PropertyAttributes::Configurable | PropertyAttributes::Writable));
             obj->set_property_descriptor("rawJSON", raw_desc);

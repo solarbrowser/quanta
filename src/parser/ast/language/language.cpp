@@ -554,7 +554,7 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
     bool plain = !tpl.is_async && !tpl.is_generator;
     if (plain && (tpl.form == Form::Declaration || tpl.form == Form::Arrow)) {
         if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-            function->set_prototype(func_proto);
+            function->initialize_prototype(func_proto);
         }
     }
 
@@ -599,7 +599,7 @@ Value instantiate_closure(Context& ctx, const ClosureTemplate& tpl) {
         Value ctor = ctx.get_binding(intrinsic_name);
         if (ctor.is_function()) {
             Value proto = ctor.as_function()->get_property("prototype");
-            if (proto.is_object()) function->set_prototype(proto.as_object());
+            if (proto.is_object()) function->initialize_prototype(proto.as_object());
         }
     }
 
@@ -1078,7 +1078,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                         // FunctionDeclaration::evaluate's identical rationale).
                         instance_method->mark_closure_environment_escaped();
                         if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-                            instance_method->set_prototype(func_proto);
+                            instance_method->initialize_prototype(func_proto);
                         }
                     }
                     instance_method->set_declared_length(method_declared_length);
@@ -1365,7 +1365,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
     // Matches create_js_function's own two follow-up steps.
     constructor_fn->mark_closure_environment_escaped();
     if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-        constructor_fn->set_prototype(func_proto);
+        constructor_fn->initialize_prototype(func_proto);
     }
     constructor_fn->set_declared_length(ctor_length);
 
@@ -1511,7 +1511,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                         static_method = std::make_unique<Function>(method_name, std::move(exe), &ctx, /*create_prototype=*/false);
                         static_method->mark_closure_environment_escaped();
                         if (Object* func_proto = ObjectFactory::get_function_prototype()) {
-                            static_method->set_prototype(func_proto);
+                            static_method->initialize_prototype(func_proto);
                         }
                     }
                     static_method->set_declared_length(method_declared_length);
@@ -1569,7 +1569,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
 
         if (super_constructor.is_null()) {
             if (proto_ptr) {
-                proto_ptr->set_prototype(nullptr);
+                proto_ptr->initialize_prototype(nullptr);
             }
             // Mark constructor so super() throws TypeError (spec: superclass null -> FunctionPrototype, not a constructor)
             constructor_fn->set_super_is_null();
@@ -1597,7 +1597,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
             }
             Function* super_fn = super_fn_check;
             if (super_fn && constructor_fn.get()) {
-                constructor_fn->set_prototype(super_fn);
+                constructor_fn->initialize_prototype(super_fn);
                 constructor_fn->set_super_constructor(super_fn);
 
                 if (proto_ptr) {
@@ -1645,7 +1645,7 @@ Value ClassDeclaration::define_class(Context& ctx) {
                     Object* super_proto_obj = nullptr;
                     if (super_proto_val.is_object()) super_proto_obj = super_proto_val.as_object();
                     else if (super_proto_val.is_function()) super_proto_obj = super_proto_val.as_function();
-                    if (super_proto_obj) proto_ptr->set_prototype(super_proto_obj);
+                    if (super_proto_obj) proto_ptr->initialize_prototype(super_proto_obj);
                 }
             }
         }

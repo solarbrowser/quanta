@@ -562,7 +562,7 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx,
     FiberRegistry::register_fiber(this, static_cast<char*>(fiber_->co->stack_base),
                                    fiber_->co->stack_size, fiber_.get(), this);
     if (s_async_generator_prototype_) {
-        set_prototype(s_async_generator_prototype_);
+        initialize_prototype(s_async_generator_prototype_);
     }
 }
 
@@ -838,7 +838,7 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
     // Requires AsyncIterator::setup_async_iterator_prototype to have already run.
     Value async_iter_proto_val = ctx.get_binding("AsyncIteratorPrototype");
     if (async_iter_proto_val.is_object()) {
-        async_gen_prototype->set_prototype(async_iter_proto_val.as_object());
+        async_gen_prototype->initialize_prototype(async_iter_proto_val.as_object());
     }
 
     auto next_fn = ObjectFactory::create_native_function("next", async_generator_next, 1);
@@ -864,7 +864,7 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
     // Per spec: %AsyncGeneratorFunction.prototype%.[[Prototype]] = %Function.prototype%
     auto async_gen_fn_proto = ObjectFactory::create_object();
     Object* func_proto = ObjectFactory::get_function_prototype();
-    async_gen_fn_proto->set_prototype(func_proto ? func_proto : s_async_generator_prototype_);
+    async_gen_fn_proto->initialize_prototype(func_proto ? func_proto : s_async_generator_prototype_);
     if (tag_sym) {
         PropertyDescriptor agf_tag(Value(std::string("AsyncGeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         async_gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), agf_tag);
@@ -1385,7 +1385,7 @@ void setup_async_functions(Context& ctx) {
                         Value async_ctor = ctx.get_binding("@@AsyncFunction");
                         if (async_ctor.is_function()) {
                             Value proto = async_ctor.as_function()->get_property("prototype");
-                            if (proto.is_object()) async_fn->set_prototype(proto.as_object());
+                            if (proto.is_object()) async_fn->initialize_prototype(proto.as_object());
                         }
                     }
                     return Value(async_fn.release());
@@ -1411,7 +1411,7 @@ void setup_async_functions(Context& ctx) {
     auto async_fn_proto = ObjectFactory::create_object();
     Object* fn_proto = ObjectFactory::get_function_prototype();
     if (fn_proto) {
-        async_fn_proto->set_prototype(fn_proto);
+        async_fn_proto->initialize_prototype(fn_proto);
     }
     // Symbol.toStringTag = "AsyncFunction"
     Symbol* to_string_tag = Symbol::get_well_known(Symbol::TO_STRING_TAG);
@@ -1433,7 +1433,7 @@ void setup_async_functions(Context& ctx) {
 
     // Per spec, AsyncFunction's [[Prototype]] is the Function constructor itself, not Function.prototype.
     Object* fn_ctor = ctx.get_built_in_object("Function");
-    if (fn_ctor) async_function_constructor->set_prototype(fn_ctor);
+    if (fn_ctor) async_function_constructor->initialize_prototype(fn_ctor);
 
     ctx.create_binding("@@AsyncFunction", Value(async_function_constructor.release()));
 
@@ -1560,11 +1560,11 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
     // Each async generator function gets a unique 'prototype' object inheriting from %AsyncGeneratorPrototype%
     if (AsyncGenerator::s_async_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->set_prototype(AsyncGenerator::s_async_generator_prototype_);
+        fn_proto->initialize_prototype(AsyncGenerator::s_async_generator_prototype_);
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
         if (AsyncGenerator::s_async_generator_function_prototype_) {
-            this->set_prototype(AsyncGenerator::s_async_generator_function_prototype_);
+            this->initialize_prototype(AsyncGenerator::s_async_generator_function_prototype_);
         }
     }
 }
@@ -1578,11 +1578,11 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
     set_is_constructor(false);
     if (AsyncGenerator::s_async_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->set_prototype(AsyncGenerator::s_async_generator_prototype_);
+        fn_proto->initialize_prototype(AsyncGenerator::s_async_generator_prototype_);
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
         if (AsyncGenerator::s_async_generator_function_prototype_) {
-            this->set_prototype(AsyncGenerator::s_async_generator_function_prototype_);
+            this->initialize_prototype(AsyncGenerator::s_async_generator_function_prototype_);
         }
     }
 }
@@ -1599,11 +1599,11 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
     set_is_constructor(false);
     if (AsyncGenerator::s_async_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->set_prototype(AsyncGenerator::s_async_generator_prototype_);
+        fn_proto->initialize_prototype(AsyncGenerator::s_async_generator_prototype_);
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
         if (AsyncGenerator::s_async_generator_function_prototype_) {
-            this->set_prototype(AsyncGenerator::s_async_generator_function_prototype_);
+            this->initialize_prototype(AsyncGenerator::s_async_generator_function_prototype_);
         }
     }
 }
@@ -1817,7 +1817,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
     // OrdinaryCreateFromConstructor: the instance inherits from this function's
     // own "prototype" object, not %AsyncGeneratorPrototype% directly.
     Value own_proto = get_property("prototype");
-    if (own_proto.is_object()) async_gen->set_prototype(own_proto.as_object());
+    if (own_proto.is_object()) async_gen->initialize_prototype(own_proto.as_object());
     return Value(async_gen.release());
 }
 

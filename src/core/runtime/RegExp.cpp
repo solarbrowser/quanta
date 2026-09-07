@@ -2854,7 +2854,7 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
         // ObjectCreate(null): groups dict has null prototype per spec; property order
         // follows source order of first group occurrence.
         auto groups_owner = ObjectFactory::create_object();
-        groups_owner->set_prototype(nullptr);
+        groups_owner->initialize_prototype(nullptr);
         for (const auto& ng : named_groups_) {
             int gn = matched_capture(ng.second);
             Value gval = gn >= 0 ? Value(slice(saved[2*gn], saved[2*gn+1])) : Value();
@@ -2897,7 +2897,7 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
         }
         if (!named_groups_.empty()) {
             auto igroups = ObjectFactory::create_object();
-            igroups->set_prototype(nullptr);
+            igroups->initialize_prototype(nullptr);
             for (const auto& ng : named_groups_) {
                 int gn = matched_capture(ng.second);
                 Value pv = gn >= 0 ? make_pair(saved[2*gn], saved[2*gn+1]) : Value();

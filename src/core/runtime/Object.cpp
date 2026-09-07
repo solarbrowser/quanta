@@ -4024,7 +4024,7 @@ Value box_primitive_this_sloppy(Context& ctx, const Value& this_value) {
         Value ctor_val = global->get_property(ctor_name);
         if (ctor_val.is_function()) {
             Value proto = ctor_val.as_function()->get_property("prototype");
-            if (proto.is_object()) wrapper->set_prototype(proto.as_object());
+            if (proto.is_object()) wrapper->initialize_prototype(proto.as_object());
         }
     }
     return Value(wrapper.release());
