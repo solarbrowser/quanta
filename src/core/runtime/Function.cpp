@@ -792,6 +792,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 ctx.set_super_called(true);
                 if (env_ctx.last_super_override()) {
                     ctx.set_last_super_override(env_ctx.last_super_override());
+                    ctx.set_last_super_override_needs_reparent(env_ctx.last_super_override_needs_reparent());
                 }
             }
             if (env_ctx.has_exception()) {
@@ -1196,6 +1197,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                 ctx.set_super_called(true);
                 if (function_context.last_super_override()) {
                     ctx.set_last_super_override(function_context.last_super_override());
+                    ctx.set_last_super_override_needs_reparent(function_context.last_super_override_needs_reparent());
                 }
                 if (is_arrow_ && closure_context_) {
                     closure_context_->set_super_called(true);
@@ -1659,13 +1661,18 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         bool super_called;
         bool in_constructor_call;
         Object* super_override;
+        bool super_override_needs_reparent;
+        bool construct_explicit_return;
         ~ConstructFlagsGuard() {
             ctx.set_super_called(super_called);
             ctx.set_in_constructor_call(in_constructor_call);
             ctx.set_last_super_override(super_override);
+            ctx.set_last_super_override_needs_reparent(super_override_needs_reparent);
+            ctx.set_last_construct_explicit_return(construct_explicit_return);
         }
     } construct_flags_guard{ctx, ctx.was_super_called(), ctx.is_in_constructor_call(),
-                            ctx.last_super_override()};
+                            ctx.last_super_override(), ctx.last_super_override_needs_reparent(),
+                            ctx.last_construct_explicit_return()};
 
     ctx.set_in_constructor_call(true);
     ctx.set_super_called(false);
@@ -1676,15 +1683,33 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     }
 
     // A synthesized default derived constructor is spec'd as `constructor(...args) { super(...args); }`, so auto-super must run before the constructor body (which here only contains field initializers) -- otherwise a super-chain override (e.g. a base constructor returning `new Proxy(this, ...)`) takes effect too late and fields get written to the object that's about to be discarded.
+    // Whether the auto-super swap below (if any) needs the subclass
+    // prototype stomped onto it -- see the re-parenting check further down
+    // for why this is !explicit_return rather than !is_native(). Only
+    // meaningful when default_ctor is true; a constructor with its own
+    // body never reaches this block (see last_super_override_needs_reparent
+    // instead, set by an explicit super() call inside such a body).
+    bool auto_super_needs_reparent = false;
     if (default_ctor && super_constructor_fn) {
         Function* super_constructor = super_constructor_fn;
         Value super_result;
+        // Default before the call: a native super_constructor never touches
+        // last_construct_explicit_return, so leaving it here correctly
+        // means "no JS return statement produced this".
+        ctx.set_last_construct_explicit_return(false);
         if (super_constructor->is_native() || super_constructor->is_default_ctor()) {
             // Native built-ins need construct semantics; so does a default-ctor JS parent,
             // whose own implicit super(...args) only runs inside construct().
+            // If super_constructor is JS, its own Function::construct just
+            // overwrote last_construct_explicit_return with its own answer.
             super_result = super_constructor->construct(ctx, args);
         } else {
+            // Known non-native here (is_native() was false above), and
+            // call_register_args has no auto-super/this-value swapping
+            // machinery of its own -- any differing result is this
+            // constructor's own explicit return.
             super_result = super_constructor->call_register_args(ctx, args, this_value);
+            ctx.set_last_construct_explicit_return(true);
         }
         ctx.set_super_called(true);
         if (ctx.has_exception()) {
@@ -1694,6 +1719,7 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         }
         if (super_result.is_object() || super_result.is_function()) {
             this_value = super_result;
+            auto_super_needs_reparent = !ctx.last_construct_explicit_return();
         }
         // InitializeInstanceElements after auto-super: add per-instance private method brand slot.
         const std::string& pm_slot = pm_brand_slot();
@@ -1713,6 +1739,7 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     }
 
     ctx.set_last_super_override(nullptr);
+    ctx.set_last_super_override_needs_reparent(false);
     ctx.set_pending_construct_call(true);
     Value result = call_register_args(ctx, args, this_value);
     bool super_was_called = ctx.was_super_called();
@@ -1742,7 +1769,9 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     Value final_result = explicit_return ? result : this_value;
 
     Object* super_override_obj = ctx.last_super_override();
+    bool super_override_needs_reparent = ctx.last_super_override_needs_reparent();
     ctx.set_last_super_override(nullptr);
+    ctx.set_last_super_override_needs_reparent(false);
 
     // If construction resolved to an object or function other than the pre-allocated this, use that
     if ((final_result.is_object() || final_result.is_function()) && final_result.as_object() != new_object.get()) {
@@ -1750,17 +1779,33 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         // A super-swapped `this` (auto-super this_value replacement, or the
         // identity recorded by call.cpp's super() handling) gets the subclass
         // prototype so `new Derived() instanceof Derived` works even when super
-        // is a built-in that ignored new.target. An explicit `return obj` from
-        // the constructor body is returned untouched (spec: NormalCompletion of
-        // the returned object as-is).
+        // is a built-in that ignored new.target -- but ONLY when the swap did
+        // NOT come from a JS constructor's own explicit `return obj;`. Per
+        // spec, an explicit return is used exactly as-is; native construction
+        // and JS auto-super/default-ctor chains (which may pass through
+        // several non-native links before bottoming out at a native, or at
+        // another explicit return further up) are the ones that still need
+        // it, which is why this checks "was the swap an explicit return" and
+        // not "was the immediate super native" -- see last_construct_
+        // explicit_return's own doc comment for the multi-level case that
+        // made the native-only check wrong.
         bool from_super_swap = !explicit_return || ret_obj == super_override_obj;
-        if (from_super_swap && is_derived && constructor_prototype.is_object() &&
+        bool swap_needs_reparent = (super_override_obj && ret_obj == super_override_obj)
+            ? super_override_needs_reparent : auto_super_needs_reparent;
+        if (from_super_swap && swap_needs_reparent && is_derived && constructor_prototype.is_object() &&
             ret_obj->get_type() != Object::ObjectType::Proxy) {
             ret_obj->set_prototype(constructor_prototype.as_object());
         }
         if (!ret_obj->get_prototype_raw() && constructor_prototype.is_object()) {
             ret_obj->set_prototype(constructor_prototype.as_object());
         }
+        // Report this invocation's own nature to whichever caller (call.cpp's
+        // super() handling, or the auto-super block above, in a nested
+        // construct) is about to read it right after we return. A native
+        // function's own construction always produces an object (there is
+        // no JS source with a return statement to distinguish), so
+        // explicit_return here is only meaningful for a JS constructor.
+        ctx.set_last_construct_explicit_return(explicit_return && !is_native());
         // A base-class constructor may have captured a raw pointer to new_object before returning this override (e.g. `new Proxy(this, ...)`), so release rather than let the unique_ptr delete it out from under them.
         new_object.release();
         return final_result;

@@ -204,14 +204,27 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
             // call() and construct() still take a vector; a super call is not
             // a hot path, so the arguments are materialized here.
             const std::vector<Value> parent_args(arg_values.begin(), arg_values.end());
+            // Default before the call: a native parent_func never touches
+            // last_construct_explicit_return, so leaving it here means "no
+            // JS return statement produced this" -- correct for a native.
+            ctx.set_last_construct_explicit_return(false);
             // A default-ctor parent's own implicit super(...args) only runs via construct().
             if (!parent_func->is_native() && parent_func->is_default_ctor()) {
                 result = parent_func->construct(ctx, parent_args);
+                // Function::construct just overwrote last_construct_explicit_return
+                // with parent_func's own answer -- nothing more to do here.
             } else if (this_obj) {
                 Value this_value(this_obj);
                 result = parent_func->call(ctx, parent_args, this_value);
+                // call() has no auto-super/this-value swapping machinery of its
+                // own, so any differing result is either parent_func's own JS
+                // return statement, or (native) its C++ implementation's
+                // internal construction -- only the former is a genuine
+                // explicit return.
+                ctx.set_last_construct_explicit_return(!parent_func->is_native());
             } else {
                 result = parent_func->call(ctx, parent_args);
+                ctx.set_last_construct_explicit_return(!parent_func->is_native());
             }
             ctx.clear_return_value();
             if (ctx.has_exception()) return Value();
@@ -249,6 +262,7 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
                     // marker would be observable through Proxy traps or a
                     // deferred module namespace's [[Get]].
                     ctx.set_last_super_override(new_this);
+                    ctx.set_last_super_override_needs_reparent(!ctx.last_construct_explicit_return());
                 }
                 returned_override = true;
             }

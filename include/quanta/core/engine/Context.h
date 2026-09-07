@@ -81,6 +81,8 @@ private:
     bool eval_arguments_conflict_ : 1 = false;
     bool is_arrow_function_context_ : 1 = false;
     bool in_class_field_init_ : 1 = false;
+    bool last_construct_explicit_return_ : 1 = false;  // see last_construct_explicit_return()
+    bool last_super_override_needs_reparent_ : 1 = false;  // see last_super_override_needs_reparent()
     // Owned by the Collector: which major epoch last reached this context
     // through a real edge (not through the survivor pool, which roots its
     // entries unconditionally). A stamp rather than a flag so that opening a
@@ -418,6 +420,34 @@ public:
     // so it needs no GC trace.
     Object* last_super_override() const { return last_super_override_; }
     void set_last_super_override(Object* o) { last_super_override_ = o; }
+    // Whether the most recently completed Function::construct() call (the
+    // one a super()/parent call just returned from) resolved via a real
+    // `return obj;` statement in that constructor's OWN body, as opposed to
+    // falling through to auto-super/this-value propagation -- which native
+    // construction is always the equivalent of, having no JS return
+    // statement of its own. A caller resets this to false immediately
+    // before calling into a parent constructor (native or JS), so a native
+    // callee -- which never touches this flag -- correctly leaves it at
+    // that default; only Function::construct's own explicit_return
+    // overwrites it, right before returning. See Function::construct's
+    // re-parenting check for why this distinction matters more than "was
+    // the parent native": a default-ctor JS class sitting between a
+    // derived class and a native ancestor (`class A extends B {}` with B
+    // itself `class B extends Uint8Array {}`, no body) is non-native but
+    // still resolves via auto-super all the way down, and needs exactly
+    // the same re-parenting a direct native super would.
+    bool last_construct_explicit_return() const { return last_construct_explicit_return_; }
+    void set_last_construct_explicit_return(bool v) { last_construct_explicit_return_ = v; }
+    // Whether the object identified by last_super_override() needs the
+    // subclass prototype stomped onto it (computed by the caller as
+    // !last_construct_explicit_return(), or !is_native() for a parent
+    // invoked via plain call() rather than construct()) -- read later by
+    // the OUTER Function::construct, by which point nested calls may have
+    // already overwritten last_construct_explicit_return() itself, so the
+    // caller must snapshot this derived answer right away rather than
+    // leave the outer check to recompute it later.
+    bool last_super_override_needs_reparent() const { return last_super_override_needs_reparent_; }
+    void set_last_super_override_needs_reparent(bool v) { last_super_override_needs_reparent_ = v; }
 
     Value get_new_target() const { return new_target_; }
     void set_new_target(const Value& val) { new_target_ = val; }
