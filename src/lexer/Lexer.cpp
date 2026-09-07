@@ -790,7 +790,21 @@ Token Lexer::read_string(char quote) {
     }
 
     current_string_has_legacy_octal_ = false;
-    std::string value = parse_string_literal(quote);
+    std::string value;
+    // The scan above already walked to the closing quote when there are no
+    // escapes to handle, so parse_string_literal would just re-walk the same
+    // span one character at a time to arrive at the identical bytes. This is
+    // the common case -- most string literals have no escapes -- so take the
+    // span it already found directly instead of re-deriving it.
+    if (!has_escapes && scan_pos < source().size() && source()[scan_pos] == quote) {
+        size_t len = scan_pos - position_;
+        value = source().substr(position_, len);
+        current_position_.column += static_cast<uint32_t>(len);
+        position_ = scan_pos;
+        current_position_.offset = static_cast<uint32_t>(position_);
+    } else {
+        value = parse_string_literal(quote);
+    }
 
     if (at_end() || current_char() != quote) {
         add_error("Unterminated string literal");
