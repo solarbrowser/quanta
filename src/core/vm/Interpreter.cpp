@@ -1308,6 +1308,7 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
             const auto& te = fb->transitions[i];
             if (te.from_shape == shape && te.key == key && te.prototype == proto0 &&
                 te.proto_epoch == epoch) {
+                write_barrier_for(obj, value);
                 obj->add_shape_property_cached(key, value, te.to_shape);
                 return;
             }

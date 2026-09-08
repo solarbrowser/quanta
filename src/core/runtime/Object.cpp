@@ -223,6 +223,7 @@ InternalSlots& Object::ensure_internals() {
 }
 
 void Object::set_internal_slot(const std::string& key, const Value& value) {
+    Collector::write_barrier(this);
     ensure_internals().set(key, value);
 }
 Value Object::get_internal_slot(const std::string& key) const {
