@@ -113,16 +113,22 @@ private:
         // hash-set node.
         IdSet all;
         IdSet captured;
-        // This function's own simple (non-destructured) parameter names --
-        // subtracted from `all` when it folds into the enclosing scope's
-        // `captured` (see FunctionNames::~FunctionNames). `all` itself
-        // still keeps them: a plain read of its own parameter inside this
-        // function's body is recorded exactly like any other identifier
-        // (note_name does not know the difference), which is correct for
-        // `all`'s own job of answering "does this function mention X
-        // anywhere", but wrong for `captured`'s -- a parameter is never a
-        // name the enclosing function needs to keep alive in an
-        // Environment for this function to reach.
+        // This function's own simple (non-destructured) parameter names,
+        // PLUS -- once any nested function has closed -- every one of
+        // *its* own names too, folded up the same way `all` is (see
+        // FunctionNames::~FunctionNames). Transitive on purpose: a name
+        // two closures down that is only ever that closure's own
+        // parameter is never something THIS function needs to keep alive
+        // either, however many scopes separate them.
+        // Subtracted from `all` when this scope folds into the enclosing
+        // scope's `captured`. `all` itself still keeps every own name: a
+        // plain read of its own parameter inside a function's body is
+        // recorded exactly like any other identifier (note_name does not
+        // know the difference), which is correct for `all`'s own job of
+        // answering "does this function mention X anywhere", but wrong
+        // for `captured`'s -- an own name is never a name the enclosing
+        // function needs to keep alive in an Environment for anything
+        // nested in it to reach.
         IdSet own_names;
         bool eval_in_nested = false;
         bool class_expression = false;
@@ -234,6 +240,16 @@ private:
                 if (!mine.own_names.count(n)) parent.captured.insert(n);
                 parent.all.insert(n);
             }
+            // own_names folds up exactly like all does, which is what makes it
+            // transitive: by the time a scope two or more levels up asks "is
+            // this mine", it has already absorbed every descendant's own
+            // names, not just its immediate child's. Without this, an inner
+            // closure's own parameter -- never anything the outer scopes need
+            // to keep alive -- rides along inside `mine.all` past its own
+            // exclusion (which only ever checked the closing scope's own
+            // names) and reads as captured one level further out than it
+            // should. See the class-level comment above for the concrete case.
+            for (auto n : mine.own_names) parent.own_names.insert(n);
             parent.eval_in_nested = parent.eval_in_nested || eval_here;
             parent.class_expression = parent.class_expression || mine.class_expression;
         }
