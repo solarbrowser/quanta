@@ -1495,6 +1495,16 @@ void register_global_builtins(Context& ctx) {
                                     promise_ptr->reject(a.empty() ? Value() : a[0]);
                                     return Value();
                                 }, 1);
+                            // The closures above hold promise_ptr only as a raw
+                            // C++ pointer -- invisible to the collector. The
+                            // microtask that scheduled this callback has already
+                            // run and its own keep_alive is spent; nothing else
+                            // necessarily still references the outer import()
+                            // promise while it waits on `pending`. Pin it back
+                            // onto its own handlers so it stays reachable for as
+                            // long as `pending`'s reaction list does.
+                            on_done->set_internal_slot("__import_owner__", Value(promise_ptr));
+                            on_fail->set_internal_slot("__import_owner__", Value(promise_ptr));
                             pending->then(on_done.release(), on_fail.release());
                             return;
                         }
@@ -1608,6 +1618,10 @@ void register_global_builtins(Context& ctx) {
                             promise->reject(a.empty() ? Value() : a[0]);
                             return Value();
                         }, 1);
+                    // Raw C++ pointer capture again -- see the matching comment
+                    // in the plain import() handler above.
+                    on_done->set_internal_slot("__import_owner__", Value(promise));
+                    on_fail->set_internal_slot("__import_owner__", Value(promise));
                     p->then(on_done.release(), on_fail.release());
                 }
             }
@@ -1636,6 +1650,8 @@ void register_global_builtins(Context& ctx) {
                             promise->reject(a.empty() ? Value() : a[0]);
                             return Value();
                         }, 1);
+                    on_done->set_internal_slot("__import_owner__", Value(promise));
+                    on_fail->set_internal_slot("__import_owner__", Value(promise));
                     pending->then(on_done.release(), on_fail.release());
                     return Value(promise_obj.release());
                 }

@@ -256,6 +256,14 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             fa_reject(c, rp, args.empty() ? Value() : args[0]);
             return Value();
         });
+    // The lambda above holds rp only as a raw C++ pointer, which the collector
+    // cannot see -- rp itself is otherwise reachable only through whatever the
+    // caller of Array.fromAsync still holds, and that reference can be long
+    // gone by the time a later step in this chain runs. Pinning rp back onto
+    // its own handler closes the loop: as long as anything keeps this handler
+    // alive (a pending microtask, a promise's then_records_), rp stays
+    // reachable through this edge too.
+    reject_fn->set_internal_slot("__fa_owner__", Value(rp));
     result_promise->set_internal_slot("__fa_on_reject__", Value(reject_fn.release()));
 
     // Step 1: handle the (possibly-awaited) iterator-result object {value, done}.
@@ -297,6 +305,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             }
             return Value();
         });
+    on_next_settled->set_internal_slot("__fa_owner__", Value(rp));
     result_promise->set_internal_slot("__fa_on_next_settled__", Value(on_next_settled.release()));
 
     // Step 2: value (now resolved) -- apply mapfn if present (and Await its result).
@@ -317,6 +326,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             }
             return Value();
         });
+    on_value->set_internal_slot("__fa_owner__", Value(rp));
     result_promise->set_internal_slot("__fa_on_value__", Value(on_value.release()));
 
     // Step 3: mapped value (now resolved) -- store and advance to the next index.
@@ -325,6 +335,7 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
             fa_set_and_advance(c, rp, args.empty() ? Value() : args[0]);
             return Value();
         });
+    on_mapped->set_internal_slot("__fa_owner__", Value(rp));
     result_promise->set_internal_slot("__fa_on_mapped__", Value(on_mapped.release()));
 }
 

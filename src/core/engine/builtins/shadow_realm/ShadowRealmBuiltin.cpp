@@ -83,6 +83,14 @@ Value make_wrapped_function(Context& caller, Engine* target_realm, Object* targe
     // there: an accessor that throws makes the wrapping itself fail, and a
     // value of the wrong type is simply absent rather than coerced.
     Object* w = wrapper.get();
+    // The closure above holds target only as a raw C++ pointer, invisible to
+    // the collector. Nothing in the target realm necessarily keeps it
+    // reachable on its own -- an expression-statement result like `new
+    // Proxy(fn, {})` at the end of an evaluated string is never bound to
+    // anything there. Pinning it back onto the wrapper closes the loop: as
+    // long as the wrapper (what the caller actually holds) is reachable, so
+    // is the thing it calls into.
+    w->set_internal_slot("__wrapped_target__", Value(target));
     Context* target_ctx = target_realm ? target_realm->get_global_context() : nullptr;
 
     // The accessor runs in the other realm but the exception can land on
