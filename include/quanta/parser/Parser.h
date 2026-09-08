@@ -123,6 +123,19 @@ private:
         // anywhere", but wrong for `captured`'s -- a parameter is never a
         // name the enclosing function needs to keep alive in an
         // Environment for this function to reach.
+        //
+        // A name in here also propagates to the enclosing scope's own
+        // own_names when this scope closes, but ONLY if it is not also in
+        // this scope's own `captured` -- see FunctionNames::~FunctionNames.
+        // Without that guard a name is unsafe to export: this is a flat,
+        // name-keyed set with no notion of which binding a given mention
+        // actually resolves to, so once a name is marked "mine" here it
+        // reads as "mine" for every occurrence of that text anywhere
+        // further out, including an unrelated same-named binding a sibling
+        // captures from a real ancestor. `mine.captured` containing the
+        // name is exactly the signal that this scope's own copy of it is
+        // itself being read through an environment by something nested in
+        // it -- in that situation the name must stop here, not ride along.
         IdSet own_names;
         bool eval_in_nested = false;
         bool class_expression = false;
@@ -233,6 +246,19 @@ private:
                 // own_names' own comment for why `captured` must not.
                 if (!mine.own_names.count(n)) parent.captured.insert(n);
                 parent.all.insert(n);
+            }
+            // Exporting own_names upward makes the exclusion transitive: a
+            // name two or more closures down that is only ever that
+            // closure's own binding is never something an outer function
+            // needs to keep alive either, however many scopes separate
+            // them. Gated by mine.captured for the reason own_names' own
+            // comment gives -- a name mine itself still needs to keep
+            // environment-resident for something nested in it must not
+            // also claim to be "handled" for whatever encloses mine, since
+            // an unrelated binding under the same name further out may
+            // still need a real capture relayed past mine.
+            for (auto n : mine.own_names) {
+                if (!mine.captured.count(n)) parent.own_names.insert(n);
             }
             parent.eval_in_nested = parent.eval_in_nested || eval_here;
             parent.class_expression = parent.class_expression || mine.class_expression;
