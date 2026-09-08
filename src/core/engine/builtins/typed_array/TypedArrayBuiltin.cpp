@@ -1200,7 +1200,18 @@ void register_typed_array_builtins(Context& ctx) {
             els.reserve(len);
             for (size_t i = 0; i < len; i++) els.push_back(ta->get_element(i));
             // Plain `<` on doubles is UB for std::sort with NaN present (NaN<x and x<NaN both false); NaN must sort last. Spec also requires stability and comparefn-throw propagation.
-            std::stable_sort(els.begin(), els.end(), [&](const Value& a, const Value& b) {
+            // Sorting `els` directly would hand libstdc++'s merge step a
+            // scratch buffer of its own, outside ValueVectorRoot's reach --
+            // a GC while the comparator runs (it's arbitrary JS) can then
+            // collect a Value that exists only in that invisible buffer.
+            // Sorting plain indices instead means the only thing ever in
+            // that scratch buffer is a uint32_t, so the actual Values never
+            // leave `els`, where they stay rooted throughout.
+            std::vector<uint32_t> order(len);
+            for (size_t i = 0; i < len; i++) order[i] = static_cast<uint32_t>(i);
+            std::stable_sort(order.begin(), order.end(), [&](uint32_t i, uint32_t j) {
+                const Value& a = els[i];
+                const Value& b = els[j];
                 if (ctx.has_exception()) return false;
                 if (cmp) {
                     const Value ca[] = {a, b};
@@ -1219,7 +1230,11 @@ void register_typed_array_builtins(Context& ctx) {
                 return std::signbit(ad) && !std::signbit(bd);
             });
             if (ctx.has_exception()) return Value();
-            for (size_t i = 0; i < len; i++) ta->set_element(i, els[i]);
+            std::vector<Value> sorted_els;
+            ValueVectorRoot sorted_els_root(&sorted_els);
+            sorted_els.reserve(len);
+            for (uint32_t i : order) sorted_els.push_back(els[i]);
+            for (size_t i = 0; i < len; i++) ta->set_element(i, sorted_els[i]);
             return Value(this_obj);
         }, 1);
     typedarray_proto_ptr->set_property_descriptor("sort", PropertyDescriptor(Value(ta_sort_fn.release()), PropertyAttributes::BuiltinFunction));

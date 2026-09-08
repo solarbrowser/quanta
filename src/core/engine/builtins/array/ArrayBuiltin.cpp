@@ -2860,10 +2860,24 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 }
             }
 
-            std::stable_sort(items.begin(), items.end(), [&](const Value& a, const Value& b) {
-                return compare(a, b) < 0;
+            // Sorting `items` directly would hand libstdc++'s merge step a
+            // scratch buffer of its own, outside ValueVectorRoot's reach --
+            // a GC while the comparator runs (it's arbitrary JS) can then
+            // collect a Value that exists only in that invisible buffer.
+            // Sorting plain indices instead means the only thing ever in
+            // that scratch buffer is a uint32_t, so the actual Values never
+            // leave `items`, where they stay rooted throughout.
+            std::vector<uint32_t> order(items.size());
+            for (uint32_t i = 0; i < order.size(); i++) order[i] = i;
+            std::stable_sort(order.begin(), order.end(), [&](uint32_t i, uint32_t j) {
+                return compare(items[i], items[j]) < 0;
             });
             if (ctx.has_exception()) return Value();
+            std::vector<Value> sorted_items;
+            ValueVectorRoot sorted_items_root(&sorted_items);
+            sorted_items.reserve(items.size());
+            for (uint32_t i : order) sorted_items.push_back(items[i]);
+            items.swap(sorted_items);
 
             uint32_t item_count = static_cast<uint32_t>(items.size());
             // The comparator has run by now, so the shape is asked again.
