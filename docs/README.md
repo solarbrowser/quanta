@@ -1,0 +1,1 @@
+documents will be empty for about a month, things got very on the track but still something can change so when i feel ready for quanta there will be real documents!
