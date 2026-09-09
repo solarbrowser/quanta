@@ -17,102 +17,11 @@ If the results are outdated, use the dedicated [runner](https://github.com/atatu
 
 ### Documentation
 
-You can reach all the documentation files from [here](https://quanta.js.org/docen/index.html).
+See `docs` folder in repo or visit [here](https://quanta.js.org/docen/)
 
 ### Build
-<details>
-  
-Quanta uses **Clang++** across all platforms.
 
-<details>
-<summary><strong>Windows</strong></summary>
-
-```bash
-# Install LLVM and add to PATH
-clang++ --version
-
-git clone https://github.com/solarbrowser/quanta
-cd quanta
-build-windows.bat
-```
-</details>
-
-<details>
-<summary><strong>Linux</strong></summary>
-
-```bash
-# Ubuntu/Debian
-sudo apt install clang lld
-
-# Fedora
-sudo dnf install clang lld
-
-# Arch
-sudo pacman -S clang lld
-
-git clone https://github.com/solarbrowser/quanta
-cd quanta
-./build.sh
-# or
-make -j$(nproc)
-```
-</details>
-
-<details>
-<summary><strong>macOS</strong></summary>
-
-```bash
-xcode-select --install
-
-git clone https://github.com/solarbrowser/quanta
-cd quanta
-./build.sh
-# or
-make -j$(nproc)
-```
-</details>
-
-<details>
-<summary><strong>Build Outputs</strong></summary>
-
-- **Windows:** `build/bin/quanta.exe`  
-- **Linux/macOS:** `build/bin/quanta`  
-- **Static Library:** `build/libquanta.a`  
-- **Logs:** `build/build.log`, `build/errors.log`  
-</details>
-
-
-<details>
-<summary><strong>Usage</strong></summary>
-
-```bash
-# Run a JavaScript file
-./build/bin/quanta example.js
-
-# Start REPL
-./build/bin/quanta
-```
-</details>
-</details>
-
-### Troubleshooting
-<details>
-
-### Clang not found
-- Windows: Ensure LLVM is in PATH, restart terminal  
-- Linux: Install clang and lld  
-
-### Build errors
-```bash
-make clean
-# or delete build/ directory
-```
-
-Check logs:
-```
-build/errors.log
-```
-</details>
+See [building.md](https://github.com/solarbrowser/quanta/blob/main/docs/contributing/building.md) for instructions.
 
 ## Roadmap
 
