@@ -2,7 +2,7 @@
 
 This document explains how to build Quanta from source, configure the build, run different build modes and troubleshoot common build issues.
 
-If you don't care about build configurations just jump to [building](#building).
+If you don't care about build configurations just jump to [building](#4-building).
 
 ## 1. Prerequisites
 
@@ -13,7 +13,7 @@ Before building Quanta, make sure your system provides the following:
 * `Make`, `CMake` or provided build scripts
 * Git
 
-See [building](#building) for setting it up on your environment.
+See [building](#4-building) for setting it up on your environment.
 
 ## 2. Clone the Source
 
