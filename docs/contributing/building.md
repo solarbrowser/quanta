@@ -30,7 +30,7 @@ Quanta uses submodules, build scripts handle them but if you get any errors:
  git submodule update --init --recursive
 ```
 
-run the commond above.
+run the command above.
 
 ## 3. Configuring the Build && Build Types
 
