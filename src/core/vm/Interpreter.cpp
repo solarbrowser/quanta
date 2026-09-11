@@ -5946,6 +5946,28 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
                     DISPATCH();
                 }
             }
+            // New-property transition cache: mirrors set_named's own transition block
+            // (see its comment) for the case this store is not an overwrite but adding
+            // a brand-new own property. transitions[0] only -- the entry the sole-shape
+            // monomorphic case always hits; te.from_shape's own null-ness (not
+            // fb.transition_count) is the guard, since an unlearned slot must never be
+            // trusted even when obj->get_shape() itself happens to be null (dictionary
+            // mode) and proto_epoch is still its initial 0.
+            if (LIKELY(!fb.transition_mega)) {
+                const FeedbackSlot::TransitionEntry& te = fb.transitions[0];
+                if (te.from_shape && te.from_shape == obj->get_shape() &&
+                    te.prototype == obj->get_prototype_raw() &&
+                    te.proto_epoch == Object::proto_epoch() &&
+                    obj->is_extensible()) {
+                    const std::string& name = f.chunk.name_at(read_u16(code, pc + 2));
+                    if (!obj->has_descriptor_override(name)) {
+                        write_barrier_for(obj, acc);
+                        obj->add_shape_property_cached(name, acc, te.to_shape);
+                        pc += 6;
+                        DISPATCH();
+                    }
+                }
+            }
         }
     }
     [[clang::musttail]] return h_SetNamedRest(f, pc, acc);
@@ -5975,6 +5997,23 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
                     DISPATCH();
                 }
                 break;
+            }
+            // Transition-cache scan (entry 0 already tried by Fast above); see
+            // its comment for the full precondition list being mirrored here.
+            if (!fb.transition_mega && own_shape && obj->is_extensible()) {
+                Object* proto0 = obj->get_prototype_raw();
+                uint64_t epoch = Object::proto_epoch();
+                for (uint8_t i = 1; i < fb.transition_count; i++) {
+                    const auto& te = fb.transitions[i];
+                    if (te.from_shape != own_shape || te.prototype != proto0 ||
+                        te.proto_epoch != epoch) continue;
+                    const std::string& name = f.chunk.name_at(read_u16(code, pc + 2));
+                    if (obj->has_descriptor_override(name)) break;
+                    write_barrier_for(obj, acc);
+                    obj->add_shape_property_cached(name, acc, te.to_shape);
+                    pc += 6;
+                    DISPATCH();
+                }
             }
         }
     }
