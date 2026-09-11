@@ -339,6 +339,13 @@ enum class Op : uint8_t {
     CallViaFunctionCallWide,          // r_obj r_args_start argc fb32
     CallViaFunctionApplyWide,         // r_obj r_args_start fb32
 
+    // Wide counterparts of CreateClosure/DeclareFunction, same reasoning:
+    // a chunk with more than 65535 closure templates (functions, methods,
+    // class constructors) needs a wider index than either opcode's narrow
+    // operand carries.
+    CreateClosureWide,                // k32
+    DeclareFunctionWide,               // k32
+
     // Same operands as Call. A direct eval runs in the caller's scope, and the
     // eval builtin learns that from a flag on the calling context.
     CallDirectEval,            // r_callee r_args_start argc n

@@ -284,6 +284,10 @@ private:
     void emit_named_ic(Op narrow_op, Op wide_op, uint8_t obj_reg, uint16_t name_idx, uint32_t fb_idx);
     void emit_keyed_ic(Op narrow_op, Op wide_op, uint8_t obj_reg, uint32_t fb_idx);
     void emit_keyed_ic2(Op narrow_op, Op wide_op, uint8_t obj_reg, uint8_t key_reg, uint32_t fb_idx);
+    // Same idea for CreateClosure/DeclareFunction: the caller has just
+    // push_back'd onto chunk_->ensure_closures(), this picks narrow (k16) or
+    // wide (k32) based on the resulting last index.
+    void emit_closure_ref(Op narrow_op, Op wide_op);
 
     // Emits a destructuring pattern. Consumes the source value from the
     // accumulator. pattern_is_emittable decides first, so a shape the emitter

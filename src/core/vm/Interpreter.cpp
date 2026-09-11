@@ -4035,6 +4035,37 @@ Value h_gen_DeclareFunction(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Wide counterpart of h_gen_CreateClosure -- see h_GetNamedWide's own
+// comment (same alloc_feedback_slot-style overflow, this time on
+// chunk_->ensure_closures() rather than a feedback pool).
+Value h_CreateClosureWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint32_t idx = read_u32(code, pc + 1);
+    pc += 5;
+    acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// Wide counterpart of h_gen_DeclareFunction -- see h_CreateClosureWide's
+// own comment.
+Value h_DeclareFunctionWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint32_t idx = read_u32(code, pc + 1);
+    pc += 5;
+    declare_function(ctx, (*chunk.closures)[idx]);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 
 Value h_gen_DefineClass(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
@@ -7213,6 +7244,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::FinalizeStaticPropertyWide)] = &h_FinalizeStaticPropertyWide;
     t[static_cast<uint8_t>(Op::CallViaFunctionCallWide)] = &h_CallViaFunctionCallWide;
     t[static_cast<uint8_t>(Op::CallViaFunctionApplyWide)] = &h_CallViaFunctionApplyWide;
+    t[static_cast<uint8_t>(Op::CreateClosureWide)] = &h_CreateClosureWide;
+    t[static_cast<uint8_t>(Op::DeclareFunctionWide)] = &h_DeclareFunctionWide;
     t[static_cast<uint8_t>(Op::CallDirectEval)] = &h_gen_CallDirectEval;
     t[static_cast<uint8_t>(Op::ResolveBindingEnv)] = &h_gen_ResolveBindingEnv;
     t[static_cast<uint8_t>(Op::LdaResolvedEnv)] = &h_gen_LdaResolvedEnv;

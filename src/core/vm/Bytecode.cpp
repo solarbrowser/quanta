@@ -157,6 +157,7 @@ const OpInfo& op_info(Op op) {
         {"GetKeyedWide", 5, 'u'}, {"SetKeyedWide", 6, 'b'},
         {"FinalizeStaticPropertyWide", 10, 'L'},
         {"CallViaFunctionCallWide", 7, 'M'}, {"CallViaFunctionApplyWide", 6, 'O'},
+        {"CreateClosureWide", 4, 'U'}, {"DeclareFunctionWide", 4, 'V'},
         {"CallDirectEval", 5, 'c'},
         {"ResolveBindingEnv", 3, 'n'},
         {"LdaResolvedEnv", 3, 'i'}, {"StaResolvedEnv", 3, 'i'},
@@ -569,6 +570,16 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
             case 'z': {
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
                                (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
+                out << " [" << idx << "]";
+                break;
+            }
+            // Wide counterpart of 'z' (CreateClosureWide/DeclareFunctionWide):
+            // same single-index shape, k32 instead of k16.
+            case 'U': case 'V': {
+                uint32_t idx = static_cast<uint32_t>(chunk.code[operand_pc]) |
+                               (static_cast<uint32_t>(chunk.code[operand_pc + 1]) << 8) |
+                               (static_cast<uint32_t>(chunk.code[operand_pc + 2]) << 16) |
+                               (static_cast<uint32_t>(chunk.code[operand_pc + 3]) << 24);
                 out << " [" << idx << "]";
                 break;
             }

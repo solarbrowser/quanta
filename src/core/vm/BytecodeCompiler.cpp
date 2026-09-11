@@ -5364,12 +5364,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     for (const auto& stmt : block->get_statements()) {
         if (stmt->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
         if (!env_mode) return nullptr;
-        if (compiler.chunk_->ensure_closures().size() >= 0xFFFF) return nullptr;
+        if (compiler.chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return nullptr;
         compiler.hoisted_fn_decls_.insert(stmt.get());
         compiler.chunk_->ensure_closures().push_back(
             compiler.with_ancestor_chain(closure_template_for(stmt.get())));
-        compiler.emit(Op::DeclareFunction);
-        compiler.emit_u16(static_cast<uint16_t>(compiler.chunk_->ensure_closures().size() - 1));
+        compiler.emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
     }
 
     // A `using` at the top of the body disposes when the body ends, exactly as
@@ -6770,6 +6769,17 @@ void BytecodeCompiler::emit_keyed_ic2(Op narrow_op, Op wide_op, uint8_t obj_reg,
     else emit_u32(fb_idx);
 }
 
+void BytecodeCompiler::emit_closure_ref(Op narrow_op, Op wide_op) {
+    uint32_t idx = static_cast<uint32_t>(chunk_->ensure_closures().size() - 1);
+    if (idx <= 0xFFFFu) {
+        emit(narrow_op);
+        emit_u16(static_cast<uint16_t>(idx));
+    } else {
+        emit(wide_op);
+        emit_u32(idx);
+    }
+}
+
 // True if every leaf of this pattern is a shape emit_pattern_bind can express.
 // Checked up front so a refusal costs no half-emitted bytecode.
 // Whether an assignment pattern may write this name from a register. A `let`
@@ -7080,14 +7090,13 @@ bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
         return compile_statement(branch);
     }
     if (!env_mode_) return false;
-    if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+    if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
     const Identifier* id = static_cast<const FunctionDeclaration*>(branch)->get_id();
     if (!id || id->get_name().empty()) return false;
     const std::string& name = id->get_name();
     if (annexb_fn_vars_.count(name)) {
         chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(branch)));
-        emit(Op::CreateClosure);
-        emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+        emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
         emit_write_local(name, /*is_declaration=*/false);
         return !failed_;
     }
@@ -7101,8 +7110,7 @@ bool BytecodeCompiler::compile_if_branch(const ASTNode* branch) {
     env_depth_++;
     hoisted_fn_decls_.insert(branch);
     chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(branch)));
-    emit(Op::DeclareFunction);
-    emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+    emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
     emit(Op::ExitLoopEnv);
     env_depth_--;
     return !failed_;
@@ -8309,11 +8317,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
             for (const auto& st : block->get_statements()) {
                 if (st->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
                 if (!env_mode_) return false;
-                if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+                if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
                 hoisted_fn_decls_.insert(st.get());
                 chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(st.get())));
-                emit(Op::DeclareFunction);
-                emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+                emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
             }
             bool has_using = false;
             for (const auto& st : block->get_statements()) {
@@ -9207,11 +9214,10 @@ bool BytecodeCompiler::compile_statement(const ASTNode* node) {
                 for (const auto& s : static_cast<const CaseClause*>(c.get())->get_consequent()) {
                     if (s->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
                     if (!env_mode_) return false;
-                    if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+                    if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
                     hoisted_fn_decls_.insert(s.get());
                     chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(s.get())));
-                    emit(Op::DeclareFunction);
-                    emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+                    emit_closure_ref(Op::DeclareFunction, Op::DeclareFunctionWide);
                 }
             }
 
@@ -9486,7 +9492,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         }
         elements.push_back(std::move(e));
     }
-    if (chunk_->ensure_closures().size() + elements.size() + 1 >= 0xFFFF) return false;
+    if (chunk_->ensure_closures().size() + elements.size() + 1 >= 0xFFFFFFFEu) return false;
 
     // From here on instructions go out. Only the heritage expression can still
     // refuse -- it is arbitrary code, and whether the compiler takes it is not
@@ -9610,8 +9616,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         }
         chunk_->ensure_closures().push_back(std::move(tmpl));
     }
-    emit(Op::CreateClosure);
-    emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+    emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
     // The constructor carries the class's name, not the key it was written
     // under.
     if (!class_name.empty()) {
@@ -9707,10 +9712,9 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 tmpl.form = ClosureTemplate::Form::FunctionExpr;
                 tmpl.body_is_strict = true;
                 tmpl.is_method_shorthand = true;  // no .prototype, not a constructor
-                if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+                if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
                 chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
-                emit(Op::CreateClosure);
-                emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+                emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
             } else {
                 emit(Op::LdaUndefined);
             }
@@ -9744,8 +9748,7 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 }
                 chunk_->ensure_closures().push_back(std::move(tmpl));
             }
-            emit(Op::CreateClosure);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+            emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
             // An instance member belongs to the prototype, a static one to the
             // constructor -- which is also what each homes on for `super`.
             const uint8_t target = static_cast<uint8_t>(e.is_static ? ctor_reg : proto_reg);
@@ -9829,10 +9832,9 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
             tmpl.form = ClosureTemplate::Form::FunctionExpr;
             tmpl.body_is_strict = true;
             tmpl.is_method_shorthand = true;
-            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+            if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
             chunk_->ensure_closures().push_back(with_ancestor_chain(std::move(tmpl)));
-            emit(Op::CreateClosure);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+            emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
             emit(Op::RunStaticElement);
             emit_u8(static_cast<uint8_t>(ctor_reg));
         } else {
@@ -11623,10 +11625,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
         case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION: {
-            if (chunk_->ensure_closures().size() >= 0xFFFF) return false;
+            if (chunk_->ensure_closures().size() >= 0xFFFFFFFEu) return false;
             chunk_->ensure_closures().push_back(with_ancestor_chain(closure_template_for(node)));
-            emit(Op::CreateClosure);
-            emit_u16(static_cast<uint16_t>(chunk_->ensure_closures().size() - 1));
+            emit_closure_ref(Op::CreateClosure, Op::CreateClosureWide);
             return true;
         }
 
