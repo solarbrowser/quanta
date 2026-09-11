@@ -322,6 +322,23 @@ enum class Op : uint8_t {
     // form's operand. Only a literal large enough to fill the pool reaches it.
     LdaConstWide,              // k32
 
+    // Wide counterparts of the ten feedback-slot-bearing opcodes below, for
+    // the same reason LdaConstWide exists: a single function or script body
+    // with more than 65535 IC sites of one of these needs a wider index than
+    // the narrow form's operand carries. Every other operand is unchanged --
+    // only the trailing feedback index widens from u16 to u32 -- so each of
+    // these mirrors its narrow counterpart's layout with fb32 in place of fb.
+    GetNamedWide,                     // r_obj n fb32
+    SetNamedWide,                     // r_obj n fb32
+    GetPrivateWide,                   // r_obj n fb32
+    SetPrivateWide,                   // r_obj n fb32
+    DefineOwnWide,                    // r_obj n fb32
+    GetKeyedWide,                     // r_obj fb32
+    SetKeyedWide,                     // r_obj r_key fb32
+    FinalizeStaticPropertyWide,       // r_obj key_name_idx display_name_idx kind fb32
+    CallViaFunctionCallWide,          // r_obj r_args_start argc fb32
+    CallViaFunctionApplyWide,         // r_obj r_args_start fb32
+
     // Same operands as Call. A direct eval runs in the caller's scope, and the
     // eval builtin learns that from a flag on the calling context.
     CallDirectEval,            // r_callee r_args_start argc n

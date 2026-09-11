@@ -274,9 +274,16 @@ private:
     void emit_load_const(const Value& v);
     void emit_u32(uint32_t v);
     uint16_t add_name(const std::string& name);
-    uint16_t alloc_feedback_slot();
-    uint16_t alloc_private_feedback();
-    uint16_t alloc_keyed_feedback();
+    uint32_t alloc_feedback_slot();
+    uint32_t alloc_private_feedback();
+    uint32_t alloc_keyed_feedback();
+    // Picks the narrow or wide opcode/operand form the same way emit_load_const
+    // does for constants, so a chunk needing more than 65535 IC sites of one
+    // of these shapes still compiles instead of failing outright -- see
+    // alloc_feedback_slot's own doc comment.
+    void emit_named_ic(Op narrow_op, Op wide_op, uint8_t obj_reg, uint16_t name_idx, uint32_t fb_idx);
+    void emit_keyed_ic(Op narrow_op, Op wide_op, uint8_t obj_reg, uint32_t fb_idx);
+    void emit_keyed_ic2(Op narrow_op, Op wide_op, uint8_t obj_reg, uint8_t key_reg, uint32_t fb_idx);
 
     // Emits a destructuring pattern. Consumes the source value from the
     // accumulator. pattern_is_emittable decides first, so a shape the emitter

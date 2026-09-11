@@ -151,6 +151,12 @@ const OpInfo& op_info(Op op) {
         {"LdaWith", 3, 'n'}, {"ResolveWithTarget", 2, 'n'}, {"LdaWithResolved", 3, 'l'},
         {"StaWithResolved", 3, 'l'},
         {"LdaConstWide", 4, 'q'},
+        {"GetNamedWide", 7, 'a'}, {"SetNamedWide", 7, 'a'},
+        {"GetPrivateWide", 7, 'a'}, {"SetPrivateWide", 7, 'a'},
+        {"DefineOwnWide", 7, 'a'},
+        {"GetKeyedWide", 5, 'u'}, {"SetKeyedWide", 6, 'b'},
+        {"FinalizeStaticPropertyWide", 10, 'L'},
+        {"CallViaFunctionCallWide", 7, 'M'}, {"CallViaFunctionApplyWide", 6, 'O'},
         {"CallDirectEval", 5, 'c'},
         {"ResolveBindingEnv", 3, 'n'},
         {"LdaResolvedEnv", 3, 'i'}, {"StaResolvedEnv", 3, 'i'},
@@ -226,11 +232,11 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'B': check(0, "reads"); check(1, "reads"); break;
             case 'S': check_run(0, 1); break;
             case 'c': check(0, "calls"); check_run(1, 2); break;
-            case 'y': check(0, "calls"); check_run(1, 2); break;
+            case 'y': case 'M': check(0, "calls"); check_run(1, 2); break;
             // Fixed 2-register run (thisArg, argsArray) with no separate
             // count operand -- args_start is always followed by exactly
             // one more register, unlike check_run's variable-length list.
-            case 'Z': {
+            case 'Z': case 'O': {
                 check(0, "calls");
                 const unsigned first = reg_at(1);
                 if (first + 2 > limit) bad(pc, info.name, "argument list ends past", first + 1);
@@ -239,12 +245,20 @@ void validate_chunk_registers(const BytecodeChunk& chunk, const std::string& nam
             case 'v': check(0, "calls"); check(1, "receiver"); check_run(2, 3); break;
             case 'w': check(0, "calls"); check(1, "receiver"); check(2, "spread array"); break;
             case 'W': check(0, "constructs"); check(1, "spread array"); break;
-            case 'g': case 'f': case 'l': case 'm': case 's': check(0, "receiver"); break;
+            // g/f/l/m/s and their Wide counterparts (a: GetNamed/SetNamed/
+            // GetPrivate/SetPrivate/DefineOwnWide's shared shape, u: GetKeyedWide,
+            // L: FinalizeStaticPropertyWide) all check only the receiver at byte
+            // 0 -- the feedback index that widens between narrow and wide never
+            // holds a register.
+            case 'g': case 'f': case 'l': case 'm': case 's':
+            case 'a': case 'u': case 'L':
+                check(0, "receiver"); break;
             // A register and a name.
             case 'Y': case 'Q': check(0, "reads"); break;
             case 'P': check(0, "reads"); check(1, "reads"); break;
             case 'C': check(0, "closes the iterator in"); break;
-            case 'x': case 'j': check(0, "reads"); check(1, "reads"); break;
+            // x/j and SetKeyedWide (b) all check two registers at bytes 0,1.
+            case 'x': case 'j': case 'b': check(0, "reads"); check(1, "reads"); break;
             case 'J': case 'R': check(0, "reads"); check(1, "reads"); check(2, "reads"); break;
             case 'I': check(1, "stores into"); break;
             case 'K': check(2, "stores into"); break;
@@ -367,6 +381,18 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " fb=" << fb_idx;
                 break;
             }
+            // Wide counterpart of 'y' (CallViaFunctionCallWide): same shape, fb32.
+            case 'M': {
+                uint32_t fb_idx = static_cast<uint32_t>(chunk.code[operand_pc + 3]) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 4]) << 8) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 5]) << 16) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 6]) << 24);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " args=r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " argc=" << static_cast<int>(chunk.code[operand_pc + 2])
+                    << " fb=" << fb_idx;
+                break;
+            }
             case 'v': {
                 uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 4]) |
                                     (static_cast<uint16_t>(chunk.code[operand_pc + 5]) << 8);
@@ -396,6 +422,19 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " fb=" << fb_idx;
                 break;
             }
+            // Wide counterpart of 'Z' (CallViaFunctionApplyWide): same shape, fb32.
+            case 'O': {
+                uint32_t fb_idx = static_cast<uint32_t>(chunk.code[operand_pc + 2]) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 3]) << 8) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 4]) << 16) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 5]) << 24);
+                int args_start2 = static_cast<int>(chunk.code[operand_pc + 1]);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " this=r" << args_start2
+                    << " argsArray=r" << (args_start2 + 1)
+                    << " fb=" << fb_idx;
+                break;
+            }
             case 'W': {
                 uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
                                     (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
@@ -414,6 +453,21 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " fb=" << fb_idx;
                 break;
             }
+            // Wide counterpart of 'g': same r_obj,n,fb shape, just fb32
+            // instead of fb16 (used by GetNamed/SetNamed/GetPrivate/
+            // SetPrivate/DefineOwnWide).
+            case 'a': {
+                uint16_t name_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                uint32_t fb_idx = static_cast<uint32_t>(chunk.code[operand_pc + 3]) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 4]) << 8) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 5]) << 16) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 6]) << 24);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.name_at(name_idx) << "'"
+                    << " fb=" << fb_idx;
+                break;
+            }
             case 'h': {
                 uint16_t n = static_cast<uint16_t>(chunk.code[operand_pc]) |
                              (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
@@ -427,9 +481,30 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                     << " fb=" << fb_idx;
                 break;
             }
+            // Wide counterpart of 'f' (GetKeyedWide): same r_obj,fb shape, fb32.
+            case 'u': {
+                uint32_t fb_idx = static_cast<uint32_t>(chunk.code[operand_pc + 1]) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 2]) << 8) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 3]) << 16) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 4]) << 24);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " fb=" << fb_idx;
+                break;
+            }
             case 'x': {
                 uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 2]) |
                                    (static_cast<uint16_t>(chunk.code[operand_pc + 3]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " r" << static_cast<int>(chunk.code[operand_pc + 1])
+                    << " fb=" << fb_idx;
+                break;
+            }
+            // Wide counterpart of 'x' (SetKeyedWide): same r_obj,r_key,fb shape, fb32.
+            case 'b': {
+                uint32_t fb_idx = static_cast<uint32_t>(chunk.code[operand_pc + 2]) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 3]) << 8) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 4]) << 16) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 5]) << 24);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
                     << " r" << static_cast<int>(chunk.code[operand_pc + 1])
                     << " fb=" << fb_idx;
@@ -539,6 +614,24 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
                                      (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
                 uint16_t fb_idx = static_cast<uint16_t>(chunk.code[operand_pc + 6]) |
                                    (static_cast<uint16_t>(chunk.code[operand_pc + 7]) << 8);
+                out << " r" << static_cast<int>(chunk.code[operand_pc])
+                    << " '" << chunk.name_at(key_idx) << "'"
+                    << " '" << chunk.name_at(disp_idx) << "'"
+                    << " kind=" << static_cast<int>(chunk.code[operand_pc + 5])
+                    << " fb=" << fb_idx;
+                break;
+            }
+            // Wide counterpart of 's' (FinalizeStaticPropertyWide): same
+            // shape, fb32 instead of fb16.
+            case 'L': {
+                uint16_t key_idx = static_cast<uint16_t>(chunk.code[operand_pc + 1]) |
+                                    (static_cast<uint16_t>(chunk.code[operand_pc + 2]) << 8);
+                uint16_t disp_idx = static_cast<uint16_t>(chunk.code[operand_pc + 3]) |
+                                     (static_cast<uint16_t>(chunk.code[operand_pc + 4]) << 8);
+                uint32_t fb_idx = static_cast<uint32_t>(chunk.code[operand_pc + 6]) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 7]) << 8) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 8]) << 16) |
+                                  (static_cast<uint32_t>(chunk.code[operand_pc + 9]) << 24);
                 out << " r" << static_cast<int>(chunk.code[operand_pc])
                     << " '" << chunk.name_at(key_idx) << "'"
                     << " '" << chunk.name_at(disp_idx) << "'"

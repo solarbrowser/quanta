@@ -6720,24 +6720,54 @@ uint16_t BytecodeCompiler::add_name(const std::string& name) {
     return index;
 }
 
-uint16_t BytecodeCompiler::alloc_feedback_slot() {
-    if (feedback_.size() >= 0xFFFF) { failed_ = true; return 0; }
+// A pool past the 65535th entry no longer fits the narrow form's operand --
+// same reasoning as add_constant, and the same generous ceiling: a chunk
+// needing more than that many is not one this compiler could hold anyway.
+// emit_named_ic/emit_keyed_ic/emit_keyed_ic2 pick the matching narrow or
+// wide opcode from the index this returns, mirroring emit_load_const.
+uint32_t BytecodeCompiler::alloc_feedback_slot() {
+    if (feedback_.size() >= 0xFFFFFFFEu) { failed_ = true; return 0; }
     feedback_.push_back(FeedbackSlot{});
-    return static_cast<uint16_t>(feedback_.size() - 1);
+    return static_cast<uint32_t>(feedback_.size() - 1);
 }
 
-uint16_t BytecodeCompiler::alloc_private_feedback() {
+uint32_t BytecodeCompiler::alloc_private_feedback() {
     auto& pf = chunk_->ensure_ic_feedback().private_feedback;
-    if (pf.size() >= 0xFFFF) { failed_ = true; return 0; }
+    if (pf.size() >= 0xFFFFFFFEu) { failed_ = true; return 0; }
     pf.push_back(PrivateFeedback{});
-    return static_cast<uint16_t>(pf.size() - 1);
+    return static_cast<uint32_t>(pf.size() - 1);
 }
 
-uint16_t BytecodeCompiler::alloc_keyed_feedback() {
+uint32_t BytecodeCompiler::alloc_keyed_feedback() {
     auto& kf = chunk_->ensure_ic_feedback().keyed_feedback;
-    if (kf.size() >= 0xFFFF) { failed_ = true; return 0; }
+    if (kf.size() >= 0xFFFFFFFEu) { failed_ = true; return 0; }
     kf.push_back(KeyedFeedback{});
-    return static_cast<uint16_t>(kf.size() - 1);
+    return static_cast<uint32_t>(kf.size() - 1);
+}
+
+void BytecodeCompiler::emit_named_ic(Op narrow_op, Op wide_op, uint8_t obj_reg,
+                                      uint16_t name_idx, uint32_t fb_idx) {
+    emit(fb_idx <= 0xFFFFu ? narrow_op : wide_op);
+    emit_u8(obj_reg);
+    emit_u16(name_idx);
+    if (fb_idx <= 0xFFFFu) emit_u16(static_cast<uint16_t>(fb_idx));
+    else emit_u32(fb_idx);
+}
+
+void BytecodeCompiler::emit_keyed_ic(Op narrow_op, Op wide_op, uint8_t obj_reg, uint32_t fb_idx) {
+    emit(fb_idx <= 0xFFFFu ? narrow_op : wide_op);
+    emit_u8(obj_reg);
+    if (fb_idx <= 0xFFFFu) emit_u16(static_cast<uint16_t>(fb_idx));
+    else emit_u32(fb_idx);
+}
+
+void BytecodeCompiler::emit_keyed_ic2(Op narrow_op, Op wide_op, uint8_t obj_reg,
+                                       uint8_t key_reg, uint32_t fb_idx) {
+    emit(fb_idx <= 0xFFFFu ? narrow_op : wide_op);
+    emit_u8(obj_reg);
+    emit_u8(key_reg);
+    if (fb_idx <= 0xFFFFu) emit_u16(static_cast<uint16_t>(fb_idx));
+    else emit_u32(fb_idx);
 }
 
 // True if every leaf of this pattern is a shape emit_pattern_bind can express.
@@ -7428,16 +7458,14 @@ bool BytecodeCompiler::emit_pattern_target_store(const ASTNode* target, bool is_
                 emit_u16(add_name(static_cast<const Identifier*>(mem->get_property())->get_name()));
             }
         } else if (member_key_reg >= 0) {
-            emit(Op::SetKeyed);
-            emit_u8(static_cast<uint8_t>(member_obj_reg));
-            emit_u8(static_cast<uint8_t>(member_key_reg));
-            emit_u16(alloc_keyed_feedback());
+            emit_keyed_ic2(Op::SetKeyed, Op::SetKeyedWide, static_cast<uint8_t>(member_obj_reg),
+                           static_cast<uint8_t>(member_key_reg), alloc_keyed_feedback());
         } else {
             const bool priv = member_is_private(mem);
-            emit(priv ? Op::SetPrivate : Op::SetNamed);
-            emit_u8(static_cast<uint8_t>(member_obj_reg));
-            emit_u16(add_name(static_cast<const Identifier*>(mem->get_property())->get_name()));
-            emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+            emit_named_ic(priv ? Op::SetPrivate : Op::SetNamed, priv ? Op::SetPrivateWide : Op::SetNamedWide,
+                          static_cast<uint8_t>(member_obj_reg),
+                          add_name(static_cast<const Identifier*>(mem->get_property())->get_name()),
+                          priv ? alloc_private_feedback() : alloc_feedback_slot());
         }
         return !failed_;
     }
@@ -7582,9 +7610,7 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
                 emit(Op::Ldar);
                 emit_u8(static_cast<uint8_t>(key_hold));
             }
-            emit(Op::GetKeyed);
-            emit_u8(static_cast<uint8_t>(src_reg));
-            emit_u16(alloc_keyed_feedback());
+            emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(src_reg), alloc_keyed_feedback());
         } else {
             std::string key;
             if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -7603,10 +7629,8 @@ bool BytecodeCompiler::emit_pattern_bind(const ASTNode* pattern, bool is_lexical
             with_reg = emit_with_target_resolve(target, is_lexical);
             member_obj = emit_member_target_resolve(target, is_assignment, member_key);
             if (failed_) return false;
-            emit(Op::GetNamed);
-            emit_u8(static_cast<uint8_t>(src_reg));
-            emit_u16(add_name(key));
-            emit_u16(alloc_feedback_slot());
+            emit_named_ic(Op::GetNamed, Op::GetNamedWide, static_cast<uint8_t>(src_reg),
+                          add_name(key), alloc_feedback_slot());
         }
 
         if (default_expr) {
@@ -8146,16 +8170,14 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     if (!mem->is_computed()) {
         uint16_t name_idx = add_name(
             static_cast<const Identifier*>(mem->get_property())->get_name());
-        emit(priv ? Op::GetPrivate : Op::GetNamed);
-        emit_u8(static_cast<uint8_t>(obj_reg));
-        emit_u16(name_idx);
-        emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+        emit_named_ic(priv ? Op::GetPrivate : Op::GetNamed, priv ? Op::GetPrivateWide : Op::GetNamedWide,
+                      static_cast<uint8_t>(obj_reg), name_idx,
+                      priv ? alloc_private_feedback() : alloc_feedback_slot());
         size_t skip = emit_jump(skip_op);
         if (!compile_expression(expr->get_right())) return false;
-        emit(priv ? Op::SetPrivate : Op::SetNamed);
-        emit_u8(static_cast<uint8_t>(obj_reg));
-        emit_u16(name_idx);
-        emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+        emit_named_ic(priv ? Op::SetPrivate : Op::SetNamed, priv ? Op::SetPrivateWide : Op::SetNamedWide,
+                      static_cast<uint8_t>(obj_reg), name_idx,
+                      priv ? alloc_private_feedback() : alloc_feedback_slot());
         if (!patch_jump(skip)) return false;
         free_temp(obj_reg);
         return !failed_;
@@ -8178,15 +8200,12 @@ bool BytecodeCompiler::compile_logical_assignment(const AssignmentExpression* ex
     emit_u8(static_cast<uint8_t>(key_reg));
     emit(Op::Ldar);
     emit_u8(static_cast<uint8_t>(key_reg));
-    emit(Op::GetKeyed);  // key still in the accumulator after Star
-    emit_u8(static_cast<uint8_t>(obj_reg));
-    emit_u16(alloc_keyed_feedback());
+    // key still in the accumulator after Star
+    emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(obj_reg), alloc_keyed_feedback());
     size_t skip = emit_jump(skip_op);
     if (!compile_expression(expr->get_right())) return false;
-    emit(Op::SetKeyed);
-    emit_u8(static_cast<uint8_t>(obj_reg));
-    emit_u8(static_cast<uint8_t>(key_reg));
-    emit_u16(alloc_keyed_feedback());
+    emit_keyed_ic2(Op::SetKeyed, Op::SetKeyedWide, static_cast<uint8_t>(obj_reg),
+                   static_cast<uint8_t>(key_reg), alloc_keyed_feedback());
     if (!patch_jump(skip)) return false;
     free_temp(key_reg);
     free_temp(obj_reg);
@@ -9746,7 +9765,8 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 emit_u16(add_name(e.key));
                 emit_u8(e.kind);
             } else {
-                emit(Op::FinalizeStaticProperty);
+                uint32_t fb_idx = alloc_feedback_slot();
+                emit(fb_idx <= 0xFFFFu ? Op::FinalizeStaticProperty : Op::FinalizeStaticPropertyWide);
                 emit_u8(target);
                 emit_u16(add_name(e.key));
                 // An accessor's function is named for how it is reached, not
@@ -9760,7 +9780,8 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 // plain-key form.
                 emit_u8(static_cast<uint8_t>(e.kind | kClassElementFlag |
                                              (e.kind == 0 && !keeps_super ? kSuperFreeFlag : 0)));
-                emit_u16(alloc_feedback_slot());
+                if (fb_idx <= 0xFFFFu) emit_u16(static_cast<uint16_t>(fb_idx));
+                else emit_u32(fb_idx);
             }
         }
         if (raw_key_reg >= 0) free_temp(raw_key_reg);
@@ -9827,10 +9848,8 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 emit_u8(static_cast<uint8_t>(ctor_reg));
                 emit_u16(add_name(se.key));
             } else {
-                emit(Op::DefineOwn);
-                emit_u8(static_cast<uint8_t>(ctor_reg));
-                emit_u16(add_name(se.key));
-                emit_u16(alloc_feedback_slot());
+                emit_named_ic(Op::DefineOwn, Op::DefineOwnWide, static_cast<uint8_t>(ctor_reg),
+                              add_name(se.key), alloc_feedback_slot());
             }
         }
     }
@@ -10113,10 +10132,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
             if (!mem->is_computed()) {
                 const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
-                emit(priv ? Op::GetPrivate : Op::GetNamed);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u16(add_name(name));
-                emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+                emit_named_ic(priv ? Op::GetPrivate : Op::GetNamed, priv ? Op::GetPrivateWide : Op::GetNamedWide,
+                              static_cast<uint8_t>(obj_reg), add_name(name),
+                              priv ? alloc_private_feedback() : alloc_feedback_slot());
             } else {
                 // Evaluating the key leaves it in the accumulator, exactly
                 // what GetKeyed expects -- no extra register needed for reads.
@@ -10124,9 +10142,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     ChainMaskScope mask(chain_shortcircuit_jumps_);
                     if (!compile_expression(mem->get_property())) return false;
                 }
-                emit(Op::GetKeyed);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u16(alloc_keyed_feedback());
+                emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(obj_reg), alloc_keyed_feedback());
             }
             if (borrowed_reg < 0) free_temp(obj_reg);
             return !failed_;
@@ -10157,10 +10173,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
             if (!mem->is_computed()) {
                 const std::string& name = static_cast<const Identifier*>(mem->get_property())->get_name();
-                emit(priv ? Op::GetPrivate : Op::GetNamed);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u16(add_name(name));
-                emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+                emit_named_ic(priv ? Op::GetPrivate : Op::GetNamed, priv ? Op::GetPrivateWide : Op::GetNamedWide,
+                              static_cast<uint8_t>(obj_reg), add_name(name),
+                              priv ? alloc_private_feedback() : alloc_feedback_slot());
             } else {
                 {
                     ChainMaskScope mask(chain_shortcircuit_jumps_);
@@ -10171,9 +10186,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     ThisCacheBarrier this_cache_guard(this_cache_valid_);
                     if (!compile_expression(mem->get_property())) return false;
                 }
-                emit(Op::GetKeyed);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u16(alloc_keyed_feedback());
+                emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(obj_reg), alloc_keyed_feedback());
             }
             free_temp(obj_reg);
             return !failed_;
@@ -10422,10 +10435,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         if (!mem->is_computed()) {
                             name_idx = add_name(
                                 static_cast<const Identifier*>(mem->get_property())->get_name());
-                            emit(priv ? Op::GetPrivate : Op::GetNamed);
-                            emit_u8(static_cast<uint8_t>(obj_reg));
-                            emit_u16(name_idx);
-                            emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+                            emit_named_ic(priv ? Op::GetPrivate : Op::GetNamed, priv ? Op::GetPrivateWide : Op::GetNamedWide,
+                                          static_cast<uint8_t>(obj_reg), name_idx,
+                                          priv ? alloc_private_feedback() : alloc_feedback_slot());
                         } else {
                             if (!compile_expression(mem->get_property())) return false;
                             key_reg = alloc_temp();
@@ -10444,9 +10456,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             emit_u8(static_cast<uint8_t>(key_reg));
                             emit(Op::Ldar);
                             emit_u8(static_cast<uint8_t>(key_reg));
-                            emit(Op::GetKeyed);  // key still in the accumulator
-                            emit_u8(static_cast<uint8_t>(obj_reg));
-                            emit_u16(alloc_keyed_feedback());
+                            // key still in the accumulator
+                            emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(obj_reg), alloc_keyed_feedback());
                         }
 
                         int old_temp = -1;
@@ -10459,15 +10470,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         }
                         emit(is_inc ? Op::Inc : Op::Dec);
                         if (!mem->is_computed()) {
-                            emit(priv ? Op::SetPrivate : Op::SetNamed);
-                            emit_u8(static_cast<uint8_t>(obj_reg));
-                            emit_u16(name_idx);
-                            emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+                            emit_named_ic(priv ? Op::SetPrivate : Op::SetNamed, priv ? Op::SetPrivateWide : Op::SetNamedWide,
+                                          static_cast<uint8_t>(obj_reg), name_idx,
+                                          priv ? alloc_private_feedback() : alloc_feedback_slot());
                         } else {
-                            emit(Op::SetKeyed);
-                            emit_u8(static_cast<uint8_t>(obj_reg));
-                            emit_u8(static_cast<uint8_t>(key_reg));
-                            emit_u16(alloc_keyed_feedback());
+                            emit_keyed_ic2(Op::SetKeyed, Op::SetKeyedWide, static_cast<uint8_t>(obj_reg),
+                                           static_cast<uint8_t>(key_reg), alloc_keyed_feedback());
                         }
                         if (is_post) {
                             emit(Op::Ldar);
@@ -11018,10 +11026,9 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
             if (compound) {
                 if (!mem->is_computed()) {
-                    emit(priv ? Op::GetPrivate : Op::GetNamed);
-                    emit_u8(static_cast<uint8_t>(obj_reg));
-                    emit_u16(name_idx);
-                    emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+                    emit_named_ic(priv ? Op::GetPrivate : Op::GetNamed, priv ? Op::GetPrivateWide : Op::GetNamedWide,
+                                  static_cast<uint8_t>(obj_reg), name_idx,
+                                  priv ? alloc_private_feedback() : alloc_feedback_slot());
                 } else {
                     // Spec: CheckObjectCoercible(base) before ToPropertyKey(key)
                     // for a compound assignment's GetValue step.
@@ -11035,9 +11042,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     emit_u8(static_cast<uint8_t>(key_reg));
                     emit(Op::Ldar);
                     emit_u8(static_cast<uint8_t>(key_reg));
-                    emit(Op::GetKeyed);
-                    emit_u8(static_cast<uint8_t>(obj_reg));
-                    emit_u16(alloc_keyed_feedback());
+                    emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(obj_reg), alloc_keyed_feedback());
                 }
                 int old_val = alloc_temp();
                 if (failed_) return false;
@@ -11057,15 +11062,12 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             }
 
             if (!mem->is_computed()) {
-                emit(priv ? Op::SetPrivate : Op::SetNamed);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u16(name_idx);
-                emit_u16(priv ? alloc_private_feedback() : alloc_feedback_slot());
+                emit_named_ic(priv ? Op::SetPrivate : Op::SetNamed, priv ? Op::SetPrivateWide : Op::SetNamedWide,
+                              static_cast<uint8_t>(obj_reg), name_idx,
+                              priv ? alloc_private_feedback() : alloc_feedback_slot());
             } else {
-                emit(Op::SetKeyed);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u8(static_cast<uint8_t>(key_reg));
-                emit_u16(alloc_keyed_feedback());
+                emit_keyed_ic2(Op::SetKeyed, Op::SetKeyedWide, static_cast<uint8_t>(obj_reg),
+                               static_cast<uint8_t>(key_reg), alloc_keyed_feedback());
                 free_temp(key_reg);
             }
             free_temp(obj_reg);
@@ -11231,11 +11233,15 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             emit_u8(static_cast<uint8_t>(arg_reg));
                         }
                     }
-                    emit(Op::CallViaFunctionCall);
-                    emit_u8(static_cast<uint8_t>(obj_reg));
-                    emit_u8(static_cast<uint8_t>(args_start));
-                    emit_u8(argc);
-                    emit_u16(alloc_feedback_slot());
+                    {
+                        uint32_t fb_idx = alloc_feedback_slot();
+                        emit(fb_idx <= 0xFFFFu ? Op::CallViaFunctionCall : Op::CallViaFunctionCallWide);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        emit_u8(static_cast<uint8_t>(args_start));
+                        emit_u8(argc);
+                        if (fb_idx <= 0xFFFFu) emit_u16(static_cast<uint16_t>(fb_idx));
+                        else emit_u32(fb_idx);
+                    }
                     free_temp(obj_reg);
                     return !failed_;
                 }
@@ -11264,10 +11270,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                             emit_u8(static_cast<uint8_t>(arg_reg));
                         }
                     }
-                    emit(Op::CallViaFunctionApply);
-                    emit_u8(static_cast<uint8_t>(obj_reg));
-                    emit_u8(static_cast<uint8_t>(args_start));
-                    emit_u16(alloc_feedback_slot());
+                    {
+                        uint32_t fb_idx = alloc_feedback_slot();
+                        emit(fb_idx <= 0xFFFFu ? Op::CallViaFunctionApply : Op::CallViaFunctionApplyWide);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        emit_u8(static_cast<uint8_t>(args_start));
+                        if (fb_idx <= 0xFFFFu) emit_u16(static_cast<uint16_t>(fb_idx));
+                        else emit_u32(fb_idx);
+                    }
                     free_temp(obj_reg);
                     return !failed_;
                 }
@@ -11299,17 +11309,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     if (!emit_super_load(super_mem)) return false;
                 } else if (!mem_computed) {
                     method_name = static_cast<const Identifier*>(mem_prop)->get_name();
-                    emit(mem_private ? Op::GetPrivate : Op::GetNamed);
-                    emit_u8(static_cast<uint8_t>(obj_reg));
-                    emit_u16(add_name(method_name));
-                    emit_u16(mem_private ? alloc_private_feedback() : alloc_feedback_slot());
+                    emit_named_ic(mem_private ? Op::GetPrivate : Op::GetNamed, mem_private ? Op::GetPrivateWide : Op::GetNamedWide,
+                                  static_cast<uint8_t>(obj_reg), add_name(method_name),
+                                  mem_private ? alloc_private_feedback() : alloc_feedback_slot());
                 } else {
                     method_name = "<computed>";  // CallResolved diagnostics only
                     ChainMaskScope key_mask(chain_shortcircuit_jumps_);
                     if (!compile_expression(mem_prop)) return false;
-                    emit(Op::GetKeyed);
-                    emit_u8(static_cast<uint8_t>(obj_reg));
-                    emit_u16(alloc_keyed_feedback());
+                    emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(obj_reg), alloc_keyed_feedback());
                 }
                 int func_reg = alloc_temp();
                 if (failed_) return false;
@@ -11447,10 +11454,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(this_reg));
                 if (!compile_expression(call_args[2].get())) return false;
-                emit(Op::DefineOwn);
-                emit_u8(static_cast<uint8_t>(this_reg));
-                emit_u16(add_name(field_key));
-                emit_u16(alloc_feedback_slot());
+                emit_named_ic(Op::DefineOwn, Op::DefineOwnWide, static_cast<uint8_t>(this_reg),
+                              add_name(field_key), alloc_feedback_slot());
                 free_temp(this_reg);
                 // The call's own value is undefined; the statement discards it.
                 emit(Op::LdaUndefined);
@@ -11738,14 +11743,16 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                                                   : is_setter ? ("set " + key)
                                                   : key;
                         uint16_t display_name_idx = add_name(display_name);
-                        emit(Op::FinalizeStaticProperty);
+                        uint32_t fb_idx = alloc_feedback_slot();
+                        emit(fb_idx <= 0xFFFFu ? Op::FinalizeStaticProperty : Op::FinalizeStaticPropertyWide);
                         emit_u8(static_cast<uint8_t>(obj_reg));
                         emit_u16(key_name_idx);
                         emit_u16(display_name_idx);
                         uint8_t kind_byte = is_method ? 0 : (is_getter ? 1 : 2);
                         if (is_method && !keeps_super) kind_byte |= kSuperFreeFlag;
                         emit_u8(kind_byte);
-                        emit_u16(alloc_feedback_slot());
+                        if (fb_idx <= 0xFFFFu) emit_u16(static_cast<uint16_t>(fb_idx));
+                        else emit_u32(fb_idx);
                     } else {
                         // NamedEvaluation step 6: unlike Method/Getter/Setter
                         // (always named), a plain Value property is only named
@@ -11759,10 +11766,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         }
                         // CreateDataProperty (a poisoned Object.prototype
                         // accessor must not fire) -- DefineOwn.
-                        emit(Op::DefineOwn);
-                        emit_u8(static_cast<uint8_t>(obj_reg));
-                        emit_u16(add_name(key));
-                        emit_u16(alloc_feedback_slot());
+                        emit_named_ic(Op::DefineOwn, Op::DefineOwnWide, static_cast<uint8_t>(obj_reg),
+                                      add_name(key), alloc_feedback_slot());
                     }
                 } else {
                     // Computed key (Value or Method only -- computed-key
@@ -11871,10 +11876,8 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             }
             if (long_literal) {
                 emit_load_const(Value(static_cast<double>(elem_count)));
-                emit(Op::SetNamed);
-                emit_u8(static_cast<uint8_t>(obj_reg));
-                emit_u16(add_name("length"));
-                emit_u16(alloc_feedback_slot());
+                emit_named_ic(Op::SetNamed, Op::SetNamedWide, static_cast<uint8_t>(obj_reg),
+                              add_name("length"), alloc_feedback_slot());
             }
             emit(Op::Ldar);
             emit_u8(static_cast<uint8_t>(obj_reg));

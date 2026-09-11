@@ -94,6 +94,15 @@ inline uint16_t read_u16(const uint8_t* code, uint32_t pc) {
            (static_cast<uint16_t>(code[pc + 1]) << 8);
 }
 
+// For the *Wide feedback-slot opcodes' u32 index operand -- same idea as
+// read_u16, widened. h_LdaConstWide hand-rolled this once for its own u32
+// constant-pool index; with ten more handlers needing the identical
+// unpack, a shared helper is the right call now.
+inline uint32_t read_u32(const uint8_t* code, uint32_t pc) {
+    return static_cast<uint32_t>(code[pc]) | (static_cast<uint32_t>(code[pc + 1]) << 8) |
+           (static_cast<uint32_t>(code[pc + 2]) << 16) | (static_cast<uint32_t>(code[pc + 3]) << 24);
+}
+
 // Routes through the shared apply_operator so VM and tree-walker semantics can't drift.
 inline Value binary_slow(Context& ctx, BinOp op, const Value& l, const Value& r) {
     return BinaryExpression::apply_operator(ctx, op, l, r);
@@ -4677,6 +4686,68 @@ Value h_gen_CallViaFunctionCall(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Wide counterpart of h_gen_CallViaFunctionCall -- see h_GetNamedWide's
+// own comment. Identical body past the operand-read prologue; only fb_idx
+// widens.
+Value h_CallViaFunctionCallWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Function* owner = f.owner;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint8_t args_start = code[pc + 2];
+    uint8_t argc = code[pc + 3];
+    uint32_t fb_idx = read_u32(code, pc + 4);
+    pc += 8;
+    const Value& target = regs[obj_reg];
+    FeedbackSlot& fb_slot = chunk.feedback[fb_idx];
+    bool handled = false;
+    if (target.is_function()) {
+        Object* obj = target.as_object();
+        const FeedbackBody& fb = fb_slot.read();
+        if (f.feedback_rooted && !fb.proto_mega && !obj->has_any_descriptor_override()) {
+            Shape* rs = obj->get_shape();
+            Object* p0 = obj->get_prototype();
+            uint64_t pep = Object::proto_epoch();
+            for (uint8_t k = 0; k < fb.proto_count; k++) {
+                const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+                if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep) {
+                    if (pe.from_descriptor && pe.desc_epoch == Object::descriptor_epoch() &&
+                        pe.cached_value.is_function() &&
+                        pe.cached_value.as_function() == ObjectFactory::get_pristine_function_call()) {
+                        Value this_arg = argc > 0 ? regs[args_start] : Value();
+                        std::span<const Value> call_args(
+                            regs + args_start + (argc > 0 ? 1 : 0), argc > 0 ? argc - 1 : 0);
+                        acc = target.as_function()->call_register_args(ctx, call_args, this_arg);
+                        handled = true;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if (!handled) {
+        Value method = get_named(ctx, target, "call", &fb_slot, owner, f.feedback_rooted);
+        CHECK_EXC_TAIL();
+        std::span<const Value> call_args(regs + args_start, argc);
+        if (method.is_function()) {
+            acc = method.as_function()->call_register_args(ctx, call_args, target);
+        } else if (method.is_object() &&
+                   method.as_object()->get_type() == Object::ObjectType::Proxy) {
+            std::vector<Value> trap_args(call_args.begin(), call_args.end());
+            acc = static_cast<Proxy*>(method.as_object())->apply_trap(trap_args, target);
+        } else {
+            ctx.throw_type_error("value.call is not a function");
+        }
+    }
+    Collector::safepoint();
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 // `X.apply(thisArg, argsArray)`, exactly two arguments (any other count
 // takes the plain GetNamed+CallResolved path). Same idea as
 // CallViaFunctionCall but for "apply": the fast path unpacks argsArray via
@@ -4789,6 +4860,103 @@ Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// Wide counterpart of h_gen_CallViaFunctionApply -- see h_GetNamedWide's
+// own comment. Identical body past the operand-read prologue; only fb_idx
+// widens.
+Value h_CallViaFunctionApplyWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Function* owner = f.owner;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint8_t args_start = code[pc + 2];
+    uint32_t fb_idx = read_u32(code, pc + 3);
+    pc += 7;
+    const Value& target = regs[obj_reg];
+    FeedbackSlot& fb_slot = chunk.feedback[fb_idx];
+    bool handled = false;
+    if (target.is_function()) {
+        Object* obj = target.as_object();
+        const FeedbackBody& fb = fb_slot.read();
+        if (f.feedback_rooted && !fb.proto_mega && !obj->has_any_descriptor_override()) {
+            Shape* rs = obj->get_shape();
+            Object* p0 = obj->get_prototype();
+            uint64_t pep = Object::proto_epoch();
+            for (uint8_t k = 0; k < fb.proto_count; k++) {
+                const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+                if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep) {
+                    if (pe.from_descriptor && pe.desc_epoch == Object::descriptor_epoch() &&
+                        pe.cached_value.is_function() &&
+                        pe.cached_value.as_function() == ObjectFactory::get_pristine_function_apply()) {
+                        const Value& this_arg = regs[args_start];
+                        const Value& args_array = regs[args_start + 1];
+                        constexpr uint32_t kInlineApplyArgs = 8;
+                        Value stack_args[kInlineApplyArgs];
+                        uint32_t inline_count = 0;
+                        std::vector<Value> heap_args;
+                        bool use_heap = false;
+                        if (!args_array.is_undefined() && !args_array.is_null()) {
+                            if (!args_array.is_object() && !args_array.is_function()) {
+                                ctx.throw_type_error(
+                                    "CreateListFromArrayLike: argArray must be an object");
+                            } else if (args_array.is_object()) {
+                                Object* arr_obj = args_array.as_object();
+                                Value length_val = arr_obj->get_property("length");
+                                CHECK_EXC_TAIL();
+                                if (length_val.is_number()) {
+                                    uint32_t length = static_cast<uint32_t>(length_val.to_number());
+                                    if (length <= kInlineApplyArgs) {
+                                        for (uint32_t i = 0; i < length; i++) {
+                                            stack_args[i] = arr_obj->get_element(i);
+                                        }
+                                        inline_count = length;
+                                    } else {
+                                        use_heap = true;
+                                        heap_args.reserve(length);
+                                        for (uint32_t i = 0; i < length; i++) {
+                                            heap_args.push_back(arr_obj->get_element(i));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        CHECK_EXC_TAIL();
+                        if (use_heap) {
+                            ValueVectorRoot heap_args_root(&heap_args);
+                            acc = target.as_function()->call_register_args(ctx, heap_args, this_arg);
+                        } else {
+                            acc = target.as_function()->call_register_args(
+                                ctx, std::span<const Value>(stack_args, inline_count), this_arg);
+                        }
+                        handled = true;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if (!handled) {
+        Value method = get_named(ctx, target, "apply", &fb_slot, owner, f.feedback_rooted);
+        CHECK_EXC_TAIL();
+        std::span<const Value> call_args(regs + args_start, 2);
+        if (method.is_function()) {
+            acc = method.as_function()->call_register_args(ctx, call_args, target);
+        } else if (method.is_object() &&
+                   method.as_object()->get_type() == Object::ObjectType::Proxy) {
+            std::vector<Value> trap_args(call_args.begin(), call_args.end());
+            acc = static_cast<Proxy*>(method.as_object())->apply_trap(trap_args, target);
+        } else {
+            ctx.throw_type_error("value.apply is not a function");
+        }
+    }
+    Collector::safepoint();
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -5276,6 +5444,29 @@ Value h_gen_GetNamed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Wide counterpart of h_gen_GetNamed, for a chunk needing more feedback
+// slots than the narrow form's u16 operand can index -- see
+// BytecodeCompiler::alloc_feedback_slot's own doc comment. Never fused
+// (fused_store_form has no case for it), so no FUSED_EPILOGUE: the fast
+// path's own optimizations don't apply either, since this opcode only
+// exists on a path already vanishingly rare.
+Value h_GetNamedWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Function* owner = f.owner;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint16_t name_idx = read_u16(code, pc + 2);
+    uint32_t fb_idx = read_u32(code, pc + 4);
+    pc += 8;
+    acc = get_named(ctx, regs[obj_reg], chunk.name_at(name_idx), &chunk.feedback[fb_idx], owner, f.feedback_rooted);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 // A monomorphic own-property read is a shape compare and a slot load, and it
 // cannot throw. get_named reaches that in a handful of instructions but the
 // generated handler pays its prologue first, including the instr_pc store only
@@ -5510,6 +5701,24 @@ Value h_gen_SetNamed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Wide counterpart of h_gen_SetNamed -- see h_GetNamedWide's own comment.
+Value h_SetNamedWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Function* owner = f.owner;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint16_t name_idx = read_u16(code, pc + 2);
+    uint32_t fb_idx = read_u32(code, pc + 4);
+    pc += 8;
+    set_named(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx], owner, f.feedback_rooted);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 // The write counterpart of h_GetNamedFast, with the same reasoning: a
 // monomorphic own-property store is a shape compare and a slot write, and it
 // cannot throw. The barrier still runs, since the store is what the remembered
@@ -5622,6 +5831,26 @@ Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Wide counterpart of h_gen_GetPrivate -- see h_GetNamedWide's own comment.
+// private_feedback_data is its own pool (alloc_private_feedback), separate
+// from chunk.feedback -- indexed here the same way, just with a u32 index.
+Value h_GetPrivateWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    PrivateFeedback* private_feedback_data = f.private_feedback_data;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint16_t name_idx = read_u16(code, pc + 2);
+    uint32_t fb_idx = read_u32(code, pc + 4);
+    pc += 8;
+    acc = get_private(ctx, regs[obj_reg], chunk.name_at(name_idx), &private_feedback_data[fb_idx], f.owner);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_SetPrivate(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5642,6 +5871,24 @@ Value h_gen_SetPrivate(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// Wide counterpart of h_gen_SetPrivate -- see h_GetPrivateWide's own comment.
+Value h_SetPrivateWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    PrivateFeedback* private_feedback_data = f.private_feedback_data;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint16_t name_idx = read_u16(code, pc + 2);
+    uint32_t fb_idx = read_u32(code, pc + 4);
+    pc += 8;
+    set_private(ctx, regs[obj_reg], chunk.name_at(name_idx), acc, &private_feedback_data[fb_idx], f.owner);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -5698,6 +5945,65 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Wide counterpart of h_gen_GetKeyed -- see h_GetNamedWide's own comment.
+// keyed_feedback is its own pool (alloc_keyed_feedback), indexed the same
+// way with a u32 index.
+// Wide counterpart of h_gen_GetKeyed -- see h_GetNamedWide's own comment.
+// keyed_feedback is its own pool (alloc_keyed_feedback), indexed the same
+// way with a u32 index. Kept as the same do/while(0)+break shape the
+// narrow form uses (rather than early DISPATCH()s per branch): CHECK_EXC
+// relies on `continue` to skip the rest of the block when an exception is
+// pending, which an early standalone CHECK_EXC_TAIL() does not -- and a
+// live std::string (the to_property_key() branch) crossing a musttail
+// DISPATCH() would refuse the tail call outright, which is exactly why
+// the narrow form scopes it inside the block too.
+Value h_GetKeyedWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    do {
+        {
+            uint8_t obj_reg = code[pc + 1];
+            uint32_t fb_idx = read_u32(code, pc + 2);
+            pc += 6;
+            const Value& recv = regs[obj_reg];
+            if (recv.is_null() || recv.is_undefined()) {
+                ctx.throw_type_error("Cannot read property of null or undefined");
+                CHECK_EXC();
+                break;
+            }
+            uint32_t index;
+            Object* dense;
+            TypedArrayBase* typed;
+            if (array_index_key(acc, index)) {
+                if (dense_element_slot(recv, index, dense)) {
+                    acc = dense->get_element_unchecked(index);
+                    break;
+                }
+                if (typed_element_slot(recv, index, typed)) {
+                    acc = typed->get_element_unchecked(index);
+                    break;
+                }
+            }
+            if (acc.is_string()) {
+                acc = get_keyed(ctx, recv, acc.as_string()->str(), &chunk.ic_feedback->keyed_feedback[fb_idx]);
+                CHECK_EXC();
+                break;
+            }
+            std::string key = acc.to_property_key();
+            CHECK_EXC();
+            acc = get_keyed(ctx, recv, key, &chunk.ic_feedback->keyed_feedback[fb_idx]);
+            CHECK_EXC();
+            break;
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -5744,6 +6050,59 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                 CHECK_EXC();
                 break;
             }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// Wide counterpart of h_gen_SetKeyed -- see h_GetKeyedWide's own comment.
+// Wide counterpart of h_gen_SetKeyed -- see h_GetKeyedWide's own comment
+// for why this keeps the do/while(0)+break shape rather than early
+// DISPATCH()s per branch.
+Value h_SetKeyedWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    do {
+        {
+            uint8_t obj_reg = code[pc + 1];
+            uint8_t key_reg = code[pc + 2];
+            uint32_t fb_idx = read_u32(code, pc + 3);
+            pc += 7;
+            const Value& recv = regs[obj_reg];
+            if (recv.is_null() || recv.is_undefined()) {
+                ctx.throw_type_error(std::string("Cannot set properties of ") +
+                    (recv.is_null() ? "null" : "undefined"));
+                CHECK_EXC();
+                break;
+            }
+            uint32_t index;
+            Object* dense;
+            TypedArrayBase* typed;
+            if (array_index_key(regs[key_reg], index)) {
+                if (dense_element_store_slot(recv, index, dense) &&
+                    dense->store_dense_element(index, acc)) {
+                    break;
+                }
+                if (typed_element_slot(recv, index, typed)) {
+                    typed->set_element_unchecked(index, acc);
+                    break;
+                }
+            }
+            if (regs[key_reg].is_string()) {
+                set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, &chunk.ic_feedback->keyed_feedback[fb_idx], f.owner);
+                CHECK_EXC();
+                break;
+            }
+            std::string key = regs[key_reg].to_property_key();
+            CHECK_EXC();
+            set_keyed(ctx, recv, key, acc, &chunk.ic_feedback->keyed_feedback[fb_idx], f.owner);
+            CHECK_EXC();
+            break;
+        }
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
@@ -5893,6 +6252,24 @@ Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// Wide counterpart of h_gen_DefineOwn -- see h_GetNamedWide's own comment.
+Value h_DefineOwnWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint16_t name_idx = read_u16(code, pc + 2);
+    uint32_t fb_idx = read_u32(code, pc + 4);
+    pc += 8;
+    Object* obj = as_object_like(regs[obj_reg]);
+    define_own_cached(obj, chunk.name_at(name_idx), acc, &chunk.feedback[fb_idx]);
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -6080,6 +6457,75 @@ Value h_gen_FinalizeStaticProperty(Frame& f, uint32_t pc, Value acc) {
                 break;
             }
     } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// Wide counterpart of h_gen_FinalizeStaticProperty -- see h_GetNamedWide's
+// own comment. Identical body past the operand-read prologue; only fb_idx
+// widens (raw_kind stays put, it sits before fb in both forms).
+Value h_FinalizeStaticPropertyWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    Value* regs = f.regs;
+    const uint8_t* code = f.code;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    uint8_t obj_reg = code[pc + 1];
+    uint16_t key_name_idx = read_u16(code, pc + 2);
+    uint16_t display_name_idx = read_u16(code, pc + 4);
+    uint8_t raw_kind = code[pc + 6];
+    uint8_t kind = raw_kind & 0x3;
+    bool super_free = (raw_kind & 0x4) != 0;
+    bool class_element = (raw_kind & 0x8) != 0;
+    uint32_t fb_idx = read_u32(code, pc + 7);
+    pc += 11;
+    Object* obj = as_object_like(regs[obj_reg]);
+    if (acc.is_function()) {
+        Function* fn = acc.as_function();
+        if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+            fn->set_name(chunk.name_at(display_name_idx));
+        }
+        const std::string& key = chunk.name_at(key_name_idx);
+        if (kind == 0) {
+            if (!super_free && obj) fn->set_home_object(obj);
+            if (fn->is_constructor()) {
+                fn->set_is_constructor(false);
+                fn->set_function_prototype(nullptr);
+            }
+            if (class_element) {
+                fn->set_is_strict(true);
+                if (obj) {
+                    PropertyDescriptor d(acc,
+                        static_cast<PropertyAttributes>(
+                            PropertyAttributes::Writable |
+                            PropertyAttributes::Configurable));
+                    obj->set_property_descriptor(key, d);
+                }
+            } else if (obj) {
+                define_own_cached(obj, key, acc, &chunk.feedback[fb_idx]);
+            }
+        } else {
+            if (fn->is_constructor()) fn->set_function_prototype(nullptr);
+            if (class_element) {
+                fn->set_is_strict(true);
+                if (obj) fn->set_home_object(obj);
+                if (obj) {
+                    PropertyDescriptor d;
+                    if (obj->has_own_property(key)) {
+                        PropertyDescriptor existing = obj->get_property_descriptor(key);
+                        if (existing.is_accessor_descriptor()) d = existing;
+                    }
+                    if (kind == 1) d.set_getter(fn); else d.set_setter(fn);
+                    d.set_enumerable(false);
+                    d.set_configurable(true);
+                    obj->set_property_descriptor(key, d);
+                }
+            } else if (obj) {
+                define_accessor_cached(obj, key, fn, kind == 1, &chunk.feedback[fb_idx]);
+            }
+        }
+    }
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -6757,6 +7203,16 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaWithResolved)] = &h_gen_LdaWithResolved;
     t[static_cast<uint8_t>(Op::StaWithResolved)] = &h_gen_StaWithResolved;
     t[static_cast<uint8_t>(Op::LdaConstWide)] = &h_LdaConstWide;
+    t[static_cast<uint8_t>(Op::GetNamedWide)] = &h_GetNamedWide;
+    t[static_cast<uint8_t>(Op::SetNamedWide)] = &h_SetNamedWide;
+    t[static_cast<uint8_t>(Op::GetPrivateWide)] = &h_GetPrivateWide;
+    t[static_cast<uint8_t>(Op::SetPrivateWide)] = &h_SetPrivateWide;
+    t[static_cast<uint8_t>(Op::DefineOwnWide)] = &h_DefineOwnWide;
+    t[static_cast<uint8_t>(Op::GetKeyedWide)] = &h_GetKeyedWide;
+    t[static_cast<uint8_t>(Op::SetKeyedWide)] = &h_SetKeyedWide;
+    t[static_cast<uint8_t>(Op::FinalizeStaticPropertyWide)] = &h_FinalizeStaticPropertyWide;
+    t[static_cast<uint8_t>(Op::CallViaFunctionCallWide)] = &h_CallViaFunctionCallWide;
+    t[static_cast<uint8_t>(Op::CallViaFunctionApplyWide)] = &h_CallViaFunctionApplyWide;
     t[static_cast<uint8_t>(Op::CallDirectEval)] = &h_gen_CallDirectEval;
     t[static_cast<uint8_t>(Op::ResolveBindingEnv)] = &h_gen_ResolveBindingEnv;
     t[static_cast<uint8_t>(Op::LdaResolvedEnv)] = &h_gen_LdaResolvedEnv;
