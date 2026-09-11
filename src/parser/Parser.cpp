@@ -2216,7 +2216,18 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
                 NameScope& theirs = expr_parser.name_scopes_.back();
                 mine.class_expression = mine.class_expression || theirs.class_expression;
                 for (auto n : theirs.captured) mine.captured.insert(n);
-                for (auto n : theirs.all) mine.all.insert(n);
+                // Guarded the same way FunctionNames::~FunctionNames guards its
+                // own fold into a parent, even though theirs.declared_here is
+                // always empty today (a `${...}` substitution only ever parses
+                // one Expression, never a var/for statement) -- an unguarded
+                // duplicate of the exact bug this whole project exists to fix,
+                // sitting in a second location "because it happens to always be
+                // empty," is exactly the kind of latent trap that becomes next
+                // month's regression.
+                for (auto n : theirs.all) {
+                    if (theirs.declared_here.count(n)) continue;
+                    mine.all.insert(n);
+                }
                 mine.eval_in_nested = mine.eval_in_nested || theirs.eval_in_nested;
             }
             expressions.push_back(std::move(expression));
@@ -3579,6 +3590,16 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             DestructuringAssignment* dest = static_cast<DestructuringAssignment*>(destructuring.get());
             dest->set_source(std::move(init));
 
+            // `var`-kind destructured names are function-scoped like any other
+            // `var`, so they belong in declared_here same as a simple `var`
+            // binding -- `let`/`const` destructuring is block-scoped and must
+            // not (see NameScope::declared_here's own comment).
+            if (kind == VariableDeclarator::Kind::VAR) {
+                std::vector<std::string> bound;
+                dest->collect_bound_names(bound);
+                for (const auto& name : bound) declare_local_name(name);
+            }
+
             // The empty name is what marks a declarator as destructuring; the
             // position is the pattern's own, not the declaration's, so a later
             // declarator does not report the first one's location.
@@ -3675,7 +3696,11 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
         auto id = std::make_unique<Identifier>(token_string(current_token()),
                                              current_token().get_start(), current_token().get_end());
         advance();
-        
+        // `var`-kind is function-scoped regardless of which block this
+        // declaration textually sits in; `let`/`const` are block-scoped and
+        // must not go into declared_here (see NameScope::declared_here).
+        if (kind == VariableDeclarator::Kind::VAR) declare_local_name(id->get_name());
+
         std::unique_ptr<ASTNode> init = nullptr;
         if (consume_if_match(TokenType::ASSIGN)) {
             init = parse_assignment_expression();
@@ -4515,6 +4540,15 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                             }
                         }
                     }
+                } else if (kind == VariableDeclarator::Kind::VAR) {
+                    // `for (var [pattern] ...)` is function-scoped like any
+                    // other `var`, same reasoning as parse_variable_declaration.
+                    auto* da = dynamic_cast<DestructuringAssignment*>(destructuring.get());
+                    if (da) {
+                        std::vector<std::string> bound;
+                        da->collect_bound_names(bound);
+                        for (const auto& nm : bound) declare_local_name(nm);
+                    }
                 }
 
                 if (current_token().get_type() == TokenType::ASSIGN) {
@@ -4591,6 +4625,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             }
 
             auto identifier = std::make_unique<Identifier>(var_name, var_start, var_end);
+            if (kind == VariableDeclarator::Kind::VAR) declare_local_name(var_name);
 
             std::unique_ptr<ASTNode> initializer = nullptr;
             if (current_token().get_type() == TokenType::ASSIGN) {
@@ -4624,6 +4659,14 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 if (!next_identifier) {
                     add_error("Expected identifier after ',' in variable declaration");
                     return nullptr;
+                }
+                // parse_identifier() already ran note_name on this one (unlike
+                // the first binder above, built by hand) -- recorded as an
+                // ordinary mention, not a declaration. declared_here still
+                // needs it for `var`, same as the first binder, regardless of
+                // how it got into `all`.
+                if (kind == VariableDeclarator::Kind::VAR) {
+                    declare_local_name(static_cast<Identifier*>(next_identifier.get())->get_name());
                 }
 
                 std::unique_ptr<ASTNode> next_initializer = nullptr;
@@ -7129,14 +7172,21 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         id = std::make_unique<Identifier>(std::string(fe_name),
                                         current_token().get_start(), current_token().get_end());
         advance();
+        // A named function expression's own name is bound only within its
+        // own body (fn_names has already pushed this function's scope,
+        // above) -- the same "resolves entirely inside mine" category as a
+        // parameter, so it belongs in declared_here for the same reason.
+        declare_local_name(std::string(fe_name));
     } else if (current_token().get_type() == TokenType::YIELD && !options_.strict_mode && !is_generator) {
         // yield is a valid function expression name in sloppy non-generator context
         note_name("yield");
+        declare_local_name("yield");
         id = std::make_unique<Identifier>("yield", current_token().get_start(), current_token().get_end());
         advance();
     } else if (current_token().get_type() == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module) {
         // await is a valid function expression name outside async context
         note_name("await");
+        declare_local_name("await");
         id = std::make_unique<Identifier>("await", current_token().get_start(), current_token().get_end());
         advance();
     }

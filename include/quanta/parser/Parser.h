@@ -113,17 +113,30 @@ private:
         // hash-set node.
         IdSet all;
         IdSet captured;
-        // This function's own simple (non-destructured) parameter names --
-        // subtracted from `all` when it folds into the enclosing scope's
-        // `captured` (see FunctionNames::~FunctionNames). `all` itself
-        // still keeps them: a plain read of its own parameter inside this
-        // function's body is recorded exactly like any other identifier
-        // (note_name does not know the difference), which is correct for
-        // `all`'s own job of answering "does this function mention X
-        // anywhere", but wrong for `captured`'s -- a parameter is never a
-        // name the enclosing function needs to keep alive in an
-        // Environment for this function to reach.
-        IdSet own_names;
+        // Every name this function itself declares in a form that is
+        // unambiguously function-scoped -- currently just its own simple
+        // (non-destructured) parameters (record_params/record_param).
+        // Withheld entirely (not just from `captured`) when this scope
+        // folds into its parent's, see FunctionNames::~FunctionNames: a
+        // name fully contained here never reaches any ancestor's sets at
+        // all, which is what makes the exclusion transitive without ever
+        // exporting a flag across levels. `all` still keeps every one of
+        // these names for THIS scope's own snapshot (a plain read of its
+        // own parameter is recorded exactly like any other identifier,
+        // note_name does not know the difference) -- only the fold into
+        // the parent withholds them.
+        //
+        // Deliberately excludes let/const/class/catch-params/let-or-const
+        // for-loop binders even though those are also "declared here":
+        // this struct is function-granularity only (no per-block scope
+        // exists), and a block-scoped shadow folded into this set would be
+        // indistinguishable from a real function-scoped declaration,
+        // wrongly swallowing a sibling function's genuine free reference
+        // to an unrelated same-named binding from a real outer ancestor.
+        // var/parameters/a named function expression's own self-reference
+        // have no such hazard: they are function-scoped regardless of
+        // which block they are textually written in.
+        IdSet declared_here;
         bool eval_in_nested = false;
         bool class_expression = false;
     };
@@ -150,6 +163,18 @@ private:
         if (!recording_names_) return;
         if (name_scopes_.empty()) return;
         name_scopes_.back().all.insert(NamePool::intern(n));
+    }
+    // For a declaration form that is unambiguously function-scoped
+    // regardless of which block it is textually nested in (var, a named
+    // function expression's own self-reference) -- see NameScope::
+    // declared_here's own comment for why block-scoped forms (let/const/
+    // class/catch params) must never call this. Unlike note_name, this
+    // does not need a recording_names_ guard: it is only ever called from
+    // a declaration's own parse, never from the property-name contexts
+    // NameRecording suppresses.
+    void declare_local_name(const std::string& n) {
+        if (name_scopes_.empty()) return;
+        name_scopes_.back().declared_here.insert(NamePool::intern(n));
     }
     // Opens the scope of a function literal; closing it hands what the
     // function mentioned to whatever encloses it.
@@ -179,7 +204,7 @@ private:
         // Called once the parameter list is fully parsed, before the body:
         // a simple (non-destructured) parameter's own name is never one
         // this function needs FROM its enclosing scope, however many times
-        // its own body reads it -- see NameScope::own_names' own comment.
+        // its own body reads it -- see NameScope::declared_here' own comment.
         // A destructured parameter's synthetic name is skipped: nothing in
         // the body ever reads it by that name, so there is nothing to
         // exclude, and the names the pattern itself binds are its own,
@@ -189,14 +214,14 @@ private:
             NameScope& mine = p.name_scopes_.back();
             for (const auto& param : params) {
                 if (param->has_destructuring()) continue;
-                if (const Identifier* id = param->get_name()) mine.own_names.insert(NamePool::intern(id->get_name()));
+                if (const Identifier* id = param->get_name()) mine.declared_here.insert(NamePool::intern(id->get_name()));
             }
         }
         // Single-identifier arrow form (`x => ...`), which never builds a
         // Parameter vector at all.
         void record_param(const std::string& name) {
             if (p.name_scopes_.empty()) return;
-            p.name_scopes_.back().own_names.insert(NamePool::intern(name));
+            p.name_scopes_.back().declared_here.insert(NamePool::intern(name));
         }
         BodyScopeInfo take() const {
             BodyScopeInfo info;
@@ -229,9 +254,21 @@ private:
             NameScope& parent = p.name_scopes_.back();
             const bool eval_here = mine.all.count(NamePool::intern("eval")) != 0 || mine.eval_in_nested;
             for (auto n : mine.all) {
-                // `all` keeps every name regardless -- see NameScope::
-                // own_names' own comment for why `captured` must not.
-                if (!mine.own_names.count(n)) parent.captured.insert(n);
+                // Withheld from BOTH parent sets, not just `captured`: a
+                // name fully contained in `mine` must never reach the
+                // parent's `all` either, otherwise the parent's own fold
+                // into ITS parent sees an ordinary mention with no memory
+                // that this level already decided the name stops here --
+                // that gap (all folding unconditionally while captured
+                // didn't) is what let an inner closure's own parameter leak
+                // past its immediate parent. Re-deciding this fresh, from
+                // only `mine.declared_here`, at every single level -- never
+                // exporting a flag into a shared bucket across levels --
+                // is what keeps a sibling's genuine capture of the same
+                // text, or this parent's own direct reference to it, from
+                // ever being confused with a name that stops here.
+                if (mine.declared_here.count(n)) continue;
+                parent.captured.insert(n);
                 parent.all.insert(n);
             }
             parent.eval_in_nested = parent.eval_in_nested || eval_here;
