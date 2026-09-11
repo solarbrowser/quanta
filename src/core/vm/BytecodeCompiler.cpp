@@ -6464,7 +6464,7 @@ void BytecodeCompiler::emit_read_local(const std::string& name) {
             emit_ancestor_read(hops, slot, name);
             return;
         }
-        emit(Op::LdaLookup); emit_u16(add_name(name)); return;
+        emit_lookup_ref(Op::LdaLookup, Op::LdaLookupWide, name); return;
     }
     if (lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) {
         emit(Op::LdarChecked);
@@ -6511,7 +6511,7 @@ void BytecodeCompiler::emit_write_local(const std::string& name, bool is_declara
             emit_ancestor_write(hops, slot, name);
             return;
         }
-        emit(Op::StaLookup); emit_u16(add_name(name)); return;
+        emit_lookup_ref(Op::StaLookup, Op::StaLookupWide, name); return;
     }
     if (!is_declaration && lexical_registers_.count(reg) && !initialized_lexicals_.count(reg)) {
         emit(Op::StarChecked);
@@ -6656,7 +6656,8 @@ void BytecodeCompiler::fuse_store_pairs() {
 }
 
 void BytecodeCompiler::emit(Op op) {
-    if (op == Op::LdaLookup || op == Op::StaLookup) chunk_->uses_lookup_cache = true;
+    if (op == Op::LdaLookup || op == Op::StaLookup ||
+        op == Op::LdaLookupWide || op == Op::StaLookupWide) chunk_->uses_lookup_cache = true;
     if (op == Op::CreateClosure) chunk_->has_nested_closures = true;
     // super.x/super.x=/super[expr] all read `this` too, as the receiver an
     // accessor they find is called with (or, for ResolveSuperBase, as the
@@ -6709,14 +6710,41 @@ void BytecodeCompiler::emit_u32(uint32_t v) {
     code_.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
 }
 
-uint16_t BytecodeCompiler::add_name(const std::string& name) {
+uint32_t BytecodeCompiler::intern_name(const std::string& name) {
     auto it = name_index_.find(name);
     if (it != name_index_.end()) return it->second;
-    if (names_.size() >= 0xFFFF) { failed_ = true; return 0; }
-    const uint16_t index = static_cast<uint16_t>(names_.size());
+    if (names_.size() >= 0xFFFFFFFEu) { failed_ = true; return 0; }
+    const uint32_t index = static_cast<uint32_t>(names_.size());
     names_.push_back(name);
     name_index_.emplace(name, index);
     return index;
+}
+
+// Only ~20 of the opcodes carrying a name-index operand (GetNamed's own
+// name half, LdaEnv, DeclarePrivateName, BindClassName, ...) have ever
+// gotten a Wide counterpart -- LdaLookup/StaLookup, via emit_lookup_ref
+// below, are the one pair that has. Every other caller of this function
+// still hard-fails once intern_name's shared pool passes 65535 distinct
+// names in one chunk, same as every pool here did before its own Wide
+// fix landed -- this one just hasn't gotten the rest of the treatment.
+// Re-validated on every call, not just on a fresh intern: a name already
+// interned past 65535 through emit_lookup_ref's wide path must still
+// fail here on a later cache hit, not silently truncate.
+uint16_t BytecodeCompiler::add_name(const std::string& name) {
+    uint32_t idx = intern_name(name);
+    if (idx > 0xFFFFu) { failed_ = true; return 0; }
+    return static_cast<uint16_t>(idx);
+}
+
+void BytecodeCompiler::emit_lookup_ref(Op narrow_op, Op wide_op, const std::string& name) {
+    uint32_t idx = intern_name(name);
+    if (idx <= 0xFFFFu) {
+        emit(narrow_op);
+        emit_u16(static_cast<uint16_t>(idx));
+    } else {
+        emit(wide_op);
+        emit_u32(idx);
+    }
 }
 
 // A pool past the 65535th entry no longer fits the narrow form's operand --
@@ -10101,8 +10129,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     return !failed_;
                 }
             }
-            emit(Op::LdaLookup);
-            emit_u16(add_name(name));
+            emit_lookup_ref(Op::LdaLookup, Op::LdaLookupWide, name);
             return !failed_;
         }
 

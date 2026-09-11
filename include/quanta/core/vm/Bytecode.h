@@ -346,6 +346,18 @@ enum class Op : uint8_t {
     CreateClosureWide,                // k32
     DeclareFunctionWide,               // k32
 
+    // Wide counterparts of LdaLookup/StaLookup only -- add_name's own
+    // names_ pool has the identical 65535-entry ceiling every pool here
+    // has had, but ~20 opcodes carry a name-index operand and covering
+    // all of them is a much larger change than this pair; these two are
+    // the plain dynamic-lookup read/write, the simplest and most direct
+    // pair to give the escape hatch to. Every other name-bearing opcode
+    // (GetNamed's own name half, LdaEnv, DeclarePrivateName, ...) still
+    // hard-fails at 65535 distinct names in one chunk -- see add_name's
+    // own doc comment.
+    LdaLookupWide,                     // k32
+    StaLookupWide,                     // k32
+
     // Same operands as Call. A direct eval runs in the caller's scope, and the
     // eval builtin learns that from a flag on the calling context.
     CallDirectEval,            // r_callee r_args_start argc n

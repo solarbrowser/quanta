@@ -158,6 +158,7 @@ const OpInfo& op_info(Op op) {
         {"FinalizeStaticPropertyWide", 10, 'L'},
         {"CallViaFunctionCallWide", 7, 'M'}, {"CallViaFunctionApplyWide", 6, 'O'},
         {"CreateClosureWide", 4, 'U'}, {"DeclareFunctionWide", 4, 'V'},
+        {"LdaLookupWide", 4, 'H'}, {"StaLookupWide", 4, 'T'},
         {"CallDirectEval", 5, 'c'},
         {"ResolveBindingEnv", 3, 'n'},
         {"LdaResolvedEnv", 3, 'i'}, {"StaResolvedEnv", 3, 'i'},
@@ -357,6 +358,16 @@ std::string disassemble_chunk(const BytecodeChunk& chunk, const std::string& nam
             case 'n': {
                 uint16_t idx = static_cast<uint16_t>(chunk.code[operand_pc]) |
                                (static_cast<uint16_t>(chunk.code[operand_pc + 1]) << 8);
+                out << " '" << chunk.name_at(idx) << "'";
+                break;
+            }
+            // Wide counterpart of 'n' (LdaLookupWide/StaLookupWide only):
+            // same single-index shape, k32 instead of k16.
+            case 'H': case 'T': {
+                uint32_t idx = static_cast<uint32_t>(chunk.code[operand_pc]) |
+                               (static_cast<uint32_t>(chunk.code[operand_pc + 1]) << 8) |
+                               (static_cast<uint32_t>(chunk.code[operand_pc + 2]) << 16) |
+                               (static_cast<uint32_t>(chunk.code[operand_pc + 3]) << 24);
                 out << " '" << chunk.name_at(idx) << "'";
                 break;
             }

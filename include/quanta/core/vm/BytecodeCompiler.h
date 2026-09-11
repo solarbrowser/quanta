@@ -273,7 +273,14 @@ private:
     uint32_t add_constant(const Value& v);
     void emit_load_const(const Value& v);
     void emit_u32(uint32_t v);
+    // Interns into names_/name_index_ with no ceiling of its own (besides
+    // the same 4-billion-ish one add_constant uses) -- add_name below is
+    // the narrow-only wrapper every other caller still gets. See
+    // add_name's own doc comment for why only LdaLookup/StaLookup get the
+    // wide escape hatch this enables.
+    uint32_t intern_name(const std::string& name);
     uint16_t add_name(const std::string& name);
+    void emit_lookup_ref(Op narrow_op, Op wide_op, const std::string& name);
     uint32_t alloc_feedback_slot();
     uint32_t alloc_private_feedback();
     uint32_t alloc_keyed_feedback();
@@ -445,7 +452,12 @@ private:
     // Where each name already sits, so add_name does not compare against every
     // name already in the table. The table itself stays a vector because the
     // chunk indexes into it; this only exists while the chunk is being built.
-    std::unordered_map<std::string, uint16_t> name_index_;
+    // uint32_t, not uint16_t: intern_name can return past 65535 (only
+    // LdaLookupWide/StaLookupWide can address that far -- see add_name's
+    // own doc comment). A name interned once at a wide index and looked
+    // up again through plain add_name correctly reports "past add_name's
+    // own range" rather than silently truncating.
+    std::unordered_map<std::string, uint32_t> name_index_;
     std::vector<FeedbackSlot> feedback_;
     std::unordered_map<std::string, int> locals_;
     // Names declared `const` in this chunk. declare_local() only takes a name,

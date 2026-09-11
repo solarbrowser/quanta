@@ -2533,6 +2533,90 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// Wide counterpart of h_gen_LdaLookup -- see h_GetNamedWide's own comment
+// (add_name's own pool, this time, not a feedback one -- see add_name's
+// doc comment for why only this opcode and StaLookup got the wide form).
+// Never fused (no LdaLookupStarWide exists), so no FUSED_EPILOGUE. Kept
+// as the same do/while(0)+break shape the narrow form uses, for the same
+// musttail/CHECK_EXC reason h_GetKeyedWide's own comment explains.
+Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
+    const uint8_t* code = f.code;
+    Environment* entry_env = f.entry_env;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    do {
+        {
+            uint32_t name_idx = read_u32(code, pc + 1);
+            pc += 5;
+            {
+                const auto& entry = lookup_cache_data[name_idx];
+                if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
+                } else if (entry.obj_shape) {
+                    Object* bo = entry.env->get_binding_object();
+                    if (bo && bo->get_shape() == entry.obj_shape &&
+                        entry.descriptor_epoch == Object::descriptor_epoch()) {
+                        if (const Value* s = bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
+                            acc = *s;
+                            break;
+                        }
+                    }
+                } else if (entry.slot) { acc = *entry.slot; break; }
+            }
+            const std::string* key = chunk.names[name_idx];
+            const std::string& name = *key;
+            if (ctx.is_in_tdz_interned(key)) {
+                ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                CHECK_EXC();
+                break;
+            }
+            Environment* env = ctx.get_lexical_environment();
+            bool found = false;
+            bool beyond_frame = false;
+            {
+                Context* prev_cc = Object::current_context_;
+                Object::current_context_ = &ctx;
+                for (; env; env = env->get_outer()) {
+                    if (env == entry_env) beyond_frame = true;
+                    if (env->try_get_binding_interned(key, acc, &ctx)) { found = true; break; }
+                    if (ctx.has_exception()) break;
+                }
+                Object::current_context_ = prev_cc;
+            }
+            CHECK_EXC();
+            if (found) {
+                if (beyond_frame && (env != entry_env || chunk.script_mode) &&
+                    !env->is_per_call_scope()) {
+                    uint32_t obj_slot = 0;
+                    bool slot_writable = false;
+                    if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
+                        env->mark_referenced();
+                        lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable,
+                                                      Environment::binding_shadow_epoch()};
+                    } else if (env->cacheable_object_binding(name, obj_slot)) {
+                        env->mark_referenced();
+                        lookup_cache_data[name_idx] = {env, nullptr,
+                            env->get_binding_object()->get_shape(),
+                            Object::descriptor_epoch(), obj_slot, false,
+                            Environment::binding_shadow_epoch()};
+                    }
+                }
+            } else if (ctx.has_binding(name)) {
+                acc = ctx.get_binding(name);
+                CHECK_EXC();
+            } else {
+                ctx.throw_reference_error("'" + name + "' is not defined");
+                CHECK_EXC();
+            }
+            break;
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = f.ctx;
@@ -2664,6 +2748,90 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                 CHECK_EXC();
                 break;
             }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
+// Wide counterpart of h_gen_StaLookup -- see h_LdaLookupWide's own comment.
+Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = f.ctx;
+    BytecodeChunk::LookupCacheEntry* lookup_cache_data = f.lookup_cache_data;
+    const uint8_t* code = f.code;
+    Environment* entry_env = f.entry_env;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    do {
+        {
+            uint32_t sta_name_idx = read_u32(code, pc + 1);
+            pc += 5;
+            {
+                const auto& entry = lookup_cache_data[sta_name_idx];
+                if (entry.slot && !entry.obj_shape && entry.writable &&
+                    entry.shadow_epoch == Environment::binding_shadow_epoch()) {
+                    if (acc.is_object() || acc.is_function() || acc.is_string() ||
+                        acc.is_symbol() || acc.is_bigint()) {
+                        Collector::write_barrier_env(entry.env);
+                    }
+                    *entry.slot = acc;
+                    break;
+                }
+            }
+            const std::string* key = chunk.names[sta_name_idx];
+            const std::string& name = *key;
+            if (ctx.is_in_tdz_interned(key)) {
+                ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                CHECK_EXC();
+                break;
+            }
+            Environment* env = ctx.find_binding_env_interned(key);
+            CHECK_EXC();
+            if (!env) {
+                if (ctx.is_strict_mode()) {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    CHECK_EXC();
+                    break;
+                }
+                Object* global = ctx.get_global_object();
+                if (global) global->set_property(name, acc);
+                break;
+            }
+            if (env->get_type() == Environment::Type::Object && env->get_binding_object()) {
+                Object* bobj = env->get_binding_object();
+                if (!bobj->has_own_property(name) && ctx.is_strict_mode()) {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    CHECK_EXC();
+                    break;
+                }
+                bool ok = bobj->set_property(name, acc);
+                if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                }
+            } else {
+                bool ok = env->set_binding(name, acc);
+                if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                } else if (ok && (env != entry_env || chunk.script_mode)) {
+                    bool beyond_frame = chunk.script_mode && env == entry_env;
+                    if (!beyond_frame) {
+                        for (Environment* e = entry_env->get_outer(); e; e = e->get_outer()) {
+                            if (e == env) { beyond_frame = true; break; }
+                        }
+                    }
+                    bool slot_writable = false;
+                    Value* slot = beyond_frame ? env->stable_binding_slot(name, &slot_writable)
+                                               : nullptr;
+                    if (slot && slot_writable && !env->is_per_call_scope()) {
+                        env->mark_referenced();
+                        lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true,
+                                                          Environment::binding_shadow_epoch()};
+                    }
+                }
+            }
+            CHECK_EXC();
+            break;
+        }
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
@@ -7246,6 +7414,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::CallViaFunctionApplyWide)] = &h_CallViaFunctionApplyWide;
     t[static_cast<uint8_t>(Op::CreateClosureWide)] = &h_CreateClosureWide;
     t[static_cast<uint8_t>(Op::DeclareFunctionWide)] = &h_DeclareFunctionWide;
+    t[static_cast<uint8_t>(Op::LdaLookupWide)] = &h_LdaLookupWide;
+    t[static_cast<uint8_t>(Op::StaLookupWide)] = &h_StaLookupWide;
     t[static_cast<uint8_t>(Op::CallDirectEval)] = &h_gen_CallDirectEval;
     t[static_cast<uint8_t>(Op::ResolveBindingEnv)] = &h_gen_ResolveBindingEnv;
     t[static_cast<uint8_t>(Op::LdaResolvedEnv)] = &h_gen_LdaResolvedEnv;
