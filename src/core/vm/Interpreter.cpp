@@ -1983,15 +1983,15 @@ Value h_gen_LdaThis(Frame& f, uint32_t pc, Value acc) {
                     break;
                 }
                 if (!this_resolved) {
-                    // Same resolution as LdaLookup 'this': the binding is
-                    // created by Function::call (arrows find the outer one
-                    // through the chain).
-                    Environment* env = ctx.find_binding_env("this");
-                    if (env) {
-                        this_value = env->get_binding_direct("this", &ctx);
-                    } else if (ctx.has_binding("this")) {
-                        this_value = ctx.get_binding("this");
-                    }
+                    // find_binding_env("this")/has_binding("this")/get_binding
+                    // ("this") each special-case the name and return in one
+                    // step -- no environment has owned `this` since it became
+                    // pure Context frame state, so the chain-walk shape this
+                    // used to have (env lookup, then a binding fetch) was
+                    // three redundant "this"-string compares (each paying a
+                    // temporary std::string construction) to reach exactly
+                    // what get_this_value() already holds directly.
+                    this_value = ctx.get_this_value();
                     CHECK_EXC();
                     this_resolved = true;
                 }
