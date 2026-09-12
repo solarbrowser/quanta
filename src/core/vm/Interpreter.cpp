@@ -3564,9 +3564,16 @@ Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
                     ctx.set_variable_environment(ctx.get_lexical_environment());
                 }
                 Environment* env = ctx.get_lexical_environment();
-                if (chunk.env) for (const auto& loc : chunk.env->env_locals) {
+                // Interned, not name-based: chunk.env->env_local_keys is already
+                // populated (VM::run's own entry seeding fills it before any
+                // bytecode -- this opcode included -- ever dispatches), so
+                // reaching for the cached pointer here instead of the raw name
+                // skips a Shape::intern() per local on every single call.
+                if (chunk.env) for (size_t li = 0; li < chunk.env->env_locals.size(); li++) {
+                    const auto& loc = chunk.env->env_locals[li];
+                    const std::string* key = chunk.env->env_local_keys[li];
                     if (loc.is_lexical) {
-                        env->create_uninitialized_binding(loc.name, !loc.is_const);
+                        env->create_uninitialized_binding_interned(key, !loc.is_const);
                         // is_strict_const() wants the const SET, not just the cleared mutable
                         // flag, and every "Assignment to constant variable" check gates on
                         // it -- without this they are all inert in sloppy mode for a binding
@@ -3576,10 +3583,10 @@ Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
                     // Spec FDI: in the split scope a var that repeats a
                     // parameter's name starts from that parameter's value, not
                     // undefined -- the two are separate bindings from here on.
-                    else if (split_scope && params_env->has_own_binding(loc.name)) {
-                        env->create_binding(loc.name, params_env->get_binding(loc.name), true);
+                    else if (split_scope && params_env->has_own_binding_interned(key)) {
+                        env->create_binding_interned(key, params_env->get_binding_direct_interned(key), true);
                     }
-                    else env->create_binding(loc.name, Value(), true);
+                    else env->create_binding_interned(key, Value(), true);
                 }
                 break;
             }
