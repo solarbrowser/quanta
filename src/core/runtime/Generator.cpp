@@ -663,6 +663,11 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     // A named class's own name is bound as an immutable self-reference inside its
     // methods (__closure_const_<name>) -- see ClassDeclaration::evaluate. Everything
     // else resolves through closure_environment_, no materialization needed.
+    // Counted (not just applied) so get_suspendable_chunk's lazy compile below
+    // can tell the compiler's env_bound slot predictor how many of these
+    // bindings actually landed ahead of the parameters it already knows about
+    // -- see EnvSlotHazards.
+    int closure_slot_count = 0;
     auto prop_keys = this->get_internal_property_keys();
     for (const auto& key : prop_keys) {
         if (key.length() > 10 && key.substr(0, 10) == "__closure_" && key.substr(0, 16) != "__closure_const_") {
@@ -670,6 +675,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
             if (this->has_property("__closure_const_" + var_name)) {
                 Value closure_value = this->get_property(key);
                 gen_context.create_lexical_binding(var_name, closure_value, false);
+                closure_slot_count++;
             }
         }
     }
@@ -677,15 +683,27 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     // Spec 15.8.4 NamedEvaluation / FunctionDeclarationInstantiation: a named
     // GeneratorExpression binds its own name as an immutable self-reference
     // inside its body (assignment is silently ignored in sloppy mode, throws in strict).
+    bool self_name_slot = false;
     {
         const std::string& fn_name = this->get_name();
         if (!fn_name.empty() && fn_name != "<anonymous>" && !gen_context.has_binding(fn_name)) {
             gen_context.create_binding(fn_name, Value(this), false);
+            self_name_slot = true;
         }
     }
 
     // Compile now so the arguments-object check below can see needs_arguments.
-    const BytecodeChunk* susp_chunk = get_suspendable_chunk(gen_context);
+    // Everything above that lands in gen_context ahead of the parameter
+    // bindings further down is already known at this point -- see
+    // EnvSlotHazards's doc comment for why counting it here (rather than
+    // leaving the compiler's env_bound predictor at its 0 default) matters.
+    EnvSlotHazards susp_hazards;
+    susp_hazards.closure_slot_count = closure_slot_count;
+    susp_hazards.home_object = gen_slots.home_object != nullptr;
+    susp_hazards.super_ctor = gen_slots.super_ctor != nullptr;
+    susp_hazards.is_static_method = gen_slots.is_static_method;
+    susp_hazards.self_name_slot = self_name_slot;
+    const BytecodeChunk* susp_chunk = get_suspendable_chunk(gen_context, &susp_hazards);
 
     // The chunk always compiles with an empty parameter list (params bind
     // into the Context directly, not chunk registers -- see
@@ -834,7 +852,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     return std::make_unique<Generator>(this, gen_context_ptr.release(), &ctx);
 }
 
-const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx) {
+const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx, const EnvSlotHazards* hazards) {
     const FunctionExecutable* exe = get_executable().get();
     if (!exe) return nullptr;
     if (exe->suspendable_incompatible) return nullptr;
@@ -846,7 +864,7 @@ const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx) {
     for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
         if (e->is_with_environment()) { outer_with = true; break; }
     }
-    exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names(), outer_with);
+    exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names(), outer_with, hazards);
     if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
     return exe->suspendable_chunk.get();

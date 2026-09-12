@@ -32,6 +32,7 @@ class BytecodeChunk;
 class Visitor;
 class AsyncFunction;
 class AsyncGeneratorFunction;
+struct EnvSlotHazards;
 
 // Fiber-based async executor (minicoro). The body runs exactly once on a
 // dedicated stack. `await expr` suspends via mco_yield; promise callbacks
@@ -109,7 +110,7 @@ public:
 
     Value call(Context& ctx, std::span<const Value> args, Value this_value = Value());
 
-    const BytecodeChunk* get_suspendable_chunk(Context& ctx);
+    const BytecodeChunk* get_suspendable_chunk(Context& ctx, const EnvSlotHazards* hazards = nullptr);
     void trace(Visitor& v);
 };
 
@@ -269,7 +270,7 @@ public:
 
     Value call(Context& ctx, std::span<const Value> args, Value this_value = Value());
 
-    const BytecodeChunk* get_suspendable_chunk(Context& ctx);
+    const BytecodeChunk* get_suspendable_chunk(Context& ctx, const EnvSlotHazards* hazards = nullptr);
     void trace(Visitor& v);
 };
 

@@ -23,6 +23,7 @@ class ASTNode;
 class Function;
 class BytecodeChunk;
 class Visitor;
+struct EnvSlotHazards;
 
 class YieldException : public std::exception {
 public:
@@ -195,7 +196,7 @@ public:
 
     // Compiles on first call and caches; permanently null if the body or the
     // captured scope chain (a `with`) is incompatible.
-    const BytecodeChunk* get_suspendable_chunk(Context& ctx);
+    const BytecodeChunk* get_suspendable_chunk(Context& ctx, const EnvSlotHazards* hazards = nullptr);
     void trace(Visitor& v);
 };
 

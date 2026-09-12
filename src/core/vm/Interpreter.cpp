@@ -7924,12 +7924,15 @@ Value run_expression(const ASTNode* expr, Context& ctx, bool& ok) {
 
 std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
                                                    const std::vector<std::string>& env_bound,
-                                                   bool outer_with) {
+                                                   bool outer_with,
+                                                   const EnvSlotHazards* env_slot_hazards) {
     if (!body) return nullptr;
     static const std::vector<std::unique_ptr<Parameter>> no_params;
     auto chunk = BytecodeCompiler::compile(body, ParamList::from_nodes(no_params), /*suspendable=*/true,
                                            /*is_arrow=*/false, /*is_strict=*/false, &env_bound,
-                                           outer_with);
+                                           outer_with, /*allow_arguments=*/false, /*scope_info=*/nullptr,
+                                           /*ancestor_chain=*/nullptr, /*needs_self_binding=*/false,
+                                           env_slot_hazards);
     if (!chunk) return nullptr;
     static const bool disasm = [] {
         const char* env = std::getenv("QUANTA_VM_DISASM");

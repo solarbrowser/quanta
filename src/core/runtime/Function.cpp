@@ -1037,6 +1037,10 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     // methods (__closure_const_<name>) since the class's name binding doesn't exist
     // in scope yet when its methods are created -- see ClassDeclaration::evaluate.
     // Everything else resolves through closure_environment_, no materialization needed.
+    // Counted (not just found_any) so a compile() about to happen below can
+    // tell the compiler's slot predictor how many of these landed ahead of
+    // params/locals in this same Environment -- see EnvSlotHazards.
+    int closure_slot_count = 0;
     if (executable_->closure_props_state != 0) {
         auto prop_keys = this->get_internal_property_keys();
         bool found_any = false;
@@ -1049,6 +1053,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                     Environment* fn_lex = function_context.get_lexical_environment();
                     if (!fn_lex || !fn_lex->has_own_binding(var_name)) {
                         function_context.create_lexical_binding(var_name, closure_value, false);
+                        closure_slot_count++;
                     }
                 }
             }
@@ -1099,6 +1104,24 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
             for (Environment* e = function_context.get_lexical_environment(); e; e = e->get_outer()) {
                 if (e->is_with_environment()) { outer_with = true; break; }
             }
+            // Everything call_tree_walker will insert into this call's own
+            // Environment ahead of params/locals is already stable by now
+            // (this compile() only ever runs lazily, on first call, strictly
+            // after any class construction that produces slots/closure_props
+            // -- see EnvSlotHazards). self_name_slot mirrors self_name_state's
+            // own runtime check (Function.cpp below), just evaluated here
+            // too, alongside it, for the compiler's benefit.
+            const std::string& self_name = get_name();
+            EnvSlotHazards hazards;
+            hazards.closure_slot_count = closure_slot_count;
+            hazards.home_object = slots.home_object != nullptr;
+            hazards.super_ctor = slots.super_ctor != nullptr;
+            hazards.is_static_method = slots.is_static_method;
+            hazards.super_is_null = slots.super_is_null;
+            hazards.private_brands = slots.private_brands != nullptr;
+            hazards.self_name_slot = !self_name.empty() && self_name != "<anonymous>" &&
+                                      !function_context.has_binding(self_name) &&
+                                      BytecodeCompiler::references_identifier(ast, self_name);
             executable_->bytecode_chunk =
                 BytecodeCompiler::compile(ast, executable_->param_list(), /*suspendable=*/false, is_arrow_,
                                           is_strict_ || executable_->fast_strict,
@@ -1106,7 +1129,8 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                                           /*allow_arguments=*/false,
                                           executable_->body_scope_info(),
                                           executable_->outer_scope_chain,
-                                          executable_->needs_self_binding);
+                                          executable_->needs_self_binding,
+                                          &hazards);
             executable_->recompute_fast_gate();
             if (executable_->bytecode_chunk) {
                 // The chunk's constants (new, unmarked cells) are only reachable

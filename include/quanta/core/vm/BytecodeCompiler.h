@@ -23,6 +23,33 @@ class ASTNode;
 class Parameter;
 class ClassDeclaration;
 
+// How many bindings `Function::call_tree_walker` will insert into this
+// call's own Environment before params/locals seed into it (see
+// EnvSlotInfo's doc comment below) -- gathered by the caller from data that
+// is already stable by the time compile() runs (lazily, on first call,
+// strictly after any class construction that produces it), so the slot
+// predictor can start counting from the right place instead of always 0.
+// Every field here only ever shifts a *prediction*, never a real binding:
+// Environment::inline_slot_interned re-validates by name regardless, so a
+// wrong count here costs only the fast path, never correctness.
+struct EnvSlotHazards {
+    // Number of `__closure_<name>` bindings Function.cpp:1040-1060's sweep
+    // will actually create for this call (usually 0 or 1 -- the class's own
+    // name, when this method's body references it).
+    int closure_slot_count = 0;
+    bool home_object = false;      // Function.cpp: slots.home_object
+    bool super_ctor = false;       // Function.cpp: slots.super_ctor (__super__)
+    bool is_static_method = false; // only adds a slot when super_ctor also holds (__super_is_static__)
+    bool super_is_null = false;    // Function.cpp: slots.super_is_null
+    bool private_brands = false;   // Function.cpp: slots.private_brands
+    // Best-effort: self_name_state's own runtime check evaluated early, at
+    // the same call that lazily compiles this chunk, instead of only inside
+    // call_tree_walker's later prologue. Not a guaranteed-exact prediction
+    // (references_identifier is conservative), which is fine given the
+    // by-name re-validation above.
+    bool self_name_slot = false;
+};
+
 // Single-pass AST -> bytecode compiler. Returns nullptr for any function it
 // cannot fully compile -- that function then permanently runs on the
 // tree-walker (no mixed execution).
@@ -65,7 +92,12 @@ public:
                                                  // real ancestor than the chain's own hop count assumes.
                                                  // Only ever true from Function::call_default_impl, same
                                                  // as ancestor_chain itself.
-                                                 bool needs_self_binding = false);
+                                                 bool needs_self_binding = false,
+                                                 // What call_tree_walker will insert into this call's own
+                                                 // Environment before params/locals seed into it -- see
+                                                 // EnvSlotHazards's own doc comment. Null (the default) means
+                                                 // "nothing known," same as every field left at its default.
+                                                 const EnvSlotHazards* env_slot_hazards = nullptr);
 
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,

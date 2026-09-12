@@ -4297,7 +4297,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     bool suspendable, bool is_arrow, bool is_strict,
     const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
     const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain,
-    bool needs_self_binding) {
+    bool needs_self_binding, const EnvSlotHazards* env_slot_hazards) {
     if (!body) return nullptr;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
@@ -4904,6 +4904,25 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     constexpr size_t kEnvSlotPredictMax = 32;
     size_t flat_slot_counter = 0;
     if (env_mode) {
+        // Same reasoning as env_bound just below, for Function::call_tree_
+        // walker's own pre-seeding insertions (__closure_<name>, __home_
+        // object__, __super__/__super_is_static__, __super_is_null__,
+        // __eval_private_names__, a self-name recursion binding) -- see
+        // EnvSlotHazards's doc comment. All of it is stable and readable by
+        // the time this compile() call happens (lazily, on first call,
+        // strictly after any class construction that produces it), which is
+        // what makes counting it here sound rather than a guess.
+        if (env_slot_hazards) {
+            flat_slot_counter += static_cast<size_t>(env_slot_hazards->closure_slot_count);
+            if (env_slot_hazards->home_object) flat_slot_counter++;
+            if (env_slot_hazards->super_ctor) {
+                flat_slot_counter++;
+                if (env_slot_hazards->is_static_method) flat_slot_counter++;
+            }
+            if (env_slot_hazards->super_is_null) flat_slot_counter++;
+            if (env_slot_hazards->private_brands) flat_slot_counter++;
+            if (env_slot_hazards->self_name_slot) flat_slot_counter++;
+        }
         // A suspendable body's parameters are bound by the caller, into the
         // very environment this chunk runs in, before anything here binds
         // anything -- so they hold the first slots and the body's own names

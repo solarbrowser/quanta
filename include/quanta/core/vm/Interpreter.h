@@ -16,6 +16,7 @@ class Parameter;
 
 class Context;
 class Function;
+struct EnvSlotHazards;
 
 namespace VM {
 
@@ -41,7 +42,8 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 // per call/fiber.
 std::unique_ptr<BytecodeChunk> compile_suspendable(const ASTNode* body,
                                                    const std::vector<std::string>& env_bound,
-                                                   bool outer_with = false);
+                                                   bool outer_with = false,
+                                                   const EnvSlotHazards* env_slot_hazards = nullptr);
 
 // A parameter's default expression. Suspendable functions bind their
 // parameters outside the compiled body, so this is the one place a default is
