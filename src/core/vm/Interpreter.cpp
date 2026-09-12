@@ -5813,14 +5813,47 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                     const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
                     if (pe.receiver_shape == rs && pe.prototype == p0 && pe.proto_epoch == pep) {
                         // An absence is a value like any other here: undefined.
-                        // A getter entry is not served from this handler -- the
-                        // call it needs can throw, which is what the generated
-                        // handler's epilogue is for.
                         if (pe.absent) {
                             acc = Value();
                             FUSED_TAIL(6);
                         }
-                        if (pe.is_getter) break;
+                        // An inherited getter (class `get x()`, always a
+                        // prototype descriptor, never a shape slot) used to
+                        // fall all the way to h_gen_GetNamed here -- a full
+                        // descriptor rebuild plus chain walk on every single
+                        // call, even once this exact call site had already
+                        // proven it monomorphic. The call itself can still
+                        // throw, so it gets the same handler-table search
+                        // CHECK_EXC does, just written by hand: this handler
+                        // has no do/while(0)+FUSED_EPILOGUE wrapper of its own
+                        // for the macro's `continue` to land in.
+                        if (pe.is_getter) {
+                            if (pe.desc_epoch == Object::descriptor_epoch()) {
+                                if (Function* getter_fn = pe.cached_value.as_function()) {
+                                    f.instr_pc = pc;
+                                    Value result = getter_fn->call_register_args(f.ctx, {}, receiver);
+                                    if (f.ctx.has_exception()) {
+                                        const BytecodeChunk& chunk = f.chunk;
+                                        int32_t handler_pc = -1;
+                                        uint32_t best_width = UINT32_MAX;
+                                        if (chunk.handlers) for (const auto& h : *chunk.handlers) {
+                                            if (pc >= h.start_pc && pc < h.end_pc) {
+                                                uint32_t width = h.end_pc - h.start_pc;
+                                                if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
+                                            }
+                                        }
+                                        if (handler_pc < 0) return Value();
+                                        acc = f.ctx.get_exception();
+                                        f.ctx.clear_exception();
+                                        pc = static_cast<uint32_t>(handler_pc);
+                                        DISPATCH();
+                                    }
+                                    acc = result;
+                                    FUSED_TAIL(6);
+                                }
+                            }
+                            break;
+                        }
                         if (pe.from_descriptor) {
                             if (pe.desc_epoch == Object::descriptor_epoch()) {
                                 acc = pe.cached_value;
@@ -5864,7 +5897,34 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                         acc = Value();
                         FUSED_TAIL(6);
                     }
-                    if (pe.is_getter) break;
+                    // Same reasoning as the object-receiver scan above.
+                    if (pe.is_getter) {
+                        if (pe.desc_epoch == Object::descriptor_epoch()) {
+                            if (Function* getter_fn = pe.cached_value.as_function()) {
+                                f.instr_pc = pc;
+                                Value result = getter_fn->call_register_args(f.ctx, {}, receiver);
+                                if (f.ctx.has_exception()) {
+                                    const BytecodeChunk& chunk = f.chunk;
+                                    int32_t handler_pc = -1;
+                                    uint32_t best_width = UINT32_MAX;
+                                    if (chunk.handlers) for (const auto& h : *chunk.handlers) {
+                                        if (pc >= h.start_pc && pc < h.end_pc) {
+                                            uint32_t width = h.end_pc - h.start_pc;
+                                            if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
+                                        }
+                                    }
+                                    if (handler_pc < 0) return Value();
+                                    acc = f.ctx.get_exception();
+                                    f.ctx.clear_exception();
+                                    pc = static_cast<uint32_t>(handler_pc);
+                                    DISPATCH();
+                                }
+                                acc = result;
+                                FUSED_TAIL(6);
+                            }
+                        }
+                        break;
+                    }
                     if (pe.from_descriptor) {
                         if (pe.desc_epoch == Object::descriptor_epoch()) {
                             acc = pe.cached_value;
