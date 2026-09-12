@@ -366,16 +366,22 @@ inline bool function_proto_read_cacheable(const std::string& name) {
 //
 // `prototype` is recorded only by SetNamed, whose cached fact ("no [[Set]]
 // blocker on the chain") depends on which chain the receiver has. It is a real
-// GC cell, so recording one needs an owner to barrier against and to keep the
-// entry traced -- the gate learn_proto already uses.
+// GC cell, so recording one needs it kept traced -- gated on `rooted`, not
+// `owner`, for the same reason learn_proto's own callers gate on `rooted`:
+// an ownerless top-level script chunk is traced anyway for the run via
+// ChunkFeedbackRoot (see VM::run_script), so it needs no owner to barrier
+// against. write_barrier(owner) is still called unconditionally when
+// rooted -- it already no-ops safely on a null owner (Collector::
+// write_barrier bails on `!cell` first), so this costs nothing when an
+// owner-based chunk is the one actually being kept alive here instead.
 void learn_transition(FeedbackSlot* fb_slot, Shape* from_shape, Shape* to_shape,
                        Object* prototype, uint32_t slot_index, uint64_t epoch,
-                       Function* owner) {
+                       Function* owner, bool rooted) {
     // Reaching here is the site learning something, so the body exists
     // from this point on.
     FeedbackBody& fb = fb_slot->ensure();
     if (prototype) {
-        if (!owner) return;
+        if (!rooted) return;
         Collector::write_barrier(owner);
     }
     for (uint8_t i = 0; i < fb.transition_count; i++) {
@@ -993,7 +999,7 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         int32_t idx = s ? s->find_slot(name) : -1;
         if (idx >= 0) {
             learn_transition(fb_slot, shape_before, s, obj->get_prototype_raw(),
-                              static_cast<uint32_t>(idx), Object::proto_epoch(), owner);
+                              static_cast<uint32_t>(idx), Object::proto_epoch(), owner, rooted);
         }
     }
 }
@@ -1047,7 +1053,7 @@ void define_own_cached(Object* obj, const std::string& key, const Value& value, 
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(key) : -1;
         if (idx >= 0) {
-            learn_transition(fb_slot, shape_before, s, nullptr, static_cast<uint32_t>(idx), 0, nullptr);
+            learn_transition(fb_slot, shape_before, s, nullptr, static_cast<uint32_t>(idx), 0, nullptr, false);
         }
     }
 }
@@ -1119,7 +1125,7 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
         if (to_shape) {
             obj->add_accessor_shape_property_cached(key, getter_v, setter_v, to_shape);
             if (fb_slot && !(fb && fb->transition_mega)) {
-                learn_transition(fb_slot, shape_before, to_shape, nullptr, 0, 0, nullptr);
+                learn_transition(fb_slot, shape_before, to_shape, nullptr, 0, 0, nullptr, false);
             }
             return;
         }
