@@ -407,6 +407,12 @@ public:
     // escaped: a chunk that never emits Op::CreateClosure on any branch can
     // never make that chain outlive the call, no matter which branch runs.
     mutable bool fast_no_closures = false;
+    // GC retrace staleness tracking (see trace_chunks_if_needed): 0 means
+    // never traced -- Collector::current_major_epoch() never returns 0, so a
+    // fresh executable always forces its first trace regardless of the dirty
+    // flag below.
+    mutable uint8_t gc_traced_epoch_ = 0;
+    mutable bool gc_feedback_dirty_ = false;
     void recompute_fast_gate() const {
         fast_gate = !vm_incompatible && bytecode_chunk && !bytecode_chunk->env_mode &&
                     strict_directive_state >= 0 && closure_props_state == 0;
@@ -432,6 +438,30 @@ public:
     // new instance reuses it -- exactly the dangling-constant corruption
     // this registry prevents.
     static void gc_trace_roots(Visitor& v);
+
+    // Retraces this executable's chunks only if something could have changed
+    // since the last time THIS METHOD traced them this major epoch: constants
+    // are frozen at compile time (see BytecodeChunk::constants' doc comment)
+    // and never need a second look, and feedback only changes via a learn_*
+    // call that already reaches mark_feedback_dirty() alongside its existing
+    // write_barrier(owner). Called ONLY from gc_trace_roots (below) -- NOT
+    // from Function::trace_default (see trace_chunks_unconditional for that).
+    // Sharing this one stamp between both callers was tried and reverted: a
+    // burst of freshly-marked closures all sharing one executable (e.g. an
+    // arrow literal re-created on every call of a hot recursive function)
+    // each call trace_chunks_if_needed once per mark_step drain, and the
+    // first one to run stamps epoch/dirty for the whole group -- starving
+    // the rest of a chance to individually re-affirm reachability for
+    // whatever THEY were about to newly mark. Two independent traces (one
+    // gated, one not) is simpler to reason about than one shared stamp two
+    // unrelated callers race to consume.
+    void trace_chunks_if_needed(Visitor& v) const;
+    // Same walk, unconditional -- used by Function::trace_default, which is
+    // already gated by the sticky mark bit on the Function cell itself (only
+    // runs for a freshly-marked-or-remembered instance this cycle), so it
+    // does not need a second, independent skip on top of that.
+    void trace_chunks_unconditional(Visitor& v) const;
+    void mark_feedback_dirty() const { gc_feedback_dirty_ = true; }
 
 private:
     mutable uint32_t ref_count_ = 0;

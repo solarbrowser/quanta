@@ -77,6 +77,12 @@ void hunt_check(const Environment* env, const char* who);
 // run_minor_collection's survivor prune.
 constinit thread_local uint8_t g_major_epoch = 1;
 
+} // anonymous namespace
+
+uint8_t Collector::current_major_epoch() { return g_major_epoch; }
+
+namespace {
+
 class MarkVisitor final : public Visitor {
 public:
     size_t marked_cells = 0;

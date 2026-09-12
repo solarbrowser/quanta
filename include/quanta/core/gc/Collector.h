@@ -83,6 +83,15 @@ public:
     // No minor collection runs while true.
     static bool major_in_progress() { return major_in_progress_; }
 
+    // The collector's own major-generation counter (bumped, skipping 0, each
+    // time a new major cycle opens). 0 is permanently reserved and never
+    // returned, so a consumer using 0 as "never seen" sentinel (e.g.
+    // FunctionExecutable::gc_traced_epoch_) always mismatches on a first
+    // check. Exposed for exactly that kind of "have I been retraced this
+    // major yet" comparison outside Collector.cpp -- see Context's own
+    // gc_reached_since_major for the pattern this mirrors.
+    static uint8_t current_major_epoch();
+
     // Records `cell` (base address of a live cell) as mutated. Needed on
     // every post-construction write of a traced field or property slot;
     // no-op for young cells since a minor trace reaches them anyway.

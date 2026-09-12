@@ -538,9 +538,9 @@ const BytecodeChunk* AsyncFunction::get_suspendable_chunk(Context& ctx) {
 }
 
 void AsyncFunction::trace(Visitor& v) {
+    // suspendable_chunk is already covered by Function::trace_default's own
+    // call into FunctionExecutable::trace_chunks_if_needed.
     Function::trace_default(v);
-    const auto& exe = get_executable();
-    if (exe && exe->suspendable_chunk) exe->suspendable_chunk->trace(v);
 }
 
 
@@ -1840,9 +1840,9 @@ const BytecodeChunk* AsyncGeneratorFunction::get_suspendable_chunk(Context& ctx)
 }
 
 void AsyncGeneratorFunction::trace(Visitor& v) {
+    // suspendable_chunk is already covered by Function::trace_default's own
+    // call into FunctionExecutable::trace_chunks_if_needed.
     Function::trace_default(v);
-    const auto& exe = get_executable();
-    if (exe && exe->suspendable_chunk) exe->suspendable_chunk->trace(v);
 }
 
 }

@@ -8,6 +8,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/vm/Bytecode.h"
+#include "quanta/core/gc/Collector.h"
 
 namespace Quanta {
 
@@ -31,10 +32,17 @@ namespace Quanta {
 // program's function count, this one is a much smaller trade -- a decl site
 // only ever gets ONE FunctionExecutable (shared by every instantiation), so
 // the cost scales with source size, not with runtime closure-creation
-// count, the way Function's own byte budget does. 224 and 240 are both exact
-// Heap::kSizeClasses entries, so this lands on the next class cleanly rather
+// count, the way Function's own byte budget does. 224 and 240 were both
+// exact Heap::kSizeClasses entries, landing cleanly on the next class rather
 // than paying for slack an in-between size would waste.
-static_assert(sizeof(FunctionExecutable) == 240);
+// Then by gc_traced_epoch_/gc_feedback_dirty_ (2 bytes, but the existing
+// mutable-bool cluster had only 1 spare byte before its own alignment
+// boundary, so this crosses into a new one): lets trace_chunks_if_needed
+// skip a chunk whose feedback hasn't changed since it was last traced this
+// GC major epoch, instead of every live executable's chunk being walked on
+// every single minor collection unconditionally -- see FunctionExecutable.h.
+// Eight bytes per decl site is negligible next to that.
+static_assert(sizeof(FunctionExecutable) == 248);
 #else
 static_assert(sizeof(FunctionExecutable) <= 256);
 #endif
@@ -123,16 +131,42 @@ void FunctionExecutable::add_parameter(const Parameter& p, bool copy) {
 
 void FunctionExecutable::gc_trace_roots(Visitor& v) {
     for (FunctionExecutable* exe = live_head_; exe; exe = exe->live_next_) {
-        if (exe->bytecode_chunk) exe->bytecode_chunk->trace(v);
-        if (exe->suspendable_chunk) exe->suspendable_chunk->trace(v);
-        // A suspendable function's parameter defaults are chunks of their own,
-        // reached from nothing else.
-        for (const auto& p : exe->parameter_objects) {
-            if (!p) continue;
-            if (p->default_chunk()) p->default_chunk()->trace(v);
-            if (p->pattern_chunk()) p->pattern_chunk()->trace(v);
-        }
+        exe->trace_chunks_if_needed(v);
     }
+}
+
+// Parameter default/pattern chunks always run with owner == nullptr
+// (run_default_value/run_pattern_binder never pass one) and rooted == false
+// (their chunks never set script_mode), so none of the GC-cell-bearing
+// learn_* paths in Interpreter.cpp ever populate them -- except
+// get_private/set_private's unconditional cached_receiver write, which has
+// no barrier at all in that case. No reliable per-write dirty signal exists
+// for these two chunks, so both trace methods below always retrace them,
+// exactly as gc_trace_roots did before this change. A suspendable function's
+// parameter defaults are chunks of their own, reached from nothing else.
+static void trace_parameter_chunks(const std::vector<std::unique_ptr<Parameter>>& parameter_objects, Visitor& v) {
+    for (const auto& p : parameter_objects) {
+        if (!p) continue;
+        if (p->default_chunk()) p->default_chunk()->trace(v);
+        if (p->pattern_chunk()) p->pattern_chunk()->trace(v);
+    }
+}
+
+void FunctionExecutable::trace_chunks_if_needed(Visitor& v) const {
+    const uint8_t epoch = Collector::current_major_epoch();
+    if (gc_traced_epoch_ != epoch || gc_feedback_dirty_) {
+        if (bytecode_chunk) bytecode_chunk->trace(v);
+        if (suspendable_chunk) suspendable_chunk->trace(v);
+        gc_traced_epoch_ = epoch;
+        gc_feedback_dirty_ = false;
+    }
+    trace_parameter_chunks(parameter_objects, v);
+}
+
+void FunctionExecutable::trace_chunks_unconditional(Visitor& v) const {
+    if (bytecode_chunk) bytecode_chunk->trace(v);
+    if (suspendable_chunk) suspendable_chunk->trace(v);
+    trace_parameter_chunks(parameter_objects, v);
 }
 
 // Both body setters funnel through here: the directive is a fact about the

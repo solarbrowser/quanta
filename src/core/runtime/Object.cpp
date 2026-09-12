@@ -662,7 +662,20 @@ void Function::trace_default(Visitor& v) {
     // executable_ is a plain (non-GC) shared_ptr -- ordinary refcounting keeps
     // its owned AST clone alive, no GC pinning needed. Only its compiled
     // chunk holds GC references (constants) that still need tracing.
-    if (executable_ && executable_->bytecode_chunk) executable_->bytecode_chunk->trace(v);
+    // trace_chunks_unconditional also covers suspendable_chunk and every
+    // parameter's default/pattern chunk (see FunctionExecutable.h) -- the
+    // Generator/Async subclasses' own trace() overrides used to retrace
+    // suspendable_chunk again themselves; that line is gone now that this
+    // covers it. Deliberately NOT trace_chunks_if_needed's epoch/dirty-gated
+    // sibling: this call is already gated by the sticky mark bit on THIS
+    // Function cell (trace_default only runs for a freshly-marked-or-
+    // remembered instance), and sharing that other stamp with gc_trace_roots
+    // was tried and reverted -- see trace_chunks_if_needed's own comment for
+    // why (a burst of fresh closures sharing one executable, e.g. an arrow
+    // literal re-created on every call of a hot recursive function, would
+    // race to consume one shared stamp and starve each other's chance to
+    // individually re-affirm reachability).
+    if (executable_) executable_->trace_chunks_unconditional(v);
     if (NonNativeInstanceData* d = instance_data()) {
         for (auto& pf : d->feedback.private_feedback) {
             v.visit_object(pf.cached_receiver);

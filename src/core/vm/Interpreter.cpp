@@ -31,6 +31,7 @@
 
 namespace Quanta {
 
+
 // Defined in the tree-walker's call.cpp: one shared definition of what a
 // spread expands to, so Op::SpreadInto and the tree-walker cannot drift.
 void append_spread_values(Context& ctx, const Value& spread_value, std::vector<Value>& out);
@@ -154,6 +155,20 @@ bool key_is_canonical_index(const std::string& s, size_t& out_index) {
 void learn_feedback(FeedbackSlot* fb_slot, Shape* shape, uint32_t slot_index,
                      bool is_accessor = false);
 
+// write_barrier(owner) (see below) only re-remembers the one calling Function
+// instance, so its own trace() re-visits the shared chunk next cycle -- it
+// says nothing to FunctionExecutable::gc_trace_roots's separate, unconditional
+// walk (BytecodeChunk/FunctionExecutable are plain C++ objects, not GC cells,
+// so they cannot be write-barriered directly). This is the signal that lets
+// that walk skip a chunk whose feedback hasn't changed since it was last
+// traced -- called alongside every existing write_barrier(owner) that stores
+// a new GC-cell reference into a chunk-shared (not per-instance) feedback
+// entry. owner may be null (an ownerless top-level/run_expression chunk,
+// already covered separately by ChunkFeedbackRoot/chunk_roots()).
+inline void mark_owner_feedback_dirty(Function* owner) {
+    if (owner) owner->get_executable()->mark_feedback_dirty();
+}
+
 // Mirrors MemberExpression::evaluate's primitive-receiver branch.
 Value get_primitive_named(Context& ctx, const Value& prim, const std::string& name,
                            FeedbackSlot* fb_slot, Function* owner, bool rooted) {
@@ -236,6 +251,7 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
     if (fb_slot && rooted && (desc.is_accessor_descriptor() || desc.has_value())) {
         fb = &fb_slot->ensure();
         Collector::write_barrier(owner);
+        mark_owner_feedback_dirty(owner);
         fb->prim_proto = proto_obj;
         fb->prim_is_getter = desc.is_accessor_descriptor();
         fb->prim_value = fb->prim_is_getter ? Value(desc.get_getter()) : desc.get_value();
@@ -383,6 +399,7 @@ void learn_transition(FeedbackSlot* fb_slot, Shape* from_shape, Shape* to_shape,
     if (prototype) {
         if (!rooted) return;
         Collector::write_barrier(owner);
+        mark_owner_feedback_dirty(owner);
     }
     for (uint8_t i = 0; i < fb.transition_count; i++) {
         if (fb.transitions[i].from_shape == from_shape) {
@@ -426,12 +443,14 @@ void learn_proto(FeedbackSlot* fb_slot, Shape* receiver_shape, Object* prototype
         auto& pe = fb.proto_entries[i];
         if (pe.receiver_shape == receiver_shape && pe.prototype == prototype) {
             Collector::write_barrier(owner);
+            mark_owner_feedback_dirty(owner);
             pe = fresh;
             return;
         }
     }
     if (fb.proto_count < FeedbackSlot::kMaxEntries) {
         Collector::write_barrier(owner);
+        mark_owner_feedback_dirty(owner);
         fb.proto_entries[fb.proto_count++] = fresh;
     } else {
         fb.proto_mega = true;
@@ -686,6 +705,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             // changes this entry knows nothing about.
             else if (override_desc && fb_slot && rooted) {
                 Collector::write_barrier(owner);
+                mark_owner_feedback_dirty(owner);
                 FeedbackBody& learned = fb_slot->ensure();
                 learned.own_desc_receiver = obj;
                 learned.own_desc_value = desc.get_value();
@@ -844,6 +864,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         obj->get_type() == Object::ObjectType::Function &&
         name != "name" && name != "length") {
         Collector::write_barrier(owner);
+        mark_owner_feedback_dirty(owner);
         FeedbackBody& learned = fb_slot->ensure();
         learned.own_desc_receiver = obj;
         learned.own_desc_value = result;
@@ -1174,6 +1195,7 @@ void learn_keyed_transition(KeyedFeedback* fb, Shape* from_shape, const std::str
     if (prototype) {
         if (!owner) return;
         Collector::write_barrier(owner);
+        mark_owner_feedback_dirty(owner);
     }
     for (uint8_t i = 0; i < fb->transition_count; i++) {
         if (fb->transitions[i].from_shape == from_shape && fb->transitions[i].key == key) {
