@@ -588,7 +588,12 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
         fast_ctx.set_lexical_environment(outer_env);
         fast_ctx.set_variable_environment(outer_env);
-        fast_ctx.set_arrow_function_context(is_arrow_);
+        // reset_for_call already cleared this to false as part of its bulk
+        // field reset -- writing it again is a real cost (a packed :1
+        // bitfield store is a read-modify-write, not a free no-op) paid by
+        // every non-arrow call for nothing, which is the overwhelming
+        // majority of fast-path traffic. Only an actual arrow needs the flip.
+        if (is_arrow_) fast_ctx.set_arrow_function_context(true);
         if (is_strict_ || executable_->fast_strict) fast_ctx.set_strict_mode(true);
         // reset_for_call always clears new.target/is_in_constructor_call, so a
         // base-class constructor let in by ctor_ok above (the only kind of
@@ -749,7 +754,10 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             env_ctx.set_variable_environment(call_env);
             env_ctx.set_owned_env(call_env);
             ExecContextScope gc_frame(&env_ctx);
-            env_ctx.set_arrow_function_context(false);
+            // No set_arrow_function_context call needed here: this gate
+            // already requires !is_arrow_ (see its own condition above), and
+            // reset_for_call already cleared the bit -- writing false over
+            // false was pure redundant bitfield read-modify-write.
             if (is_strict_ || executable_->fast_strict) env_ctx.set_strict_mode(true);
             // __home_object__ is what Op::GetSuper's fallback needs: the gate
             // above already excludes a constructor, so `owner` (this very
@@ -950,7 +958,10 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     if (is_arrow_ && has_internal_slot("__arrow_new_target__")) {
         function_context.set_new_target(get_internal_slot("__arrow_new_target__"));
     }
-    function_context.set_arrow_function_context(is_arrow_);
+    // A freshly constructed Context already defaults this bitfield to false
+    // (Context.h's in-class initializer) -- only an actual arrow needs the
+    // write, same reasoning as the fast-path sites above.
+    if (is_arrow_) function_context.set_arrow_function_context(true);
 
     // Arrows share the enclosing derived constructor's this-TDZ state: `this`
     // (and a second super()) inside an arrow must throw while the creating
