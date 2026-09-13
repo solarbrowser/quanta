@@ -564,19 +564,19 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     bool ctor_ok = !is_class_constructor_ || !is_derived_ctor();
     if (executable_ && executable_->fast_gate && ctor_ok &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
-        // The context is heap-allocated and survivor-managed like the full
-        // path: native code (promise reactions, job queues) can capture the
-        // active context and run after this call returns, so a stack context
-        // would dangle. It is taken from the call pool rather than built,
-        // since consecutive calls differ in only the fields reset_for_call
-        // writes. The saving beyond that is everything else: no per-call
+        // Stack-resident, not pool-acquired: an ordinary, non-escaping call
+        // (measured at 98.17% of real pool releases before this change)
+        // never touches the heap for its Context at all. The rare call that
+        // DOES escape -- a closure capturing it, a native that stashes it
+        // (promise reactions, job queues), a nested generator/async/module-
+        // await capture -- materializes a fresh heap copy and repoints
+        // everything watching this address before handing it out; see
+        // Context::materialize_to_heap() and its 5 call sites
+        // (mark_exposed_to_escape's callers). The saving beyond dropping the
+        // pool is everything else this path already skipped: no per-call
         // Environment, no binding inserts, `this` as a run() param.
-        Engine* fast_engine = ctx.get_engine();
-        Context& fast_ctx = *CallContextPool::acquire(fast_engine, &ctx);
-        struct PoolRelease {
-            Context* c; Engine* e;
-            ~PoolRelease() { CallContextPool::release(c, e); }
-        } fast_release{&fast_ctx, fast_engine};
+        Context fast_ctx(ctx.get_engine(), &ctx, Context::Type::Function);
+        fast_ctx.mark_stack_resident();
         Environment* outer_env = get_closure_environment();
         if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
         if (!outer_env) outer_env = ctx.get_lexical_environment();
@@ -594,18 +594,18 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
         fast_ctx.set_lexical_environment(outer_env);
         fast_ctx.set_variable_environment(outer_env);
-        // reset_for_call already cleared this to false as part of its bulk
-        // field reset -- writing it again is a real cost (a packed :1
-        // bitfield store is a read-modify-write, not a free no-op) paid by
-        // every non-arrow call for nothing, which is the overwhelming
-        // majority of fast-path traffic. Only an actual arrow needs the flip.
+        // Already false, straight from construction -- writing it again is a
+        // real cost (a packed :1 bitfield store is a read-modify-write, not
+        // a free no-op) paid by every non-arrow call for nothing, which is
+        // the overwhelming majority of fast-path traffic. Only an actual
+        // arrow needs the flip.
         if (is_arrow_) fast_ctx.set_arrow_function_context(true);
         if (is_strict_ || executable_->fast_strict) fast_ctx.set_strict_mode(true);
-        // reset_for_call always clears new.target/is_in_constructor_call, so a
-        // base-class constructor let in by ctor_ok above (the only kind of
-        // constructor call that reaches this path) needs it copied back from
-        // the caller before its own Op::LdaNewTarget can read it -- the same
-        // restore call_tree_walker does for its own per-call context.
+        // Construction always leaves new.target/is_in_constructor_call clear,
+        // so a base-class constructor let in by ctor_ok above (the only kind
+        // of constructor call that reaches this path) needs it copied back
+        // from the caller before its own Op::LdaNewTarget can read it -- the
+        // same restore call_tree_walker does for its own per-call context.
         if (ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined()) {
             fast_ctx.set_in_constructor_call(true);
             fast_ctx.set_new_target(ctx.get_new_target());
@@ -703,6 +703,25 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
                 closure_context_->set_super_called(true);
                 closure_context_->set_this_needs_super(false);
             }
+        }
+        // fast_ctx moved to a fresh heap address during this call (a captured
+        // closure, a native capture, a nested generator/async/module-await
+        // capture -- see materialize_to_heap()'s 5 callers). Nothing owns
+        // that heap copy the way a unique_ptr owns the general path's
+        // context: whatever captured it (Function::closure_context_,
+        // Generator::outer_context_, Promise::context_) holds a plain
+        // watching pointer, not ownership. The engine's survivor pool is
+        // where an escaped context's ownership goes instead -- same
+        // destination CallContextPool::release used to hand this exact
+        // context to before it was stack-resident, just reached from here
+        // (once, at the end of the call that escaped it) instead of a pool
+        // release. Deferred to here rather than done inside
+        // materialize_to_heap() itself: registering while the capturing
+        // Function/Generator/Promise is still mid-construction would let a
+        // GC pause between the two see the context as unreached and free it
+        // out from under its own not-yet-finished constructor.
+        if (resolved_fast_ctx != &fast_ctx) {
+            if (Engine* e = resolved_fast_ctx->get_engine()) e->add_survivor_context(resolved_fast_ctx);
         }
         if (resolved_fast_ctx->has_exception()) {
             ctx.throw_exception(resolved_fast_ctx->get_exception(), true);
