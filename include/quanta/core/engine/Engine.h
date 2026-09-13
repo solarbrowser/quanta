@@ -218,10 +218,6 @@ public:
         : ctx_(ctx), engine_(ctx->get_engine()) {
         prev_ = engine_->exec_top_scope();
         engine_->set_exec_top_scope(this);
-        // Same reasoning as VM::run's frame_slot_ registration: only a
-        // stack-resident ctx can ever be handed off to a new address, so
-        // only it needs materialize_to_heap() to know this scope exists.
-        if (ctx->is_stack_resident()) ctx->register_owning_scope(this);
     }
 
     // A call returns before its caller, so the scope being closed is almost
@@ -237,14 +233,6 @@ public:
 
     Context* context() const { return ctx_; }
     ExecContextScope* prev() const { return prev_; }
-
-    // A collector scan between this scope's construction and destruction
-    // walks the engine's exec_top_scope() list and reads ctx_ directly
-    // (Collector.cpp) -- if the Context this scope roots is ever handed off
-    // to a fresh heap address mid-call (Context::materialize_to_heap()),
-    // whatever performs that handoff must call this too, or the next scan
-    // traces the old, now-inert address instead of the live one.
-    void repoint(Context* ctx) { ctx_ = ctx; }
 
     ExecContextScope(const ExecContextScope&) = delete;
     ExecContextScope& operator=(const ExecContextScope&) = delete;

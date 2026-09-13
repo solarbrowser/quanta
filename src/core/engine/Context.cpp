@@ -51,16 +51,12 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-// 208 plus frame_slot_/owning_scope_ (two pointers, for
-// materialize_to_heap()'s repoint -- see Context.h).
-static_assert(sizeof(Context) == 224);
-static_assert(sizeof(Environment) == 216); 
+static_assert(sizeof(Context) == 208);
+static_assert(sizeof(Environment) == 216);
 #else
 static_assert(sizeof(Context) <= 896);
 static_assert(sizeof(Environment) <= 512);
 #endif
-
-constinit thread_local uint32_t Context::next_context_id_ = 1;
 
 ContextSurvivorGuard::~ContextSurvivorGuard() {
     if (!ptr) return;
@@ -180,7 +176,7 @@ void Environment::operator delete(void* ptr) {
 }
 
 Context::Context(Engine* engine, Type type)
-    : type_(type), state_(State::Running), context_id_(next_context_id_++),
+    : type_(type), state_(State::Running),
       has_exception_(false), has_return_value_(false), has_break_(false), has_continue_(false),
       is_in_constructor_call_(false), super_called_(false), this_needs_super_(false),
       strict_mode_(false),
@@ -195,7 +191,7 @@ Context::Context(Engine* engine, Type type)
 }
 
 Context::Context(Engine* engine, Context* parent, Type type)
-    : type_(type), state_(State::Running), context_id_(next_context_id_++),
+    : type_(type), state_(State::Running),
       has_exception_(false), has_return_value_(false), has_break_(false), has_continue_(false),
       is_in_constructor_call_(false), super_called_(false), this_needs_super_(false),
       strict_mode_(parent && type != Type::Function ? parent->strict_mode_ : false),
@@ -230,62 +226,6 @@ void CallContextPool::destroy(Context* ctx) { delete ctx; }
 void CallContextPool::drain() {
     for (size_t i = 0; i < g_call_context_pool_len; ++i) delete g_call_context_pool[i];
     g_call_context_pool_len = 0;
-}
-
-// See the declaration's doc comment for why this can't be `= default`.
-// Every field is moved/copied verbatim except owned_env_, the one field
-// the destructor acts on -- that one is transferred (copied here, nulled in
-// `other` below) rather than duplicated.
-Context::Context(Context&& other) noexcept
-    : type_(other.type_), state_(other.state_), context_id_(other.context_id_),
-      has_exception_(other.has_exception_), has_return_value_(other.has_return_value_),
-      has_break_(other.has_break_), has_continue_(other.has_continue_),
-      is_in_constructor_call_(other.is_in_constructor_call_), super_called_(other.super_called_),
-      this_needs_super_(other.this_needs_super_), exposed_to_escape_(other.exposed_to_escape_),
-      pending_construct_call_(other.pending_construct_call_), strict_mode_(other.strict_mode_),
-      in_param_eval_(other.in_param_eval_), is_direct_eval_call_(other.is_direct_eval_call_),
-      eval_arguments_conflict_(other.eval_arguments_conflict_),
-      is_arrow_function_context_(other.is_arrow_function_context_),
-      in_class_field_init_(other.in_class_field_init_),
-      last_construct_explicit_return_(other.last_construct_explicit_return_),
-      last_super_override_needs_reparent_(other.last_super_override_needs_reparent_),
-      gc_major_epoch_(other.gc_major_epoch_),
-      lexical_environment_(other.lexical_environment_), variable_environment_(other.variable_environment_),
-      this_value_(other.this_value_), execution_depth_(other.execution_depth_),
-      global_object_(other.global_object_), builtins_root_(other.builtins_root_),
-      builtins_(std::move(other.builtins_)),
-      current_exception_(other.current_exception_), return_value_(other.return_value_),
-      loop_labels_(std::move(other.loop_labels_)),
-      last_super_override_(other.last_super_override_), owned_env_(other.owned_env_),
-      new_target_(other.new_target_), engine_(other.engine_),
-      current_filename_(other.current_filename_),
-      microtask_queue_(std::move(other.microtask_queue_)),
-      draining_queue_(std::move(other.draining_queue_)),
-      eval_param_names_(std::move(other.eval_param_names_)),
-      import_meta_(other.import_meta_),
-      dispose_scope_stack_(std::move(other.dispose_scope_stack_)) {
-    // The only field that means "this destructor owns something and must
-    // release it" -- transferred, not duplicated, so `other`'s own
-    // destructor (which still runs, normally, at its scope exit) finds
-    // nothing left to release.
-    other.owned_env_ = nullptr;
-}
-
-Context* Context::materialize_to_heap() {
-    // Already stable: every Context that didn't start life frame-resident
-    // (which is most of them) has nothing to move, and a Context that was
-    // already materialized once reads false here too (the heap copy's own
-    // stack_resident_ defaults false, see the move constructor above).
-    if (!stack_resident_) return this;
-    Context* heap_copy = new Context(std::move(*this));
-    // frame_slot_/owning_scope_ are untouched by the move (not part of its
-    // initializer list), so `this` still names them correctly here --
-    // reading the ORIGINAL's registrations, not the heap copy's (which
-    // defaults both to null, having nothing left to watch).
-    if (Object::current_context_ == this) Object::current_context_ = heap_copy;
-    if (frame_slot_ && *frame_slot_ == this) *frame_slot_ = heap_copy;
-    if (owning_scope_) owning_scope_->repoint(heap_copy);
-    return heap_copy;
 }
 
 void Context::release_owned_env() {
@@ -835,8 +775,7 @@ std::vector<std::string> Context::get_variable_names() const {
 
 std::string Context::debug_string() const {
     std::ostringstream oss;
-    oss << "Context(id=" << context_id_ 
-        << ", type=" << static_cast<int>(type_)
+    oss << "Context(type=" << static_cast<int>(type_)
         << ", state=" << static_cast<int>(state_)
         << ", has_exception=" << has_exception_ << ")";
     return oss.str();

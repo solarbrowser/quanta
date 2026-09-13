@@ -5229,17 +5229,8 @@ Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
                     // new.target from an enclosing constructor call.
                     Value old_new_target = ctx.get_new_target();
                     ctx.set_new_target(callee);
-                    // Not `ctx` for the restore below: construct() can hand
-                    // this exact ctx off to a fresh heap address (a native
-                    // constructor reuses its caller's ctx as-is), and it
-                    // already restores new.target correctly on whichever
-                    // address ends up live -- but writing the same value
-                    // again through a stale `ctx` here would be a landmine
-                    // for any future case where construct()'s own restore
-                    // doesn't happen to make this write redundant.
-                    Context* resolved = &ctx;
-                    acc = callee.as_function()->construct(ctx, call_args, &resolved);
-                    resolved->set_new_target(old_new_target);
+                    acc = callee.as_function()->construct(ctx, call_args);
+                    ctx.set_new_target(old_new_target);
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
@@ -5339,10 +5330,8 @@ Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
                     if (callee.is_function()) {
                         Value old_new_target = ctx.get_new_target();
                         ctx.set_new_target(callee);
-                        // See h_gen_Construct for why this is resolved->, not ctx.
-                        Context* resolved = &ctx;
-                        acc = callee.as_function()->construct(ctx, call_args, &resolved);
-                        resolved->set_new_target(old_new_target);
+                        acc = callee.as_function()->construct(ctx, call_args);
+                        ctx.set_new_target(old_new_target);
                     } else if (callee.is_object() &&
                                callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                         std::vector<Value> trap_args(call_args.begin(), call_args.end());
@@ -5358,9 +5347,8 @@ Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
                     if (callee.is_function()) {
                         Value old_new_target = ctx.get_new_target();
                         ctx.set_new_target(callee);
-                        Context* resolved = &ctx;
-                        acc = callee.as_function()->construct(ctx, call_args, &resolved);
-                        resolved->set_new_target(old_new_target);
+                        acc = callee.as_function()->construct(ctx, call_args);
+                        ctx.set_new_target(old_new_target);
                     } else if (callee.is_object() &&
                                callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                         acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
@@ -7652,8 +7640,7 @@ Value run_dispatch(Frame& f) {
 }
 
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
-          const Value* this_val, Function* owner, const Value* initial_acc,
-          Context** resolved_ctx_out) {
+          const Value* this_val, Function* owner, const Value* initial_acc) {
     // Only the registers the chunk actually uses: a fixed 256 put the whole
     // bank on the C++ stack and zeroed it on every call, when the compiler
     // already knows the real count and it is small for most functions.
@@ -7822,18 +7809,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
                 lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
                 this_value, initial_acc ? *initial_acc : Value(), 0, 0, 0, this_resolved};
-    // Only a stack-resident ctx has anything to gain from this: it is what
-    // lets materialize_to_heap() keep frame.ctx correct if something escapes
-    // this exact call mid-dispatch. A heap-resident ctx (the common case --
-    // general/tree-walker calls, generators, async, eval, global) never
-    // moves, so registering here would just be a write nothing reads back.
-    if (ctx.is_stack_resident()) ctx.register_frame_slot(&frame.ctx);
 
     for (;;) {
       try {
-        Value result = run_dispatch(frame);
-        if (resolved_ctx_out) *resolved_ctx_out = frame.ctx;
-        return result;
+        return run_dispatch(frame);
       } catch (const YieldException&) {
             throw;
       } catch (const GeneratorReturnException& gen_ret) {
@@ -7859,9 +7838,6 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
       } catch (const std::exception& e) {
             // A native call (e.g. Proxy invariant violation) threw a raw C++
             // exception; CHECK_EXC below routes it like a normal JS throw.
-            // Through frame.ctx, not the outer `ctx` parameter: a capture
-            // earlier in this same dispatch can have handed `ctx` off to a
-            // fresh heap address already, and frame.ctx is what tracks that.
             if (!frame.ctx->has_exception()) frame.ctx->throw_exception(Value(std::string(e.what())));
       } catch (...) {
             if (!frame.ctx->has_exception()) frame.ctx->throw_exception(Value(std::string("Error: Unknown error")));
@@ -7878,10 +7854,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
                   if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
               }
           }
-          if (handler_pc < 0) {
-              if (resolved_ctx_out) *resolved_ctx_out = frame.ctx;
-              return Value();
-          }
+          if (handler_pc < 0) return Value();
           frame.acc = frame.ctx->get_exception();
           frame.ctx->clear_exception();
           frame.pc = static_cast<uint32_t>(handler_pc);

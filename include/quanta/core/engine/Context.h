@@ -46,7 +46,6 @@ public:
 private:
     Type type_;
     State state_;
-    uint32_t context_id_;
 
     // Packed into one bit-field group instead of scattered among the
     // pointer/Value/container fields below -- measured via mirror struct to
@@ -84,13 +83,6 @@ private:
     bool in_class_field_init_ : 1 = false;
     bool last_construct_explicit_return_ : 1 = false;  // see last_construct_explicit_return()
     bool last_super_override_needs_reparent_ : 1 = false;  // see last_super_override_needs_reparent()
-    // Set only by the two call paths that construct a Context directly in
-    // their own C++ stack frame instead of pool/heap-allocating one (see
-    // Function.cpp's fast_gate/fast_env_gate). Every other Context (the
-    // general/tree-walker path, generators, async, eval, global) is heap
-    // from birth and leaves this false -- materialize_to_heap() reads it to
-    // tell "still needs relocating" apart from "already stable, no-op".
-    bool stack_resident_ : 1 = false;
     // Owned by the Collector: which major epoch last reached this context
     // through a real edge (not through the survivor pool, which roots its
     // entries unconditionally). A stamp rather than a flag so that opening a
@@ -99,17 +91,6 @@ private:
     // only ever read as "reached", which keeps a context that could have been
     // freed and never frees one that is still held.
     uint8_t gc_major_epoch_ = 0;
-
-    // Where a stack-resident Context's own address is held by something that
-    // needs to keep pointing at whatever this call is actually using, once
-    // materialize_to_heap() has to hand it off to a fresh heap address.
-    // Registered once, by whoever creates the indirection (VM::run's Frame,
-    // ExecContextScope's constructor) -- nothing else in this class reads or
-    // writes these; they exist purely for materialize_to_heap() to repoint.
-    // Object::current_context_ needs no such registration: it is a single
-    // thread_local, checked directly by identity instead.
-    Context** frame_slot_ = nullptr;
-    ExecContextScope* owning_scope_ = nullptr;
 
     Environment* lexical_environment_;
     Environment* variable_environment_;
@@ -171,8 +152,6 @@ private:
     // now a plain pointer copy.
     const std::string* current_filename_;
 
-    static constinit thread_local uint32_t next_context_id_;
-
     // Microtask queue for Promise/async (only used on global context).
     // keep_alive lists every cell a task's lambda captures: closure storage
     // is invisible to the collector, the queue entry is its GC anchor.
@@ -205,59 +184,20 @@ public:
 
     explicit Context(Engine* engine, Type type = Type::Global);
     explicit Context(Engine* engine, Context* parent, Type type);
-    // Not auto-generated: a user-declared destructor suppresses the
-    // implicit move constructor, and a naive `= default` would double-free
-    // owned_env_ (a raw pointer the destructor releases, copied verbatim by
-    // a defaulted move rather than transferred). Written out so a
-    // frame-resident Context can be relocated to a fresh heap block without
-    // reconstructing it field by field at every call site that needs to --
-    // see Context::materialize_to_heap(). context_id_ is preserved, not
-    // regenerated: the moved-to object is the same logical call, just at a
-    // new address, and anything that logged/compared the id before the move
-    // must still recognize it after.
-    Context(Context&& other) noexcept;
+    // Never relocated once constructed (nothing repoints a Context anymore --
+    // see the call-cost redesign plan for why that used to exist and why it
+    // doesn't need to), so there is no move constructor to write around the
+    // destructor's owned_env_ release either.
     Context(const Context&) = delete;
+    Context(Context&&) = delete;
     Context& operator=(const Context&) = delete;
     Context& operator=(Context&&) = delete;
-    // Inline for the same reason the fast_gate constructor above is: a
-    // stack-resident Context (register-mode calls, no per-call Environment
-    // of their own) runs this on every single call now, with no pool to
-    // skip it for a recycled object the way CallContextPool's warm path
-    // used to. release_owned_env() itself stays out of line (needs
-    // Environment's full definition, this pointer check does not) -- the
-    // point is skipping the CALL entirely for the common case of nothing
-    // to release, not what happens inside it.
+    // Inline: reaching this in another translation unit cost a call each way
+    // on every JS call for a body this small. release_owned_env() itself
+    // stays out of line (needs Environment's full definition, this pointer
+    // check does not) -- the point is skipping the CALL entirely for the
+    // common case of nothing to release, not what happens inside it.
     ~Context() { if (owned_env_) release_owned_env(); }
-
-    // A no-op ("return this") unless stack_resident_ -- every Context that
-    // was never frame-embedded (the overwhelming majority: general-path
-    // calls, generators, async, eval, global) is already stable and has
-    // nothing to move. When it IS frame-resident, moves this (about to go
-    // out of scope) into a fresh heap-allocated Context and returns it. The
-    // source is left moved-from (owned_env_ nulled so its own destructor,
-    // which still runs normally when the frame unwinds, does not also
-    // release what the new object now owns) but is NOT itself destroyed
-    // here -- the caller's stack-local Context still runs its ordinary
-    // destructor at scope exit, exactly as if the call had never escaped.
-    // Repoints frame_slot_/owning_scope_/Object::current_context_ itself
-    // (whichever of them are actually watching this exact object) before
-    // returning, so nothing downstream needs to propagate the new address
-    // by hand.
-    Context* materialize_to_heap();
-
-    // Marks this Context as living in the caller's own C++ stack frame
-    // rather than the heap -- called exactly once, right after construction,
-    // by the two call paths that embed one (Function.cpp's
-    // fast_gate/fast_env_gate). Everything else about this object is
-    // unchanged; this only tells materialize_to_heap() it has real work to
-    // do if this object is ever handed a reason to escape.
-    void mark_stack_resident() { stack_resident_ = true; }
-    bool is_stack_resident() const { return stack_resident_; }
-
-    // See frame_slot_/owning_scope_ above: registered once by whoever
-    // creates the indirection, read only by materialize_to_heap().
-    void register_frame_slot(Context** slot) { frame_slot_ = slot; }
-    void register_owning_scope(ExecContextScope* scope) { owning_scope_ = scope; }
 
     // Pooled: reuses freed blocks instead of round-tripping the allocator
     // on every call (see Context.cpp).
@@ -266,7 +206,6 @@ public:
 
     Type get_type() const { return type_; }
     State get_state() const { return state_; }
-    uint32_t get_id() const { return context_id_; }
 
     // Everything reset_for_call() does not write is still in the state a
     // fresh context would have, so reusing this one cannot leak anything from
@@ -303,37 +242,6 @@ public:
         builtins_root_ = parent->builtins_root_ ? parent->builtins_root_ : parent;
     }
 
-    // A stack-resident Context's own constructor (Function.cpp's fast_gate):
-    // inline for the same reason reset_for_call is one call above -- a
-    // genuinely fresh call pays this on every single invocation now (there
-    // is no pool to warm up), so it has to fold into the caller instead of
-    // a real call-and-return through Context.cpp's translation unit for a
-    // body this small. Every field reset_for_call also writes is set the
-    // same way here; everything neither of them lists (the bitfields,
-    // current_exception_/return_value_/new_target_/import_meta_,
-    // frame_slot_/owning_scope_, every lazy unique_ptr/vector member) comes
-    // from its own in-class default member initializer, exactly as it does
-    // for a context recycled through the pool's cold-start path
-    // (Context(Engine*, Context*, Type)) -- the two must be changed
-    // together. The three fields reset_for_call itself never touches
-    // (lexical/variable_environment_, execution_depth_) DO need setting
-    // here: a pooled object already carries a zeroed execution_depth_ and
-    // an environment pair the caller is about to overwrite unconditionally,
-    // but a brand new object has neither yet.
-    // context_id_ deliberately gets no id here (0, not next_context_id_++):
-    // get_id()/debug_string() -- its only reader -- has no caller anywhere
-    // in the tree, so the thread_local read-increment-write every other
-    // Context constructor pays for it would be pure waste on a path this
-    // hot. If a real reader ever needs unique ids again, restore the
-    // increment here too, matching Context(Engine*, Context*, Type).
-    Context(Engine* engine, Context* parent)
-        : type_(Type::Function), state_(State::Running), context_id_(0),
-          lexical_environment_(nullptr), variable_environment_(nullptr),
-          execution_depth_(0), global_object_(parent->global_object_),
-          engine_(engine), current_filename_(parent->current_filename_) {
-        this_value_ = parent->this_value_;
-        builtins_root_ = parent->builtins_root_ ? parent->builtins_root_ : parent;
-    }
     Engine* get_engine() const { return engine_; }
 
     // Microtask queue (Promise async support)

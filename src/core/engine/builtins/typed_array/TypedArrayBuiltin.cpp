@@ -281,27 +281,22 @@ static TypedArrayBase* typed_array_species_create(Context& ctx, TypedArrayBase* 
     Function* ctor_fn = get_typed_array_species_constructor(ctx, exemplar);
     if (!ctor_fn) return nullptr;
 
-    // Not `ctx` below: the species constructor is arbitrary JS (a user
-    // subclass's own constructor, routinely calling super()), which can
-    // hand this exact ctx off to a fresh heap address if it's still
-    // frame-resident -- see Function::construct's own doc comment.
-    Context* resolved = &ctx;
-    Value result = ctor_fn->construct(ctx, ctor_args, &resolved);
-    if (resolved->has_exception()) return nullptr;
+    Value result = ctor_fn->construct(ctx, ctor_args);
+    if (ctx.has_exception()) return nullptr;
     if (!result.is_object() || !result.as_object()->is_typed_array()) {
-        resolved->throw_type_error("Species constructor did not return a TypedArray");
+        ctx.throw_type_error("Species constructor did not return a TypedArray");
         return nullptr;
     }
     TypedArrayBase* result_ta = static_cast<TypedArrayBase*>(result.as_object());
     if (result_ta->is_out_of_bounds()) {
-        resolved->throw_type_error("TypedArray is out of bounds");
+        ctx.throw_type_error("TypedArray is out of bounds");
         return nullptr;
     }
     auto is_big = [](TypedArrayBase::ArrayType t) {
         return t == TypedArrayBase::ArrayType::BIGINT64 || t == TypedArrayBase::ArrayType::BIGUINT64;
     };
     if (is_big(exemplar->get_array_type()) != is_big(result_ta->get_array_type())) {
-        resolved->throw_type_error("Cannot mix BigInt and other types, use explicit conversions");
+        ctx.throw_type_error("Cannot mix BigInt and other types, use explicit conversions");
         return nullptr;
     }
     return result_ta;
@@ -518,7 +513,14 @@ static Value construct_typed_array_generic(Context& ctx, std::span<const Value> 
             if (!iter_call_ctx) iter_call_ctx = &ctx;
             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
             if (iter_call_ctx->has_exception()) {
-                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
+                if (iter_call_ctx != &ctx) {
+                    // iter_call_ctx is closure_context_ when the iterator function
+                    // has one -- the SAME long-lived Context every future call of
+                    // that same closure reuses. Leaving has_exception_ set on it
+                    // would make the next unrelated call see a phantom exception.
+                    ctx.throw_exception(iter_call_ctx->get_exception(), true);
+                    iter_call_ctx->clear_exception();
+                }
                 return Value();
             }
             // Filled across user next() calls; the vector's heap buffer is
@@ -533,7 +535,11 @@ static Value construct_typed_array_generic(Context& ctx, std::span<const Value> 
                 if (!next_call_ctx) next_call_ctx = &ctx;
                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                 if (next_call_ctx->has_exception()) {
-                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
+                    // Same reasoning as iter_call_ctx above.
+                    if (next_call_ctx != &ctx) {
+                        ctx.throw_exception(next_call_ctx->get_exception(), true);
+                        next_call_ctx->clear_exception();
+                    }
                     return Value();
                 }
                 if (!res.is_object()) break;
