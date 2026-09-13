@@ -246,14 +246,19 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // &ctx (the caller's own context, not a fresh one) is captured into the
     // Promise's context_ field and can be read again arbitrarily later by
     // execute_handlers() for .then()/.catch() reactions -- ContextSurvivorGuard
-    // consults this instead of registering unconditionally.
-    ctx.mark_exposed_to_escape();
-    auto promise_obj = ObjectFactory::create_promise(&ctx);
+    // consults this instead of registering unconditionally. materialize_to_heap()
+    // is a no-op unless ctx is still frame-resident; every ctx.xxx() read below
+    // this point is a plain field the move copies verbatim either way (engine_,
+    // global_object_), so only the two places that store the address long-term
+    // need the resolved pointer specifically.
+    Context* resolved = ctx.materialize_to_heap();
+    resolved->mark_exposed_to_escape();
+    auto promise_obj = ObjectFactory::create_promise(resolved);
     Promise* promise_raw = static_cast<Promise*>(promise_obj.get());
     Value promise_value(promise_obj.release());
 
     // Create a persistent function-level context for this execution
-    auto exec_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
+    auto exec_ctx = ContextFactory::create_function_context(ctx.get_engine(), resolved, this);
     ExecContextScope gc_frame(exec_ctx.get());
     // See ContextSurvivorGuard's doc comment: no-op once exec_ctx is moved
     // into the AsyncExecutor below; catches an abrupt exit before that point.
