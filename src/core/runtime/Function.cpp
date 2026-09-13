@@ -674,7 +674,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         ExecContextScope gc_frame(&fast_ctx);
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &fast_ctx;
-        Value vm_result = VM::run(*executable_->bytecode_chunk, fast_ctx, args, &fast_this, this);
+        // Not `fast_ctx` directly from here on: a call inside this run() can
+        // hand fast_ctx off to a fresh heap address (native capture, a
+        // captured closure), and resolved_fast_ctx is how run() reports that
+        // back -- see Interpreter.h's run() doc comment.
+        Context* resolved_fast_ctx = &fast_ctx;
+        Value vm_result = VM::run(*executable_->bytecode_chunk, fast_ctx, args, &fast_this, this,
+                                   nullptr, &resolved_fast_ctx);
         Object::current_context_ = prev_context;
         // Only reachable at all when this call ran Op::SuperCall, which the
         // parser accepts nowhere but a derived constructor's own body or an
@@ -685,15 +691,15 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         // the general path gives it: closure_context_ is the constructor's
         // OWN Context, the one every later standalone call of this arrow
         // re-reads this_needs_super() from, and nothing else ever clears it.
-        if (fast_ctx.was_super_called()) {
+        if (resolved_fast_ctx->was_super_called()) {
             ctx.set_super_called(true);
             if (is_arrow_ && closure_context_) {
                 closure_context_->set_super_called(true);
                 closure_context_->set_this_needs_super(false);
             }
         }
-        if (fast_ctx.has_exception()) {
-            ctx.throw_exception(fast_ctx.get_exception(), true);
+        if (resolved_fast_ctx->has_exception()) {
+            ctx.throw_exception(resolved_fast_ctx->get_exception(), true);
             return Value();
         }
         return vm_result;
@@ -793,18 +799,21 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
 
             Context* prev_context = Object::current_context_;
             Object::current_context_ = &env_ctx;
-            Value vm_result = VM::run(*executable_->bytecode_chunk, env_ctx, args, nullptr, this);
+            // See the fast_ctx branch above for why this indirection exists.
+            Context* resolved_env_ctx = &env_ctx;
+            Value vm_result = VM::run(*executable_->bytecode_chunk, env_ctx, args, nullptr, this,
+                                       nullptr, &resolved_env_ctx);
             Object::current_context_ = prev_context;
 
-            if (env_ctx.was_super_called()) {
+            if (resolved_env_ctx->was_super_called()) {
                 ctx.set_super_called(true);
-                if (env_ctx.last_super_override()) {
-                    ctx.set_last_super_override(env_ctx.last_super_override());
-                    ctx.set_last_super_override_needs_reparent(env_ctx.last_super_override_needs_reparent());
+                if (resolved_env_ctx->last_super_override()) {
+                    ctx.set_last_super_override(resolved_env_ctx->last_super_override());
+                    ctx.set_last_super_override_needs_reparent(resolved_env_ctx->last_super_override_needs_reparent());
                 }
             }
-            if (env_ctx.has_exception()) {
-                ctx.throw_exception(env_ctx.get_exception(), true);
+            if (resolved_env_ctx->has_exception()) {
+                ctx.throw_exception(resolved_env_ctx->get_exception(), true);
                 return Value();
             }
             return vm_result;

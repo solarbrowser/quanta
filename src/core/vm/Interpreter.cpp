@@ -7640,7 +7640,8 @@ Value run_dispatch(Frame& f) {
 }
 
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
-          const Value* this_val, Function* owner, const Value* initial_acc) {
+          const Value* this_val, Function* owner, const Value* initial_acc,
+          Context** resolved_ctx_out) {
     // Only the registers the chunk actually uses: a fixed 256 put the whole
     // bank on the C++ stack and zeroed it on every call, when the compiler
     // already knows the real count and it is small for most functions.
@@ -7812,7 +7813,9 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
 
     for (;;) {
       try {
-        return run_dispatch(frame);
+        Value result = run_dispatch(frame);
+        if (resolved_ctx_out) *resolved_ctx_out = frame.ctx;
+        return result;
       } catch (const YieldException&) {
             throw;
       } catch (const GeneratorReturnException& gen_ret) {
@@ -7838,14 +7841,17 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
       } catch (const std::exception& e) {
             // A native call (e.g. Proxy invariant violation) threw a raw C++
             // exception; CHECK_EXC below routes it like a normal JS throw.
-            if (!ctx.has_exception()) ctx.throw_exception(Value(std::string(e.what())));
+            // Through frame.ctx, not the outer `ctx` parameter: a capture
+            // earlier in this same dispatch can have handed `ctx` off to a
+            // fresh heap address already, and frame.ctx is what tracks that.
+            if (!frame.ctx->has_exception()) frame.ctx->throw_exception(Value(std::string(e.what())));
       } catch (...) {
-            if (!ctx.has_exception()) ctx.throw_exception(Value(std::string("Error: Unknown error")));
+            if (!frame.ctx->has_exception()) frame.ctx->throw_exception(Value(std::string("Error: Unknown error")));
       }
 
       // The same handler search CHECK_EXC does, for an exception that arrived
       // as a C++ throw rather than through the context.
-      if (ctx.has_exception()) {
+      if (frame.ctx->has_exception()) {
           int32_t handler_pc = -1;
           uint32_t best_width = UINT32_MAX;
           if (chunk.handlers) for (const auto& h : *chunk.handlers) {
@@ -7854,9 +7860,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
                   if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
               }
           }
-          if (handler_pc < 0) return Value();
-          frame.acc = ctx.get_exception();
-          ctx.clear_exception();
+          if (handler_pc < 0) {
+              if (resolved_ctx_out) *resolved_ctx_out = frame.ctx;
+              return Value();
+          }
+          frame.acc = frame.ctx->get_exception();
+          frame.ctx->clear_exception();
           frame.pc = static_cast<uint32_t>(handler_pc);
           continue;
       }

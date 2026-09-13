@@ -30,9 +30,17 @@ namespace VM {
 // when GetNamed's prototype-chain cache learns a new holder/prototype
 // reference (see FeedbackSlot::ProtoEntry). Null for run_script's ownerless
 // top-level chunk -- that cache is simply inert there (see run_script).
+// resolved_ctx_out: if non-null, receives the Context this call actually
+// finished on. Every caller today passes a `ctx` that stays at one address
+// for the call's whole duration, so this is always just `&ctx` back --
+// but a caller holding a frame-resident Context of its own (one that could
+// be handed off to a fresh heap address mid-call, see
+// Context::materialize_to_heap()) needs this to know which address is
+// still live once run() returns, since its own local reference to `ctx`
+// does not update itself.
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
           const Value* this_val = nullptr, Function* owner = nullptr,
-          const Value* initial_acc = nullptr);
+          const Value* initial_acc = nullptr, Context** resolved_ctx_out = nullptr);
 
 // Compiles a generator/async BODY for the suspendable calling convention
 // (bindings already live in ctx; yield/await suspend the fiber from inside
