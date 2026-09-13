@@ -230,6 +230,49 @@ void CallContextPool::drain() {
     g_call_context_pool_len = 0;
 }
 
+// See the declaration's doc comment for why this can't be `= default`.
+// Every field is moved/copied verbatim except owned_env_, the one field
+// the destructor acts on -- that one is transferred (copied here, nulled in
+// `other` below) rather than duplicated.
+Context::Context(Context&& other) noexcept
+    : type_(other.type_), state_(other.state_), context_id_(other.context_id_),
+      has_exception_(other.has_exception_), has_return_value_(other.has_return_value_),
+      has_break_(other.has_break_), has_continue_(other.has_continue_),
+      is_in_constructor_call_(other.is_in_constructor_call_), super_called_(other.super_called_),
+      this_needs_super_(other.this_needs_super_), exposed_to_escape_(other.exposed_to_escape_),
+      pending_construct_call_(other.pending_construct_call_), strict_mode_(other.strict_mode_),
+      in_param_eval_(other.in_param_eval_), is_direct_eval_call_(other.is_direct_eval_call_),
+      eval_arguments_conflict_(other.eval_arguments_conflict_),
+      is_arrow_function_context_(other.is_arrow_function_context_),
+      in_class_field_init_(other.in_class_field_init_),
+      last_construct_explicit_return_(other.last_construct_explicit_return_),
+      last_super_override_needs_reparent_(other.last_super_override_needs_reparent_),
+      gc_major_epoch_(other.gc_major_epoch_),
+      lexical_environment_(other.lexical_environment_), variable_environment_(other.variable_environment_),
+      this_value_(other.this_value_), execution_depth_(other.execution_depth_),
+      global_object_(other.global_object_), builtins_root_(other.builtins_root_),
+      builtins_(std::move(other.builtins_)),
+      current_exception_(other.current_exception_), return_value_(other.return_value_),
+      loop_labels_(std::move(other.loop_labels_)),
+      last_super_override_(other.last_super_override_), owned_env_(other.owned_env_),
+      new_target_(other.new_target_), engine_(other.engine_),
+      current_filename_(other.current_filename_),
+      microtask_queue_(std::move(other.microtask_queue_)),
+      draining_queue_(std::move(other.draining_queue_)),
+      eval_param_names_(std::move(other.eval_param_names_)),
+      import_meta_(other.import_meta_),
+      dispose_scope_stack_(std::move(other.dispose_scope_stack_)) {
+    // The only field that means "this destructor owns something and must
+    // release it" -- transferred, not duplicated, so `other`'s own
+    // destructor (which still runs, normally, at its scope exit) finds
+    // nothing left to release.
+    other.owned_env_ = nullptr;
+}
+
+Context* Context::materialize_to_heap() {
+    return new Context(std::move(*this));
+}
+
 Context::~Context() { release_owned_env(); }
 
 void Context::release_owned_env() {

@@ -187,7 +187,30 @@ public:
 
     explicit Context(Engine* engine, Type type = Type::Global);
     explicit Context(Engine* engine, Context* parent, Type type);
+    // Not auto-generated: a user-declared destructor suppresses the
+    // implicit move constructor, and a naive `= default` would double-free
+    // owned_env_ (a raw pointer the destructor releases, copied verbatim by
+    // a defaulted move rather than transferred). Written out so a
+    // frame-resident Context can be relocated to a fresh heap block without
+    // reconstructing it field by field at every call site that needs to --
+    // see Context::materialize_to_heap(). context_id_ is preserved, not
+    // regenerated: the moved-to object is the same logical call, just at a
+    // new address, and anything that logged/compared the id before the move
+    // must still recognize it after.
+    Context(Context&& other) noexcept;
+    Context(const Context&) = delete;
+    Context& operator=(const Context&) = delete;
+    Context& operator=(Context&&) = delete;
     ~Context();
+
+    // Moves this (assumed frame-resident, about to go out of scope) into a
+    // fresh heap-allocated Context and returns it. The source is left
+    // moved-from (owned_env_ nulled so its own destructor, which still runs
+    // normally when the frame unwinds, does not also release what the new
+    // object now owns) but is NOT itself destroyed here -- the caller's
+    // stack-local Context still runs its ordinary destructor at scope exit,
+    // exactly as if the call had never escaped.
+    Context* materialize_to_heap();
 
     // Pooled: reuses freed blocks instead of round-tripping the allocator
     // on every call (see Context.cpp).
