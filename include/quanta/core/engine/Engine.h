@@ -234,6 +234,14 @@ public:
     Context* context() const { return ctx_; }
     ExecContextScope* prev() const { return prev_; }
 
+    // A collector scan between this scope's construction and destruction
+    // walks the engine's exec_top_scope() list and reads ctx_ directly
+    // (Collector.cpp) -- if the Context this scope roots is ever handed off
+    // to a fresh heap address mid-call (Context::materialize_to_heap()),
+    // whatever performs that handoff must call this too, or the next scan
+    // traces the old, now-inert address instead of the live one.
+    void repoint(Context* ctx) { ctx_ = ctx; }
+
     ExecContextScope(const ExecContextScope&) = delete;
     ExecContextScope& operator=(const ExecContextScope&) = delete;
 
