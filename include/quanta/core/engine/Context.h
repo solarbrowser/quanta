@@ -320,8 +320,14 @@ public:
     // here: a pooled object already carries a zeroed execution_depth_ and
     // an environment pair the caller is about to overwrite unconditionally,
     // but a brand new object has neither yet.
+    // context_id_ deliberately gets no id here (0, not next_context_id_++):
+    // get_id()/debug_string() -- its only reader -- has no caller anywhere
+    // in the tree, so the thread_local read-increment-write every other
+    // Context constructor pays for it would be pure waste on a path this
+    // hot. If a real reader ever needs unique ids again, restore the
+    // increment here too, matching Context(Engine*, Context*, Type).
     Context(Engine* engine, Context* parent)
-        : type_(Type::Function), state_(State::Running), context_id_(next_context_id_++),
+        : type_(Type::Function), state_(State::Running), context_id_(0),
           lexical_environment_(nullptr), variable_environment_(nullptr),
           execution_depth_(0), global_object_(parent->global_object_),
           engine_(engine), current_filename_(parent->current_filename_) {
