@@ -575,7 +575,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         // (mark_exposed_to_escape's callers). The saving beyond dropping the
         // pool is everything else this path already skipped: no per-call
         // Environment, no binding inserts, `this` as a run() param.
-        Context fast_ctx(ctx.get_engine(), &ctx, Context::Type::Function);
+        Context fast_ctx(ctx.get_engine(), &ctx);
         fast_ctx.mark_stack_resident();
         Environment* outer_env = get_closure_environment();
         if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();

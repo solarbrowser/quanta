@@ -219,7 +219,15 @@ public:
     Context(const Context&) = delete;
     Context& operator=(const Context&) = delete;
     Context& operator=(Context&&) = delete;
-    ~Context();
+    // Inline for the same reason the fast_gate constructor above is: a
+    // stack-resident Context (register-mode calls, no per-call Environment
+    // of their own) runs this on every single call now, with no pool to
+    // skip it for a recycled object the way CallContextPool's warm path
+    // used to. release_owned_env() itself stays out of line (needs
+    // Environment's full definition, this pointer check does not) -- the
+    // point is skipping the CALL entirely for the common case of nothing
+    // to release, not what happens inside it.
+    ~Context() { if (owned_env_) release_owned_env(); }
 
     // A no-op ("return this") unless stack_resident_ -- every Context that
     // was never frame-embedded (the overwhelming majority: general-path
@@ -292,6 +300,32 @@ public:
         import_meta_ = Value();
         engine_ = engine;
         current_filename_ = parent->current_filename_;
+        builtins_root_ = parent->builtins_root_ ? parent->builtins_root_ : parent;
+    }
+
+    // A stack-resident Context's own constructor (Function.cpp's fast_gate):
+    // inline for the same reason reset_for_call is one call above -- a
+    // genuinely fresh call pays this on every single invocation now (there
+    // is no pool to warm up), so it has to fold into the caller instead of
+    // a real call-and-return through Context.cpp's translation unit for a
+    // body this small. Every field reset_for_call also writes is set the
+    // same way here; everything neither of them lists (the bitfields,
+    // current_exception_/return_value_/new_target_/import_meta_,
+    // frame_slot_/owning_scope_, every lazy unique_ptr/vector member) comes
+    // from its own in-class default member initializer, exactly as it does
+    // for a context recycled through the pool's cold-start path
+    // (Context(Engine*, Context*, Type)) -- the two must be changed
+    // together. The three fields reset_for_call itself never touches
+    // (lexical/variable_environment_, execution_depth_) DO need setting
+    // here: a pooled object already carries a zeroed execution_depth_ and
+    // an environment pair the caller is about to overwrite unconditionally,
+    // but a brand new object has neither yet.
+    Context(Engine* engine, Context* parent)
+        : type_(Type::Function), state_(State::Running), context_id_(next_context_id_++),
+          lexical_environment_(nullptr), variable_environment_(nullptr),
+          execution_depth_(0), global_object_(parent->global_object_),
+          engine_(engine), current_filename_(parent->current_filename_) {
+        this_value_ = parent->this_value_;
         builtins_root_ = parent->builtins_root_ ? parent->builtins_root_ : parent;
     }
     Engine* get_engine() const { return engine_; }

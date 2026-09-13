@@ -288,8 +288,6 @@ Context* Context::materialize_to_heap() {
     return heap_copy;
 }
 
-Context::~Context() { release_owned_env(); }
-
 void Context::release_owned_env() {
     if (!owned_env_) return;
     // Block scopes still open when the environment goes back were abandoned
