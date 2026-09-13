@@ -64,7 +64,13 @@ constinit thread_local Object* Function::s_throw_type_error_ = nullptr;
 // the environment below supplies directly.
 static Context* capture_closure_context(Context* closure_context, bool capture_free) {
     if (capture_free) return nullptr;
-    if (closure_context) closure_context->mark_exposed_to_escape();
+    if (closure_context) {
+        // A no-op unless closure_context is still frame-resident: promotes it
+        // to a stable heap address before this Function outlives the call
+        // that's capturing it -- see Context::materialize_to_heap().
+        closure_context = closure_context->materialize_to_heap();
+        closure_context->mark_exposed_to_escape();
+    }
     return closure_context;
 }
 
@@ -895,9 +901,17 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     // stashes current_context_ somewhere long-lived (Promise's own ctor,
     // setTimeout), it's THIS context that would leak. ContextSurvivorGuard
     // consults this instead of registering unconditionally.
-    if (native_captures_ctx_) ctx.mark_exposed_to_escape();
+    // Not `ctx` from here on: materialize_to_heap() is a no-op unless ctx is
+    // still frame-resident, but when it isn't, everything below has to run
+    // against the address the native actually sees for the rest of this
+    // call, not the frame-resident one it's leaving behind.
+    Context* resolved = &ctx;
+    if (native_captures_ctx_) {
+        resolved = ctx.materialize_to_heap();
+        resolved->mark_exposed_to_escape();
+    }
     Context* prev_context = Object::current_context_;
-    Object::current_context_ = &ctx;
+    Object::current_context_ = resolved;
     // A native takes a view of the arguments wherever they already are.
     //
     // A plain call has to see new.target as undefined, and the context is
@@ -907,19 +921,19 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     // already undefined and has nothing to clear -- and nothing that has to
     // survive the call in order to be put back.
     Value result;
-    if (UNLIKELY_NATIVE(!is_construct_invocation && !ctx.get_new_target().is_undefined())) {
-        const Value caller_new_target = ctx.get_new_target();
-        ctx.set_new_target(Value());
-        result = native_data()->fn(ctx, args, this_value);
-        ctx.set_new_target(caller_new_target);
+    if (UNLIKELY_NATIVE(!is_construct_invocation && !resolved->get_new_target().is_undefined())) {
+        const Value caller_new_target = resolved->get_new_target();
+        resolved->set_new_target(Value());
+        result = native_data()->fn(*resolved, args, this_value);
+        resolved->set_new_target(caller_new_target);
     } else {
-        result = native_data()->fn(ctx, args, this_value);
+        result = native_data()->fn(*resolved, args, this_value);
     }
     Object::current_context_ = prev_context;
 
 
 
-    if (UNLIKELY_NATIVE(saved_caller_this)) drop_eval_caller_this(ctx);
+    if (UNLIKELY_NATIVE(saved_caller_this)) drop_eval_caller_this(*resolved);
 
     return result;
 }
