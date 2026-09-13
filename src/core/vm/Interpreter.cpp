@@ -7810,6 +7810,12 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
                 lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
                 this_value, initial_acc ? *initial_acc : Value(), 0, 0, 0, this_resolved};
+    // Only a stack-resident ctx has anything to gain from this: it is what
+    // lets materialize_to_heap() keep frame.ctx correct if something escapes
+    // this exact call mid-dispatch. A heap-resident ctx (the common case --
+    // general/tree-walker calls, generators, async, eval, global) never
+    // moves, so registering here would just be a write nothing reads back.
+    if (ctx.is_stack_resident()) ctx.register_frame_slot(&frame.ctx);
 
     for (;;) {
       try {
