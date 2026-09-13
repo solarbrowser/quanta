@@ -847,9 +847,12 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, std
     // &ctx (the caller's own context, not a fresh one) is captured into the
     // new Generator's outer_context_ and stays reachable for as long as the
     // Generator object is -- ContextSurvivorGuard consults this instead of
-    // registering unconditionally.
-    ctx.mark_exposed_to_escape();
-    return std::make_unique<Generator>(this, gen_context_ptr.release(), &ctx);
+    // registering unconditionally. materialize_to_heap() is a no-op unless
+    // ctx is still frame-resident; the last use of ctx in this function is
+    // the capture itself, so nothing here needs the resolved address again.
+    Context* resolved = ctx.materialize_to_heap();
+    resolved->mark_exposed_to_escape();
+    return std::make_unique<Generator>(this, gen_context_ptr.release(), resolved);
 }
 
 const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx, const EnvSlotHazards* hazards) {

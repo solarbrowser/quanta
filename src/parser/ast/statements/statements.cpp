@@ -216,12 +216,16 @@ Value Program::evaluate(Context& ctx) {
         }
         auto module_body = BytecodeCompiler::compile_module_body(statements_, outer_with);
         if (module_body) {
-            ctx.mark_exposed_to_escape();
-            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            // materialize_to_heap() is a no-op unless ctx is still
+            // frame-resident (a module's own context never is today, but
+            // this stays correct regardless of where it's called from).
+            Context* resolved = ctx.materialize_to_heap();
+            resolved->mark_exposed_to_escape();
+            auto promise_obj = ObjectFactory::create_promise(resolved);
             Promise* promise_raw = static_cast<Promise*>(promise_obj.get());
             completion_promise_ = Value(promise_obj.release());
             auto executor = std::make_shared<AsyncExecutor>(
-                std::move(module_body), &ctx, promise_raw, ctx.get_engine());
+                std::move(module_body), resolved, promise_raw, resolved->get_engine());
             executor->run();
             return Value();
         }
