@@ -25,6 +25,7 @@ class Function;
 class Visitor;
 class Environment;
 class Error;
+class ExecContextScope;
 
 class Context {
 public:
@@ -83,6 +84,13 @@ private:
     bool in_class_field_init_ : 1 = false;
     bool last_construct_explicit_return_ : 1 = false;  // see last_construct_explicit_return()
     bool last_super_override_needs_reparent_ : 1 = false;  // see last_super_override_needs_reparent()
+    // Set only by the two call paths that construct a Context directly in
+    // their own C++ stack frame instead of pool/heap-allocating one (see
+    // Function.cpp's fast_gate/fast_env_gate). Every other Context (the
+    // general/tree-walker path, generators, async, eval, global) is heap
+    // from birth and leaves this false -- materialize_to_heap() reads it to
+    // tell "still needs relocating" apart from "already stable, no-op".
+    bool stack_resident_ : 1 = false;
     // Owned by the Collector: which major epoch last reached this context
     // through a real edge (not through the survivor pool, which roots its
     // entries unconditionally). A stamp rather than a flag so that opening a
@@ -92,6 +100,16 @@ private:
     // freed and never frees one that is still held.
     uint8_t gc_major_epoch_ = 0;
 
+    // Where a stack-resident Context's own address is held by something that
+    // needs to keep pointing at whatever this call is actually using, once
+    // materialize_to_heap() has to hand it off to a fresh heap address.
+    // Registered once, by whoever creates the indirection (VM::run's Frame,
+    // ExecContextScope's constructor) -- nothing else in this class reads or
+    // writes these; they exist purely for materialize_to_heap() to repoint.
+    // Object::current_context_ needs no such registration: it is a single
+    // thread_local, checked directly by identity instead.
+    Context** frame_slot_ = nullptr;
+    ExecContextScope* owning_scope_ = nullptr;
 
     Environment* lexical_environment_;
     Environment* variable_environment_;
@@ -203,14 +221,35 @@ public:
     Context& operator=(Context&&) = delete;
     ~Context();
 
-    // Moves this (assumed frame-resident, about to go out of scope) into a
-    // fresh heap-allocated Context and returns it. The source is left
-    // moved-from (owned_env_ nulled so its own destructor, which still runs
-    // normally when the frame unwinds, does not also release what the new
-    // object now owns) but is NOT itself destroyed here -- the caller's
-    // stack-local Context still runs its ordinary destructor at scope exit,
-    // exactly as if the call had never escaped.
+    // A no-op ("return this") unless stack_resident_ -- every Context that
+    // was never frame-embedded (the overwhelming majority: general-path
+    // calls, generators, async, eval, global) is already stable and has
+    // nothing to move. When it IS frame-resident, moves this (about to go
+    // out of scope) into a fresh heap-allocated Context and returns it. The
+    // source is left moved-from (owned_env_ nulled so its own destructor,
+    // which still runs normally when the frame unwinds, does not also
+    // release what the new object now owns) but is NOT itself destroyed
+    // here -- the caller's stack-local Context still runs its ordinary
+    // destructor at scope exit, exactly as if the call had never escaped.
+    // Repoints frame_slot_/owning_scope_/Object::current_context_ itself
+    // (whichever of them are actually watching this exact object) before
+    // returning, so nothing downstream needs to propagate the new address
+    // by hand.
     Context* materialize_to_heap();
+
+    // Marks this Context as living in the caller's own C++ stack frame
+    // rather than the heap -- called exactly once, right after construction,
+    // by the two call paths that embed one (Function.cpp's
+    // fast_gate/fast_env_gate). Everything else about this object is
+    // unchanged; this only tells materialize_to_heap() it has real work to
+    // do if this object is ever handed a reason to escape.
+    void mark_stack_resident() { stack_resident_ = true; }
+    bool is_stack_resident() const { return stack_resident_; }
+
+    // See frame_slot_/owning_scope_ above: registered once by whoever
+    // creates the indirection, read only by materialize_to_heap().
+    void register_frame_slot(Context** slot) { frame_slot_ = slot; }
+    void register_owning_scope(ExecContextScope* scope) { owning_scope_ = scope; }
 
     // Pooled: reuses freed blocks instead of round-tripping the allocator
     // on every call (see Context.cpp).

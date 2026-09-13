@@ -51,7 +51,9 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Context) == 208);
+// 208 plus frame_slot_/owning_scope_ (two pointers, for
+// materialize_to_heap()'s repoint -- see Context.h).
+static_assert(sizeof(Context) == 224);
 static_assert(sizeof(Environment) == 216); 
 #else
 static_assert(sizeof(Context) <= 896);
@@ -270,7 +272,20 @@ Context::Context(Context&& other) noexcept
 }
 
 Context* Context::materialize_to_heap() {
-    return new Context(std::move(*this));
+    // Already stable: every Context that didn't start life frame-resident
+    // (which is most of them) has nothing to move, and a Context that was
+    // already materialized once reads false here too (the heap copy's own
+    // stack_resident_ defaults false, see the move constructor above).
+    if (!stack_resident_) return this;
+    Context* heap_copy = new Context(std::move(*this));
+    // frame_slot_/owning_scope_ are untouched by the move (not part of its
+    // initializer list), so `this` still names them correctly here --
+    // reading the ORIGINAL's registrations, not the heap copy's (which
+    // defaults both to null, having nothing left to watch).
+    if (Object::current_context_ == this) Object::current_context_ = heap_copy;
+    if (frame_slot_ && *frame_slot_ == this) *frame_slot_ = heap_copy;
+    if (owning_scope_) owning_scope_->repoint(heap_copy);
+    return heap_copy;
 }
 
 Context::~Context() { release_owned_env(); }
