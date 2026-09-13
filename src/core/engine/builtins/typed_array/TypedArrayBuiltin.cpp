@@ -281,22 +281,27 @@ static TypedArrayBase* typed_array_species_create(Context& ctx, TypedArrayBase* 
     Function* ctor_fn = get_typed_array_species_constructor(ctx, exemplar);
     if (!ctor_fn) return nullptr;
 
-    Value result = ctor_fn->construct(ctx, ctor_args);
-    if (ctx.has_exception()) return nullptr;
+    // Not `ctx` below: the species constructor is arbitrary JS (a user
+    // subclass's own constructor, routinely calling super()), which can
+    // hand this exact ctx off to a fresh heap address if it's still
+    // frame-resident -- see Function::construct's own doc comment.
+    Context* resolved = &ctx;
+    Value result = ctor_fn->construct(ctx, ctor_args, &resolved);
+    if (resolved->has_exception()) return nullptr;
     if (!result.is_object() || !result.as_object()->is_typed_array()) {
-        ctx.throw_type_error("Species constructor did not return a TypedArray");
+        resolved->throw_type_error("Species constructor did not return a TypedArray");
         return nullptr;
     }
     TypedArrayBase* result_ta = static_cast<TypedArrayBase*>(result.as_object());
     if (result_ta->is_out_of_bounds()) {
-        ctx.throw_type_error("TypedArray is out of bounds");
+        resolved->throw_type_error("TypedArray is out of bounds");
         return nullptr;
     }
     auto is_big = [](TypedArrayBase::ArrayType t) {
         return t == TypedArrayBase::ArrayType::BIGINT64 || t == TypedArrayBase::ArrayType::BIGUINT64;
     };
     if (is_big(exemplar->get_array_type()) != is_big(result_ta->get_array_type())) {
-        ctx.throw_type_error("Cannot mix BigInt and other types, use explicit conversions");
+        resolved->throw_type_error("Cannot mix BigInt and other types, use explicit conversions");
         return nullptr;
     }
     return result_ta;

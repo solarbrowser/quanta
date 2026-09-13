@@ -208,40 +208,48 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
             // last_construct_explicit_return, so leaving it here means "no
             // JS return statement produced this" -- correct for a native.
             ctx.set_last_construct_explicit_return(false);
+            // Not `ctx` from here on: a native parent_func (or one that
+            // itself calls a native) reuses ctx as-is, and can hand it off
+            // to a fresh heap address if it's still frame-resident -- see
+            // Function::call_native's own doc comment. Every subsequent
+            // read and write in this function has to land on whichever
+            // address ends up live, not the frame-resident one construct()/
+            // call() may be leaving behind.
+            Context* resolved = &ctx;
             // A default-ctor parent's own implicit super(...args) only runs via construct().
             if (!parent_func->is_native() && parent_func->is_default_ctor()) {
-                result = parent_func->construct(ctx, parent_args);
+                result = parent_func->construct(*resolved, parent_args, &resolved);
                 // Function::construct just overwrote last_construct_explicit_return
                 // with parent_func's own answer -- nothing more to do here.
             } else if (this_obj) {
                 Value this_value(this_obj);
-                result = parent_func->call(ctx, parent_args, this_value);
+                result = parent_func->call(*resolved, parent_args, this_value, &resolved);
                 // call() has no auto-super/this-value swapping machinery of its
                 // own, so any differing result is either parent_func's own JS
                 // return statement, or (native) its C++ implementation's
                 // internal construction -- only the former is a genuine
                 // explicit return.
-                ctx.set_last_construct_explicit_return(!parent_func->is_native());
+                resolved->set_last_construct_explicit_return(!parent_func->is_native());
             } else {
-                result = parent_func->call(ctx, parent_args);
-                ctx.set_last_construct_explicit_return(!parent_func->is_native());
+                result = parent_func->call(*resolved, parent_args, Value(), &resolved);
+                resolved->set_last_construct_explicit_return(!parent_func->is_native());
             }
-            ctx.clear_return_value();
-            if (ctx.has_exception()) return Value();
+            resolved->clear_return_value();
+            if (resolved->has_exception()) return Value();
 
-            ctx.set_in_constructor_call(was_in_ctor);
-            ctx.set_new_target(old_new_target);
+            resolved->set_in_constructor_call(was_in_ctor);
+            resolved->set_new_target(old_new_target);
 
             // BindThisValue on an already-initialized binding: a second
             // super() throws here, AFTER the parent ran -- `this` keeps
             // its first value and field initializers don't re-run.
             if (super_already_called) {
-                ctx.throw_reference_error("Super constructor called twice");
+                resolved->throw_reference_error("Super constructor called twice");
                 return Value();
             }
 
-            ctx.set_super_called(true);
-            ctx.set_this_needs_super(false);
+            resolved->set_super_called(true);
+            resolved->set_this_needs_super(false);
 
             // If parent constructor explicitly returned an object, use that as new this.
             // Resolved BEFORE adding the private-method brand slot below: the slot must
@@ -252,8 +260,8 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
             if ((result.is_object() || result.is_function()) && this_obj) {
                 Object* new_this = result.as_object();
                 if (new_this && new_this != this_obj) {
-                    ctx.set_this_binding(new_this);
-                    ctx.set_binding("this", result);
+                    resolved->set_this_binding(new_this);
+                    resolved->set_binding("this", result);
                     final_this_obj = new_this;
                     // Lets Function::construct tell a super-swapped `this`
                     // (needs the subclass prototype stomped for built-in
@@ -261,8 +269,8 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
                     // untouched). Context-side identity only: a property
                     // marker would be observable through Proxy traps or a
                     // deferred module namespace's [[Get]].
-                    ctx.set_last_super_override(new_this);
-                    ctx.set_last_super_override_needs_reparent(!ctx.last_construct_explicit_return());
+                    resolved->set_last_super_override(new_this);
+                    resolved->set_last_super_override_needs_reparent(!resolved->last_construct_explicit_return());
                 }
                 returned_override = true;
             }
@@ -275,16 +283,16 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
                 if (!pm_cs.is_empty() && pm_cs.top().function_ptr) {
                     Function* running = pm_cs.top().function_ptr;
                     const std::string& pm_slot = running->pm_brand_slot();
-                    Object* pm_this = final_this_obj ? final_this_obj : ctx.get_this_binding();
+                    Object* pm_this = final_this_obj ? final_this_obj : resolved->get_this_binding();
                     if (!pm_slot.empty()) {
                         if (pm_this) pm_this->add_private_field(pm_slot);
-                        if (ctx.has_exception()) return Value();
+                        if (resolved->has_exception()) return Value();
                     }
                     // The class's own fields go on here too, where `this` first
                     // exists: after super() returned it.
                     if (running->field_initializers() && pm_this) {
-                        running->initialize_instance_fields(ctx, pm_this);
-                        if (ctx.has_exception()) return Value();
+                        running->initialize_instance_fields(*resolved, pm_this, &resolved);
+                        if (resolved->has_exception()) return Value();
                     }
                 }
             }

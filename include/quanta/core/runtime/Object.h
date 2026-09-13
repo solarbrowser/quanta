@@ -1790,7 +1790,11 @@ public:
     Object* field_initializers() const { return class_slots().field_inits; }
     // Runs them against a freshly built instance: spec 7.3.32 DefineField, so
     // an own property each time, never a set through the prototype.
-    void initialize_instance_fields(Context& ctx, Object* instance) const;
+    // resolved_ctx_out: see call_native's own doc comment -- a field
+    // initializer function can itself escape ctx (it is called the same
+    // way any other function is), and this function reads ctx.has_exception()
+    // right after each one.
+    void initialize_instance_fields(Context& ctx, Object* instance, Context** resolved_ctx_out = nullptr) const;
     void set_super_is_null() { mutable_class_slots().super_is_null = true; }
     void set_default_ctor() { mutable_class_slots().is_default_ctor = true; }
     void set_static_method() { mutable_class_slots().is_static_method = true; }
@@ -1843,7 +1847,13 @@ public:
 
     // Non-virtual: switches on get_function_kind(), same reasoning as
     // trace() above. call_default() is the plain-Function body.
-    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    // resolved_ctx_out: see call_native's own doc comment. Only reaches the
+    // native branch -- the Async/Generator/AsyncGenerator dispatch and
+    // call_default_impl never hand this exact ctx to something that can
+    // move it out from under them (their own escape sites, already
+    // materialize-then-mark, own their own separate contexts instead).
+    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value(),
+              Context** resolved_ctx_out = nullptr);
     // Arguments passed as a view instead of a fresh vector. Two things have to
     // hold of that view and neither holds for an arbitrary span, so a caller
     // has to establish both: the values are already GC roots, and the view
@@ -1855,7 +1865,13 @@ public:
     // for every comparison.
     // Inline: the body is a kind test and a forward, but as its own symbol it
     // opened a frame on every call from the interpreter for that one test.
-    Value call_register_args(Context& ctx, std::span<const Value> args, Value this_value) {
+    // resolved_ctx_out: see call_native's own doc comment. Only the native
+    // branch can actually move ctx (call_default_impl never touches the
+    // ctx a caller passed in, only its own fast_ctx/env_ctx locals; the
+    // suspendable-kind branch's ctx is likewise never the one that can
+    // escape here), so that is the only one that needs to forward it.
+    Value call_register_args(Context& ctx, std::span<const Value> args, Value this_value,
+                             Context** resolved_ctx_out = nullptr) {
         // The three suspendable kinds keep the arguments past the call that
         // made them, so a view of the caller's registers cannot serve them.
         if (get_function_kind() != FunctionKind::Plain) {
@@ -1864,16 +1880,21 @@ public:
         }
         // A native has its own entry: call_default_impl's frame is built for a
         // JS body it would only walk past.
-        if (is_native_) return call_native(ctx, args, this_value);
+        if (is_native_) return call_native(ctx, args, this_value, resolved_ctx_out);
         return call_default_impl(ctx, args, this_value, nullptr);
     }
     // Arguments that live in the caller's VM registers, on the same terms
-    // call_register_args states: already GC roots, and valid for the whole call.
-    Value construct(Context& ctx, std::span<const Value> args);
+    // call_register_args states: already GC roots, and valid for the whole
+    // call. resolved_ctx_out: see call_native's own doc comment -- a native
+    // constructor reuses ctx as-is too, and construct() itself writes back
+    // to ctx afterward (new.target/is_in_constructor_call restore) in
+    // several places, so unlike a plain read-only caller it needs the
+    // resolved address, not just a correct one for the call it makes.
+    Value construct(Context& ctx, std::span<const Value> args, Context** resolved_ctx_out = nullptr);
     void learn_construct_slot_hint(const Object* built);
     // For a caller that arrived with a vector: its storage is malloc'd and
     // invisible to the stack scan, so it is rooted for the duration.
-    Value construct(Context& ctx, const std::vector<Value>& args);
+    Value construct(Context& ctx, const std::vector<Value>& args, Context** resolved_ctx_out = nullptr);
     
     // None of these seven are virtual on Object anymore -- Object's own
     // get_property()/etc. switch on get_type() and dispatch here directly.
@@ -1943,8 +1964,20 @@ protected:
     Value call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
                             const std::vector<Value>* args_vec);
     Value call_tree_walker(Context& ctx, std::span<const Value> args, Value this_value);
-    Value call_native(Context& ctx, std::span<const Value> args, Value this_value);
-    Value call_native_rooted(Context& ctx, const std::vector<Value>& args_vec, Value this_value);
+    // resolved_ctx_out: like VM::run's own (see Interpreter.h) -- a native
+    // callee reuses its caller's own ctx rather than getting a fresh one
+    // ("ctx is reused as-is"), so a native whose native_captures_ctx_
+    // defaults true can hand THIS exact ctx off to a fresh heap address
+    // (Context::materialize_to_heap()) if it's still frame-resident. A
+    // caller that only reads ctx afterward is already safe (CHECK_EXC and
+    // friends re-derive through f.ctx), but one that WRITES to it
+    // afterward (Function::construct's flag save/restore, most notably)
+    // has to write through the resolved address instead, or the write
+    // lands on the stale, moved-from original.
+    Value call_native(Context& ctx, std::span<const Value> args, Value this_value,
+                      Context** resolved_ctx_out = nullptr);
+    Value call_native_rooted(Context& ctx, const std::vector<Value>& args_vec, Value this_value,
+                             Context** resolved_ctx_out = nullptr);
 };
 
 // get_type()-based replacement for dynamic_cast<Function*>: Object is no

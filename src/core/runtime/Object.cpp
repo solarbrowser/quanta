@@ -601,9 +601,18 @@ void Function::add_field_initializer(const std::string& key, const Value& initia
     set_construct_slot_hint((n + 3) / 3);
 }
 
-void Function::initialize_instance_fields(Context& ctx, Object* instance) const {
+void Function::initialize_instance_fields(Context& ctx, Object* instance, Context** resolved_ctx_out) const {
     Object* fields = class_slots().field_inits;
-    if (!fields || !instance) return;
+    if (!fields || !instance) {
+        if (resolved_ctx_out) *resolved_ctx_out = &ctx;
+        return;
+    }
+    // Not `ctx` for any read/write below: a field initializer can be (or
+    // call into) a native, which can hand this exact ctx off to a fresh
+    // heap address if it's still frame-resident -- see call_native's own
+    // doc comment. A Proxy's define trap, reached from set_property_descriptor
+    // below, is the same hazard.
+    Context* resolved = &ctx;
     uint32_t n = static_cast<uint32_t>(fields->get_length());
     for (uint32_t i = 0; i + 2 < n; i += 3) {
         std::string key = fields->get_element(i).to_string();
@@ -615,8 +624,11 @@ void Function::initialize_instance_fields(Context& ctx, Object* instance) const 
         const bool is_private = (flags & 0x2) != 0;
         Value value;
         if (init.is_function()) {
-            value = init.as_function()->call(ctx, {}, Value(instance));
-            if (ctx.has_exception()) return;
+            value = init.as_function()->call(*resolved, {}, Value(instance), &resolved);
+            if (resolved->has_exception()) {
+                if (resolved_ctx_out) *resolved_ctx_out = resolved;
+                return;
+            }
             // NamedEvaluation: a function written anonymously as the
             // initializer takes the field's name; one that merely came out of
             // it keeps whatever name it has.
@@ -644,13 +656,18 @@ void Function::initialize_instance_fields(Context& ctx, Object* instance) const 
         bool ok = (instance->get_type() == Object::ObjectType::Proxy)
                       ? static_cast<Proxy*>(instance)->define_property_trap(Value(key), d)
                       : instance->set_property_descriptor(key, d);
-        if (ctx.has_exception()) return;
+        if (resolved->has_exception()) {
+            if (resolved_ctx_out) *resolved_ctx_out = resolved;
+            return;
+        }
         if (!ok) {
-            ctx.throw_type_error("Cannot define property " + key +
-                                 ", object is not extensible");
+            resolved->throw_type_error("Cannot define property " + key +
+                                       ", object is not extensible");
+            if (resolved_ctx_out) *resolved_ctx_out = resolved;
             return;
         }
     }
+    if (resolved_ctx_out) *resolved_ctx_out = resolved;
 }
 
 void Function::trace_default(Visitor& v) {

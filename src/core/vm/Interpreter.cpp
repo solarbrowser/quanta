@@ -5229,8 +5229,17 @@ Value h_gen_Construct(Frame& f, uint32_t pc, Value acc) {
                     // new.target from an enclosing constructor call.
                     Value old_new_target = ctx.get_new_target();
                     ctx.set_new_target(callee);
-                    acc = callee.as_function()->construct(ctx, call_args);
-                    ctx.set_new_target(old_new_target);
+                    // Not `ctx` for the restore below: construct() can hand
+                    // this exact ctx off to a fresh heap address (a native
+                    // constructor reuses its caller's ctx as-is), and it
+                    // already restores new.target correctly on whichever
+                    // address ends up live -- but writing the same value
+                    // again through a stale `ctx` here would be a landmine
+                    // for any future case where construct()'s own restore
+                    // doesn't happen to make this write redundant.
+                    Context* resolved = &ctx;
+                    acc = callee.as_function()->construct(ctx, call_args, &resolved);
+                    resolved->set_new_target(old_new_target);
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);
@@ -5330,8 +5339,10 @@ Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
                     if (callee.is_function()) {
                         Value old_new_target = ctx.get_new_target();
                         ctx.set_new_target(callee);
-                        acc = callee.as_function()->construct(ctx, call_args);
-                        ctx.set_new_target(old_new_target);
+                        // See h_gen_Construct for why this is resolved->, not ctx.
+                        Context* resolved = &ctx;
+                        acc = callee.as_function()->construct(ctx, call_args, &resolved);
+                        resolved->set_new_target(old_new_target);
                     } else if (callee.is_object() &&
                                callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                         std::vector<Value> trap_args(call_args.begin(), call_args.end());
@@ -5347,8 +5358,9 @@ Value h_gen_ConstructSpread(Frame& f, uint32_t pc, Value acc) {
                     if (callee.is_function()) {
                         Value old_new_target = ctx.get_new_target();
                         ctx.set_new_target(callee);
-                        acc = callee.as_function()->construct(ctx, call_args);
-                        ctx.set_new_target(old_new_target);
+                        Context* resolved = &ctx;
+                        acc = callee.as_function()->construct(ctx, call_args, &resolved);
+                        resolved->set_new_target(old_new_target);
                     } else if (callee.is_object() &&
                                callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                         acc = static_cast<Proxy*>(callee.as_object())->construct_trap(call_args);

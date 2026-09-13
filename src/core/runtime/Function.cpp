@@ -462,13 +462,14 @@ static void declare_pattern_parameter_names(Context& function_context, ASTNode* 
     }
 }
 
-Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
+Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value,
+                     Context** resolved_ctx_out) {
     switch (get_function_kind()) {
         case FunctionKind::Async: return static_cast<AsyncFunction*>(this)->call(ctx, args, this_value);
         case FunctionKind::Generator: return static_cast<GeneratorFunction*>(this)->call(ctx, args, this_value);
         case FunctionKind::AsyncGenerator: return static_cast<AsyncGeneratorFunction*>(this)->call(ctx, args, this_value);
         default:
-            if (is_native_) return call_native_rooted(ctx, args, this_value);
+            if (is_native_) return call_native_rooted(ctx, args, this_value, resolved_ctx_out);
             return call_default_impl(ctx, args, this_value, &args);
     }
 }
@@ -888,23 +889,29 @@ namespace {
 // which a register-mode call never does -- its arguments are covered by its own
 // frame -- so the root lives out here rather than as a branch inside every call.
 Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_vec,
-                                   Value this_value) {
+                                   Value this_value, Context** resolved_ctx_out) {
     ValueVectorRoot args_root(&args_vec);
-    return call_native(ctx, args_vec, this_value);
+    return call_native(ctx, args_vec, this_value, resolved_ctx_out);
 }
 
 [[gnu::noinline]] Value Function::call_native(Context& ctx, std::span<const Value> args,
-                                              Value this_value) {
+                                              Value this_value, Context** resolved_ctx_out) {
     // Consumed immediately so a nested call triggered from inside this
     // invocation doesn't inherit it.
     const bool is_construct_invocation = ctx.consume_pending_construct_call();
     CallStack& stack = CallStack::instance();
-    if (stack.depth() >= CallStack::MAX_STACK_DEPTH) return throw_call_stack_exceeded(ctx);
+    if (stack.depth() >= CallStack::MAX_STACK_DEPTH) {
+        if (resolved_ctx_out) *resolved_ctx_out = &ctx;
+        return throw_call_stack_exceeded(ctx);
+    }
     // A frame count is only a stand-in for how much stack is left, and it is
     // calibrated for the thread's. Where the stack's own end is known, ask it.
     if (const char* floor = current_stack_floor()) {
         const char probe = 0;
-        if (&probe < floor) return throw_call_stack_exceeded(ctx);
+        if (&probe < floor) {
+            if (resolved_ctx_out) *resolved_ctx_out = &ctx;
+            return throw_call_stack_exceeded(ctx);
+        }
     }
     CheckedDepthFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
 
@@ -954,6 +961,7 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
 
     if (UNLIKELY_NATIVE(saved_caller_this)) drop_eval_caller_this(*resolved);
 
+    if (resolved_ctx_out) *resolved_ctx_out = resolved;
     return result;
 }
 
@@ -1654,25 +1662,35 @@ bool Function::set_property(const std::string& key, const Value& value, Property
     return ok;
 }
 
-Value Function::construct(Context& ctx, const std::vector<Value>& args) {
+Value Function::construct(Context& ctx, const std::vector<Value>& args, Context** resolved_ctx_out) {
     ValueVectorRoot args_root(&args);
-    return construct(ctx, std::span<const Value>(args));
+    return construct(ctx, std::span<const Value>(args), resolved_ctx_out);
 }
 
-Value Function::construct(Context& ctx, std::span<const Value> args) {
+Value Function::construct(Context& ctx, std::span<const Value> args, Context** resolved_ctx_out) {
     // Check if this function is a constructor
     if (!is_constructor_) {
         ctx.throw_exception(Value("TypeError: " + get_name() + " is not a constructor"));
+        if (resolved_ctx_out) *resolved_ctx_out = &ctx;
         return Value();
     }
 
+    // Not `ctx` from here on: a native super constructor, a native field
+    // initializer, or the constructor body itself (call_register_args, a
+    // few lines down) can each hand this exact ctx off to a fresh heap
+    // address if it's still frame-resident ("ctx is reused as-is" for a
+    // native call) -- and this function writes back to ctx afterward
+    // (new.target/is_in_constructor_call restore) in several places, not
+    // just reads it, so a stale reference here would silently lose those
+    // writes instead of just missing an exception check.
+    Context* resolved = &ctx;
     // The prototype is resolved before the object exists, so nothing runs
     // between allocating it and giving it one -- which is what lets the
     // install below skip a barrier it could have nothing to do.
     Value constructor_prototype = this->constructor_prototype();
     // GetPrototypeFromConstructor: initial prototype comes from new.target, which may already differ from `this`.
     Value initial_proto = constructor_prototype;
-    Value existing_new_target = ctx.get_new_target();
+    Value existing_new_target = resolved->get_new_target();
     if (!existing_new_target.is_undefined()) {
         Object* nt_obj = existing_new_target.is_function() ? static_cast<Object*>(existing_new_target.as_function())
                         : existing_new_target.is_object() ? existing_new_target.as_object() : nullptr;
@@ -1723,8 +1741,11 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         const std::string& base_pm_slot = pm_brand_slot();
         if (!base_pm_slot.empty()) new_object->add_private_field(base_pm_slot);
         if (field_initializers()) {
-            initialize_instance_fields(ctx, new_object.get());
-            if (ctx.has_exception()) return Value();
+            initialize_instance_fields(*resolved, new_object.get(), &resolved);
+            if (resolved->has_exception()) {
+                if (resolved_ctx_out) *resolved_ctx_out = resolved;
+                return Value();
+            }
         }
     }
 
@@ -1733,30 +1754,36 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     // running: `new Map()` after `super()` left the enclosing derived
     // constructor looking like it had never called super at all. new.target
     // below is saved for the same reason; these three are its neighbours.
+    // Holds &resolved (a pointer to the local above), not a Context&: by
+    // the time this guard's destructor runs, resolved may have been
+    // repointed one or more times since construction, and the restore
+    // below has to land on whichever address is live *then*, not whatever
+    // resolved happened to be when the guard was built.
     struct ConstructFlagsGuard {
-        Context& ctx;
+        Context** ctx_slot;
         bool super_called;
         bool in_constructor_call;
         Object* super_override;
         bool super_override_needs_reparent;
         bool construct_explicit_return;
         ~ConstructFlagsGuard() {
-            ctx.set_super_called(super_called);
-            ctx.set_in_constructor_call(in_constructor_call);
-            ctx.set_last_super_override(super_override);
-            ctx.set_last_super_override_needs_reparent(super_override_needs_reparent);
-            ctx.set_last_construct_explicit_return(construct_explicit_return);
+            Context* c = *ctx_slot;
+            c->set_super_called(super_called);
+            c->set_in_constructor_call(in_constructor_call);
+            c->set_last_super_override(super_override);
+            c->set_last_super_override_needs_reparent(super_override_needs_reparent);
+            c->set_last_construct_explicit_return(construct_explicit_return);
         }
-    } construct_flags_guard{ctx, ctx.was_super_called(), ctx.is_in_constructor_call(),
-                            ctx.last_super_override(), ctx.last_super_override_needs_reparent(),
-                            ctx.last_construct_explicit_return()};
+    } construct_flags_guard{&resolved, resolved->was_super_called(), resolved->is_in_constructor_call(),
+                            resolved->last_super_override(), resolved->last_super_override_needs_reparent(),
+                            resolved->last_construct_explicit_return()};
 
-    ctx.set_in_constructor_call(true);
-    ctx.set_super_called(false);
+    resolved->set_in_constructor_call(true);
+    resolved->set_super_called(false);
     // Preserve new.target across the whole super-chain instead of stomping it with `this`.
-    Value old_new_target = ctx.get_new_target();
+    Value old_new_target = resolved->get_new_target();
     if (old_new_target.is_undefined()) {
-        ctx.set_new_target(Value(static_cast<Object*>(this)));
+        resolved->set_new_target(Value(static_cast<Object*>(this)));
     }
 
     // A synthesized default derived constructor is spec'd as `constructor(...args) { super(...args); }`, so auto-super must run before the constructor body (which here only contains field initializers) -- otherwise a super-chain override (e.g. a base constructor returning `new Proxy(this, ...)`) takes effect too late and fields get written to the object that's about to be discarded.
@@ -1773,58 +1800,63 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         // Default before the call: a native super_constructor never touches
         // last_construct_explicit_return, so leaving it here correctly
         // means "no JS return statement produced this".
-        ctx.set_last_construct_explicit_return(false);
+        resolved->set_last_construct_explicit_return(false);
         if (super_constructor->is_native() || super_constructor->is_default_ctor()) {
             // Native built-ins need construct semantics; so does a default-ctor JS parent,
             // whose own implicit super(...args) only runs inside construct().
             // If super_constructor is JS, its own Function::construct just
             // overwrote last_construct_explicit_return with its own answer.
-            super_result = super_constructor->construct(ctx, args);
+            super_result = super_constructor->construct(*resolved, args, &resolved);
         } else {
             // Known non-native here (is_native() was false above), and
             // call_register_args has no auto-super/this-value swapping
             // machinery of its own -- any differing result is this
             // constructor's own explicit return.
-            super_result = super_constructor->call_register_args(ctx, args, this_value);
-            ctx.set_last_construct_explicit_return(true);
+            super_result = super_constructor->call_register_args(*resolved, args, this_value, &resolved);
+            resolved->set_last_construct_explicit_return(true);
         }
-        ctx.set_super_called(true);
-        if (ctx.has_exception()) {
-            ctx.set_in_constructor_call(false);
-            ctx.set_new_target(old_new_target);
+        resolved->set_super_called(true);
+        if (resolved->has_exception()) {
+            resolved->set_in_constructor_call(false);
+            resolved->set_new_target(old_new_target);
+            if (resolved_ctx_out) *resolved_ctx_out = resolved;
             return Value();
         }
         if (super_result.is_object() || super_result.is_function()) {
             this_value = super_result;
-            auto_super_needs_reparent = !ctx.last_construct_explicit_return();
+            auto_super_needs_reparent = !resolved->last_construct_explicit_return();
         }
         // InitializeInstanceElements after auto-super: add per-instance private method brand slot.
         const std::string& pm_slot = pm_brand_slot();
         Object* pm_this = this_value.is_object() ? this_value.as_object() : nullptr;
         if (!pm_slot.empty() && pm_this) pm_this->add_private_field(pm_slot);
         if (field_initializers() && pm_this) {
-            initialize_instance_fields(ctx, pm_this);
-            if (ctx.has_exception()) {
-                ctx.set_in_constructor_call(false);
-                ctx.set_new_target(old_new_target);
+            initialize_instance_fields(*resolved, pm_this, &resolved);
+            if (resolved->has_exception()) {
+                resolved->set_in_constructor_call(false);
+                resolved->set_new_target(old_new_target);
+                if (resolved_ctx_out) *resolved_ctx_out = resolved;
                 return Value();
             }
         }
         // Nested super construct() clears/overwrites these shared flags -- restore them.
-        ctx.set_in_constructor_call(true);
-        ctx.set_new_target(old_new_target);
+        resolved->set_in_constructor_call(true);
+        resolved->set_new_target(old_new_target);
     }
 
-    ctx.set_last_super_override(nullptr);
-    ctx.set_last_super_override_needs_reparent(false);
-    ctx.set_pending_construct_call(true);
-    Value result = call_register_args(ctx, args, this_value);
-    bool super_was_called = ctx.was_super_called();
-    ctx.set_in_constructor_call(false);
-    ctx.set_new_target(old_new_target);
+    resolved->set_last_super_override(nullptr);
+    resolved->set_last_super_override_needs_reparent(false);
+    resolved->set_pending_construct_call(true);
+    Value result = call_register_args(*resolved, args, this_value, &resolved);
+    bool super_was_called = resolved->was_super_called();
+    resolved->set_in_constructor_call(false);
+    resolved->set_new_target(old_new_target);
 
     // Propagate any exception from the constructor body before checking super state
-    if (ctx.has_exception()) return Value();
+    if (resolved->has_exception()) {
+        if (resolved_ctx_out) *resolved_ctx_out = resolved;
+        return Value();
+    }
 
     // `extends null` is also derived: super() can never succeed there, so a
     // completed constructor still has an uninitialized this -> ReferenceError below.
@@ -1832,12 +1864,14 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
 
     // TypeError for explicit non-object return must come before ReferenceError for missing super (spec 13c)
     if (is_derived && !result.is_undefined() && !result.is_object() && !result.is_function()) {
-        ctx.throw_type_error("Derived constructors may only return object or undefined");
+        resolved->throw_type_error("Derived constructors may only return object or undefined");
+        if (resolved_ctx_out) *resolved_ctx_out = resolved;
         return Value();
     }
 
     if (!result.is_object() && !result.is_function() && !super_was_called && is_derived) {
-        ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+        resolved->throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+        if (resolved_ctx_out) *resolved_ctx_out = resolved;
         return Value();
     }
 
@@ -1845,10 +1879,10 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     bool explicit_return = result.is_object() || result.is_function();
     Value final_result = explicit_return ? result : this_value;
 
-    Object* super_override_obj = ctx.last_super_override();
-    bool super_override_needs_reparent = ctx.last_super_override_needs_reparent();
-    ctx.set_last_super_override(nullptr);
-    ctx.set_last_super_override_needs_reparent(false);
+    Object* super_override_obj = resolved->last_super_override();
+    bool super_override_needs_reparent = resolved->last_super_override_needs_reparent();
+    resolved->set_last_super_override(nullptr);
+    resolved->set_last_super_override_needs_reparent(false);
 
     // If construction resolved to an object or function other than the pre-allocated this, use that
     if ((final_result.is_object() || final_result.is_function()) && final_result.as_object() != new_object.get()) {
@@ -1882,12 +1916,14 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
         // function's own construction always produces an object (there is
         // no JS source with a return statement to distinguish), so
         // explicit_return here is only meaningful for a JS constructor.
-        ctx.set_last_construct_explicit_return(explicit_return && !is_native());
+        resolved->set_last_construct_explicit_return(explicit_return && !is_native());
         // A base-class constructor may have captured a raw pointer to new_object before returning this override (e.g. `new Proxy(this, ...)`), so release rather than let the unique_ptr delete it out from under them.
         new_object.release();
+        if (resolved_ctx_out) *resolved_ctx_out = resolved;
         return final_result;
     } else {
         learn_construct_slot_hint(new_object.get());
+        if (resolved_ctx_out) *resolved_ctx_out = resolved;
         return Value(new_object.release());
     }
 }
