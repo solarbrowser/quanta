@@ -1757,8 +1757,15 @@ BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
 // the rest of that body stops running with pc already pointed at the
 // handler -- which would clobber the exception value in acc (found via
 // ~{valueOf(){throw}} in a try).
+// Reads/clears through f.ctx, not the ambient `ctx` alias a handler may have
+// cached at its own entry: a call this same handler just made can hand its
+// own context off to a fresh heap address (native capture, a captured
+// closure, ...), and f.ctx is the one thing every such handoff repoints --
+// a stale local alias would silently miss the exception this call set on
+// the NEW address, which is the failure mode `capture_closure_context` and
+// call_native's own escape marking are specifically written not to allow.
 #define CHECK_EXC()                                                        \
-    if (ctx.has_exception()) {                                            \
+    if (f.ctx->has_exception()) {                                          \
         int32_t handler_pc = -1;                                           \
         uint32_t best_width = UINT32_MAX;                                  \
         if (chunk.handlers) for (const auto& h : *chunk.handlers) {       \
@@ -1768,8 +1775,8 @@ BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
             }                                                              \
         }                                                                  \
         if (handler_pc < 0) return Value();                               \
-        acc = ctx.get_exception();                                        \
-        ctx.clear_exception();                                            \
+        acc = f.ctx->get_exception();                                      \
+        f.ctx->clear_exception();                                          \
         pc = static_cast<uint32_t>(handler_pc);                           \
         continue;                                                          \
     } else ((void)0)
@@ -1836,7 +1843,7 @@ BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
 // generated body -- its `continue` binds to the do/while(0) wrapper and
 // leaves it, which is exactly where the epilogue picks up.
 #define CHECK_EXC_TAIL()                                                   \
-    if (ctx.has_exception()) {                                            \
+    if (f.ctx->has_exception()) {                                          \
         int32_t handler_pc = -1;                                           \
         uint32_t best_width = UINT32_MAX;                                  \
         if (chunk.handlers) for (const auto& h : *chunk.handlers) {       \
@@ -1846,8 +1853,8 @@ BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
             }                                                              \
         }                                                                  \
         if (handler_pc < 0) return Value();                               \
-        acc = ctx.get_exception();                                        \
-        ctx.clear_exception();                                            \
+        acc = f.ctx->get_exception();                                      \
+        f.ctx->clear_exception();                                          \
         pc = static_cast<uint32_t>(handler_pc);                           \
     } else ((void)0)
 
