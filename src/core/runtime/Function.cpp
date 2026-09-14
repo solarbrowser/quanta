@@ -24,6 +24,7 @@
 #include <unordered_set>
 
 #define UNLIKELY_NATIVE(x) (__builtin_expect(!!(x), 0))
+#define LIKELY_NATIVE(x) (__builtin_expect(!!(x), 1))
 
 #ifdef _MSC_VER
 #include <xmmintrin.h>
@@ -241,7 +242,7 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
-      instance_data_(new NativeFunctionData{std::move(native_fn), 0, name})
+      instance_data_(new NativeFunctionData{.fn = std::move(native_fn), .declared_length = 0, .name = name})
  {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -261,7 +262,29 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
       is_class_constructor_(false), is_strict_(false), is_param_default_(false),
-      instance_data_(new NativeFunctionData{std::move(native_fn), arity, name})
+      instance_data_(new NativeFunctionData{.fn = std::move(native_fn), .declared_length = arity, .name = name})
+ {
+    if (create_prototype) {
+        auto proto = ObjectFactory::create_object();
+        prototype_ = proto.release();
+        PropertyDescriptor prototype_desc(Value(prototype_), PropertyAttributes::None);
+        this->set_property_descriptor("prototype", prototype_desc);
+    }
+
+    // "name"/"length" are lazy -- see the class-header comment.
+}
+
+Function::Function(const std::string& name,
+                   std::function<Value(Context&, std::span<const Value>, Value,
+                                        bool, Value)> construct_fn,
+                   uint32_t arity,
+                   bool create_prototype)
+    : Object(ObjectType::Function), closure_context_(nullptr), closure_environment_(nullptr),
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
+      is_class_constructor_(false), is_strict_(false), is_param_default_(false),
+      has_construct_native_(true),
+      instance_data_(new NativeFunctionData{
+          .construct_fn = std::move(construct_fn), .declared_length = arity, .name = name})
  {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -898,13 +921,33 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     // already undefined and has nothing to clear -- and nothing that has to
     // survive the call in order to be put back.
     Value result;
-    if (UNLIKELY_NATIVE(!is_construct_invocation && !ctx.get_new_target().is_undefined())) {
-        const Value caller_new_target = ctx.get_new_target();
-        ctx.set_new_target(Value());
-        result = native_data()->fn(ctx, args, this_value);
-        ctx.set_new_target(caller_new_target);
+    if (LIKELY_NATIVE(!has_construct_native_)) {
+        if (UNLIKELY_NATIVE(!is_construct_invocation && !ctx.get_new_target().is_undefined())) {
+            const Value caller_new_target = ctx.get_new_target();
+            ctx.set_new_target(Value());
+            result = native_data()->fn(ctx, args, this_value);
+            ctx.set_new_target(caller_new_target);
+        } else {
+            result = native_data()->fn(ctx, args, this_value);
+        }
     } else {
-        result = native_data()->fn(ctx, args, this_value);
+        // Construct-aware native: hand is_construct/new_target in explicitly
+        // instead of leaving the native to read ctx.is_in_constructor_call()/
+        // ctx.get_new_target() itself. ctx's own ambient fields are still
+        // scrubbed/restored around the call exactly as the plain-native path
+        // above -- something this native transitively calls (an un-migrated
+        // native, a getter, Function::construct() for a bound function) may
+        // still legitimately read them ambiently and must see the same
+        // plain-call-vs-construct truth it always has.
+        const Value new_target_for_native = is_construct_invocation ? ctx.get_new_target() : Value();
+        if (UNLIKELY_NATIVE(!is_construct_invocation && !ctx.get_new_target().is_undefined())) {
+            const Value caller_new_target = ctx.get_new_target();
+            ctx.set_new_target(Value());
+            result = native_data()->construct_fn(ctx, args, this_value, is_construct_invocation, new_target_for_native);
+            ctx.set_new_target(caller_new_target);
+        } else {
+            result = native_data()->construct_fn(ctx, args, this_value, is_construct_invocation, new_target_for_native);
+        }
     }
     Object::current_context_ = prev_context;
 
@@ -1960,6 +2003,32 @@ std::unique_ptr<Function> create_native_function(const std::string& name,
 std::unique_ptr<Function> create_native_constructor(const std::string& name,
                                                     std::function<Value(Context&, std::span<const Value>, Value)> fn,
                                                     uint32_t arity) {
+    auto func = std::make_unique<Function>(name, fn, arity, true);
+    Object* func_proto = get_function_prototype();
+    if (func_proto) {
+        // Freshly made here and not handed to JS yet.
+        func->initialize_prototype_of_new(func_proto);
+    }
+    return func;
+}
+
+std::unique_ptr<Function> create_native_function_with_new_target(
+    const std::string& name,
+    std::function<Value(Context&, std::span<const Value>, Value, bool, Value)> fn,
+    uint32_t arity) {
+    auto func = std::make_unique<Function>(name, fn, arity, false);
+    Object* func_proto = get_function_prototype();
+    if (func_proto) {
+        // Freshly made here and not handed to JS yet.
+        func->initialize_prototype_of_new(func_proto);
+    }
+    return func;
+}
+
+std::unique_ptr<Function> create_native_constructor_with_new_target(
+    const std::string& name,
+    std::function<Value(Context&, std::span<const Value>, Value, bool, Value)> fn,
+    uint32_t arity) {
     auto func = std::make_unique<Function>(name, fn, arity, true);
     Object* func_proto = get_function_prototype();
     if (func_proto) {

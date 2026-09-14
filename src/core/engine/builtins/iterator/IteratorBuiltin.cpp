@@ -570,10 +570,10 @@ void register_iterator_helpers(Context& ctx) {
 }
 
 void register_iterator_constructor(Context& ctx) {
-    auto iterator_constructor = ObjectFactory::create_native_constructor("Iterator",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto iterator_constructor = ObjectFactory::create_native_constructor_with_new_target("Iterator",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)args;
-            Value new_target = ctx.get_new_target();
+            (void)is_construct;
             // Throw if called as plain function (no new.target) OR as direct `new Iterator()`.
             if (new_target.is_undefined() ||
                 (new_target.is_function() && new_target.as_function() == ctx.get_built_in_object("Iterator"))) {

@@ -263,15 +263,15 @@ std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) con
                     [](const MapEntry& e) -> const Value& { return e.key; });
 }
 
-Value Map::map_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
-    if (!ctx.is_in_constructor_call()) {
+Value Map::map_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                            bool is_construct, Value new_target) {
+    if (!is_construct) {
         ctx.throw_type_error("Constructor Map requires 'new'");
         return Value();
     }
     auto map = std::make_unique<Map>();
 
     // ES6 subclassing: use new.target.prototype if provided
-    Value new_target = ctx.get_new_target();
     if (new_target.is_function()) {
         Value nt_proto = new_target.as_function()->get_property("prototype");
         if (nt_proto.is_object()) {
@@ -466,7 +466,7 @@ Value Map::map_iterator_method(Context& ctx, std::span<const Value> args, Value 
 }
 
 void Map::setup_map_prototype(Context& ctx) {
-    auto map_constructor_fn = ObjectFactory::create_native_constructor("Map", map_constructor, 0);
+    auto map_constructor_fn = ObjectFactory::create_native_constructor_with_new_target("Map", map_constructor, 0);
     
     auto map_prototype = ObjectFactory::create_object();
     
@@ -812,17 +812,17 @@ std::vector<Set::SetEntry>::const_iterator Set::find_value(const Value& value) c
                     [](const SetEntry& e) -> const Value& { return e.value; });
 }
 
-Value Set::set_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
-    if (!ctx.is_in_constructor_call()) {
+Value Set::set_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                            bool is_construct, Value new_target) {
+    if (!is_construct) {
         ctx.throw_type_error("Constructor Set requires 'new'");
         return Value();
     }
     auto set = std::make_unique<Set>();
 
     // ES6 subclassing: use new.target.prototype if provided
-    Value new_target_s = ctx.get_new_target();
-    if (new_target_s.is_function()) {
-        Value nt_proto = new_target_s.as_function()->get_property("prototype");
+    if (new_target.is_function()) {
+        Value nt_proto = new_target.as_function()->get_property("prototype");
         if (nt_proto.is_object()) {
             set->initialize_prototype(nt_proto.as_object());
         } else if (Set::prototype_object) {
@@ -984,7 +984,7 @@ Value Set::set_iterator_method(Context& ctx, std::span<const Value> args, Value 
 }
 
 void Set::setup_set_prototype(Context& ctx) {
-    auto set_constructor_fn = ObjectFactory::create_native_constructor("Set", set_constructor, 0);
+    auto set_constructor_fn = ObjectFactory::create_native_constructor_with_new_target("Set", set_constructor, 0);
     
     auto set_prototype = ObjectFactory::create_object();
     
@@ -1460,7 +1460,7 @@ bool WeakMap::delete_symbol(Symbol* sym) {
 }
 
 void WeakMap::setup_weakmap_prototype(Context& ctx) {
-    auto weakmap_constructor_fn = ObjectFactory::create_native_constructor("WeakMap", weakmap_constructor, 0);
+    auto weakmap_constructor_fn = ObjectFactory::create_native_constructor_with_new_target("WeakMap", weakmap_constructor, 0);
     
     auto weakmap_prototype = ObjectFactory::create_object();
     
@@ -1582,7 +1582,7 @@ bool WeakSet::delete_symbol(Symbol* sym) {
 }
 
 void WeakSet::setup_weakset_prototype(Context& ctx) {
-    auto weakset_constructor_fn = ObjectFactory::create_native_constructor("WeakSet", weakset_constructor, 0);
+    auto weakset_constructor_fn = ObjectFactory::create_native_constructor_with_new_target("WeakSet", weakset_constructor, 0);
     
     auto weakset_prototype = ObjectFactory::create_object();
     
@@ -1614,8 +1614,10 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
     ctx.register_built_in_object("WeakSet", weakset_constructor_fn.release());
 }
 
-Value WeakMap::weakmap_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
-    if (!ctx.is_in_constructor_call()) {
+Value WeakMap::weakmap_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                                    bool is_construct, Value new_target) {
+    (void)new_target;
+    if (!is_construct) {
         ctx.throw_type_error("Constructor WeakMap requires 'new'");
         return Value();
     }
@@ -1775,8 +1777,10 @@ Value WeakMap::weakmap_delete(Context& ctx, std::span<const Value> args, Value r
     return Value(false);
 }
 
-Value WeakSet::weakset_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
-    if (!ctx.is_in_constructor_call()) {
+Value WeakSet::weakset_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                                    bool is_construct, Value new_target) {
+    (void)new_target;
+    if (!is_construct) {
         ctx.throw_type_error("Constructor WeakSet requires 'new'");
         return Value();
     }
@@ -1921,8 +1925,9 @@ Value WeakRef::deref() const {
     return Value();
 }
 
-Value WeakRef::weakref_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
-    if (!ctx.is_in_constructor_call()) {
+Value WeakRef::weakref_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                                    bool is_construct, Value new_target) {
+    if (!is_construct) {
         ctx.throw_type_error("Constructor WeakRef requires 'new'");
         return Value();
     }
@@ -1937,7 +1942,7 @@ Value WeakRef::weakref_constructor(Context& ctx, std::span<const Value> args, Va
         : std::make_unique<WeakRef>(target.is_function() ? static_cast<Object*>(target.as_function()) : target.as_object());
 
     Object* proto = WeakRef::prototype_object;
-    Value nt = ctx.get_new_target();
+    Value nt = new_target;
     if (nt.is_object() || nt.is_function()) {
         Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
         Value p = nt_obj->get_property("prototype");
@@ -1960,7 +1965,7 @@ Value WeakRef::weakref_deref(Context& ctx, std::span<const Value> args, Value re
 }
 
 void WeakRef::setup_weakref_prototype(Context& ctx) {
-    auto weakref_constructor_fn = ObjectFactory::create_native_constructor("WeakRef", weakref_constructor, 1);
+    auto weakref_constructor_fn = ObjectFactory::create_native_constructor_with_new_target("WeakRef", weakref_constructor, 1);
 
     auto weakref_prototype = ObjectFactory::create_object();
 
@@ -2036,8 +2041,9 @@ void FinalizationRegistry::enqueue_cleanup_job() {
     }, {Value(self)});
 }
 
-Value FinalizationRegistry::fr_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
-    if (!ctx.is_in_constructor_call()) {
+Value FinalizationRegistry::fr_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                                            bool is_construct, Value new_target) {
+    if (!is_construct) {
         ctx.throw_type_error("Constructor FinalizationRegistry requires 'new'");
         return Value();
     }
@@ -2049,7 +2055,7 @@ Value FinalizationRegistry::fr_constructor(Context& ctx, std::span<const Value> 
     auto registry = std::make_unique<FinalizationRegistry>(args[0].as_function(), global_ctx);
 
     Object* proto = FinalizationRegistry::prototype_object;
-    Value nt = ctx.get_new_target();
+    Value nt = new_target;
     if (nt.is_object() || nt.is_function()) {
         Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
         Value p = nt_obj->get_property("prototype");
@@ -2116,7 +2122,7 @@ Value FinalizationRegistry::fr_unregister(Context& ctx, std::span<const Value> a
 }
 
 void FinalizationRegistry::setup_finalization_registry_prototype(Context& ctx) {
-    auto fr_constructor_fn = ObjectFactory::create_native_constructor("FinalizationRegistry", fr_constructor, 1);
+    auto fr_constructor_fn = ObjectFactory::create_native_constructor_with_new_target("FinalizationRegistry", fr_constructor, 1);
 
     auto fr_prototype = ObjectFactory::create_object();
 

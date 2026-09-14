@@ -153,10 +153,11 @@ void register_shadow_realm_builtins(Context& ctx) {
     auto prototype = ObjectFactory::create_object();
     Object* proto_ptr = prototype.get();
 
-    auto ctor = ObjectFactory::create_native_constructor("ShadowRealm",
-        [proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto ctor = ObjectFactory::create_native_constructor_with_new_target("ShadowRealm",
+        [proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)args;
-            if (ctx.get_new_target().is_undefined()) {
+            (void)new_target;
+            if (!is_construct) {
                 ctx.throw_type_error("Constructor ShadowRealm requires 'new'");
                 return Value();
             }

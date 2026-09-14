@@ -46,7 +46,8 @@ public:
     // new_target defaults to this proxy; Reflect.construct may pass a different one.
     Value construct_trap(std::span<const Value> args, Object* new_target = nullptr);
     
-    static Value proxy_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value proxy_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                                    bool is_construct, Value new_target);
     static Value proxy_revocable(Context& ctx, std::span<const Value> args, Value receiver);
     
     static void setup_proxy(Context& ctx);

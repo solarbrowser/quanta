@@ -17,7 +17,7 @@ namespace Quanta {
 
 class Date {
 public:
-    static Value date_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value date_constructor(Context& ctx, std::span<const Value> args, Value receiver, bool is_construct);
 
     static Value now(Context& ctx, std::span<const Value> args, Value receiver);
     static Value parse(Context& ctx, std::span<const Value> args, Value receiver);

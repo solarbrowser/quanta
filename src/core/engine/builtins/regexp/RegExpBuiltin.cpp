@@ -446,8 +446,9 @@ void register_regexp_builtins(Context& ctx) {
 
     Object* regexp_proto_ptr = regexp_prototype.get();
 
-    auto regexp_constructor = ObjectFactory::create_native_constructor("RegExp",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto regexp_constructor = ObjectFactory::create_native_constructor_with_new_target("RegExp",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             // ES6: Check IsRegExp(pattern) via Symbol.match
             bool pattern_is_regexp = false;
             std::string pattern = "";
@@ -550,7 +551,6 @@ void register_regexp_builtins(Context& ctx) {
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())), PropertyAttributes::Writable);
                 
                 Object* regex_raw = regex_obj.release();
-                Value new_target = ctx.get_new_target();
                 if (!new_target.is_undefined()) {
                     Object* nt_obj = new_target.is_function()
                         ? static_cast<Object*>(new_target.as_function())

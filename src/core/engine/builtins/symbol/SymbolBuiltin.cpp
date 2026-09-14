@@ -20,9 +20,10 @@ static std::string symbol_to_string_coerce(Context& ctx, const Value& v) {
 }
 
 void register_symbol_builtins(Context& ctx) {
-    auto symbol_constructor = ObjectFactory::create_native_constructor("Symbol",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (ctx.is_in_constructor_call()) {
+    auto symbol_constructor = ObjectFactory::create_native_constructor_with_new_target("Symbol",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (is_construct) {
                 ctx.throw_type_error("Symbol is not a constructor");
                 return Value();
             }

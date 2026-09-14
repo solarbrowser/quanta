@@ -532,8 +532,9 @@ static double flatten_into_array(Context& ctx, Object* target, Object* source, d
 }
 
 void register_array_builtins(Context& ctx, Object* function_prototype) {
-    auto array_constructor = ObjectFactory::create_native_constructor("Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto array_constructor = ObjectFactory::create_native_constructor_with_new_target("Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::unique_ptr<Object> array;
             if (args.empty()) {
                 array = ObjectFactory::create_array();
@@ -553,7 +554,6 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 array->set_property("length", Value(static_cast<double>(args.size())));
             }
             // ES6: subclassing - use new.target.prototype if different from Array.prototype
-            Value new_target = ctx.get_new_target();
             if (new_target.is_function()) {
                 Value nt_proto = new_target.as_function()->get_property("prototype");
                 if (nt_proto.is_object()) {

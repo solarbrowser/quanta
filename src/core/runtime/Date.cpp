@@ -576,8 +576,8 @@ std::string Date::to_date_string(double tv) {
     return date_string(t) + " " + time_string(t) + time_zone_string(tv);
 }
 
-Value Date::date_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
-    if (!ctx.is_in_constructor_call()) {
+Value Date::date_constructor(Context& ctx, std::span<const Value> args, Value receiver, bool is_construct) {
+    if (!is_construct) {
         return Value(to_date_string(current_time_ms()));
     }
 

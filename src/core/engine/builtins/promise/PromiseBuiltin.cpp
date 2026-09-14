@@ -232,9 +232,9 @@ static void iterator_close(Context& ctx, IteratorRecord& rec) {
 }
 
 void register_promise_builtins(Context& ctx) {
-    auto promise_constructor = ObjectFactory::create_native_constructor("Promise",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) {
+    auto promise_constructor = ObjectFactory::create_native_constructor_with_new_target("Promise",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            if (!is_construct) {
                 ctx.throw_type_error("Promise constructor cannot be invoked without 'new'");
                 return Value();
             }
@@ -242,12 +242,11 @@ void register_promise_builtins(Context& ctx) {
                 ctx.throw_type_error("Promise executor must be a function");
                 return Value();
             }
-            
+
             auto promise = std::make_unique<Promise>(&ctx);
             // ES6: use new.target.prototype for subclassing support
             {
                 Object* nt_obj = nullptr;
-                Value new_target = ctx.get_new_target();
                 if (new_target.is_function()) nt_obj = static_cast<Object*>(new_target.as_function());
                 else if (new_target.is_object()) nt_obj = new_target.as_object();
 

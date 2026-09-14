@@ -255,10 +255,10 @@ Object* to_object_or_throw(Context& ctx, const Value& this_val) {
 }
 
 void register_object_builtins(Context& ctx) {
-    auto object_constructor = ObjectFactory::create_native_constructor("Object",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto object_constructor = ObjectFactory::create_native_constructor_with_new_target("Object",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             // Spec: if NewTarget is neither undefined nor the active function, return OrdinaryCreateFromConstructor.
-            Value new_target = ctx.get_new_target();
             Object* active_object_ctor = ctx.get_built_in_object("Object");
             bool has_different_new_target = !new_target.is_undefined() &&
                 !(new_target.is_function() && new_target.as_function() == static_cast<Function*>(active_object_ctor)) &&

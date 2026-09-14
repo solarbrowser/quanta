@@ -290,15 +290,16 @@ static const std::string& borrow_to_string_this(Context& ctx, const Value& this_
 }
 
 void register_string_builtins(Context& ctx) {
-    auto string_constructor = ObjectFactory::create_native_constructor("String",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto string_constructor = ObjectFactory::create_native_constructor_with_new_target("String",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
             std::string str_value;
             if (args.empty()) {
                 str_value = "";
             } else {
                 const Value& arg = args[0];
                 if (arg.is_symbol()) {
-                    if (ctx.is_in_constructor_call()) {
+                    if (is_construct) {
                         ctx.throw_type_error("Cannot convert a Symbol value to a string");
                         return Value();
                     }

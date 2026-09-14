@@ -20,8 +20,9 @@
 namespace Quanta {
 
 void register_function_builtins(Context& ctx) {
-    auto function_constructor = ObjectFactory::create_native_constructor("Function",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto function_constructor = ObjectFactory::create_native_constructor_with_new_target("Function",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::string params = "";
             std::string body = "";
 
@@ -163,7 +164,6 @@ void register_function_builtins(Context& ctx) {
                     if (is_strict) func->set_is_strict(true);
 
                     Function* raw_func = func.release();
-                    Value new_target = ctx.get_new_target();
                     if (!new_target.is_undefined()) {
                         Object* nt_obj = new_target.is_function()
                             ? static_cast<Object*>(new_target.as_function())
@@ -391,16 +391,19 @@ void register_function_builtins(Context& ctx) {
             std::string bound_name = "bound " + (name_val.is_string() ? name_val.to_string() : target_func->get_name());
             // new.target is stored as VALUE_OBJECT, so compare via raw Object* pointer
             auto self_ptr = std::make_shared<Function*>(nullptr);
-            auto bound_function = ObjectFactory::create_native_function(bound_name,
-                [target_func, bound_this, bound_args, self_ptr](Context& ctx, std::span<const Value> call_args, Value this_value) -> Value {
+            auto bound_function = ObjectFactory::create_native_function_with_new_target(bound_name,
+                [target_func, bound_this, bound_args, self_ptr](Context& ctx, std::span<const Value> call_args, Value this_value,
+                                                                 bool is_construct, Value new_tgt) -> Value {
                     std::vector<Value> final_args = bound_args;
                     final_args.insert(final_args.end(), call_args.begin(), call_args.end());
 
-                    if (ctx.is_in_constructor_call()) {
-                        Value new_tgt = ctx.get_new_target();
+                    if (is_construct) {
                         Object* new_tgt_raw = new_tgt.is_function()
                             ? static_cast<Object*>(new_tgt.as_function())
                             : new_tgt.is_object() ? new_tgt.as_object() : nullptr;
+                        // target_func->construct() is a non-native call site,
+                        // out of scope for this migration -- it still reads
+                        // new.target ambiently off ctx, so this write stays.
                         if (new_tgt_raw && new_tgt_raw == static_cast<Object*>(*self_ptr)) {
                             ctx.set_new_target(Value(static_cast<Object*>(target_func)));
                         }

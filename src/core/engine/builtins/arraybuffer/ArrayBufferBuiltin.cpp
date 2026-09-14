@@ -51,8 +51,7 @@ static double to_index_checked(Context& ctx, const Value& v) {
 static constexpr double kMaxAllocatableBytes = 4294967296.0; // 4 GiB
 
 // GetPrototypeFromConstructor: new.target's own "prototype", falling back to default_proto.
-static Object* resolve_new_target_prototype(Context& ctx, Object* default_proto) {
-    Value nt = ctx.get_new_target();
+static Object* resolve_new_target_prototype(Context& ctx, Value nt, Object* default_proto) {
     if (!nt.is_object() && !nt.is_function()) return default_proto;
     Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
     Value p = nt_obj->get_property("prototype");
@@ -148,9 +147,9 @@ void register_arraybuffer_builtins(Context& ctx) {
     auto arraybuffer_prototype = ObjectFactory::create_object();
     Object* arraybuffer_proto_ptr = arraybuffer_prototype.get();
 
-    auto arraybuffer_constructor = ObjectFactory::create_native_constructor("ArrayBuffer",
-        [arraybuffer_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto arraybuffer_constructor = ObjectFactory::create_native_constructor_with_new_target("ArrayBuffer",
+        [arraybuffer_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
 
             double byte_length_d = to_index_checked(ctx, args.empty() ? Value() : args[0]);
             if (ctx.has_exception()) return Value();
@@ -174,7 +173,7 @@ void register_arraybuffer_builtins(Context& ctx) {
 
             // Prototype resolves before allocation: a throwing prototype getter
             // must preempt a RangeError from an oversized request.
-            Object* proto = resolve_new_target_prototype(ctx, arraybuffer_proto_ptr);
+            Object* proto = resolve_new_target_prototype(ctx, new_target, arraybuffer_proto_ptr);
             if (ctx.has_exception()) return Value();
 
             if ((has_max ? max_byte_length_d : byte_length_d) > kMaxAllocatableBytes) {
@@ -441,9 +440,9 @@ void register_arraybuffer_builtins(Context& ctx) {
         auto sab_prototype = ObjectFactory::create_object();
         Object* sab_proto_ptr = sab_prototype.get();
 
-        auto sab_constructor = ObjectFactory::create_native_constructor("SharedArrayBuffer",
-            [sab_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+        auto sab_constructor = ObjectFactory::create_native_constructor_with_new_target("SharedArrayBuffer",
+            [sab_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+                if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
 
                 double byte_length_d = to_index_checked(ctx, args.empty() ? Value() : args[0]);
                 if (ctx.has_exception()) return Value();
@@ -466,7 +465,7 @@ void register_arraybuffer_builtins(Context& ctx) {
                     return Value();
                 }
 
-                Object* proto = resolve_new_target_prototype(ctx, sab_proto_ptr);
+                Object* proto = resolve_new_target_prototype(ctx, new_target, sab_proto_ptr);
                 if (ctx.has_exception()) return Value();
 
                 if ((has_max ? max_byte_length_d : byte_length_d) > kMaxAllocatableBytes) {

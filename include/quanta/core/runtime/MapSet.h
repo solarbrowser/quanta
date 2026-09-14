@@ -68,7 +68,8 @@ public:
     std::vector<Value> values() const;
     std::vector<std::pair<Value, Value>> entries() const;
     
-    static Value map_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value map_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                        bool is_construct, Value new_target);
     static Value map_set(Context& ctx, std::span<const Value> args, Value receiver);
     static Value map_get(Context& ctx, std::span<const Value> args, Value receiver);
     static Value map_has(Context& ctx, std::span<const Value> args, Value receiver);
@@ -130,7 +131,8 @@ public:
     std::vector<Value> values() const;
     std::vector<std::pair<Value, Value>> entries() const;
     
-    static Value set_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value set_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                        bool is_construct, Value new_target);
     static Value set_add(Context& ctx, std::span<const Value> args, Value receiver);
     static Value set_has(Context& ctx, std::span<const Value> args, Value receiver);
     static Value set_delete(Context& ctx, std::span<const Value> args, Value receiver);
@@ -185,7 +187,8 @@ public:
     std::unordered_map<Object*, Value>& raw_entries() { return entries_; }
     std::unordered_map<class Symbol*, Value>* raw_symbol_entries() { return symbol_entries_.get(); }
 
-    static Value weakmap_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value weakmap_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                        bool is_construct, Value new_target);
     static Value weakmap_set(Context& ctx, std::span<const Value> args, Value receiver);
     static Value weakmap_get(Context& ctx, std::span<const Value> args, Value receiver);
     static Value weakmap_has(Context& ctx, std::span<const Value> args, Value receiver);
@@ -224,7 +227,8 @@ public:
     std::unordered_set<Object*>& raw_values() { return values_; }
     std::unordered_set<class Symbol*>* raw_symbol_values() { return symbol_values_.get(); }
 
-    static Value weakset_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value weakset_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                        bool is_construct, Value new_target);
     static Value weakset_add(Context& ctx, std::span<const Value> args, Value receiver);
     static Value weakset_has(Context& ctx, std::span<const Value> args, Value receiver);
     static Value weakset_delete(Context& ctx, std::span<const Value> args, Value receiver);
@@ -257,7 +261,8 @@ public:
     // before its cell is swept.
     void clear_target() { target_object_ = nullptr; target_symbol_ = nullptr; }
 
-    static Value weakref_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value weakref_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                        bool is_construct, Value new_target);
     static Value weakref_deref(Context& ctx, std::span<const Value> args, Value receiver);
 
     static void setup_weakref_prototype(Context& ctx);
@@ -303,7 +308,8 @@ public:
     // marked cleared, removing each as its callback returns.
     void enqueue_cleanup_job();
 
-    static Value fr_constructor(Context& ctx, std::span<const Value> args, Value receiver);
+    static Value fr_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                        bool is_construct, Value new_target);
     static Value fr_register(Context& ctx, std::span<const Value> args, Value receiver);
     static Value fr_unregister(Context& ctx, std::span<const Value> args, Value receiver);
 

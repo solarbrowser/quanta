@@ -1399,6 +1399,11 @@ private:
     // had, so only eval's own invocation has to preserve it. Every other
     // native call used to create and then delete a binding for it.
     bool is_eval_native_ : 1 = false;
+    // Set only by the construct_fn-taking native constructor below: this
+    // instance's NativeFunctionData::construct_fn is populated instead of
+    // fn, so call_native must dispatch to it and hand is_construct/new_target
+    // in explicitly rather than leaving the native to read them off ctx.
+    bool has_construct_native_ : 1 = false;
     // "name"/"length" are lazy: no real descriptor/shape-slot is installed at
     // construction (see get_property/get_property_descriptor/has_own_property
     // overrides below) -- these track whether each has been explicitly
@@ -1473,6 +1478,14 @@ private:
     // a separate override).
     struct NativeFunctionData {
         std::function<Value(Context&, std::span<const Value>, Value)> fn;
+        // Populated instead of fn, only for a construct-aware native (see
+        // has_construct_native_): is_construct mirrors what the caller would
+        // otherwise have read via ctx.is_in_constructor_call(), new_target
+        // mirrors ctx.get_new_target() (Value() when is_construct is false).
+        // One shared signature rather than a separate boolean-only variant --
+        // see call_native's dispatch for why.
+        std::function<Value(Context&, std::span<const Value>, Value,
+                             bool is_construct, Value new_target)> construct_fn;
         size_t declared_length = 0;
         std::string name;
     };
@@ -1596,7 +1609,18 @@ public:
              std::function<Value(Context&, std::span<const Value>, Value)> native_fn,
              uint32_t arity,
              bool create_prototype = false);
-    
+
+    // Construct-aware native: is_construct/new_target are handed to fn
+    // explicitly by call_native instead of it reading ctx.is_in_constructor_
+    // call()/ctx.get_new_target() ambiently. Every current use is a
+    // constructor (create_prototype = true), but the parameter is kept for
+    // symmetry with the other native constructors rather than hard-coded.
+    Function(const std::string& name,
+             std::function<Value(Context&, std::span<const Value>, Value,
+                                  bool is_construct, Value new_target)> construct_fn,
+             uint32_t arity,
+             bool create_prototype);
+
     // Non-virtual: the GC sweep (Collector.cpp) reads get_function_kind()
     // and destructs through the correct concrete type itself, same pattern
     // as Object's own destructor dispatch. Out-of-line (Function.cpp):
@@ -1704,6 +1728,7 @@ public:
     bool is_mapped_arguments_accessor() const { return is_mapped_arguments_accessor_; }
     bool is_eval_native() const { return is_eval_native_; }
     void mark_eval_native() { is_eval_native_ = true; }
+    bool has_construct_native() const { return has_construct_native_; }
     // Decl-site-invariant class field count -- see FunctionExecutable::
     // construct_slot_hint's own doc comment. No-op for native functions
     // (never class constructors with instance fields).
@@ -2009,6 +2034,25 @@ namespace ObjectFactory {
     std::unique_ptr<Function> create_native_constructor(const std::string& name,
                                                         std::function<Value(Context&, std::span<const Value>, Value)> fn,
                                                         uint32_t arity = 1);
+    // Same as create_native_function, but fn receives is_construct/
+    // new_target as explicit parameters instead of reading them off ctx.
+    // For a native whose constructibility is a runtime property (e.g. a
+    // bound function, constructible only when its target is) rather than
+    // fixed at registration -- create_prototype stays false here; the caller
+    // toggles set_is_constructor() itself, as bind_fn already does.
+    std::unique_ptr<Function> create_native_function_with_new_target(
+        const std::string& name,
+        std::function<Value(Context&, std::span<const Value>, Value,
+                             bool is_construct, Value new_target)> fn,
+        uint32_t arity = 0);
+    // Same as create_native_constructor, but fn receives is_construct/
+    // new_target as explicit parameters instead of reading them off ctx --
+    // see NativeFunctionData::construct_fn's own comment.
+    std::unique_ptr<Function> create_native_constructor_with_new_target(
+        const std::string& name,
+        std::function<Value(Context&, std::span<const Value>, Value,
+                             bool is_construct, Value new_target)> fn,
+        uint32_t arity = 1);
     std::unique_ptr<Object> create_string(const std::string& value);
     std::unique_ptr<Object> create_number(double value);
     std::unique_ptr<Object> create_boolean(bool value);

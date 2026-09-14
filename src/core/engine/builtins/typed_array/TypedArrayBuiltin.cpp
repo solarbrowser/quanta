@@ -591,9 +591,10 @@ static Value construct_typed_array_generic(Context& ctx, std::span<const Value> 
 }
 
 void register_typed_array_builtins(Context& ctx) {
-    auto uint8array_constructor = ObjectFactory::create_native_constructor("Uint8Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto uint8array_constructor = ObjectFactory::create_native_constructor_with_new_target("Uint8Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT8, 1);
         }, 3);
     // ES2025: fromBase64/fromHex ignore their receiver -- always %Uint8Array.prototype%,
@@ -641,16 +642,18 @@ void register_typed_array_builtins(Context& ctx) {
     }
     ctx.register_built_in_object("Uint8Array", uint8array_constructor.release());
 
-    auto uint8clampedarray_constructor = ObjectFactory::create_native_constructor("Uint8ClampedArray",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto uint8clampedarray_constructor = ObjectFactory::create_native_constructor_with_new_target("Uint8ClampedArray",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT8_CLAMPED, 1);
         }, 3);
     ctx.register_built_in_object("Uint8ClampedArray", uint8clampedarray_constructor.release());
 
-    auto float32array_constructor = ObjectFactory::create_native_constructor("Float32Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto float32array_constructor = ObjectFactory::create_native_constructor_with_new_target("Float32Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::FLOAT32, 4);
         }, 3);
     ctx.register_built_in_object("Float32Array", float32array_constructor.release());
@@ -1863,58 +1866,66 @@ void register_typed_array_builtins(Context& ctx) {
 
     ctx.register_built_in_object("TypedArray", typedarray_constructor.release());
 
-    auto int8array_constructor = ObjectFactory::create_native_constructor("Int8Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto int8array_constructor = ObjectFactory::create_native_constructor_with_new_target("Int8Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::INT8, 1);
         }, 3);
     ctx.register_built_in_object("Int8Array", int8array_constructor.release());
 
-    auto uint16array_constructor = ObjectFactory::create_native_constructor("Uint16Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto uint16array_constructor = ObjectFactory::create_native_constructor_with_new_target("Uint16Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT16, 2);
         }, 3);
     ctx.register_built_in_object("Uint16Array", uint16array_constructor.release());
 
-    auto int16array_constructor = ObjectFactory::create_native_constructor("Int16Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto int16array_constructor = ObjectFactory::create_native_constructor_with_new_target("Int16Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::INT16, 2);
         }, 3);
     ctx.register_built_in_object("Int16Array", int16array_constructor.release());
 
-    auto uint32array_constructor = ObjectFactory::create_native_constructor("Uint32Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto uint32array_constructor = ObjectFactory::create_native_constructor_with_new_target("Uint32Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT32, 4);
         }, 3);
     ctx.register_built_in_object("Uint32Array", uint32array_constructor.release());
 
-    auto int32array_constructor = ObjectFactory::create_native_constructor("Int32Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto int32array_constructor = ObjectFactory::create_native_constructor_with_new_target("Int32Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::INT32, 4);
         }, 3);
     ctx.register_built_in_object("Int32Array", int32array_constructor.release());
 
-    auto float64array_constructor = ObjectFactory::create_native_constructor("Float64Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto float64array_constructor = ObjectFactory::create_native_constructor_with_new_target("Float64Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::FLOAT64, 8);
         }, 3);
     ctx.register_built_in_object("Float64Array", float64array_constructor.release());
 
-    auto bigint64array_constructor = ObjectFactory::create_native_constructor("BigInt64Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto bigint64array_constructor = ObjectFactory::create_native_constructor_with_new_target("BigInt64Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::BIGINT64, 8);
         }, 3);
     ctx.register_built_in_object("BigInt64Array", bigint64array_constructor.release());
 
-    auto biguint64array_constructor = ObjectFactory::create_native_constructor("BigUint64Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto biguint64array_constructor = ObjectFactory::create_native_constructor_with_new_target("BigUint64Array",
+        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)new_target;
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::BIGUINT64, 8);
         }, 3);
     ctx.register_built_in_object("BigUint64Array", biguint64array_constructor.release());
@@ -1972,16 +1983,16 @@ void register_typed_array_builtins(Context& ctx) {
     auto dataview_prototype = ObjectFactory::create_object();
     Object* dataview_proto_ptr = dataview_prototype.get();
 
-    auto dataview_constructor = ObjectFactory::create_native_constructor("DataView",
-        [dataview_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+    auto dataview_constructor = ObjectFactory::create_native_constructor_with_new_target("DataView",
+        [dataview_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            if (!is_construct) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             Value result = DataView::constructor(ctx, args, receiver);
             if (!result.is_object()) return result;
 
             // GetPrototypeFromConstructor runs after offset/length validation,
             // so a throwing prototype getter is never reached on invalid input.
             Object* proto = dataview_proto_ptr;
-            Value nt = ctx.get_new_target();
+            Value nt = new_target;
             if (nt.is_object() || nt.is_function()) {
                 Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function())
                                                   : nt.as_object();

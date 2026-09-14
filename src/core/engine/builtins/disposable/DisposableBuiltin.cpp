@@ -25,8 +25,7 @@ constexpr const char* kAsyncStack = "[[AsyncDisposableStack]]";
 // Stack entry kinds: how the captured method gets invoked at dispose time.
 enum EntryKind { kUse = 0, kAdopt = 1, kDefer = 2 };
 
-Object* resolve_new_target_prototype(Context& ctx, Object* default_proto) {
-    Value nt = ctx.get_new_target();
+Object* resolve_new_target_prototype(Context& ctx, Value nt, Object* default_proto) {
     if (!nt.is_object() && !nt.is_function()) return default_proto;
     Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
     Value p = nt_obj->get_property("prototype");
@@ -274,14 +273,15 @@ void register_stack(Context& ctx, bool async) {
         return obj.release();
     };
 
-    auto constructor = ObjectFactory::create_native_constructor(ctor_name,
-        [proto_ptr, make_stack_object, ctor_name](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto constructor = ObjectFactory::create_native_constructor_with_new_target(ctor_name,
+        [proto_ptr, make_stack_object, ctor_name](Context& ctx, std::span<const Value> args, Value receiver,
+                                                   bool is_construct, Value new_target) -> Value {
             (void)args;
-            if (!ctx.is_in_constructor_call()) {
+            if (!is_construct) {
                 ctx.throw_type_error(std::string(ctor_name) + " requires 'new'");
                 return Value();
             }
-            Object* proto = resolve_new_target_prototype(ctx, proto_ptr);
+            Object* proto = resolve_new_target_prototype(ctx, new_target, proto_ptr);
             if (ctx.has_exception()) return Value();
             return Value(make_stack_object(proto));
         }, 0);

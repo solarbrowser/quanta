@@ -16,8 +16,7 @@
 namespace Quanta {
 
 // OrdinaryCreateFromConstructor's prototype source: new.target.prototype, else a subclass `this` already wired up by super(), else the intrinsic default.
-static Object* resolve_error_prototype(Context& ctx, const Value& receiver, Object* default_proto) {
-    Value new_target = ctx.get_new_target();
+static Object* resolve_error_prototype(Context& ctx, const Value& new_target, const Value& receiver, Object* default_proto) {
     if (new_target.is_function() || new_target.is_object()) {
         Object* nt = new_target.is_function() ? static_cast<Object*>(new_target.as_function())
                                               : new_target.as_object();
@@ -143,8 +142,9 @@ void register_error_builtins(Context& ctx) {
 
     Object* error_prototype_ptr = error_prototype.get();
 
-    auto error_constructor = ObjectFactory::create_native_constructor("Error",
-        [error_prototype_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto error_constructor = ObjectFactory::create_native_constructor_with_new_target("Error",
+        [error_prototype_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
@@ -152,7 +152,7 @@ void register_error_builtins(Context& ctx) {
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
 
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, error_prototype_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, error_prototype_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -260,15 +260,16 @@ void register_error_builtins(Context& ctx) {
     type_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* type_error_proto_ptr = type_error_prototype.get();
 
-    auto type_error_constructor = ObjectFactory::create_native_constructor("TypeError",
-        [type_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto type_error_constructor = ObjectFactory::create_native_constructor_with_new_target("TypeError",
+        [type_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::TypeError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, type_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, type_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -309,15 +310,16 @@ void register_error_builtins(Context& ctx) {
     reference_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* reference_error_proto_ptr = reference_error_prototype.get();
 
-    auto reference_error_constructor = ObjectFactory::create_native_constructor("ReferenceError",
-        [reference_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto reference_error_constructor = ObjectFactory::create_native_constructor_with_new_target("ReferenceError",
+        [reference_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::ReferenceError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, reference_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, reference_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -357,15 +359,16 @@ void register_error_builtins(Context& ctx) {
     syntax_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* syntax_error_proto_ptr = syntax_error_prototype.get();
 
-    auto syntax_error_constructor = ObjectFactory::create_native_constructor("SyntaxError",
-        [syntax_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto syntax_error_constructor = ObjectFactory::create_native_constructor_with_new_target("SyntaxError",
+        [syntax_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::SyntaxError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, syntax_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, syntax_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -405,15 +408,16 @@ void register_error_builtins(Context& ctx) {
     range_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* range_error_proto_ptr = range_error_prototype.get();
 
-    auto range_error_constructor = ObjectFactory::create_native_constructor("RangeError",
-        [range_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto range_error_constructor = ObjectFactory::create_native_constructor_with_new_target("RangeError",
+        [range_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::RangeError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, range_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, range_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -454,15 +458,16 @@ void register_error_builtins(Context& ctx) {
     uri_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* uri_error_proto_ptr = uri_error_prototype.get();
 
-    auto uri_error_constructor = ObjectFactory::create_native_constructor("URIError",
-        [uri_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto uri_error_constructor = ObjectFactory::create_native_constructor_with_new_target("URIError",
+        [uri_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::URIError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, uri_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, uri_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -495,15 +500,16 @@ void register_error_builtins(Context& ctx) {
     eval_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* eval_error_proto_ptr = eval_error_prototype.get();
 
-    auto eval_error_constructor = ObjectFactory::create_native_constructor("EvalError",
-        [eval_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto eval_error_constructor = ObjectFactory::create_native_constructor_with_new_target("EvalError",
+        [eval_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!error_arg_to_string(ctx, args[0], message)) return Value();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::EvalError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, eval_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, eval_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -537,8 +543,9 @@ void register_error_builtins(Context& ctx) {
 
     Object* agg_error_proto_ptr = aggregate_error_prototype.get();
 
-    auto aggregate_error_constructor = ObjectFactory::create_native_constructor("AggregateError",
-        [agg_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto aggregate_error_constructor = ObjectFactory::create_native_constructor_with_new_target("AggregateError",
+        [agg_error_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             // Spec order: message ToString before errors iteration (order-of-args-evaluation).
             Value message_arg = args.size() > 1 ? args[1] : Value();
             bool has_message = !message_arg.is_undefined();
@@ -550,7 +557,7 @@ void register_error_builtins(Context& ctx) {
 
             auto error_obj = std::make_unique<Error>(Error::Type::AggregateError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, agg_error_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, agg_error_proto_ptr));
 
             if (has_message) {
                 error_obj->set_property_descriptor("message",
@@ -616,8 +623,9 @@ void register_error_builtins(Context& ctx) {
     suppressed_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* suppressed_proto_ptr = suppressed_error_prototype.get();
 
-    auto suppressed_error_constructor = ObjectFactory::create_native_constructor("SuppressedError",
-        [suppressed_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    auto suppressed_error_constructor = ObjectFactory::create_native_constructor_with_new_target("SuppressedError",
+        [suppressed_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
             Value message_arg = args.size() > 2 ? args[2] : Value();
             bool has_message = !message_arg.is_undefined();
             std::string message;
@@ -626,7 +634,7 @@ void register_error_builtins(Context& ctx) {
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_property("name", Value(std::string("SuppressedError")));
-            error_obj->initialize_prototype(resolve_error_prototype(ctx, receiver, suppressed_proto_ptr));
+            error_obj->initialize_prototype(resolve_error_prototype(ctx, new_target, receiver, suppressed_proto_ptr));
             // Insertion order matters (order-of-args-evaluation): message, then error, then suppressed.
             if (has_message) {
                 error_obj->set_property("message", Value(message), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));

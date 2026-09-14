@@ -913,8 +913,10 @@ PropertyDescriptor Proxy::get_property_descriptor(const std::string& key) const 
 }
 
 
-Value Proxy::proxy_constructor(Context& ctx, std::span<const Value> args, Value receiver) {
-    if (!ctx.is_in_constructor_call()) {
+Value Proxy::proxy_constructor(Context& ctx, std::span<const Value> args, Value receiver,
+                                bool is_construct, Value new_target) {
+    (void)new_target;
+    if (!is_construct) {
         ctx.throw_type_error("Constructor Proxy requires 'new'");
         return Value();
     }
@@ -969,7 +971,7 @@ Value Proxy::proxy_revocable(Context& ctx, std::span<const Value> args, Value re
 }
 
 void Proxy::setup_proxy(Context& ctx) {
-    auto proxy_constructor_fn = ObjectFactory::create_native_constructor("Proxy", proxy_constructor, 2);
+    auto proxy_constructor_fn = ObjectFactory::create_native_constructor_with_new_target("Proxy", proxy_constructor, 2);
     // Per spec, Proxy has no 'prototype'; set_function_prototype(null) clears both the raw prototype_ ptr and the descriptor.
     proxy_constructor_fn->set_function_prototype(nullptr);
 
