@@ -507,6 +507,16 @@ public:
     // add_error() or the real parse_identifier/parse_number_literal/etc --
     // those have side effects (note_name, subtree_acc_, the error list) a
     // discarded attempt must not leave behind.
+    // Whether `name` (an already-lexed TokenType::IDENTIFIER's text) can be
+    // treated as a plain identifier reference at all in the current
+    // context -- shared by try_tape_primary (a value read) and
+    // try_tape_assignment's own IDENTIFIER-'='-fast-path (an assignment
+    // target), since parse_assignment_expression's real LHS reaches this
+    // exact same parse_primary_expression/parse_identifier validation for a
+    // bare identifier target too (Parser.cpp:1904-1912, :2925-2932). Does
+    // NOT check has_escaped_keyword() -- callers check that themselves
+    // against the actual Token, since this takes just the decoded name.
+    bool try_tape_identifier_ref_ok(const std::string& name) const;
     bool try_tape_primary(ExprTape& tape);
     bool try_tape_call_or_member(ExprTape& tape);
     bool try_tape_binary(ExprTape& tape, int min_precedence);

@@ -49,7 +49,11 @@ std::unique_ptr<ASTNode> ScriptUnit::parse_expression_from_source(
     opts.strict_mode = strict;
     opts.reparsing_accepted_source = true;
     TokenSequence toks = Lexer::stream_range(source, start, end_offset, opts);
-    if (toks.lexed_count() <= 1 && toks.size() != SIZE_MAX) return nullptr;
+    // parse_body_from_source's own guard above uses `<= 1`, correct for a
+    // function body (never fewer than the `{`/`}` pair) -- an expression's
+    // minimum is exactly ONE token (a bare identifier or literal), so only
+    // a truly empty lex is a broken range here.
+    if (toks.lexed_count() == 0 && toks.size() != SIZE_MAX) return nullptr;
     Parser parser(std::move(toks));
     parser.set_source(std::move(source));
     return parser.parse_expression_at(0, strict);

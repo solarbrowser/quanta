@@ -5243,6 +5243,26 @@ std::unique_ptr<ASTNode> Parser::parse_with_statement() {
 // Every stopping point below is checked against the same condition the real
 // function it mirrors uses to decide "nothing more," never against "not one
 // of the forms I implemented."
+bool Parser::try_tape_identifier_ref_ok(const std::string& name) const {
+    // Mirrors parse_primary_expression's own strict-mode future-reserved-
+    // word check (Parser.cpp:1904-1912) -- these six names lex as plain
+    // IDENTIFIER (unlike yield/let/static/async/from/of, which have their
+    // own TokenTypes and so never reach here at all) but are a SyntaxError
+    // as an identifier reference in strict mode.
+    if (options_.strict_mode &&
+        (name == "implements" || name == "interface" || name == "package" ||
+         name == "private" || name == "protected" || name == "public")) {
+        return false;
+    }
+    // Mirrors parse_identifier's remaining two checks (Parser.cpp:2925-2932)
+    // -- `arguments` is a SyntaxError, not just absent, inside a class field
+    // initializer or static block.
+    if (name == "arguments" &&
+        (options_.in_class_field_init || options_.in_class_static_block)) {
+        return false;
+    }
+    return true;
+}
 bool Parser::try_tape_primary(ExprTape& tape) {
     const Token& token = current_token();
     switch (token.get_type()) {
@@ -5266,13 +5286,23 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             return true;
         }
         case TokenType::IDENTIFIER: {
+            // An escaped keyword (`f\u{61}lse`, decoding to "false") is
+            // never valid as an identifier -- parse_identifier's own
+            // escaped_kw branch (Parser.cpp:2888 on) has several sub-cases
+            // (always-reserved, await/yield-in-context, strict-future,
+            // escaped-async-before-function) to reject it correctly.
+            // Escaped identifiers are rare enough that bailing
+            // unconditionally here, straight to that real logic, is
+            // simplest and exactly as correct.
+            if (token.has_escaped_keyword()) return false;
+            std::string name = token_string(token);
+            if (!try_tape_identifier_ref_ok(name)) return false;
             // Never a property name here -- try_tape_call_or_member reads a
             // Member's property directly off the DOT token, never through
             // this function -- so this is always a genuine binding
             // reference, same as parse_identifier's own unconditional
             // note_name/arguments check (Parser.cpp:2859-2874), no
             // previous_token_is_dot() suppression needed.
-            std::string name = token_string(token);
             uint32_t name_id = NamePool::intern(name);
             tape.push_back(TapeEntry{TapeTag::Identifier, 1, 0.0, name_id, 0, 0, ""});
             note_name(name);
@@ -5402,9 +5432,34 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
 }
 
 bool Parser::try_tape_assignment(ExprTape& tape) {
+    // Mirrors parse_assignment_expression's own very first check
+    // (Parser.cpp:727-729) -- a bare identifier immediately followed by
+    // `=>` is an arrow function's single parameter, not a plain identifier
+    // reference, and this takes priority over everything else (including
+    // the plain-assign fast path just below: `x => ...` never has `=` right
+    // after `x`, but nothing else here would otherwise notice `=>` as
+    // anything other than "nothing more" and silently stop one token short,
+    // leaving the whole arrow body unconsumed).
+    if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ARROW) {
+        return false;
+    }
     if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ASSIGN) {
-        size_t start_idx = tape.size();
+        // An escaped identifier is never a valid assignment target
+        // (is_valid_assignment_target, Parser.cpp:3456) -- checked directly
+        // against the Token since try_tape_identifier_ref_ok only takes the
+        // already-decoded name.
+        if (current_token().has_escaped_keyword()) return false;
         std::string name = token_string(current_token());
+        if (!try_tape_identifier_ref_ok(name)) return false;
+        // Mirrors parse_assignment_expression's own static check
+        // (Parser.cpp:779-785) -- assigning to `eval`/`arguments` in strict
+        // mode is a SyntaxError caught at PARSE time, before anything runs,
+        // not something compile_tape_expr's is_local/lexical_out_of_scope
+        // checks (a runtime/compile-time concern) would ever catch. Bailing
+        // here (not add_error-ing) is correct: the real parser hits this
+        // exact branch on the fallback and reports it properly.
+        if (options_.strict_mode && (name == "eval" || name == "arguments")) return false;
+        size_t start_idx = tape.size();
         uint32_t name_id = NamePool::intern(name);
         advance();  // past the identifier
         advance();  // past '='
@@ -5437,6 +5492,17 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
+    // TapedExpression's compile-time reparse-on-failure fallback (see its
+    // own comment) needs source_ -- without it there is no way to recover
+    // when compile_tape_expr's restricted coverage turns out not to apply
+    // (e.g. any top-level module binding, which is never register-resident,
+    // so is_local always fails for it). ModuleLoader.cpp never calls
+    // set_source on the Parser it builds, so source_ is null for every
+    // module parse today -- bailing here, unconditionally, whenever
+    // source_ is unset is the general, safe rule (covers module parsing
+    // and any other future caller that skips set_source), not something
+    // narrower like checking source_type_module specifically.
+    if (!source_) return parse_expression();
     size_t saved_pos = current_token_index_;
     Position tape_start = get_current_position();
     ExprTape tape;
