@@ -11949,4 +11949,70 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
     }
 }
 
+// Proof-of-concept tape consumer -- see ExprTape's own comment
+// (BytecodeCompiler.h). Deliberately narrow (Number/Identifier/Binary only,
+// arithmetic operators only, no peephole register-reuse) -- this exists to
+// prove the mechanism produces a correct result via the SAME register/env
+// decisions compile_expression makes, not to match its every optimization
+// yet. Returns the index just past this entry's own span (index + the
+// entry's own `span`), or 0 on failure.
+size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, bool discard) {
+    if (failed_ || index >= tape.size()) return 0;
+    const TapeEntry& e = tape[index];
+    switch (e.tag) {
+        case TapeTag::Number: {
+            double v = e.number_value;
+            if (v == 0.0 && !std::signbit(v)) {
+                emit(Op::LdaZero);
+            } else if (v == std::trunc(v) && v >= INT8_MIN && v <= INT8_MAX &&
+                       !(v == 0.0 && std::signbit(v))) {
+                emit(Op::LdaSmi);
+                emit_u8(static_cast<uint8_t>(static_cast<int8_t>(v)));
+            } else {
+                emit_load_const(Value(v));
+            }
+            return failed_ ? 0 : index + e.span;
+        }
+        case TapeTag::Identifier: {
+            const std::string& name = NamePool::text(e.name_id);
+            // Mirrors compile_expression's own IDENTIFIER case, narrowed to
+            // the one path this proof-of-concept needs to exercise: an
+            // ordinary declared local, in scope, past its TDZ. Every other
+            // form (this/with/lookup/ancestor-chain) is exactly what a real
+            // port would add next, using the same private helpers.
+            if (with_depth_ == 0 && is_local(name) && !lexical_out_of_scope(name)) {
+                emit_read_local(name);
+                return failed_ ? 0 : index + e.span;
+            }
+            return 0;
+        }
+        case TapeTag::Binary: {
+            using BinOp = BinaryExpression::Operator;
+            BinOp op = static_cast<BinOp>(e.binary_op);
+            Op vm_op;
+            switch (op) {
+                case BinOp::ADD:      vm_op = Op::Add; break;
+                case BinOp::SUBTRACT: vm_op = Op::Sub; break;
+                case BinOp::MULTIPLY: vm_op = Op::Mul; break;
+                case BinOp::DIVIDE:   vm_op = Op::Div; break;
+                default: return 0;
+            }
+            size_t left_idx = index + 1;
+            size_t after_left = compile_tape_expr(tape, left_idx, false);
+            if (after_left == 0) return 0;
+            int temp = alloc_temp();
+            if (failed_) return 0;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(temp));
+            size_t after_right = compile_tape_expr(tape, after_left, false);
+            if (after_right == 0) return 0;
+            emit(vm_op);
+            emit_u8(static_cast<uint8_t>(temp));
+            free_temp(temp);
+            return failed_ ? 0 : index + e.span;
+        }
+    }
+    return 0;
+}
+
 }

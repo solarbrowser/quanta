@@ -50,6 +50,39 @@ struct EnvSlotHazards {
     bool self_name_slot = false;
 };
 
+// A flat, parent-first, span-annotated stand-in for an expression subtree --
+// one entry per production, each composite entry recording how many tape
+// slots its own subtree occupies so a consumer can jump straight to a
+// sibling by index instead of needing pointers. Nothing builds one of these
+// yet. The eventual goal is for the parser's own recursive-descent
+// expression grammar to build this directly instead of a tree of heap
+// ASTNodes (a large script's AST is dominated by exactly these node kinds);
+// this type and compile_tape_expr below exist first, on their own, to prove
+// the DOWNSTREAM half (tape -> bytecode, reusing every existing
+// register/env-residency decision unchanged) is sound before the parser
+// itself is touched.
+enum class TapeTag : uint8_t {
+    Number,
+    Identifier,
+    Binary,
+};
+
+// `span`: how many entries (including this one) this entry's whole subtree
+// occupies -- e.g. a Binary entry's span is 1 + left's span + right's span.
+// This is what lets a consumer jump straight to a sibling by index instead
+// of needing pointer navigation, the same lookahead
+// compile_expression's own peephole optimizations (e.g. BINARY_EXPRESSION
+// inspecting its right operand's shape while compiling its left,
+// BytecodeCompiler.cpp:10319-10330) already rely on today.
+struct TapeEntry {
+    TapeTag tag;
+    uint32_t span = 1;
+    double number_value = 0.0;
+    uint32_t name_id = 0;       // Identifier: NamePool id
+    uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator
+};
+using ExprTape = std::vector<TapeEntry>;
+
 // Single-pass AST -> bytecode compiler. Returns nullptr for any function it
 // cannot fully compile -- that function then permanently runs on the
 // tree-walker (no mixed execution).
@@ -167,6 +200,13 @@ private:
     // recursive call inherits it -- a subexpression's value is always needed.
     bool compile_expression(const ASTNode* node, bool discard = false);  // result in accumulator
     static bool operand_cannot_write_registers(const ASTNode* node);
+    // Proof-of-concept tape consumer -- see ExprTape's own comment. Mirrors
+    // compile_expression's own logic (same private helpers, same
+    // register/env decisions) for exactly the three tags ExprTape currently
+    // supports; returns the index just past this entry's own span, or 0 on
+    // failure (0 is never a valid "past my span" value for a non-empty
+    // tape, since every entry, including the first, has span >= 1).
+    size_t compile_tape_expr(const ExprTape& tape, size_t index, bool discard = false);
 
     bool compile_for_each_loop(const ASTNode* left, const ASTNode* right,
                                const ASTNode* body, bool is_for_in,
