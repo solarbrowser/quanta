@@ -88,6 +88,12 @@ enum class TapeTag : uint8_t {
     // Identifier/Binary/Member/Call is an anonymous function/class
     // expression), so it's correctly just absent rather than skipped.
     Assign,
+    // A string literal -- next-highest-volume literal kind after Number.
+    // Holds its own text directly (string_value below), same as AST.h's own
+    // StringLiteral does (unlike Identifier/Member, nothing here is deduped
+    // through NamePool -- literal text isn't drawn from the same small,
+    // repeated-name vocabulary NamePool exists to shrink).
+    String,
 };
 
 // `span`: how many entries (including this one) this entry's whole subtree
@@ -104,6 +110,7 @@ struct TapeEntry {
     uint32_t name_id = 0;       // Identifier: NamePool id; Member: property NamePool id
     uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator
     uint8_t call_argc = 0;      // Call: argument count (the callee, then argc argument subtrees, follow this entry)
+    std::string string_value;   // String: the literal's own text
 };
 using ExprTape = std::vector<TapeEntry>;
 

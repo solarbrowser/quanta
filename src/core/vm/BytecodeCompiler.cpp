@@ -12098,6 +12098,10 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             emit_write_local(name, /*is_declaration=*/false);
             return failed_ ? 0 : index + e.span;
         }
+        case TapeTag::String: {
+            emit_load_const(Value(e.string_value));
+            return failed_ ? 0 : index + e.span;
+        }
     }
     return 0;
 }
