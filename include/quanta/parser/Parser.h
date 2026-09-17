@@ -466,7 +466,13 @@ public:
     std::unique_ptr<ASTNode> parse_break_statement();
     std::unique_ptr<ASTNode> parse_continue_statement();
     std::unique_ptr<ASTNode> parse_expression_statement();
-    
+    // Phase 1a's one deliberately singular hook point (see the plan) --
+    // tries the narrow tape path via try_tape_assignment first, restoring
+    // current_token_index_ and falling back to the real, unmodified
+    // parse_expression() on any bail. Every other statement kind still calls
+    // parse_expression()/parse_assignment_expression() directly, unaffected.
+    std::unique_ptr<ASTNode> parse_expression_maybe_tape();
+
     std::unique_ptr<ASTNode> parse_try_statement();
     std::unique_ptr<ASTNode> parse_throw_statement();
     std::unique_ptr<ASTNode> parse_switch_statement();
@@ -490,6 +496,22 @@ public:
     std::unique_ptr<ASTNode> parse_call_expression();
     std::unique_ptr<ASTNode> parse_member_expression();
     std::unique_ptr<ASTNode> parse_primary_expression();
+
+    // Phase 1a: narrow, self-contained mirrors of the spine above that
+    // append to `tape` instead of building ASTNodes, covering exactly what
+    // BytecodeCompiler::compile_tape_expr's 7 tags accept. Each returns
+    // false the instant it sees anything outside that narrow set,
+    // touching only `tape`/`current_token_index_` (via advance()) so the
+    // caller can restore current_token_index_ and fall back to the real,
+    // unmodified spine with zero observable difference. They must NEVER call
+    // add_error() or the real parse_identifier/parse_number_literal/etc --
+    // those have side effects (note_name, subtree_acc_, the error list) a
+    // discarded attempt must not leave behind.
+    bool try_tape_primary(ExprTape& tape);
+    bool try_tape_call_or_member(ExprTape& tape);
+    bool try_tape_binary(ExprTape& tape, int min_precedence);
+    bool try_tape_assignment(ExprTape& tape);
+
     std::unique_ptr<ASTNode> parse_parenthesized_expression();
     std::unique_ptr<ASTNode> parse_function_expression();
     std::unique_ptr<ASTNode> parse_async_function_expression();
@@ -562,6 +584,15 @@ public:
     // and the value it comes to is what the arrow answers.
     std::unique_ptr<ASTNode> parse_concise_body_at(size_t tok_index, bool strict,
                                                    bool is_generator, bool is_async);
+    // A single expression at a token range, no enclosing function context at
+    // all -- unlike parse_concise_body_at (an arrow's concise body, which
+    // hardcodes class/constructor context that would wrongly legalize
+    // super()/super.x here), this is for TapedExpression's own compile-time
+    // fallback: reparsing a tape's source range as a plain tree when
+    // compile_tape_expr turns out not to support it. Always safe to call with
+    // no context, because a tape-eligible range can never contain anything
+    // (closure/await/yield/super/private field) that would have needed any.
+    std::unique_ptr<ASTNode> parse_expression_at(size_t tok_index, bool strict);
     // Hands the token stream to whoever will keep the tree, so a body recorded
     // as a range can be parsed back later. The parser is finished with it by
     // then -- parse_program_unit does the same thing at the end of a parse.

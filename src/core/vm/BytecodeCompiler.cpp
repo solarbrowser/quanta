@@ -1861,6 +1861,24 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
             add_name(n);
             return;
         }
+        // None of the 7 tags a tape can hold can ever be a closure, so this
+        // never recurses -- only Identifier entries and Assign entries' own
+        // target name_id matter (mirrors the tree's ASSIGNMENT_EXPRESSION
+        // case, :2044, which recurses into its LHS same as its RHS). A Call
+        // whose callee is literally the name "eval" is excluded by the
+        // parser already, but `eval` can still appear as a plain value
+        // elsewhere, e.g. `x = eval` or an argument, so the same check must
+        // still run per-entry.
+        case ASTNode::Type::TAPED_EXPRESSION: {
+            if (!inside_closure) return;
+            for (const auto& e : static_cast<const TapedExpression*>(node)->tape()) {
+                if (e.tag != TapeTag::Identifier && e.tag != TapeTag::Assign) continue;
+                const std::string& n = NamePool::text(e.name_id);
+                if (n == "eval") op.saw_eval = true;
+                add_name(n);
+            }
+            return;
+        }
         case ASTNode::Type::FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const FunctionExpression*>(node);
             walk_params(n->get_params());
@@ -2716,6 +2734,20 @@ bool references_outside(const ASTNode* node, const std::unordered_set<const ASTN
             return false;
         case ASTNode::Type::IDENTIFIER:
             return static_cast<const Identifier*>(node)->get_name() == name;
+        // Same check as IDENTIFIER above, run over the tape's own Identifier
+        // entries, plus Assign entries' own target name_id (the tree's own
+        // ASSIGNMENT_EXPRESSION case recurses into its LHS too, at :2863 --
+        // an assignment target is a reference for this check same as a
+        // read). A Member entry's name_id is never checked, matching the
+        // tree's own MEMBER_EXPRESSION case: non-computed property names
+        // (all a Member tape entry can be) are never a binding reference.
+        case ASTNode::Type::TAPED_EXPRESSION: {
+            for (const auto& e : static_cast<const TapedExpression*>(node)->tape()) {
+                if ((e.tag == TapeTag::Identifier || e.tag == TapeTag::Assign) &&
+                    NamePool::text(e.name_id) == name) return true;
+            }
+            return false;
+        }
         case ASTNode::Type::FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const FunctionExpression*>(node);
             return walk_params(n->get_params()) || references_outside(n->get_body(), regions, name);
@@ -11944,6 +11976,23 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             return emit_pattern_assign(lit, n->get_source());
         }
 
+        case ASTNode::Type::TAPED_EXPRESSION: {
+            const auto* tp = static_cast<const TapedExpression*>(node);
+            if (compile_tape_expr(tp->tape(), 0, discard) != 0) return !failed_;
+            if (failed_) return false;
+            // compile_tape_expr's own restricted coverage didn't cover this
+            // tape after all -- most commonly a name the parser had no way
+            // to know, at parse time, would end up captured by a later
+            // closure (see TapedExpression's own comment). Reparse its exact
+            // source range as a plain tree and fall back to the general path
+            // -- always safe, since nothing tape-eligible can need context a
+            // bare reparse doesn't set up.
+            auto rebuilt = ScriptUnit::parse_expression_from_source(
+                tp->source(), tp->get_start(), tp->get_end().offset, tp->is_strict());
+            if (!rebuilt) return false;
+            return compile_expression(rebuilt.get(), discard);
+        }
+
         default:
             return false;
     }
@@ -12092,7 +12141,16 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             // direct-eval parking, and compound operators are all out of
             // scope, matching TapeTag::Assign's own comment.
             const std::string& name = NamePool::text(e.name_id);
-            if (!is_local(name) || lexical_out_of_scope(name)) return 0;
+            // with_depth_ > 0 was documented above as out of scope but never
+            // actually checked -- a real bug, caught only once real tapes
+            // started reaching this case (Phase 1a). Inside a `with`, the
+            // object can shadow the local at runtime (compile_expression's
+            // own !compound branch takes a completely different
+            // ResolveWithTarget/StaWithResolved path for exactly this
+            // reason, :10917) -- is_local/lexical_out_of_scope alone don't
+            // account for that, so this must bail whenever with_depth_ > 0,
+            // same as the Identifier case above already does.
+            if (with_depth_ > 0 || !is_local(name) || lexical_out_of_scope(name)) return 0;
             size_t after_rhs = compile_tape_expr(tape, index + 1, false);
             if (after_rhs == 0) return 0;
             emit_write_local(name, /*is_declaration=*/false);

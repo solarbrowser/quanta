@@ -226,6 +226,18 @@ public:
                                                     bool strict, bool is_generator, bool is_async,
                                                     bool concise = false);
 
+    // The same idea, for one expression rather than a function body, and with
+    // no owning unit at all: TapedExpression's own compile-time fallback,
+    // when compile_tape_expr turns out not to support a tape it was
+    // optimistically given (see TapedExpression's own comment). Static and
+    // source-parameterized rather than an instance method, since a tape's
+    // source range can never contain a nested function/class literal that
+    // would need BuildScope/unit registration -- it needs nothing a
+    // ScriptUnit instance would provide.
+    static std::unique_ptr<ASTNode> parse_expression_from_source(
+        std::shared_ptr<const std::string> source, const Position& start,
+        uint32_t end_offset, bool strict);
+
     // Where a function literal's executable is remembered. It used to live on
     // the literal's own node, which made the node's ADDRESS the key -- and a
     // body parsed back from the tokens comes back as different nodes, so the

@@ -16,6 +16,7 @@
 #include <string>
 #include "quanta/parser/AstArena.h"
 #include "quanta/parser/NamePool.h"
+#include "quanta/core/vm/BytecodeCompiler.h"
 #include <functional>
 
 namespace Quanta {
@@ -110,7 +111,15 @@ public:
         TEMPLATE_LITERAL,
         REGEX_LITERAL,
         SPREAD_ELEMENT,
-        
+        // A leaf-shaped expression the parser built as an ExprTape instead of
+        // a subtree -- see TapedExpression below. Never contains a closure/
+        // await/yield/super/private-field: uses_arguments/contains_suspend
+        // read this straight off subtree_flags_ (stamped at construction, see
+        // TapedExpression's own comment) with no new code, but
+        // collect_closure_names/references_outside still need a case each
+        // (they walk unconditionally, not through the flags cache).
+        TAPED_EXPRESSION,
+
         EXPRESSION_STATEMENT,
         EMPTY_STATEMENT,
         VARIABLE_DECLARATION,
@@ -194,6 +203,59 @@ public:
     Value evaluate_compiled(Context& ctx);
     virtual std::string to_string() const = 0;
     virtual std::unique_ptr<ASTNode> clone() const = 0;
+};
+
+// A leaf-shaped expression the parser built directly as an ExprTape (see
+// BytecodeCompiler.h) instead of a tree of ASTNodes -- the first real
+// producer of a tape, everything before this having been proof-of-concept
+// groundwork with nothing feeding it. Owns the tape by value: unlike a tree,
+// cloning is just copying a vector, not walking/reallocating a subtree.
+//
+// source_ is a copy of the same shared_ptr the owning Parser held while
+// building the tape (cheap -- a refcount bump, see Parser::source_'s own
+// comment). It exists for exactly one reason: compile_tape_expr's Identifier/
+// Assign cases can only know whether a name is a plain register local once
+// the WHOLE enclosing function body has been parsed (a later closure could
+// still capture it) -- something no tape-eligibility check at parse time can
+// predict. When that turns out false at compile time, compile_expression's
+// TAPED_EXPRESSION case re-lexes+re-parses this exact source range as a
+// plain tree and compiles that instead (see ScriptUnit::
+// parse_expression_from_source). This is safe to do unconditionally because
+// every parser-side try_tape_* bail condition already excludes anything
+// (closures/await/yield/super/private fields) that would need context a bare
+// reparse doesn't set up.
+class TapedExpression : public ASTNode {
+private:
+    ExprTape tape_;
+    std::shared_ptr<const std::string> source_;
+    // The strict-mode the parser was in when it built this tape -- captured
+    // here because BytecodeCompiler has no strict-mode member of its own to
+    // read back at compile time (strict-mode is a grammar concern, resolved
+    // at parse time everywhere else too). Needed only for the compile-time
+    // reparse fallback, which must re-lex under the same mode.
+    bool strict_;
+
+public:
+    TapedExpression(ExprTape tape, const Position& start, const Position& end,
+                     std::shared_ptr<const std::string> source, bool strict)
+        : ASTNode(Type::TAPED_EXPRESSION, start, end),
+          tape_(std::move(tape)), source_(std::move(source)), strict_(strict) {}
+
+    const ExprTape& tape() const { return tape_; }
+    const std::shared_ptr<const std::string>& source() const { return source_; }
+    bool is_strict() const { return strict_; }
+
+    // The exact original source text, not a reconstruction -- to_string() has
+    // no runtime caller today (Function.prototype.toString() reads source
+    // text directly, never the AST), but this is trivially correct if that
+    // ever changes, since the tape's own source range IS this text.
+    std::string to_string() const override {
+        if (!source_ || end_.offset < start_.offset || end_.offset > source_->size()) return "";
+        return source_->substr(start_.offset, end_.offset - start_.offset);
+    }
+    std::unique_ptr<ASTNode> clone() const override {
+        return std::make_unique<TapedExpression>(tape_, start_, end_, source_, strict_);
+    }
 };
 
 class NumberLiteral : public ASTNode {

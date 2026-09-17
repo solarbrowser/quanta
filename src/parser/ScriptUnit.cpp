@@ -41,5 +41,19 @@ std::unique_ptr<ASTNode> ScriptUnit::parse_body_from_source(const Position& star
                    : parser.parse_body_at(0, strict, is_generator, is_async);
 }
 
+std::unique_ptr<ASTNode> ScriptUnit::parse_expression_from_source(
+    std::shared_ptr<const std::string> source, const Position& start,
+    uint32_t end_offset, bool strict) {
+    if (!source || end_offset <= start.offset || end_offset > source->size()) return nullptr;
+    Lexer::LexerOptions opts;
+    opts.strict_mode = strict;
+    opts.reparsing_accepted_source = true;
+    TokenSequence toks = Lexer::stream_range(source, start, end_offset, opts);
+    if (toks.lexed_count() <= 1 && toks.size() != SIZE_MAX) return nullptr;
+    Parser parser(std::move(toks));
+    parser.set_source(std::move(source));
+    return parser.parse_expression_at(0, strict);
+}
+
 
 }  // namespace Quanta

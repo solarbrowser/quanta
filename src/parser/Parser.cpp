@@ -177,6 +177,16 @@ std::unique_ptr<ASTNode> Parser::parse_concise_body_at(size_t tok_index, bool st
     return expr;
 }
 
+std::unique_ptr<ASTNode> Parser::parse_expression_at(size_t tok_index, bool strict) {
+    if (tok_index >= tokens_.size()) return nullptr;
+    current_token_index_ = tok_index;
+    errors_.clear();
+    options_.strict_mode = strict;
+    auto expr = parse_expression();
+    if (has_errors()) return nullptr;
+    return expr;
+}
+
 std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
                                                bool is_generator, bool is_async) {
     if (tok_index >= tokens_.size()) return nullptr;
@@ -5221,6 +5231,258 @@ std::unique_ptr<ASTNode> Parser::parse_with_statement() {
     return std::make_unique<WithStatement>(std::move(object), std::move(body), start, end);
 }
 
+// Phase 1a narrow tape builders -- see Parser.h's own comment on the
+// declarations. Each mirrors a real spine function's grammar exactly,
+// restricted to what BytecodeCompiler::compile_tape_expr's 7 tags accept.
+//
+// The one rule every one of them must get right: a token that the REAL
+// grammar would still consume here (an operator/suffix my tags don't cover)
+// must BAIL (return false), never be silently left for the caller to trip
+// over -- treating "I don't support this" the same as "there is genuinely
+// nothing more here" would leave real, valid trailing source unconsumed.
+// Every stopping point below is checked against the same condition the real
+// function it mirrors uses to decide "nothing more," never against "not one
+// of the forms I implemented."
+bool Parser::try_tape_primary(ExprTape& tape) {
+    const Token& token = current_token();
+    switch (token.get_type()) {
+        case TokenType::NUMBER: {
+            double value = token.has_numeric_value() ? tokens_.numeric_value_of(token) : 0.0;
+            tape.push_back(TapeEntry{TapeTag::Number, 1, value, 0, 0, 0, ""});
+            advance();
+            return true;
+        }
+        case TokenType::STRING: {
+            // Bails on an escaped string rather than tape-encoding it: a
+            // TapeEntry carries no has_escapes bit, and the directive-
+            // prologue scan (Program::check_use_strict_directive,
+            // BlockStatement::has_use_strict_directive) must tell an escaped
+            // "use strict" apart from a real one -- simplest to just never
+            // produce an ambiguous entry in the first place.
+            if (token.string_has_escapes()) return false;
+            std::string value = token_string(token);
+            tape.push_back(TapeEntry{TapeTag::String, 1, 0.0, 0, 0, 0, value});
+            advance();
+            return true;
+        }
+        case TokenType::IDENTIFIER: {
+            // Never a property name here -- try_tape_call_or_member reads a
+            // Member's property directly off the DOT token, never through
+            // this function -- so this is always a genuine binding
+            // reference, same as parse_identifier's own unconditional
+            // note_name/arguments check (Parser.cpp:2859-2874), no
+            // previous_token_is_dot() suppression needed.
+            std::string name = token_string(token);
+            uint32_t name_id = NamePool::intern(name);
+            tape.push_back(TapeEntry{TapeTag::Identifier, 1, 0.0, name_id, 0, 0, ""});
+            note_name(name);
+            if (name.size() == 9 && name == "arguments") subtree_acc_ |= kSubtreeArguments;
+            advance();
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+// Mirrors parse_call_expression's shared suffix loop (Parser.cpp:1517-1758),
+// restricted to plain `.identifier` (non-computed, no private/keyword names)
+// and plain `(args)` (no spread/optional/tagged-template, and the callee
+// must not itself be a Member entry or the bare identifier "super"/"eval" --
+// exactly compile_tape_expr's own Member/Call restrictions).
+bool Parser::try_tape_call_or_member(ExprTape& tape) {
+    size_t start_idx = tape.size();
+    if (!try_tape_primary(tape)) return false;
+    for (;;) {
+        if (match(TokenType::DOT)) {
+            advance();
+            // Bails on '#' (private) and a keyword-as-property-name too --
+            // both fail this same "must be a plain IDENTIFIER" check.
+            if (!match(TokenType::IDENTIFIER)) return false;
+            std::string prop = token_string(current_token());
+            advance();
+            uint32_t name_id = NamePool::intern(prop);
+            uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+            tape.insert(tape.begin() + start_idx,
+                        TapeEntry{TapeTag::Member, span, 0.0, name_id, 0, 0, ""});
+            continue;
+        }
+        if (match(TokenType::LEFT_PAREN)) {
+            if (tape[start_idx].tag == TapeTag::Member) return false;
+            if (tape[start_idx].tag == TapeTag::Identifier) {
+                const std::string& callee_name = NamePool::text(tape[start_idx].name_id);
+                if (callee_name == "super" || callee_name == "eval") return false;
+            }
+            advance();
+            uint8_t argc = 0;
+            if (!match(TokenType::RIGHT_PAREN)) {
+                for (;;) {
+                    if (argc >= 255) return false;
+                    if (!try_tape_assignment(tape)) return false;
+                    argc++;
+                    if (match(TokenType::COMMA)) {
+                        advance();
+                        if (match(TokenType::RIGHT_PAREN)) break;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            if (!match(TokenType::RIGHT_PAREN)) return false;
+            advance();
+            uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+            tape.insert(tape.begin() + start_idx,
+                        TapeEntry{TapeTag::Call, span, 0.0, 0, 0, argc, ""});
+            continue;
+        }
+        // Each of these IS part of parse_call_expression's own suffix loop
+        // condition (Parser.cpp:1518-1520) -- a real continuation the tape
+        // just doesn't represent, not "nothing more here." Must bail, not
+        // silently stop.
+        if (match(TokenType::LEFT_BRACKET) || match(TokenType::OPTIONAL_CHAINING) ||
+            match(TokenType::TEMPLATE_LITERAL)) {
+            return false;
+        }
+        break;
+    }
+    return true;
+}
+
+// Mirrors parse_binary_chain's precedence-climbing loop (Parser.cpp:1049-
+// 1096), restricted to +, -, *, / (compile_tape_expr's Binary case has no
+// case for MODULO despite it sharing precedence tier 10 with * and /, and
+// none of the comparison/logical/bitwise/shift/in/instanceof operators at
+// all).
+bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
+    // Where the left operand chain begins -- stays fixed across every
+    // iteration below. Each iteration's new Binary entry is inserted here,
+    // pushing the whole current left-hand side (and the newly-parsed right
+    // operand right after it) one slot later, which is exactly what makes
+    // repeated left-associative folds (`a + b + c` -> `(a+b)+c`) nest
+    // correctly: the second Binary entry's own left (index+1) lands on the
+    // first Binary entry, not on `a` directly.
+    size_t start_idx = tape.size();
+    if (!try_tape_call_or_member(tape)) return false;
+    // Two real grammar levels sit between parse_call_expression (what
+    // try_tape_call_or_member mirrors) and parse_binary_chain (what this
+    // loop mirrors): parse_postfix_expression (postfix ++/--) and
+    // parse_exponentiation_expression (**), neither reachable from
+    // binary_precedence's table at all. Both are real continuations the
+    // real grammar would consume here -- must bail, not stop early.
+    if (match(TokenType::INCREMENT) || match(TokenType::DECREMENT) ||
+        match(TokenType::EXPONENT)) {
+        return false;
+    }
+    for (;;) {
+        const TokenType op_token = current_token().get_type();
+        const int precedence = binary_precedence(op_token);
+        // Matches parse_binary_chain's own stopping condition exactly
+        // (Parser.cpp:1066) -- genuinely nothing more at this precedence
+        // level, not a gap in tag coverage.
+        if (precedence == 0 || precedence < min_precedence) break;
+        if (op_token != TokenType::PLUS && op_token != TokenType::MINUS &&
+            op_token != TokenType::MULTIPLY && op_token != TokenType::DIVIDE) {
+            // A real operator at an eligible precedence (e.g. MODULO, or any
+            // comparison/logical/bitwise op) that this tag set can't
+            // represent -- the real function would consume it, so this must
+            // bail, not quietly stop one operand short.
+            return false;
+        }
+        advance();
+        // Left-associative: the right side may only take operators that
+        // bind tighter, same as parse_binary_chain's own right-hand
+        // recursion (Parser.cpp:1075).
+        if (!try_tape_binary(tape, precedence + 1)) return false;
+        uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+        tape.insert(tape.begin() + start_idx,
+                    TapeEntry{TapeTag::Binary, span, 0.0, 0,
+                              static_cast<uint8_t>(token_to_binary_operator(op_token)), 0, ""});
+    }
+    return true;
+}
+
+bool Parser::try_tape_assignment(ExprTape& tape) {
+    if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ASSIGN) {
+        size_t start_idx = tape.size();
+        std::string name = token_string(current_token());
+        uint32_t name_id = NamePool::intern(name);
+        advance();  // past the identifier
+        advance();  // past '='
+        note_name(name);
+        if (name.size() == 9 && name == "arguments") subtree_acc_ |= kSubtreeArguments;
+        if (!try_tape_assignment(tape)) return false;  // rhs, right-associative
+        uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+        tape.insert(tape.begin() + start_idx,
+                    TapeEntry{TapeTag::Assign, span, 0.0, name_id, 0, 0, ""});
+        return true;
+    }
+    if (!try_tape_binary(tape, 2)) return false;
+    // Closes the gaps binary_precedence leaves open, all the way up to this
+    // function's own real counterpart (parse_assignment_expression):
+    // assignment operators (including plain '=' onto something other than a
+    // bare identifier, e.g. `a.b = 5`), and everything between
+    // parse_binary_chain and parse_assignment_expression in the real chain
+    // (parse_nullish_coalescing_expression's `??`, parse_logical_or_
+    // expression's `||`, parse_conditional_expression's `?`) -- none of
+    // these are in binary_precedence's table, so try_tape_binary's own loop
+    // would have already stopped "cleanly" right before one. Correct for
+    // that loop's own purposes, but this level must still catch each one and
+    // bail, since the real grammar keeps going here.
+    const TokenType next = current_token().get_type();
+    if (is_assignment_operator(next) || next == TokenType::LOGICAL_OR ||
+        next == TokenType::NULLISH_COALESCING || next == TokenType::QUESTION) {
+        return false;
+    }
+    return true;
+}
+
+std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
+    size_t saved_pos = current_token_index_;
+    Position tape_start = get_current_position();
+    ExprTape tape;
+    // try_tape_assignment mirrors parse_assignment_expression, not
+    // parse_expression -- it has no comma-awareness of its own (a comma
+    // inside a call's argument list is normal and handled by
+    // try_tape_call_or_member's own loop), so the top-level sequence-
+    // expression check parse_expression's own loop would apply
+    // (Parser.cpp:709) has to happen here instead, once, after a successful
+    // top-level attempt.
+    //
+    // A tape that ends up being nothing but a single String entry is
+    // rejected too, unconditionally, and re-parsed as a real tree instead:
+    // a solo string-literal statement is a directive-prologue candidate
+    // ("use strict", or any other directive a future spec/host adds), and
+    // several places (Program::check_use_strict_directive, BlockStatement::
+    // has_use_strict_directive, Parser.cpp's own last_body_strict_ scan, and
+    // possibly others not all found by one search) recognize a directive by
+    // the STATEMENT's own AST node being STRING_LITERAL-shaped, not by its
+    // text alone. Refusing this one specific tape shape keeps every one of
+    // those working with no changes anywhere else -- the statement parses
+    // as a real StringLiteral tree, exactly as if this hook did not exist.
+    bool ok = try_tape_assignment(tape) &&
+              current_token().get_type() != TokenType::COMMA &&
+              !(tape.size() == 1 && tape[0].tag == TapeTag::String);
+    if (ok) {
+        // The real last-consumed token's own end, scanned back past
+        // whitespace/newline/comment exactly like previous_token_is_dot()
+        // does (Parser.cpp:3043) -- get_current_position() would instead
+        // give the START of whatever comes next, which can differ from the
+        // expression's own true end whenever trailing trivia sits between
+        // them.
+        Position tape_end = tape_start;
+        for (size_t i = current_token_index_; i > 0; ) {
+            const TokenType t = tokens_[--i].get_type();
+            if (t == TokenType::NEWLINE || t == TokenType::WHITESPACE || t == TokenType::COMMENT) continue;
+            tape_end = tokens_[i].get_end();
+            break;
+        }
+        return std::make_unique<TapedExpression>(std::move(tape), tape_start, tape_end,
+                                                  source_, options_.strict_mode);
+    }
+    current_token_index_ = saved_pos;
+    return parse_expression();
+}
+
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     Position start = get_current_position();
 
@@ -5378,7 +5640,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
         return std::make_unique<LabeledStatement>(label, std::move(statement), start, end);
     }
 
-    auto expr = parse_expression();
+    auto expr = parse_expression_maybe_tape();
     if (!expr) {
         return nullptr;
     }
