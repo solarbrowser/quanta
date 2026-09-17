@@ -65,6 +65,29 @@ enum class TapeTag : uint8_t {
     Number,
     Identifier,
     Binary,
+    // Non-computed, non-private, non-super member access only (`obj.prop`)
+    // -- the common case and the next-highest-volume node kind after
+    // Identifier. Computed/private/super forms are deliberately out of
+    // scope for now, same "narrow but correct" approach as Binary's
+    // missing peephole -- compile_tape_expr returns 0 (unsupported) for
+    // them, exactly like compile_expression returning false falls the
+    // whole containing body back to the general path.
+    Member,
+    // Plain `f(a, b, c)` only -- callee is anything except a Member entry
+    // (obj.method() needs the receiver-passing CallResolved form, out of
+    // scope here) and not the identifiers "super"/"eval" (each need their
+    // own ceremony compile_expression's CALL_EXPRESSION case special-cases
+    // first). No spread, no optional chaining, no tagged template.
+    Call,
+    // Plain `x = <rhs>` only -- `x` must already be a register-resident
+    // local, past its TDZ (the outer/global/with/direct-eval-park/compound
+    // forms compile_expression's own ASSIGNMENT_EXPRESSION case handles are
+    // all out of scope here). The named-evaluation step
+    // (stamp_inferred_class_name/is_named_evaluation_rhs) never applies to
+    // any RHS shape this tape can currently represent (none of Number/
+    // Identifier/Binary/Member/Call is an anonymous function/class
+    // expression), so it's correctly just absent rather than skipped.
+    Assign,
 };
 
 // `span`: how many entries (including this one) this entry's whole subtree
@@ -78,8 +101,9 @@ struct TapeEntry {
     TapeTag tag;
     uint32_t span = 1;
     double number_value = 0.0;
-    uint32_t name_id = 0;       // Identifier: NamePool id
+    uint32_t name_id = 0;       // Identifier: NamePool id; Member: property NamePool id
     uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator
+    uint8_t call_argc = 0;      // Call: argument count (the callee, then argc argument subtrees, follow this entry)
 };
 using ExprTape = std::vector<TapeEntry>;
 
@@ -202,7 +226,7 @@ private:
     static bool operand_cannot_write_registers(const ASTNode* node);
     // Proof-of-concept tape consumer -- see ExprTape's own comment. Mirrors
     // compile_expression's own logic (same private helpers, same
-    // register/env decisions) for exactly the three tags ExprTape currently
+    // register/env decisions) for exactly the tags ExprTape currently
     // supports; returns the index just past this entry's own span, or 0 on
     // failure (0 is never a valid "past my span" value for a non-empty
     // tape, since every entry, including the first, has span >= 1).

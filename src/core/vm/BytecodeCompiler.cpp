@@ -12011,6 +12011,93 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             free_temp(temp);
             return failed_ ? 0 : index + e.span;
         }
+        case TapeTag::Member: {
+            // Mirrors compile_expression's own MEMBER_EXPRESSION case,
+            // narrowed to non-computed/non-private/non-super (`obj.prop`) --
+            // super/private/computed all return 0 (unsupported) rather than
+            // being represented, since this tag has no property-name-vs-
+            // computed-key distinction yet and no super/private bit. A real
+            // port would extend the entry, not this narrow proof.
+            size_t obj_idx = index + 1;
+            const TapeEntry& obj_e = tape[obj_idx];
+            int borrowed_reg = -1;
+            if (obj_e.tag == TapeTag::Identifier) {
+                borrowed_reg = plain_local_register(NamePool::text(obj_e.name_id));
+            }
+            int obj_reg = borrowed_reg;
+            size_t after_obj;
+            if (obj_reg >= 0) {
+                after_obj = obj_idx + obj_e.span;
+            } else {
+                after_obj = compile_tape_expr(tape, obj_idx, false);
+                if (after_obj == 0) return 0;
+                obj_reg = alloc_temp();
+                if (failed_) return 0;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(obj_reg));
+            }
+            const std::string& prop_name = NamePool::text(e.name_id);
+            emit_named_ic(Op::GetNamed, Op::GetNamedWide,
+                          static_cast<uint8_t>(obj_reg), add_name(prop_name), alloc_feedback_slot());
+            if (borrowed_reg < 0) free_temp(obj_reg);
+            return failed_ ? 0 : index + e.span;
+        }
+        case TapeTag::Call: {
+            // Mirrors compile_expression's own plain-call fallback (callee
+            // compiled and Star'd into its own register, arguments compiled
+            // into consecutive temps, Op::Call) -- narrowed to exclude
+            // member-callee (obj.method(), needs CallResolved), "super"/
+            // "eval" callees (each need their own ceremony), spread,
+            // optional chaining, and tagged templates, exactly as TapeTag::
+            // Call's own comment says.
+            size_t callee_idx = index + 1;
+            const TapeEntry& callee_e = tape[callee_idx];
+            if (callee_e.tag == TapeTag::Member) return 0;
+            std::string callee_name;
+            if (callee_e.tag == TapeTag::Identifier) {
+                callee_name = NamePool::text(callee_e.name_id);
+                if (callee_name == "super" || callee_name == "eval") return 0;
+            }
+            size_t after_callee = compile_tape_expr(tape, callee_idx, false);
+            if (after_callee == 0) return 0;
+            int callee_reg = alloc_temp();
+            if (failed_) return 0;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(callee_reg));
+
+            int args_start = next_register_;
+            size_t arg_idx = after_callee;
+            for (uint8_t i = 0; i < e.call_argc; i++) {
+                int arg_reg = alloc_temp();
+                if (failed_) return 0;
+                size_t after_arg = compile_tape_expr(tape, arg_idx, false);
+                if (after_arg == 0) return 0;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(arg_reg));
+                arg_idx = after_arg;
+            }
+            emit(Op::Call);
+            emit_u8(static_cast<uint8_t>(callee_reg));
+            emit_u8(static_cast<uint8_t>(args_start));
+            emit_u8(e.call_argc);
+            emit_u16(add_name(callee_name));
+            free_temp(callee_reg);
+            return failed_ ? 0 : index + e.span;
+        }
+        case TapeTag::Assign: {
+            // Mirrors compile_expression's own ASSIGNMENT_EXPRESSION case,
+            // narrowed to the plain-`=`-to-an-already-local-register path
+            // (`!compound` branch reached when `is_local(name) &&
+            // !lexical_out_of_scope(name)`) -- outer/global writes, `with`,
+            // direct-eval parking, and compound operators are all out of
+            // scope, matching TapeTag::Assign's own comment.
+            const std::string& name = NamePool::text(e.name_id);
+            if (!is_local(name) || lexical_out_of_scope(name)) return 0;
+            size_t after_rhs = compile_tape_expr(tape, index + 1, false);
+            if (after_rhs == 0) return 0;
+            emit_write_local(name, /*is_declaration=*/false);
+            return failed_ ? 0 : index + e.span;
+        }
     }
     return 0;
 }
