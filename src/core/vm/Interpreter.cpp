@@ -72,8 +72,8 @@ Value declare_function(Context& ctx, const ClosureTemplate& tpl);
 // And from call.cpp, backing Op::SuperCall.
 Value perform_super_call(Context& ctx, std::span<const Value> arg_values, bool super_already_called);
 // And from member.cpp, backing the Op::GetSuper family.
-Object* resolve_super_base(Context& ctx, Function* owner);
-Value super_get(Context& ctx, const std::string& prop_name, Function* owner);
+Object* resolve_super_base(Context& ctx, Function* owner, Environment* lex_env = nullptr);
+Value super_get(Context& ctx, const std::string& prop_name, Function* owner, Environment* lex_env = nullptr);
 Value super_get_on(Context& ctx, Object* base, const std::string& prop_name);
 void super_set(Context& ctx, const std::string& prop_name, const Value& value, Function* owner);
 void super_set_on(Context& ctx, Object* base, const std::string& prop_name, const Value& value);
@@ -1579,6 +1579,10 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
 // function of its own with no exception-handling region in it. run() keeps
 // the try/catch, the register bank and the env side-stack; this only hands
 // the loop pointers to them.
+// CallInfo itself is declared in Interpreter.h (Function.cpp needs the
+// complete type too, to hold one as a stack local -- a forward declaration
+// isn't enough there).
+
 struct Frame {
     const BytecodeChunk& chunk;
     // Repointable, not a reference: a frame-resident Context (once wired in)
@@ -1614,7 +1618,24 @@ struct Frame {
     uint32_t instr_pc;
     uint8_t env_save_top;
     bool this_resolved;
+    // Non-null only for a fast_gate call: carries this call's own lexical/
+    // variable environment when ctx is the caller's shared Context rather
+    // than a freshly pool-acquired one, so ctx's own fields (which then
+    // still hold the CALLER's environment) are not the source of truth.
+    // Stack-resident only, built fresh per call, never escapes past it.
+    const CallInfo* call_info = nullptr;
 };
+
+// The permanent form of the diagnostic's frame_lex_env_diag(f): falls back
+// to ctx's own ambient field exactly like today whenever call_info is null
+// (every call path except a migrated fast_gate), so nothing changes for
+// fast_env_gate/the general path/native calls until they opt in.
+inline Environment* frame_lexical_env(Frame& f) {
+    return f.call_info ? f.call_info->lexical_environment_ : f.ctx->get_lexical_environment();
+}
+inline Environment* frame_variable_env(Frame& f) {
+    return f.call_info ? f.call_info->variable_environment_ : f.ctx->get_variable_environment();
+}
 
 // Tail-call threaded dispatch.
 //
@@ -2513,7 +2534,7 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.get_lexical_environment();
+                Environment* env = frame_lexical_env(f);
                 bool found = false;
                 // Only a binding at or beyond the frame's entry environment
                 // outlives this frame. One found closer -- a block or a loop
@@ -2558,8 +2579,8 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                                 Environment::binding_shadow_epoch()};
                         }
                     }
-                } else if (ctx.has_binding(name)) {
-                    acc = ctx.get_binding(name);
+                } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
+                    acc = lex->get_binding(name);
                     CHECK_EXC();
                 } else {
                     ctx.throw_reference_error("'" + name + "' is not defined");
@@ -2612,7 +2633,7 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
                 CHECK_EXC();
                 break;
             }
-            Environment* env = ctx.get_lexical_environment();
+            Environment* env = frame_lexical_env(f);
             bool found = false;
             bool beyond_frame = false;
             {
@@ -2643,8 +2664,8 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
                             Environment::binding_shadow_epoch()};
                     }
                 }
-            } else if (ctx.has_binding(name)) {
-                acc = ctx.get_binding(name);
+            } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
+                acc = lex->get_binding(name);
                 CHECK_EXC();
             } else {
                 ctx.throw_reference_error("'" + name + "' is not defined");
@@ -2674,13 +2695,18 @@ Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = nullptr;
+                if (name != "this") {
+                    for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
+                        if (e->has_own_binding(name)) { env = e; break; }
+                    }
+                }
                 CHECK_EXC();
                 if (env) {
                     acc = env->get_binding_direct(name, &ctx);
                     CHECK_EXC();
-                } else if (ctx.has_binding(name)) {
-                    acc = ctx.get_binding(name);
+                } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
+                    acc = lex->get_binding(name);
                     CHECK_EXC();
                 } else {
                     acc = Value();
@@ -2733,7 +2759,14 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env_interned(key);
+                // Same as Context::find_binding_env_interned, but starting
+                // from frame_lexical_env(f) instead of ctx's own field.
+                Environment* env = nullptr;
+                if (*key != "this") {
+                    for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
+                        if (e->has_own_binding_interned(key)) { env = e; break; }
+                    }
+                }
                 CHECK_EXC();
                 if (!env) {
                     if (ctx.is_strict_mode()) {
@@ -2825,7 +2858,12 @@ Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
                 CHECK_EXC();
                 break;
             }
-            Environment* env = ctx.find_binding_env_interned(key);
+            Environment* env = nullptr;
+            if (*key != "this") {
+                for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
+                    if (e->has_own_binding_interned(key)) { env = e; break; }
+                }
+            }
             CHECK_EXC();
             if (!env) {
                 if (ctx.is_strict_mode()) {
@@ -2889,7 +2927,15 @@ Value h_gen_ResolveBindingEnv(Frame& f, uint32_t pc, Value acc) {
     const std::string* key = chunk.names[read_u16(code, pc + 1)];
     uint8_t slot = code[pc + 3];
     pc += 4;
-    f.resolved_envs[slot] = ctx.find_binding_env_interned(key);
+    {
+        Environment* env = nullptr;
+        if (*key != "this") {
+            for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
+                if (e->has_own_binding_interned(key)) { env = e; break; }
+            }
+        }
+        f.resolved_envs[slot] = env;
+    }
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -3008,7 +3054,17 @@ Value h_gen_CheckLookupResolvable(Frame& f, uint32_t pc, Value acc) {
                 {
                 const std::string& name = chunk.name_at(read_u16(code, pc));
                 pc += 2;
-                acc = Value(ctx.find_binding_env(name) != nullptr || ctx.has_binding(name));
+                bool found = false;
+                if (name != "this") {
+                    for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
+                        if (e->has_own_binding(name)) { found = true; break; }
+                    }
+                }
+                if (!found) {
+                    Environment* lex = frame_lexical_env(f);
+                    found = lex && lex->has_binding(name);
+                }
+                acc = Value(found);
                 break;
             }
     } while (0);
@@ -3094,16 +3150,23 @@ Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env(name);
+                // Same as Context::find_binding_env, but starting from
+                // frame_lexical_env(f) instead of ctx's own field.
+                Environment* env = nullptr;
+                if (name != "this") {
+                    for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
+                        if (e->has_own_binding(name)) { env = e; break; }
+                    }
+                }
                 CHECK_EXC();
                 if (env) {
                     bool ok = env->set_binding(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                     }
-                } else if (ctx.has_binding(name)) {
+                } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
                     // Object environment record (global/with) path.
-                    ctx.set_binding(name, acc);
+                    lex->set_binding(name, acc);
                 } else {
                     // Resolvable before the RHS ran, but the RHS deleted the
                     // binding (e.g. `x = (delete global.x, 2)`) --
@@ -3135,7 +3198,7 @@ Value h_LdaEnvFast(Frame& f, uint32_t pc, Value acc) {
     static const std::string* kThis = Shape::intern("this");
     const std::string* key = f.chunk.names[read_u16(f.code, pc + 1)];
     if (LIKELY(key != kThis)) {
-        if (Environment* env = f.ctx->get_lexical_environment()) {
+        if (Environment* env = frame_lexical_env(f)) {
             Value out;
             if (LIKELY(env->try_read_declarative_chain(key, out))) {
                 acc = out;
@@ -3169,7 +3232,7 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
                     Value object_value;
                     bool from_object = false;
                     int r = Environment::kNotBound;
-                    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+                    for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
                         r = e->env_read_step_interned(key, acc, &ctx);
                         CHECK_EXC();
                         if (r == Environment::kObjectValue) {
@@ -3196,7 +3259,10 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
                 }
                 // `is_local` doesn't mean the scope is still active --
                 // "not found" here is the same as never-declared.
-                Environment* env = ctx.find_binding_env(name);
+                Environment* env = nullptr;
+                for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
+                    if (e->has_own_binding(name)) { env = e; break; }
+                }
                 if (env) {
                     acc = env->get_binding_direct(name, &ctx);
                 } else {
@@ -3228,7 +3294,12 @@ Value h_gen_StaEnv(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env_interned(key);
+                Environment* env = nullptr;
+                if (*key != "this") {
+                    for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
+                        if (e->has_own_binding_interned(key)) { env = e; break; }
+                    }
+                }
                 if (env) {
                     if (!env->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
@@ -3257,7 +3328,7 @@ Value h_gen_StaEnvInit(Frame& f, uint32_t pc, Value acc) {
                 {
                 const std::string* key = chunk.names[read_u16(code, pc)];
                 pc += 2;
-                ctx.get_lexical_environment()->initialize_binding_interned(key, acc);  // current environment, no chain walk
+                frame_lexical_env(f)->initialize_binding_interned(key, acc);  // current environment, no chain walk
                 break;
             }
 
@@ -3282,7 +3353,7 @@ Value h_LdaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
     const uint8_t* code = f.code;
     const uint8_t slot = code[pc + 1];
     const std::string* key = f.chunk.names[read_u16(code, pc + 2)];
-    if (Environment* env = f.ctx->get_lexical_environment()) {
+    if (Environment* env = frame_lexical_env(f)) {
         if (auto* e = env->inline_slot_interned(slot, key)) {
             if (LIKELY(e->slot.initialized)) {
                 acc = e->slot.value;
@@ -3307,7 +3378,8 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                 const std::string* key = chunk.names[read_u16(code, pc)];
                 const std::string& name = *key;
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
+                Environment* diag_start = frame_lexical_env(f);
+                if (auto* e = diag_start->inline_slot_interned(slot, key)) {
                     if (!e->slot.initialized) {
                         ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                         CHECK_EXC();
@@ -3321,7 +3393,16 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env_interned(key);
+                // Same as Context::find_binding_env_interned, but starting
+                // from frame_lexical_env(f) instead of ctx's own field --
+                // that Context method can't be redirected without
+                // duplicating its loop with an explicit start point.
+                Environment* env = nullptr;
+                if (*key != "this") {
+                    for (Environment* e = diag_start; e; e = e->get_outer()) {
+                        if (e->has_own_binding_interned(key)) { env = e; break; }
+                    }
+                }
                 if (env) {
                     acc = env->get_binding_direct_interned(key, &ctx);
                 } else {
@@ -3350,7 +3431,8 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                 const std::string* key = chunk.names[read_u16(code, pc)];
                 const std::string& name = *key;
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
+                Environment* diag_start = frame_lexical_env(f);
+                if (auto* e = diag_start->inline_slot_interned(slot, key)) {
                     // The slot is a shortcut past the chain walk, not past the
                     // checks: the matching load asks this too, and a write to a
                     // binding still in its own initialiser has to raise.
@@ -3368,7 +3450,7 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                         }
                         break;
                     }
-                    Collector::write_barrier_env_for(ctx.get_lexical_environment(), acc);
+                    Collector::write_barrier_env_for(diag_start, acc);
                     e->slot.value = acc;
                     break;
                 }
@@ -3377,7 +3459,14 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Environment* env = ctx.find_binding_env_interned(key);
+                // Same as Context::find_binding_env_interned, but starting
+                // from frame_lexical_env(f) instead of ctx's own field.
+                Environment* env = nullptr;
+                if (*key != "this") {
+                    for (Environment* e = diag_start; e; e = e->get_outer()) {
+                        if (e->has_own_binding_interned(key)) { env = e; break; }
+                    }
+                }
                 if (env) {
                     if (!env->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
@@ -3408,19 +3497,19 @@ Value h_gen_StaEnvSlotInit(Frame& f, uint32_t pc, Value acc) {
                 pc += 1;
                 const std::string* key = chunk.names[read_u16(code, pc)];
                 pc += 2;
-                if (auto* e = ctx.get_lexical_environment()->inline_slot_interned(slot, key)) {
+                if (auto* e = frame_lexical_env(f)->inline_slot_interned(slot, key)) {
                     // Skipping the name lookup is the point of this path; the
                     // barrier initialize_binding runs below is not optional
                     // with it. An environment already traced by an open major
                     // is never revisited on its own, so a declaration storing
                     // a fresh cell here would leave it unmarked and swept
                     // while the binding still points at it.
-                    Collector::write_barrier_env_for(ctx.get_lexical_environment(), acc);
+                    Collector::write_barrier_env_for(frame_lexical_env(f), acc);
                     e->slot.value = acc;
                     e->slot.initialized = true;
                     break;
                 }
-                ctx.get_lexical_environment()->initialize_binding_interned(key, acc);
+                frame_lexical_env(f)->initialize_binding_interned(key, acc);
                 break;
             }
     } while (0);
@@ -3452,7 +3541,8 @@ Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
                 const std::string* key = chunk.names[read_u16(code, pc)];
                 const std::string& name = *key;
                 pc += 2;
-                Environment* env = ctx.get_lexical_environment();
+                Environment* diag_start = frame_lexical_env(f);
+                Environment* env = diag_start;
                 for (uint8_t h = 0; h < hops && env; h++) env = env->get_outer();
                 if (env) {
                     if (auto* e = env->inline_slot_interned(slot, key)) {
@@ -3473,7 +3563,7 @@ Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
                 Value object_value;
                 bool from_object = false;
                 int r = Environment::kNotBound;
-                for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+                for (Environment* e = diag_start; e; e = e->get_outer()) {
                     r = e->env_read_step_interned(key, acc, &ctx);
                     CHECK_EXC();
                     if (r == Environment::kObjectValue) {
@@ -3513,7 +3603,8 @@ Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
                 const std::string* key = chunk.names[read_u16(code, pc)];
                 const std::string& name = *key;
                 pc += 2;
-                Environment* env = ctx.get_lexical_environment();
+                Environment* diag_start = frame_lexical_env(f);
+                Environment* env = diag_start;
                 for (uint8_t h = 0; h < hops && env; h++) env = env->get_outer();
                 if (env) {
                     if (auto* e = env->inline_slot_interned(slot, key)) {
@@ -3540,7 +3631,12 @@ Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Environment* found = ctx.find_binding_env_interned(key);
+                Environment* found = nullptr;
+                if (*key != "this") {
+                    for (Environment* e = diag_start; e; e = e->get_outer()) {
+                        if (e->has_own_binding_interned(key)) { found = e; break; }
+                    }
+                }
                 if (found) {
                     if (!found->set_binding_direct_interned(key, acc, &ctx) &&
                         (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
@@ -3567,15 +3663,15 @@ Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
     pc += 2;
     do {
                 {
-                Environment* params_env = ctx.get_lexical_environment();
+                Environment* params_env = frame_lexical_env(f);
                 if (split_scope) {
                     ctx.push_block_scope();
                     // The body's scope is its variable environment too, so a
                     // `var` or a hoisted function declaration lands there
                     // rather than beside the parameters.
-                    ctx.set_variable_environment(ctx.get_lexical_environment());
+                    ctx.set_variable_environment(frame_lexical_env(f));
                 }
-                Environment* env = ctx.get_lexical_environment();
+                Environment* env = frame_lexical_env(f);
                 // Interned, not name-based: chunk.env->env_local_keys is already
                 // populated (VM::run's own entry seeding fills it before any
                 // bytecode -- this opcode included -- ever dispatches), so
@@ -3636,7 +3732,7 @@ Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
                 ctx.push_block_scope();
-                Environment* env = ctx.get_lexical_environment();
+                Environment* env = frame_lexical_env(f);
                 const auto& vars = chunk.env->loop_envs[idx];
                 const auto& keys = loop_env_keys_for(chunk, idx);
                 for (size_t i = 0; i < vars.size(); i++) {
@@ -3668,13 +3764,13 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 const auto& vars = chunk.env->loop_envs[idx];
                 const auto& keys = loop_env_keys_for(chunk, idx);
                 std::vector<Value> carried(vars.size());
-                Environment* old_env = ctx.get_lexical_environment();
+                Environment* old_env = frame_lexical_env(f);
                 for (size_t i = 0; i < vars.size(); i++) {
                     if (vars[i].copy_forward) carried[i] = old_env->get_binding_direct_interned(keys[i], &ctx);
                 }
                 ctx.pop_block_scope();
                 ctx.push_block_scope();
-                Environment* new_env = ctx.get_lexical_environment();
+                Environment* new_env = frame_lexical_env(f);
                 for (size_t i = 0; i < vars.size(); i++) {
                     const auto& v = vars[i];
                     if (v.is_lexical) {
@@ -3714,7 +3810,7 @@ Value h_gen_SaveEnv(Frame& f, uint32_t pc, Value acc) {
     instr_pc = pc;
     pc += 1;
     do {
-                env_saves[env_save_top++] = ctx.get_lexical_environment();
+                env_saves[env_save_top++] = frame_lexical_env(f);
                 break;
     } while (0);
     CHECK_EXC_TAIL();
@@ -4221,7 +4317,25 @@ Value h_gen_CreateClosure(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
-                acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+                // instantiate_closure (language.cpp) reads ctx.get_lexical_
+                // environment() ambiently -- both directly (needs_self_binding)
+                // and indirectly (Function's own constructor captures
+                // closure_environment_ from whatever ctx currently holds).
+                // When call_info carries this call's real environment
+                // (a fast_gate call that shares the caller's Context), ctx's
+                // own field would be the CALLER's -- swap the true value in
+                // for the duration of the call, restore right after.
+                if (f.call_info) {
+                    Environment* saved_lex = ctx.get_lexical_environment();
+                    Environment* saved_var = ctx.get_variable_environment();
+                    ctx.set_lexical_environment(f.call_info->lexical_environment_);
+                    ctx.set_variable_environment(f.call_info->variable_environment_);
+                    acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+                    ctx.set_lexical_environment(saved_lex);
+                    ctx.set_variable_environment(saved_var);
+                } else {
+                    acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+                }
                 CHECK_EXC();
                 break;
             }
@@ -4241,7 +4355,20 @@ Value h_gen_DeclareFunction(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
-                declare_function(ctx, (*chunk.closures)[idx]);
+                // Same as h_gen_CreateClosure above -- declare_function both
+                // makes its own scope-placement decision off ctx and calls
+                // instantiate_closure internally.
+                if (f.call_info) {
+                    Environment* saved_lex = ctx.get_lexical_environment();
+                    Environment* saved_var = ctx.get_variable_environment();
+                    ctx.set_lexical_environment(f.call_info->lexical_environment_);
+                    ctx.set_variable_environment(f.call_info->variable_environment_);
+                    declare_function(ctx, (*chunk.closures)[idx]);
+                    ctx.set_lexical_environment(saved_lex);
+                    ctx.set_variable_environment(saved_var);
+                } else {
+                    declare_function(ctx, (*chunk.closures)[idx]);
+                }
                 CHECK_EXC();
                 break;
             }
@@ -4261,7 +4388,17 @@ Value h_CreateClosureWide(Frame& f, uint32_t pc, Value acc) {
     instr_pc = pc;
     uint32_t idx = read_u32(code, pc + 1);
     pc += 5;
-    acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+    if (f.call_info) {
+        Environment* saved_lex = ctx.get_lexical_environment();
+        Environment* saved_var = ctx.get_variable_environment();
+        ctx.set_lexical_environment(f.call_info->lexical_environment_);
+        ctx.set_variable_environment(f.call_info->variable_environment_);
+        acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+        ctx.set_lexical_environment(saved_lex);
+        ctx.set_variable_environment(saved_var);
+    } else {
+        acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
+    }
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -4276,7 +4413,17 @@ Value h_DeclareFunctionWide(Frame& f, uint32_t pc, Value acc) {
     instr_pc = pc;
     uint32_t idx = read_u32(code, pc + 1);
     pc += 5;
-    declare_function(ctx, (*chunk.closures)[idx]);
+    if (f.call_info) {
+        Environment* saved_lex = ctx.get_lexical_environment();
+        Environment* saved_var = ctx.get_variable_environment();
+        ctx.set_lexical_environment(f.call_info->lexical_environment_);
+        ctx.set_variable_environment(f.call_info->variable_environment_);
+        declare_function(ctx, (*chunk.closures)[idx]);
+        ctx.set_lexical_environment(saved_lex);
+        ctx.set_variable_environment(saved_var);
+    } else {
+        declare_function(ctx, (*chunk.closures)[idx]);
+    }
     CHECK_EXC_TAIL();
     DISPATCH();
 }
@@ -5437,7 +5584,7 @@ Value h_gen_GetSuper(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t name_idx = read_u16(code, pc);
                 pc += 2;
-                acc = super_get(ctx, chunk.name_at(name_idx), f.owner);
+                acc = super_get(ctx, chunk.name_at(name_idx), f.owner, frame_lexical_env(f));
                 CHECK_EXC();
                 break;
             }
@@ -5488,7 +5635,7 @@ Value h_gen_ResolveSuperBase(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                Object* base = resolve_super_base(ctx, f.owner);
+                Object* base = resolve_super_base(ctx, f.owner, frame_lexical_env(f));
                 CHECK_EXC();
                 regs[dst] = base ? Value(base) : Value();
                 break;
@@ -6996,7 +7143,7 @@ Value h_gen_LdaWith(Frame& f, uint32_t pc, Value acc) {
         Environment* home = nullptr;
         Context* prev_cc = Object::current_context_;
         Object::current_context_ = &ctx;
-        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
             if (e->try_get_binding_interned(key, acc, &ctx)) { found = true; home = e; break; }
             if (ctx.has_exception()) break;
             // A dead-zone binding still ends the search: the name resolved, it
@@ -7032,7 +7179,7 @@ Value h_gen_ResolveWithTarget(Frame& f, uint32_t pc, Value acc) {
     acc = Value();
     Context* prev_cc = Object::current_context_;
     Object::current_context_ = &ctx;
-    for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+    for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
         // HasBinding on a with environment is a HasProperty, which a Proxy can
         // trap and throw from.
         const bool has = e->has_own_binding(name);
@@ -7083,7 +7230,7 @@ Value h_gen_LdaWithResolved(Frame& f, uint32_t pc, Value acc) {
             Object::current_context_ = prev_cc;
             break;
         }
-        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
             if (e->is_with_environment()) continue;
             Value out;
             if (e->try_get_binding(name, out, &ctx)) { acc = out; break; }
@@ -7124,7 +7271,7 @@ Value h_gen_StaWithResolved(Frame& f, uint32_t pc, Value acc) {
             break;
         }
         Environment* found = nullptr;
-        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
             if (e->is_with_environment()) continue;  // gained the name after the verdict
             if (e->has_own_binding(name)) { found = e; break; }
         }
@@ -7196,7 +7343,7 @@ Value h_gen_DeleteLookup(Frame& f, uint32_t pc, Value acc) {
         acc = Value(false);
         Context* prev_cc = Object::current_context_;
         Object::current_context_ = &ctx;
-        for (Environment* e = ctx.get_lexical_environment(); e; e = e->get_outer()) {
+        for (Environment* e = frame_lexical_env(f); e; e = e->get_outer()) {
             const bool has = e->has_own_binding(*name);
             if (ctx.has_exception()) break;
             if (!has) continue;
@@ -7640,7 +7787,8 @@ Value run_dispatch(Frame& f) {
 }
 
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
-          const Value* this_val, Function* owner, const Value* initial_acc) {
+          const Value* this_val, Function* owner, const Value* initial_acc,
+          const CallInfo* call_info) {
     // Only the registers the chunk actually uses: a fixed 256 put the whole
     // bank on the C++ stack and zeroed it on every call, when the compiler
     // already knows the real count and it is small for most functions.
@@ -7742,7 +7890,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     // chunk.script_mode (see both handlers below); this pointer stays the
     // real environment either way so the beyond_frame walk still starts
     // from the right place.
-    Environment* entry_env = ctx.get_lexical_environment();
+    Environment* entry_env = call_info ? call_info->lexical_environment_ : ctx.get_lexical_environment();
 
     // A chunk may be shared across several Function instances created from the
     // same declaration site (see FunctionExecutable), each with its own
@@ -7809,6 +7957,7 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
                 lookup_cache_data,
                 private_feedback_data, code, constants, entry_env,
                 this_value, initial_acc ? *initial_acc : Value(), 0, 0, 0, this_resolved};
+    frame.call_info = call_info;
 
     for (;;) {
       try {

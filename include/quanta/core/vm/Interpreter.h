@@ -16,9 +16,22 @@ class Parameter;
 
 class Context;
 class Function;
+class Environment;
 struct EnvSlotHazards;
 
 namespace VM {
+
+// Stack-resident only -- built fresh in Function::call_default_impl's
+// fast_gate block, threaded through VM::run/Frame, never heap-allocated,
+// never outlives the call that built it. Carries exactly the two fields
+// whose ambient ctx-read was the actual blocker behind every earlier failed
+// Context-sharing attempt -- new_target_/is_in_constructor_call_ stay pure
+// ctx passthroughs (never the blocker), and this_value_/strict_mode_/
+// is_arrow_function_context_ are deferred to a later, separate stage.
+struct CallInfo {
+    Environment* lexical_environment_ = nullptr;
+    Environment* variable_environment_ = nullptr;
+};
 
 // Executes a chunk to completion. The register file lives on the C++ stack
 // so the conservative GC scan covers it for free (and generator fibers
@@ -30,9 +43,12 @@ namespace VM {
 // when GetNamed's prototype-chain cache learns a new holder/prototype
 // reference (see FeedbackSlot::ProtoEntry). Null for run_script's ownerless
 // top-level chunk -- that cache is simply inert there (see run_script).
+// call_info: a fast_gate call's own lexical/variable environment, non-null
+// only once that path stops pool-acquiring its own Context -- null
+// everywhere else, unaffected.
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
           const Value* this_val = nullptr, Function* owner = nullptr,
-          const Value* initial_acc = nullptr);
+          const Value* initial_acc = nullptr, const CallInfo* call_info = nullptr);
 
 // Compiles a generator/async BODY for the suspendable calling convention
 // (bindings already live in ctx; yield/await suspend the fiber from inside

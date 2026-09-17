@@ -99,12 +99,17 @@ private:
     // only the bits that cross that boundary.
     uint32_t subtree_acc_ = 0;
 
-    // One per function being read, innermost last. `all` gathers every name
-    // the function mentions, `captured` only the ones something nested in it
-    // mentions -- which is the set that has to stay in the environment. A
-    // function closing folds its whole `all` into its parent's `captured`,
-    // because from the parent's side every one of those names is inside a
-    // closure.
+    // One per lexical scope being read, innermost last -- a unified stack
+    // that holds BOTH function-literal frames (FunctionNames) and plain
+    // block frames (LexicalBlockScope: a `{}`, a catch parameter, a switch
+    // body, a for(let/const) head), mirroring the real nesting of the JS
+    // scope tree instead of approximating it with one flat set per function.
+    // `all` gathers every name mentioned inside this scope (directly, or
+    // folded up from something nested in it); `captured` is the subset that
+    // crossed an actual closure boundary somewhere below and so has to stay
+    // in an Environment rather than a register. A scope closing folds into
+    // whatever is now the new top of the stack via fold_into -- see its own
+    // comment for exactly how `all` and `captured` propagate differently.
     struct NameScope {
         // Interned (NamePool) ids, not text: a bundle-sized file closes
         // tens of thousands of these, and the same few thousand names
@@ -113,32 +118,83 @@ private:
         // hash-set node.
         IdSet all;
         IdSet captured;
-        // Every name this function itself declares in a form that is
-        // unambiguously function-scoped -- currently just its own simple
-        // (non-destructured) parameters (record_params/record_param).
-        // Withheld entirely (not just from `captured`) when this scope
-        // folds into its parent's, see FunctionNames::~FunctionNames: a
-        // name fully contained here never reaches any ancestor's sets at
-        // all, which is what makes the exclusion transitive without ever
-        // exporting a flag across levels. `all` still keeps every one of
-        // these names for THIS scope's own snapshot (a plain read of its
-        // own parameter is recorded exactly like any other identifier,
-        // note_name does not know the difference) -- only the fold into
-        // the parent withholds them.
-        //
-        // Deliberately excludes let/const/class/catch-params/let-or-const
-        // for-loop binders even though those are also "declared here":
-        // this struct is function-granularity only (no per-block scope
-        // exists), and a block-scoped shadow folded into this set would be
-        // indistinguishable from a real function-scoped declaration,
-        // wrongly swallowing a sibling function's genuine free reference
-        // to an unrelated same-named binding from a real outer ancestor.
-        // var/parameters/a named function expression's own self-reference
-        // have no such hazard: they are function-scoped regardless of
-        // which block they are textually written in.
+        // Every name this scope itself declares -- a function's own simple
+        // (non-destructured) parameters, var declarators, and a named
+        // function/class expression's own self-reference for a FUNCTION
+        // frame (record_params/record_param, declare_local_name); a
+        // let/const/class/catch-param declarator for a BLOCK frame
+        // (declare_block_scoped_name). Withheld entirely from `all` (not
+        // just from `captured`) when this scope folds into its parent, see
+        // fold_into: a name fully contained here never reaches any
+        // ancestor's `all` at all, which is what makes the exclusion
+        // correct without ever exporting a flag across levels -- re-decided
+        // fresh from only THIS scope's own local set, every single time.
+        // `all` still keeps every one of these names for THIS scope's own
+        // snapshot (a plain read of its own declaration is recorded exactly
+        // like any other identifier, note_name does not know the
+        // difference) -- only the fold into the parent withholds them.
         IdSet declared_here;
         bool eval_in_nested = false;
         bool class_expression = false;
+        // True for a frame opened by a function literal (FunctionNames);
+        // false for a frame opened by a plain lexical block
+        // (LexicalBlockScope). name_scopes_ is a unified stack of both kinds
+        // -- a block nested in a function, a function nested in a block, and
+        // a block nested in a block are all just adjacent stack entries.
+        // fold_into treats every level the same way for `all` (exclude this
+        // frame's own declared_here, full stop); the one place frame kind
+        // matters is `captured`'s relay -- see fold_into's own comment.
+        bool is_function = false;
+
+        // Folds `all - declared_here` into `parent`, exactly the rule
+        // FunctionNames::~FunctionNames used to inline (see git history for
+        // the original), now shared by every frame kind so a function
+        // nested inside a block behaves identically to a function nested in
+        // a function, and a block nested in a block just repeats the same
+        // rule one more time. Never exports anything beyond this one fold: a
+        // name in `declared_here` stops here, full stop, re-decided fresh at
+        // every single level from only that level's own local set -- the
+        // "re-decide fresh, never export a flag" discipline that fixed two
+        // earlier reverted attempts (7d230c1c/580734dd) at this exact
+        // problem, now generalized from function-only to every lexical
+        // level.
+        void fold_into(NameScope& parent) const {
+            for (auto n : all) {
+                if (declared_here.count(n)) continue;
+                parent.all.insert(n);
+                // A function frame closing always crosses a closure
+                // boundary, so every surviving name becomes captured in the
+                // parent too -- the exact behavior this replaces.
+                if (is_function) parent.captured.insert(n);
+            }
+            // `captured` is a DIFFERENT question from `all`'s and is never
+            // gated by declared_here for a block close: it answers "does
+            // some declared name of mine need environment residency," fed
+            // straight into the ENCLOSING FUNCTION's own compile pass (which
+            // checks it against that function's OWN locally declared names,
+            // wherever within it they live -- a for-loop's own `let i`, a
+            // bare block's own `let e`, whatever). Whether THIS block itself
+            // owns the declaration is irrelevant to that question -- a name
+            // this block declares and a closure directly inside it captures
+            // still has to reach the function that will actually allocate
+            // storage for it, however many further block-only hops separate
+            // them. `all`'s exclusion is the one guarding against same-text
+            // confusion with an unrelated binding further out -- without
+            // this decoupling, a for-loop/bare-block's own let, captured by
+            // a closure inside it, would silently lose its residency mark
+            // once it stopped short at the block that legitimately excludes
+            // it from `all`. A function frame never
+            // needs this second loop: every name already relayed via the
+            // branch above (mine.all, minus mine.declared_here) already
+            // becomes captured there, unconditionally, so nothing here would
+            // add anything new.
+            if (!is_function) {
+                for (auto n : captured) parent.captured.insert(n);
+            }
+            const bool eval_here = all.count(NamePool::intern("eval")) != 0 || eval_in_nested;
+            parent.eval_in_nested = parent.eval_in_nested || eval_here;
+            parent.class_expression = parent.class_expression || class_expression;
+        }
     };
     std::vector<NameScope> name_scopes_;
 
@@ -172,7 +228,34 @@ private:
     // does not need a recording_names_ guard: it is only ever called from
     // a declaration's own parse, never from the property-name contexts
     // NameRecording suppresses.
+    //
+    // Walks up to the nearest FUNCTION frame rather than using whatever is
+    // innermost, because name_scopes_ is a unified stack that can also hold
+    // plain block frames (LexicalBlockScope) now -- a `var` declared inside
+    // a block is still function-scoped by spec, so it must land in the
+    // function's own declared_here, never a block's, or that block's own
+    // close would wrongly withhold it from the function that actually owns
+    // it. A no-op change at every call site reached with no block open
+    // (params, a function/class expression's own self-name -- all recorded
+    // immediately after their own FunctionNames is pushed, before any block
+    // exists), and exactly the fix needed once a block CAN be open.
     void declare_local_name(const std::string& n) {
+        if (name_scopes_.empty()) return;
+        const uint32_t id = NamePool::intern(n);
+        for (auto it = name_scopes_.rbegin(); it != name_scopes_.rend(); ++it) {
+            if (it->is_function) { it->declared_here.insert(id); return; }
+        }
+    }
+    // For a declaration form that IS block-scoped (let/const/class/catch
+    // params/a for-loop's own let/const binder) -- writes into whichever
+    // frame is innermost right now, block or function. Safe to add
+    // unconditionally, unlike declare_local_name: a block frame's own close
+    // (LexicalBlockScope's destructor) applies the exact same "re-decide
+    // fresh from only this frame's own declared_here" rule FunctionNames
+    // already uses (see NameScope::fold_into), so a name declared here can
+    // never be confused with an unrelated same-text binding that lives
+    // outside this specific block.
+    void declare_block_scoped_name(const std::string& n) {
         if (name_scopes_.empty()) return;
         name_scopes_.back().declared_here.insert(NamePool::intern(n));
     }
@@ -182,6 +265,7 @@ private:
         Parser& p;
         explicit FunctionNames(Parser& parser) : p(parser) {
             p.name_scopes_.emplace_back();
+            p.name_scopes_.back().is_function = true;
         }
         FunctionNames(const FunctionNames&) = delete;
         FunctionNames& operator=(const FunctionNames&) = delete;
@@ -251,28 +335,30 @@ private:
             NameScope mine = std::move(p.name_scopes_.back());
             p.name_scopes_.pop_back();
             if (p.name_scopes_.empty()) return;
-            NameScope& parent = p.name_scopes_.back();
-            const bool eval_here = mine.all.count(NamePool::intern("eval")) != 0 || mine.eval_in_nested;
-            for (auto n : mine.all) {
-                // Withheld from BOTH parent sets, not just `captured`: a
-                // name fully contained in `mine` must never reach the
-                // parent's `all` either, otherwise the parent's own fold
-                // into ITS parent sees an ordinary mention with no memory
-                // that this level already decided the name stops here --
-                // that gap (all folding unconditionally while captured
-                // didn't) is what let an inner closure's own parameter leak
-                // past its immediate parent. Re-deciding this fresh, from
-                // only `mine.declared_here`, at every single level -- never
-                // exporting a flag into a shared bucket across levels --
-                // is what keeps a sibling's genuine capture of the same
-                // text, or this parent's own direct reference to it, from
-                // ever being confused with a name that stops here.
-                if (mine.declared_here.count(n)) continue;
-                parent.captured.insert(n);
-                parent.all.insert(n);
-            }
-            parent.eval_in_nested = parent.eval_in_nested || eval_here;
-            parent.class_expression = parent.class_expression || mine.class_expression;
+            mine.fold_into(p.name_scopes_.back());
+        }
+    };
+    // Opens a plain lexical block's own scope: a `{}` BlockStatement, a
+    // catch clause's parameter list, a switch body, or a for(let/const)
+    // head -- anything that can hold its own let/const/class/catch-param
+    // declarations distinct from whatever encloses it, but is not itself a
+    // closure boundary and never gets its own BodyScopeInfo (nothing
+    // downstream ever asks a block for one -- see NameScope::fold_into for
+    // why a block still relays an already-captured name onward instead of
+    // silently dropping it). Closes exactly the way FunctionNames does,
+    // minus the take()/record_scope_info step.
+    struct LexicalBlockScope {
+        Parser& p;
+        explicit LexicalBlockScope(Parser& parser) : p(parser) {
+            p.name_scopes_.emplace_back();
+        }
+        LexicalBlockScope(const LexicalBlockScope&) = delete;
+        LexicalBlockScope& operator=(const LexicalBlockScope&) = delete;
+        ~LexicalBlockScope() {
+            NameScope mine = std::move(p.name_scopes_.back());
+            p.name_scopes_.pop_back();
+            if (p.name_scopes_.empty()) return;
+            mine.fold_into(p.name_scopes_.back());
         }
     };
     bool previous_token_is_dot() const;

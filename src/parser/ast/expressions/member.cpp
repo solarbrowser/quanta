@@ -148,7 +148,18 @@ bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& 
 // below, the write path in assignment.cpp and the compiled Op::GetSuper
 // family, so all three agree on how __super__/__super_is_static__/
 // __home_object__ are interpreted.
-Object* resolve_super_base(Context& ctx, Function* owner) {
+//
+// lex_env: the calling frame's own lexical environment (frame_lexical_env(f)
+// for a bytecode caller with a fast_gate CallInfo, null for the tree-walker
+// callers below, which have no Frame at all). Falling back to
+// ctx.get_lexical_environment() when null keeps their behavior unchanged; a
+// fast_gate arrow inheriting `super` from its captured chain needs its OWN
+// chain here, not ctx's ambient field, which fast_gate's Context-sharing
+// leaves pointing at whichever call is still live on the shared Context --
+// the __home_object__/__super__ bindings live one level in from the
+// arrow's own frame, so reading ctx's ambient field found whatever frame
+// happened to own it last instead.
+Object* resolve_super_base(Context& ctx, Function* owner, Environment* lex_env = nullptr) {
     // Spec: GetSuperBase() is [[HomeObject]].[[GetPrototypeOf]](). Reading the
     // prototype live also keeps a post-definition Object.setPrototypeOf on the
     // home object visible, which a cached parent constructor would miss.
@@ -164,7 +175,8 @@ Object* resolve_super_base(Context& ctx, Function* owner) {
             return home_obj->get_prototype();
         }
     }
-    Value home = ctx.get_binding("__home_object__");
+    Environment* env = lex_env ? lex_env : ctx.get_lexical_environment();
+    Value home = env ? env->get_binding("__home_object__") : Value();
     if (!home.is_undefined() && !home.is_null()) {
         Object* home_obj = home.is_function() ? static_cast<Object*>(home.as_function())
                                               : home.as_object();
@@ -172,11 +184,11 @@ Object* resolve_super_base(Context& ctx, Function* owner) {
     }
     // No home object recorded (async methods, Proxy-wrapped calls): fall back to
     // the parent constructor that the call frame bound.
-    Value super_ctor = ctx.get_binding("__super__");
+    Value super_ctor = env ? env->get_binding("__super__") : Value();
     if (super_ctor.is_function()) {
         // Static method: super.x resolves on the parent constructor itself;
         // an instance method goes through its prototype.
-        if (ctx.has_binding("__super_is_static__")) return super_ctor.as_function();
+        if (env && env->has_binding("__super_is_static__")) return super_ctor.as_function();
         Value proto_val = super_ctor.as_function()->get_property("prototype");
         return proto_val.is_object() ? proto_val.as_object() : nullptr;
     }
@@ -209,12 +221,12 @@ Value super_get_on(Context& ctx, Object* base, const std::string& prop_name) {
 
 // super.<name>: no key expression, so the base can be resolved here.
 // Shared with Op::GetSuper.
-Value super_get(Context& ctx, const std::string& prop_name, Function* owner) {
+Value super_get(Context& ctx, const std::string& prop_name, Function* owner, Environment* lex_env) {
     if (ctx.this_needs_super()) {
         ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
         return Value();
     }
-    return super_get_on(ctx, resolve_super_base(ctx, owner), prop_name);
+    return super_get_on(ctx, resolve_super_base(ctx, owner, lex_env), prop_name);
 }
 
 // super [[Set]] (ES2024 13.3.7.4) on an already-resolved base: the lookup walks the

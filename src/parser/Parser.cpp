@@ -19,6 +19,7 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <unordered_set>
 
 namespace Quanta {
@@ -2212,23 +2213,12 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
             // the template sits in, so a closure written inside one is a
             // closure of that scope.
             if (!name_scopes_.empty() && !expr_parser.name_scopes_.empty()) {
-                NameScope& mine = name_scopes_.back();
-                NameScope& theirs = expr_parser.name_scopes_.back();
-                mine.class_expression = mine.class_expression || theirs.class_expression;
-                for (auto n : theirs.captured) mine.captured.insert(n);
-                // Guarded the same way FunctionNames::~FunctionNames guards its
-                // own fold into a parent, even though theirs.declared_here is
-                // always empty today (a `${...}` substitution only ever parses
-                // one Expression, never a var/for statement) -- an unguarded
-                // duplicate of the exact bug this whole project exists to fix,
-                // sitting in a second location "because it happens to always be
-                // empty," is exactly the kind of latent trap that becomes next
-                // month's regression.
-                for (auto n : theirs.all) {
-                    if (theirs.declared_here.count(n)) continue;
-                    mine.all.insert(n);
-                }
-                mine.eval_in_nested = mine.eval_in_nested || theirs.eval_in_nested;
+                // theirs.is_function is false (default) and theirs.declared_here
+                // is always empty today (a `${...}` substitution only ever
+                // parses one Expression, never a var/for/class statement) --
+                // fold_into handles both correctly regardless, the same shared
+                // rule every other lexical level in this parser now uses.
+                expr_parser.name_scopes_.back().fold_into(name_scopes_.back());
             }
             expressions.push_back(std::move(expression));
             pos = expr_end + 1;
@@ -3530,6 +3520,9 @@ std::unique_ptr<ASTNode> Parser::parse_using_declaration(bool is_await, bool con
         auto init = parse_assignment_expression();
         if (!init) return nullptr;
 
+        // `using` binds like a `const` -- block-scoped, same as let/const's
+        // own declare_block_scoped_name call.
+        declare_block_scoped_name(name);
         bindings.emplace_back(name, std::move(init));
 
         if (current_token().get_type() != TokenType::COMMA) break;
@@ -3591,13 +3584,18 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             dest->set_source(std::move(init));
 
             // `var`-kind destructured names are function-scoped like any other
-            // `var`, so they belong in declared_here same as a simple `var`
-            // binding -- `let`/`const` destructuring is block-scoped and must
-            // not (see NameScope::declared_here's own comment).
-            if (kind == VariableDeclarator::Kind::VAR) {
+            // `var`, so they belong in the nearest function's declared_here
+            // same as a simple `var` binding; `let`/`const` destructuring is
+            // block-scoped and belongs in whatever block frame is innermost
+            // right now (see declare_local_name/declare_block_scoped_name).
+            {
                 std::vector<std::string> bound;
                 dest->collect_bound_names(bound);
-                for (const auto& name : bound) declare_local_name(name);
+                if (kind == VariableDeclarator::Kind::VAR) {
+                    for (const auto& name : bound) declare_local_name(name);
+                } else {
+                    for (const auto& name : bound) declare_block_scoped_name(name);
+                }
             }
 
             // The empty name is what marks a declarator as destructuring; the
@@ -3697,9 +3695,10 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
                                              current_token().get_start(), current_token().get_end());
         advance();
         // `var`-kind is function-scoped regardless of which block this
-        // declaration textually sits in; `let`/`const` are block-scoped and
-        // must not go into declared_here (see NameScope::declared_here).
+        // declaration textually sits in; `let`/`const` belong to whichever
+        // block frame is innermost right now.
         if (kind == VariableDeclarator::Kind::VAR) declare_local_name(id->get_name());
+        else declare_block_scoped_name(id->get_name());
 
         std::unique_ptr<ASTNode> init = nullptr;
         if (consume_if_match(TokenType::ASSIGN)) {
@@ -3931,6 +3930,14 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         return nullptr;
     }
     SubtreeScope scope(*this);
+    // A function's own top-level body has no shadow ambiguity at that single
+    // level (nothing else shares its exact nesting depth within itself), so
+    // its own let/const/class/catch-param declarations write straight into
+    // the function's own NameScope -- no extra frame needed. Every OTHER
+    // block (if/while/for/try/finally bodies, and any explicit `{}`) gets
+    // its own frame, since it's the one place a same-text shadow can occur.
+    std::optional<LexicalBlockScope> block_scope;
+    if (!is_function_body) block_scope.emplace(*this);
     Position start = get_current_position();
     const size_t body_tok_first = current_token_index_;
 
@@ -4374,6 +4381,17 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     // Tracks the declaration kind when `for (let/const/var [pattern] of ...)` is parsed.
     // Used to pass per-iteration lexical scope info to ForOfStatement.
     int for_of_decl_kind = -1;
+    // One frame covers the whole loop (head + whatever the body turns out to
+    // be) -- declared here, before `kind` is known, because this function's
+    // many early-error-return paths and gotos make it impossible to
+    // construct this any later than the top without missing some of them.
+    // Emplaced only for LET/CONST once the declaration keyword is actually
+    // seen (a plain `for(;;)`/`for(x in/of ...)` with no declaration, or a
+    // `var` head, needs no block frame at all -- var is function-scoped
+    // regardless). If the loop body is itself a `{}` it gets its OWN nested
+    // frame automatically from parse_block_statement's own change, which
+    // alone correctly separates `for (let i...) { let i; }` shadowing.
+    std::optional<LexicalBlockScope> for_let_scope;
 
     bool is_await_loop = false;
     if (match(TokenType::AWAIT)) {
@@ -4440,6 +4458,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     std::string binding_name = token_string(current_token());
                     Position binding_pos = get_current_position();
                     advance(); // consume id
+                    declare_block_scoped_name(binding_name);
                     std::vector<UsingBinding> bindings;
                     bindings.push_back(UsingBinding(binding_name, nullptr));
                     subtree_acc_ |= kSubtreeLexicalDecl;
@@ -4482,6 +4501,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                         return nullptr;
                     }
                     advance(); // consume ID
+                    declare_block_scoped_name(binding_name);
                     std::vector<UsingBinding> bindings;
                     bindings.push_back(UsingBinding(binding_name, nullptr));
                     subtree_acc_ |= kSubtreeLexicalDecl;
@@ -4515,8 +4535,9 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     add_error("Expected variable declaration keyword");
                     return nullptr;
             }
+            if (kind != VariableDeclarator::Kind::VAR) for_let_scope.emplace(*this);
             advance();
-            
+
             if (current_token().get_type() == TokenType::LEFT_BRACKET ||
                 current_token().get_type() == TokenType::LEFT_BRACE) {
 
@@ -4538,6 +4559,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                                 add_error("SyntaxError: Identifier '" + nm + "' has already been declared");
                                 return nullptr;
                             }
+                            declare_block_scoped_name(nm);
                         }
                     }
                 } else if (kind == VariableDeclarator::Kind::VAR) {
@@ -4626,6 +4648,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
 
             auto identifier = std::make_unique<Identifier>(var_name, var_start, var_end);
             if (kind == VariableDeclarator::Kind::VAR) declare_local_name(var_name);
+            else declare_block_scoped_name(var_name);
 
             std::unique_ptr<ASTNode> initializer = nullptr;
             if (current_token().get_type() == TokenType::ASSIGN) {
@@ -4667,6 +4690,8 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 // how it got into `all`.
                 if (kind == VariableDeclarator::Kind::VAR) {
                     declare_local_name(static_cast<Identifier*>(next_identifier.get())->get_name());
+                } else {
+                    declare_block_scoped_name(static_cast<Identifier*>(next_identifier.get())->get_name());
                 }
 
                 std::unique_ptr<ASTNode> next_initializer = nullptr;
@@ -5404,20 +5429,24 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
         kSubtreeSuspend | kSubtreeWith | kSubtreeArguments | kSubtreeLexicalDecl));
-    FunctionNames fn_names(*this);
+    // FunctionNames fn_names is constructed AFTER the name is parsed (below)
+    // -- a declaration's own name binds in the scope it sits in, not its
+    // own body's scope (same reasoning as parse_class_declaration's own
+    // header comment). Constructing it up here would wrongly confine the
+    // name to this function's own body, the way it used to for classes.
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::FUNCTION)) {
         add_error("Expected 'function'");
         return nullptr;
     }
-    
+
     bool is_generator = false;
     if (current_token().get_type() == TokenType::MULTIPLY) {
         advance();
         is_generator = true;
     }
-    
+
     {
         TokenType ct = current_token().get_type();
         bool name_ok = ct == TokenType::IDENTIFIER || token_is_unreserved_contextual(ct);
@@ -5443,6 +5472,18 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         add_error("'" + fn_name + "' cannot be used as function name in strict mode");
         return nullptr;
     }
+
+    // The name resolves against the scope this declaration sits in -- see
+    // this function's own header comment. declare_block_scoped_name (not
+    // declare_local_name) because a function declaration textually nested
+    // in a block is block-scoped in strict code and Annex B's extra
+    // var-scoped copy in sloppy code is handled separately by the bytecode
+    // compiler's own hoisting machinery -- this only feeds the parser's
+    // capture analysis, where stopping at the innermost scope is always
+    // safe (see NameScope::declared_here's own comment on why over-scoping
+    // a name here is at worst a missed optimization, never a wrong value).
+    declare_block_scoped_name(fn_name);
+    FunctionNames fn_names(*this);
 
     if (!consume(TokenType::LEFT_PAREN)) {
         add_error("Expected '(' after function name");
@@ -5766,10 +5807,13 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
         kSubtreeSuspend | kSubtreeWith | kSubtreeLexicalDecl));
     fn_scope.contribute(kSubtreeLexicalDecl);
-    // Everything a class holds -- its heritage, its computed keys, its method
-    // bodies and field initializers -- closes over the scope around it, so
-    // for what a closure can see it counts as one.
-    FunctionNames class_names(*this);
+    // FunctionNames class_names is constructed AFTER the name is parsed
+    // (below) -- a declaration's own name binds in the scope it sits in, not
+    // its own body's scope (unlike a class/function EXPRESSION's self-name,
+    // which resolves only inside its own body and is correctly declared into
+    // its own already-pushed frame elsewhere). Constructing it up here, as
+    // this function used to, would wrongly confine the name to the class's
+    // own body.
     Position start = get_current_position();
     
     if (!consume(TokenType::CLASS)) {
@@ -5822,6 +5866,14 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             return nullptr;
         }
     }
+    // The name resolves against the scope this declaration sits in -- see
+    // this function's own header comment for why class_names is constructed
+    // only after this point, not before.
+    declare_block_scoped_name(static_cast<Identifier*>(id.get())->get_name());
+    // Everything a class holds -- its heritage, its computed keys, its method
+    // bodies and field initializers -- closes over the scope around it, so
+    // for what a closure can see it counts as one.
+    FunctionNames class_names(*this);
 
     bool saved_strict_pre = options_.strict_mode;
     options_.strict_mode = true;
@@ -9711,6 +9763,13 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
     Position start = current_token().get_start();
     advance();
 
+    // Covers both `catch (e) {}` and the bare ES2019+ `catch {}` form --
+    // empty is harmless. The catch body's own parse_block_statement() call
+    // below pushes its OWN nested frame, correctly reproducing the spec's
+    // two-scope catch shape (parameter environment wrapping a distinct body
+    // environment) for free.
+    LexicalBlockScope catch_param_scope(*this);
+
     std::string parameter_name = "";
 
     // Optional catch binding: catch can have no parameter (ES2019+)
@@ -9737,6 +9796,7 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
                         add_error("SyntaxError: Duplicate binding '" + nm + "' in catch parameter");
                         return nullptr;
                     }
+                    declare_block_scoped_name(nm);
                 }
             }
             parameter_name = "__destr_pattern__";
@@ -9751,6 +9811,7 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
                 return nullptr;
             }
 
+            declare_block_scoped_name(parameter_name);
             advance();
         } else {
             add_error("Expected identifier or destructuring pattern in catch clause");
@@ -9852,6 +9913,10 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
         add_error("Expected '{' after switch expression");
         return nullptr;
     }
+
+    // One shared scope across every case -- matches spec (a switch body is a
+    // single block environment, not one per case).
+    LexicalBlockScope switch_scope(*this);
 
     options_.switch_depth++;
     std::vector<std::unique_ptr<ASTNode>> cases;
