@@ -3712,7 +3712,7 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
 
         std::unique_ptr<ASTNode> init = nullptr;
         if (consume_if_match(TokenType::ASSIGN)) {
-            init = parse_assignment_expression();
+            init = parse_assignment_maybe_tape();
             if (!init) {
                 add_error("Expected expression after '=' in variable declaration");
                 return nullptr;
@@ -4343,7 +4343,7 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
         return nullptr;
     }
     
-    auto test = parse_expression();
+    auto test = parse_expression_maybe_tape();
     if (!test) {
         add_error("Expected expression in if condition");
         return nullptr;
@@ -5043,7 +5043,7 @@ for_semicolon:
 
     std::unique_ptr<ASTNode> test = nullptr;
     if (!match(TokenType::SEMICOLON)) {
-        test = parse_expression();
+        test = parse_expression_maybe_tape();
         if (!test) {
             add_error("Expected test condition in for loop");
             return nullptr;
@@ -5118,7 +5118,7 @@ std::unique_ptr<ASTNode> Parser::parse_while_statement() {
         return nullptr;
     }
     
-    auto test = parse_expression();
+    auto test = parse_expression_maybe_tape();
     if (!test) {
         add_error("Expected condition in while loop");
         return nullptr;
@@ -5173,7 +5173,7 @@ std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
         return nullptr;
     }
     
-    auto test = parse_expression();
+    auto test = parse_expression_maybe_tape();
     if (!test) {
         add_error("Expected condition in do-while loop");
         return nullptr;
@@ -5615,6 +5615,21 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
     return true;
 }
 
+// The real last-consumed token's own end, scanned back past whitespace/
+// newline/comment exactly like previous_token_is_dot() does (Parser.cpp:
+// 3043) -- get_current_position() would instead give the START of
+// whatever comes next, which can differ from an expression's own true end
+// whenever trailing trivia sits between them. `fallback` is returned if
+// current_token_index_ is 0 (nothing behind it to scan).
+Position Parser::last_consumed_token_end(const Position& fallback) const {
+    for (size_t i = current_token_index_; i > 0; ) {
+        const TokenType t = tokens_[--i].get_type();
+        if (t == TokenType::NEWLINE || t == TokenType::WHITESPACE || t == TokenType::COMMENT) continue;
+        return tokens_[i].get_end();
+    }
+    return fallback;
+}
+
 std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
     // TapedExpression's compile-time reparse-on-failure fallback (see its
     // own comment) needs source_ -- without it there is no way to recover
@@ -5649,28 +5664,45 @@ std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
     // text alone. Refusing this one specific tape shape keeps every one of
     // those working with no changes anywhere else -- the statement parses
     // as a real StringLiteral tree, exactly as if this hook did not exist.
+    // This check only matters at true statement-expression granularity, but
+    // costs nothing to keep here even for callers (like
+    // parse_assignment_maybe_tape) that never reach this function in a
+    // directive-prologue position at all.
     bool ok = try_tape_assignment(tape) &&
               current_token().get_type() != TokenType::COMMA &&
               !(tape.size() == 1 && tape[0].tag == TapeTag::String);
     if (ok) {
-        // The real last-consumed token's own end, scanned back past
-        // whitespace/newline/comment exactly like previous_token_is_dot()
-        // does (Parser.cpp:3043) -- get_current_position() would instead
-        // give the START of whatever comes next, which can differ from the
-        // expression's own true end whenever trailing trivia sits between
-        // them.
-        Position tape_end = tape_start;
-        for (size_t i = current_token_index_; i > 0; ) {
-            const TokenType t = tokens_[--i].get_type();
-            if (t == TokenType::NEWLINE || t == TokenType::WHITESPACE || t == TokenType::COMMENT) continue;
-            tape_end = tokens_[i].get_end();
-            break;
-        }
+        Position tape_end = last_consumed_token_end(tape_start);
         return std::make_unique<TapedExpression>(std::move(tape), tape_start, tape_end,
                                                   source_, options_.strict_mode);
     }
     current_token_index_ = saved_pos;
     return parse_expression();
+}
+
+// Same idea as parse_expression_maybe_tape, but for a position that binds
+// exactly one AssignmentExpression rather than a full Expression --
+// VariableDeclarator's own initializer, which the real parser reaches via
+// parse_assignment_expression() directly, never parse_expression(). No
+// comma-sequence check is needed here at all: unlike an expression
+// statement or a call argument, a comma right after a declarator's init
+// is never a sequence operator, it's the separator before the next
+// declarator (`var x = a, b;` is two declarators, not one with a sequence
+// initializer) -- try_tape_assignment already stops cleanly there on its
+// own. No directive-prologue check either, since a declarator's init has
+// no such significance to begin with.
+std::unique_ptr<ASTNode> Parser::parse_assignment_maybe_tape() {
+    if (!source_) return parse_assignment_expression();
+    size_t saved_pos = current_token_index_;
+    Position tape_start = get_current_position();
+    ExprTape tape;
+    if (try_tape_assignment(tape)) {
+        Position tape_end = last_consumed_token_end(tape_start);
+        return std::make_unique<TapedExpression>(std::move(tape), tape_start, tape_end,
+                                                  source_, options_.strict_mode);
+    }
+    current_token_index_ = saved_pos;
+    return parse_assignment_expression();
 }
 
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
@@ -9222,7 +9254,7 @@ std::unique_ptr<ASTNode> Parser::parse_return_statement() {
     // the closing brace as the returned expression.
     if (!match(TokenType::SEMICOLON) && !match(TokenType::RIGHT_BRACE) && !at_end() &&
         current_token().get_start().line == start.line) {
-        argument = parse_expression();
+        argument = parse_expression_maybe_tape();
         if (!argument) {
             add_error("Invalid return expression");
             return nullptr;
@@ -10350,7 +10382,7 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
         return nullptr;
     }
     
-    auto discriminant = parse_expression();
+    auto discriminant = parse_expression_maybe_tape();
     if (!discriminant) {
         add_error("Expected expression in switch statement");
         return nullptr;
@@ -10379,7 +10411,7 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
             Position case_start = current_token().get_start();
             advance();
             
-            auto test = parse_expression();
+            auto test = parse_expression_maybe_tape();
             if (!test) {
                 add_error("Expected expression after 'case'");
                 return nullptr;

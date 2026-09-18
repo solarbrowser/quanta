@@ -466,12 +466,16 @@ public:
     std::unique_ptr<ASTNode> parse_break_statement();
     std::unique_ptr<ASTNode> parse_continue_statement();
     std::unique_ptr<ASTNode> parse_expression_statement();
-    // Phase 1a's one deliberately singular hook point (see the plan) --
-    // tries the narrow tape path via try_tape_assignment first, restoring
+    // Tries the narrow tape path via try_tape_assignment first, restoring
     // current_token_index_ and falling back to the real, unmodified
-    // parse_expression() on any bail. Every other statement kind still calls
-    // parse_expression()/parse_assignment_expression() directly, unaffected.
+    // parse_expression() on any bail -- used at parse_expression_statement's
+    // own call site. parse_assignment_maybe_tape is the same idea for a
+    // position that binds one AssignmentExpression rather than a full
+    // Expression (VariableDeclarator's initializer); both share
+    // last_consumed_token_end for computing the tape's own end position.
     std::unique_ptr<ASTNode> parse_expression_maybe_tape();
+    std::unique_ptr<ASTNode> parse_assignment_maybe_tape();
+    Position last_consumed_token_end(const Position& fallback) const;
 
     std::unique_ptr<ASTNode> parse_try_statement();
     std::unique_ptr<ASTNode> parse_throw_statement();
