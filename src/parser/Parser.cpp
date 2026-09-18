@@ -5379,10 +5379,12 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
 }
 
 // Mirrors parse_binary_chain's precedence-climbing loop (Parser.cpp:1049-
-// 1096), restricted to +, -, *, / (compile_tape_expr's Binary case has no
-// case for MODULO despite it sharing precedence tier 10 with * and /, and
-// none of the comparison/logical/bitwise/shift/in/instanceof operators at
-// all).
+// 1096). Covers every operator in binary_precedence's own table except
+// LOGICAL_AND (&&), which short-circuits (a conditional jump; the right
+// operand may never run) and so does not fit this tag's "always compute
+// both sides" shape -- see compile_tape_expr's own Binary case comment for
+// the fuller list of what's excluded here for the same reason (||, ??,
+// **, the comma operator) and why each is safe to exclude.
 bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
     // Where the left operand chain begins -- stays fixed across every
     // iteration below. Each iteration's new Binary entry is inserted here,
@@ -5410,12 +5412,11 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
         // (Parser.cpp:1066) -- genuinely nothing more at this precedence
         // level, not a gap in tag coverage.
         if (precedence == 0 || precedence < min_precedence) break;
-        if (op_token != TokenType::PLUS && op_token != TokenType::MINUS &&
-            op_token != TokenType::MULTIPLY && op_token != TokenType::DIVIDE) {
-            // A real operator at an eligible precedence (e.g. MODULO, or any
-            // comparison/logical/bitwise op) that this tag set can't
-            // represent -- the real function would consume it, so this must
-            // bail, not quietly stop one operand short.
+        if (op_token == TokenType::LOGICAL_AND) {
+            // The one entry in binary_precedence's table this tag doesn't
+            // cover (short-circuits -- see this function's own comment).
+            // Eligible precedence, real grammar would consume it here, so
+            // this must bail, not quietly stop one operand short.
             return false;
         }
         advance();

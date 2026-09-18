@@ -12036,14 +12036,61 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             return 0;
         }
         case TapeTag::Binary: {
+            // Mirrors compile_expression's own general (non-peephole) path
+            // for every op it maps this same way (BytecodeCompiler.cpp:
+            // 10320-10378) -- compile left, Star into a temp, compile
+            // right, emit vm_op against the temp. The peephole that skips
+            // the temp when the left is already a TDZ-free local register
+            // (:10347-10368) is deliberately not ported yet -- correct
+            // either way, just not yet as tight.
+            //
+            // LOGICAL_AND/LOGICAL_OR/NULLISH_COALESCING and EXPONENT are
+            // NOT here despite compile_expression handling them as
+            // BinaryExpression/NullishCoalescingExpression nodes: the
+            // logical forms short-circuit (conditional jump, right operand
+            // may never run -- :10295-10303, structurally different from
+            // this tag's "always compute both sides"), and EXPONENT is a
+            // separate, right-associative grammar level in the real parser
+            // (parse_exponentiation_expression, between parse_binary_chain
+            // and parse_unary_expression) that try_tape_binary doesn't
+            // reach at all. COMMA is likewise a different grammar level
+            // (parse_expression's own top-level loop). All four stay
+            // unsupported until each gets its own deliberate design, not a
+            // case added here.
+            //
+            // IN's one special case (:10309-10317, `#name in obj` as a
+            // brand check rather than a property lookup) needs no mirror
+            // here: a private name can never reach this tag as an
+            // Identifier entry in the first place (try_tape_primary only
+            // ever matches TokenType::IDENTIFIER, never HASH -- private
+            // names are a wholly separate token/production the parser-side
+            // tape builder never touches), so the left operand of a
+            // tape-encoded `in` is provably never a private name.
             using BinOp = BinaryExpression::Operator;
             BinOp op = static_cast<BinOp>(e.binary_op);
             Op vm_op;
             switch (op) {
-                case BinOp::ADD:      vm_op = Op::Add; break;
-                case BinOp::SUBTRACT: vm_op = Op::Sub; break;
-                case BinOp::MULTIPLY: vm_op = Op::Mul; break;
-                case BinOp::DIVIDE:   vm_op = Op::Div; break;
+                case BinOp::ADD:                  vm_op = Op::Add; break;
+                case BinOp::SUBTRACT:             vm_op = Op::Sub; break;
+                case BinOp::MULTIPLY:             vm_op = Op::Mul; break;
+                case BinOp::DIVIDE:               vm_op = Op::Div; break;
+                case BinOp::MODULO:               vm_op = Op::Mod; break;
+                case BinOp::BITWISE_AND:          vm_op = Op::BitAnd; break;
+                case BinOp::BITWISE_OR:           vm_op = Op::BitOr; break;
+                case BinOp::BITWISE_XOR:          vm_op = Op::BitXor; break;
+                case BinOp::LEFT_SHIFT:           vm_op = Op::Shl; break;
+                case BinOp::RIGHT_SHIFT:          vm_op = Op::Sar; break;
+                case BinOp::UNSIGNED_RIGHT_SHIFT: vm_op = Op::Shr; break;
+                case BinOp::EQUAL:                vm_op = Op::TestEq; break;
+                case BinOp::NOT_EQUAL:            vm_op = Op::TestNe; break;
+                case BinOp::STRICT_EQUAL:         vm_op = Op::TestStrictEq; break;
+                case BinOp::STRICT_NOT_EQUAL:     vm_op = Op::TestStrictNe; break;
+                case BinOp::LESS_THAN:            vm_op = Op::TestLt; break;
+                case BinOp::GREATER_THAN:         vm_op = Op::TestGt; break;
+                case BinOp::LESS_EQUAL:           vm_op = Op::TestLe; break;
+                case BinOp::GREATER_EQUAL:        vm_op = Op::TestGe; break;
+                case BinOp::INSTANCEOF:           vm_op = Op::TestInstanceOf; break;
+                case BinOp::IN:                   vm_op = Op::TestIn; break;
                 default: return 0;
             }
             size_t left_idx = index + 1;
