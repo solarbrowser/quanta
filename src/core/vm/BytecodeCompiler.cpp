@@ -12226,6 +12226,38 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             emit_load_const(Value(e.string_value));
             return failed_ ? 0 : index + e.span;
         }
+        case TapeTag::Unary: {
+            // Mirrors compile_expression's own UNARY_EXPRESSION case for
+            // exactly these six ops (:10385-10434) -- each is just "compile
+            // the operand, emit one op," no temp register needed. TYPEOF's
+            // real case looks special (:10401-10429, a multi-branch check
+            // for an Identifier operand: this/with/local/arguments-super-
+            // new-bail/lookup) but needs no separate mirror here: that
+            // whole branch exists ONLY to give a non-local identifier a
+            // path that doesn't throw on typeof-of-an-unresolved-global,
+            // and every one of those non-local shapes already fails
+            // compile_tape_expr's own Identifier case (its is_local/
+            // lexical_out_of_scope/with_depth_==0 checks) -- so compiling
+            // the operand generically through this same function already
+            // produces the identical bytecode for the one shape this tape
+            // supports (a plain local read), and correctly returns 0
+            // (triggering the reparse fallback, which has every real
+            // branch) for every shape it doesn't.
+            using UnOp = UnaryExpression::Operator;
+            UnOp op = static_cast<UnOp>(e.binary_op);
+            size_t after_operand = compile_tape_expr(tape, index + 1, false);
+            if (after_operand == 0) return 0;
+            switch (op) {
+                case UnOp::PLUS:        emit(Op::ToNumber); break;
+                case UnOp::MINUS:       emit(Op::Neg); break;
+                case UnOp::LOGICAL_NOT: emit(Op::LogicalNot); break;
+                case UnOp::BITWISE_NOT: emit(Op::BitNot); break;
+                case UnOp::TYPEOF:      emit(Op::TypeOf); break;
+                case UnOp::VOID:        emit(Op::LdaUndefined); break;
+                default: return 0;
+            }
+            return failed_ ? 0 : index + e.span;
+        }
     }
     return 0;
 }

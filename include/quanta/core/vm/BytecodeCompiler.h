@@ -94,6 +94,15 @@ enum class TapeTag : uint8_t {
     // through NamePool -- literal text isn't drawn from the same small,
     // repeated-name vocabulary NamePool exists to shrink).
     String,
+    // A prefix unary operator -- +, -, !, ~, typeof, void only (delete and
+    // prefix ++/-- need an assignable target this tape can't represent as
+    // an update yet, and neither lexes as a token try_tape_unary's switch
+    // matches, so both already bail on sight rather than needing an
+    // explicit exclusion here). Reuses binary_op for the operator code
+    // (UnaryExpression::Operator) -- never coexists with Binary in the
+    // same entry, same reuse pattern name_id already has across Identifier/
+    // Member/Assign.
+    Unary,
 };
 
 // `span`: how many entries (including this one) this entry's whole subtree

@@ -519,6 +519,15 @@ public:
     bool try_tape_identifier_ref_ok(const std::string& name) const;
     bool try_tape_primary(ExprTape& tape);
     bool try_tape_call_or_member(ExprTape& tape);
+    // Mirrors parse_unary_expression's own recursive structure
+    // (Parser.cpp:1138-1250) for exactly the six prefix operators
+    // compile_tape_expr's Unary case supports (+, -, !, ~, typeof, void).
+    // delete and prefix ++/-- fall through to try_tape_call_or_member
+    // (this function's own "no operator here" branch) and bail there
+    // exactly like await/any other keyword token would -- try_tape_primary
+    // only ever matches NUMBER/STRING/IDENTIFIER, so none of them are ever
+    // mistaken for a primary.
+    bool try_tape_unary(ExprTape& tape);
     bool try_tape_binary(ExprTape& tape, int min_precedence);
     // Mirrors parse_logical_or_expression's own loop on `||`, one grammar
     // level above try_tape_binary. `??` is skipped entirely (not yet

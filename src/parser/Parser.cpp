@@ -5378,6 +5378,36 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
     return true;
 }
 
+// Mirrors parse_unary_expression's own recursive structure (Parser.cpp:
+// 1138-1250) for the six prefix operators compile_tape_expr's Unary case
+// supports. Right-associative by direct recursion (`!!x` -> LOGICAL_NOT(
+// LOGICAL_NOT(x))), same as the real function calling itself for its own
+// operand.
+bool Parser::try_tape_unary(ExprTape& tape) {
+    UnaryExpression::Operator op;
+    switch (current_token().get_type()) {
+        case TokenType::PLUS:        op = UnaryExpression::Operator::PLUS; break;
+        case TokenType::MINUS:       op = UnaryExpression::Operator::MINUS; break;
+        case TokenType::LOGICAL_NOT: op = UnaryExpression::Operator::LOGICAL_NOT; break;
+        case TokenType::BITWISE_NOT: op = UnaryExpression::Operator::BITWISE_NOT; break;
+        case TokenType::TYPEOF:      op = UnaryExpression::Operator::TYPEOF; break;
+        case TokenType::VOID:        op = UnaryExpression::Operator::VOID; break;
+        default:
+            // delete, prefix ++/--, await -- none lex as a token this
+            // switch matches, so they fall through here and bail exactly
+            // like any other unsupported primary would (try_tape_primary
+            // only ever matches NUMBER/STRING/IDENTIFIER).
+            return try_tape_call_or_member(tape);
+    }
+    advance();
+    size_t start_idx = tape.size();
+    if (!try_tape_unary(tape)) return false;
+    uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+    tape.insert(tape.begin() + start_idx,
+                TapeEntry{TapeTag::Unary, span, 0.0, 0, static_cast<uint8_t>(op), 0, ""});
+    return true;
+}
+
 // Mirrors parse_binary_chain's precedence-climbing loop (Parser.cpp:1049-
 // 1096). Covers every operator in binary_precedence's own table, including
 // LOGICAL_AND (&&) -- short-circuiting doesn't change how try_tape_binary
@@ -5397,13 +5427,16 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
     // correctly: the second Binary entry's own left (index+1) lands on the
     // first Binary entry, not on `a` directly.
     size_t start_idx = tape.size();
-    if (!try_tape_call_or_member(tape)) return false;
-    // Two real grammar levels sit between parse_call_expression (what
-    // try_tape_call_or_member mirrors) and parse_binary_chain (what this
-    // loop mirrors): parse_postfix_expression (postfix ++/--) and
-    // parse_exponentiation_expression (**), neither reachable from
-    // binary_precedence's table at all. Both are real continuations the
-    // real grammar would consume here -- must bail, not stop early.
+    if (!try_tape_unary(tape)) return false;
+    // One real grammar level sits between parse_unary_expression (what
+    // try_tape_unary mirrors) and parse_binary_chain (what this loop
+    // mirrors): parse_exponentiation_expression (**), not reachable from
+    // binary_precedence's table at all -- a real continuation the real
+    // grammar would consume here, must bail, not stop early. Postfix
+    // ++/-- (parse_postfix_expression, one level BELOW parse_unary_
+    // expression) is checked here too rather than inside try_tape_unary,
+    // since it applies to the whole unary-or-below result either way and
+    // this is the one place both paths (prefix-wrapped or not) rejoin.
     if (match(TokenType::INCREMENT) || match(TokenType::DECREMENT) ||
         match(TokenType::EXPONENT)) {
         return false;
