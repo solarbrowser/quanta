@@ -5316,7 +5316,10 @@ bool Parser::try_tape_primary(ExprTape& tape) {
 }
 
 // Mirrors parse_call_expression's shared suffix loop (Parser.cpp:1517-1758),
-// restricted to plain `.identifier` (non-computed, no private/keyword names)
+// restricted to plain `.identifier` (non-private/keyword names),
+// `[expr]` (the key is one try_tape_assignment, not a full parse_expression
+// -- a stray comma inside, e.g. `a[b, c]`, correctly bails at the
+// RIGHT_BRACKET check below rather than being mis-parsed as a sequence),
 // and plain `(args)` (no spread/optional/tagged-template, and the callee
 // must not itself be a Member entry or the bare identifier "super"/"eval" --
 // exactly compile_tape_expr's own Member/Call restrictions).
@@ -5335,6 +5338,21 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
             uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
             tape.insert(tape.begin() + start_idx,
                         TapeEntry{TapeTag::Member, span, 0.0, name_id, 0, 0, ""});
+            continue;
+        }
+        if (match(TokenType::LEFT_BRACKET)) {
+            advance();
+            if (!try_tape_assignment(tape)) return false;
+            // Anything other than the closing bracket right here -- most
+            // notably a comma, which the real grammar reads as a full
+            // sequence expression (`a[b, c]` is valid, keyed by `c`) that
+            // this tape has no way to represent -- must bail rather than
+            // be silently mis-parsed as just the key it already has.
+            if (!match(TokenType::RIGHT_BRACKET)) return false;
+            advance();
+            uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+            tape.insert(tape.begin() + start_idx,
+                        TapeEntry{TapeTag::Member, span, 0.0, 0, 0, /*computed=*/1, ""});
             continue;
         }
         if (match(TokenType::LEFT_PAREN)) {
@@ -5369,8 +5387,7 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
         // condition (Parser.cpp:1518-1520) -- a real continuation the tape
         // just doesn't represent, not "nothing more here." Must bail, not
         // silently stop.
-        if (match(TokenType::LEFT_BRACKET) || match(TokenType::OPTIONAL_CHAINING) ||
-            match(TokenType::TEMPLATE_LITERAL)) {
+        if (match(TokenType::OPTIONAL_CHAINING) || match(TokenType::TEMPLATE_LITERAL)) {
             return false;
         }
         break;

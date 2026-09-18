@@ -65,13 +65,15 @@ enum class TapeTag : uint8_t {
     Number,
     Identifier,
     Binary,
-    // Non-computed, non-private, non-super member access only (`obj.prop`)
-    // -- the common case and the next-highest-volume node kind after
-    // Identifier. Computed/private/super forms are deliberately out of
-    // scope for now, same "narrow but correct" approach as Binary's
-    // missing peephole -- compile_tape_expr returns 0 (unsupported) for
-    // them, exactly like compile_expression returning false falls the
-    // whole containing body back to the general path.
+    // Non-private, non-super member access -- both `obj.prop` (call_argc
+    // below doubles as an is-computed flag: 0) and `obj[expr]` (1, with the
+    // key as its own subtree right after the object's, same "extra
+    // subtree(s) follow" shape Call already uses for its arguments).
+    // Private/super forms are deliberately out of scope for now, same
+    // "narrow but correct" approach as Binary's missing peephole --
+    // compile_tape_expr returns 0 (unsupported) for them, exactly like
+    // compile_expression returning false falls the whole containing body
+    // back to the general path.
     Member,
     // Plain `f(a, b, c)` only -- callee is anything except a Member entry
     // (obj.method() needs the receiver-passing CallResolved form, out of
@@ -116,9 +118,9 @@ struct TapeEntry {
     TapeTag tag;
     uint32_t span = 1;
     double number_value = 0.0;
-    uint32_t name_id = 0;       // Identifier: NamePool id; Member: property NamePool id
-    uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator
-    uint8_t call_argc = 0;      // Call: argument count (the callee, then argc argument subtrees, follow this entry)
+    uint32_t name_id = 0;       // Identifier: NamePool id; Member (non-computed): property NamePool id, unused when computed
+    uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator; Unary: UnaryExpression::Operator
+    uint8_t call_argc = 0;      // Call: argument count (the callee, then argc argument subtrees, follow this entry); Member: 1 if computed (obj[expr], key subtree follows the object's), 0 if not (obj.prop, name_id holds the property)
     std::string string_value;   // String: the literal's own text
 };
 using ExprTape = std::vector<TapeEntry>;

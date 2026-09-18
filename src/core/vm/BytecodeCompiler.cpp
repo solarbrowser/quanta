@@ -12127,12 +12127,11 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::Member: {
-            // Mirrors compile_expression's own MEMBER_EXPRESSION case,
-            // narrowed to non-computed/non-private/non-super (`obj.prop`) --
-            // super/private/computed all return 0 (unsupported) rather than
-            // being represented, since this tag has no property-name-vs-
-            // computed-key distinction yet and no super/private bit. A real
-            // port would extend the entry, not this narrow proof.
+            // Mirrors compile_expression's own MEMBER_EXPRESSION case
+            // (:10187-10229), narrowed to non-private/non-super -- those
+            // return 0 (unsupported) rather than being represented, since
+            // this tag has no super/private bit. A real port would extend
+            // the entry, not this narrow proof.
             size_t obj_idx = index + 1;
             const TapeEntry& obj_e = tape[obj_idx];
             int borrowed_reg = -1;
@@ -12151,9 +12150,30 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
                 emit(Op::Star);
                 emit_u8(static_cast<uint8_t>(obj_reg));
             }
-            const std::string& prop_name = NamePool::text(e.name_id);
-            emit_named_ic(Op::GetNamed, Op::GetNamedWide,
-                          static_cast<uint8_t>(obj_reg), add_name(prop_name), alloc_feedback_slot());
+            if (e.call_argc == 0) {
+                const std::string& prop_name = NamePool::text(e.name_id);
+                emit_named_ic(Op::GetNamed, Op::GetNamedWide,
+                              static_cast<uint8_t>(obj_reg), add_name(prop_name), alloc_feedback_slot());
+            } else {
+                // Computed: the key's own subtree follows the object's,
+                // evaluated into the accumulator -- exactly what GetKeyed
+                // expects, no extra register needed. ChainMaskScope masks
+                // the (always inactive here) optional-chain collector the
+                // same way compile_expression's own case does for a
+                // computed key, even though nothing this tape can
+                // represent could ever populate it -- cheap to match
+                // exactly rather than argue it's unreachable.
+                size_t key_idx = after_obj;
+                size_t after_key;
+                {
+                    ChainMaskScope mask(chain_shortcircuit_jumps_);
+                    after_key = compile_tape_expr(tape, key_idx, false);
+                }
+                if (after_key == 0) return 0;
+                emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide,
+                              static_cast<uint8_t>(obj_reg), alloc_keyed_feedback());
+                after_obj = after_key;
+            }
             if (borrowed_reg < 0) free_temp(obj_reg);
             return failed_ ? 0 : index + e.span;
         }
