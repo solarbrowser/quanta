@@ -105,6 +105,13 @@ enum class TapeTag : uint8_t {
     // same entry, same reuse pattern name_id already has across Identifier/
     // Member/Assign.
     Unary,
+    // `??` -- structurally almost identical to Binary's own LOGICAL_AND/OR
+    // short-circuit branch (compile left, conditional jump, maybe compile
+    // right), but a separate tag rather than another Binary op: `??` is
+    // NullishCoalescingExpression in the real tree, not a BinaryExpression,
+    // so it has no BinaryExpression::Operator value to store in binary_op
+    // in the first place.
+    Nullish,
 };
 
 // `span`: how many entries (including this one) this entry's whole subtree

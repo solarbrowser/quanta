@@ -5478,32 +5478,64 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
     return true;
 }
 
+// Mirrors parse_nullish_coalescing_expression's own loop (Parser.cpp:954-
+// 1001), one grammar level below try_tape_logical_or and one above
+// try_tape_binary. `??` is left-associative and chains with itself freely
+// (`a ?? b ?? c` needs no parens), but the spec forbids mixing it with an
+// unparenthesized `&&` on either side -- the real function's own
+// "is_unparenthesized_logical" guard checks whether an operand's own start
+// token was `(`. This tape has no way to represent a parenthesized
+// subexpression at all (try_tape_primary bails outright on `(`, long
+// before this point), so that escape hatch never applies to anything this
+// tape could have built -- the check below simplifies to unconditionally
+// rejecting an operand that is itself a bare Binary(LOGICAL_AND) entry
+// (never LOGICAL_OR: `||` lives one level above this function and can't
+// have been folded into a try_tape_binary result).
+bool Parser::try_tape_nullish(ExprTape& tape) {
+    auto is_unparenthesized_and = [&](size_t at) {
+        return tape[at].tag == TapeTag::Binary &&
+               static_cast<BinaryExpression::Operator>(tape[at].binary_op) ==
+                   BinaryExpression::Operator::LOGICAL_AND;
+    };
+    size_t start_idx = tape.size();
+    if (!try_tape_binary(tape, 2)) return false;
+    if (is_unparenthesized_and(start_idx)) return false;
+    for (;;) {
+        if (!match(TokenType::NULLISH_COALESCING)) break;
+        advance();
+        size_t right_idx = tape.size();
+        if (!try_tape_binary(tape, 2)) return false;
+        if (is_unparenthesized_and(right_idx)) return false;
+        uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+        tape.insert(tape.begin() + start_idx, TapeEntry{TapeTag::Nullish, span, 0.0, 0, 0, 0, ""});
+    }
+    return true;
+}
+
 // Mirrors parse_logical_or_expression's own loop (Parser.cpp:917-952) --
 // `||` short-circuits the same way `&&` does, so it reuses the exact same
 // TapeTag::Binary entry shape and compile_tape_expr codegen path, just one
-// grammar level up from try_tape_binary. See this function's own
-// declaration comment (Parser.h) for why a `??` seen here can simply bail
-// rather than needing its own mixing-restriction check.
+// grammar level up from try_tape_nullish. The mixing restriction runs the
+// other direction here: an operand that came back as a bare Nullish entry
+// (unparenthesized `??`) is exactly as illegal on this side as an
+// unparenthesized `&&` is on try_tape_nullish's -- see that function's own
+// comment for why the parenthesized escape hatch never applies to this
+// tape at all.
 bool Parser::try_tape_logical_or(ExprTape& tape) {
     size_t start_idx = tape.size();
-    if (!try_tape_binary(tape, 2)) return false;
+    if (!try_tape_nullish(tape)) return false;
+    if (tape[start_idx].tag == TapeTag::Nullish) return false;
     for (;;) {
-        if (match(TokenType::LOGICAL_OR)) {
-            advance();
-            if (!try_tape_binary(tape, 2)) return false;
-            uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
-            tape.insert(tape.begin() + start_idx,
-                        TapeEntry{TapeTag::Binary, span, 0.0, 0,
-                                  static_cast<uint8_t>(BinaryExpression::Operator::LOGICAL_OR),
-                                  0, ""});
-            continue;
-        }
-        // `??` is a real continuation of the grammar at this exact
-        // position (parse_nullish_coalescing_expression sits directly
-        // below parse_logical_or_expression) that this function doesn't
-        // support -- must bail, not stop early.
-        if (match(TokenType::NULLISH_COALESCING)) return false;
-        break;
+        if (!match(TokenType::LOGICAL_OR)) break;
+        advance();
+        size_t right_idx = tape.size();
+        if (!try_tape_nullish(tape)) return false;
+        if (tape[right_idx].tag == TapeTag::Nullish) return false;
+        uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+        tape.insert(tape.begin() + start_idx,
+                    TapeEntry{TapeTag::Binary, span, 0.0, 0,
+                              static_cast<uint8_t>(BinaryExpression::Operator::LOGICAL_OR),
+                              0, ""});
     }
     return true;
 }

@@ -12278,6 +12278,23 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             }
             return failed_ ? 0 : index + e.span;
         }
+        case TapeTag::Nullish: {
+            // Mirrors compile_expression's own NULLISH_COALESCING_EXPRESSION
+            // case exactly (:10275-10286) -- same shape as Binary's own
+            // LOGICAL_AND/OR short-circuit branch, just JumpIfNotNullish
+            // instead of JumpIfFalse/JumpIfTrue.
+            size_t after_left = compile_tape_expr(tape, index + 1, false);
+            if (after_left == 0) return 0;
+            size_t skip = emit_jump(Op::JumpIfNotNullish);
+            size_t after_right;
+            {
+                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                after_right = compile_tape_expr(tape, after_left, false);
+            }
+            if (after_right == 0) return 0;
+            if (!patch_jump(skip)) return 0;
+            return failed_ ? 0 : index + e.span;
+        }
     }
     return 0;
 }

@@ -529,13 +529,15 @@ public:
     // mistaken for a primary.
     bool try_tape_unary(ExprTape& tape);
     bool try_tape_binary(ExprTape& tape, int min_precedence);
+    // Mirrors parse_nullish_coalescing_expression's own loop on `??`, one
+    // grammar level above try_tape_binary and one below try_tape_logical_or
+    // -- see this function's own definition comment (Parser.cpp) for the
+    // unparenthesized-mixing restriction it enforces against `&&`.
+    bool try_tape_nullish(ExprTape& tape);
     // Mirrors parse_logical_or_expression's own loop on `||`, one grammar
-    // level above try_tape_binary. `??` is skipped entirely (not yet
-    // supported) rather than delegated to a try_tape_nullish layer, so a
-    // `??` seen here must bail, same as any other real-but-unsupported
-    // operator -- this also happens to be exactly the spec's own
-    // unparenthesized-mixing restriction between `||` and `??`, gotten for
-    // free rather than needing its own check.
+    // level above try_tape_nullish -- see that function's own comment for
+    // the mixing restriction this one enforces in the other direction,
+    // against `??`.
     bool try_tape_logical_or(ExprTape& tape);
     bool try_tape_assignment(ExprTape& tape);
 
