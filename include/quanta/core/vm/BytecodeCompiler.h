@@ -112,6 +112,13 @@ enum class TapeTag : uint8_t {
     // so it has no BinaryExpression::Operator value to store in binary_op
     // in the first place.
     Nullish,
+    // `test ? consequent : alternate` -- three subtrees follow in that
+    // order (test, then consequent, then alternate). Only one of
+    // consequent/alternate ever runs, same jump-based shape as Nullish/
+    // Binary's short-circuit branch, just two jumps (past the consequent,
+    // to skip the alternate; and out of the consequent, to skip it when
+    // the test is false) instead of one.
+    Conditional,
 };
 
 // `span`: how many entries (including this one) this entry's whole subtree

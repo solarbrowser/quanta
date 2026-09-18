@@ -5540,6 +5540,27 @@ bool Parser::try_tape_logical_or(ExprTape& tape) {
     return true;
 }
 
+// Mirrors parse_conditional_expression's own structure (Parser.cpp:870-
+// 915) -- the test is parse_logical_or_expression, but consequent and
+// alternate are each a full AssignmentExpression, not a nested
+// ConditionalExpression (the real function calls parse_assignment_
+// expression() twice, deliberately not itself recursively), so both
+// mutually recurse back into try_tape_assignment here rather than into
+// this function.
+bool Parser::try_tape_conditional(ExprTape& tape) {
+    size_t start_idx = tape.size();
+    if (!try_tape_logical_or(tape)) return false;
+    if (!match(TokenType::QUESTION)) return true;
+    advance();
+    if (!try_tape_assignment(tape)) return false;
+    if (!match(TokenType::COLON)) return false;
+    advance();
+    if (!try_tape_assignment(tape)) return false;
+    uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+    tape.insert(tape.begin() + start_idx, TapeEntry{TapeTag::Conditional, span, 0.0, 0, 0, 0, ""});
+    return true;
+}
+
 bool Parser::try_tape_assignment(ExprTape& tape) {
     // Mirrors parse_assignment_expression's own very first check
     // (Parser.cpp:727-729) -- a bare identifier immediately followed by
@@ -5580,21 +5601,17 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
                     TapeEntry{TapeTag::Assign, span, 0.0, name_id, 0, 0, ""});
         return true;
     }
-    if (!try_tape_logical_or(tape)) return false;
-    // Closes the gap between try_tape_logical_or (parse_logical_or_
-    // expression) and this function's own real counterpart
-    // (parse_assignment_expression): assignment operators (including
-    // plain '=' onto something other than a bare identifier, e.g.
-    // `a.b = 5`) and the ternary `?` (parse_conditional_expression) --
-    // neither is in binary_precedence's table and try_tape_logical_or has
-    // no notion of either, so both would already have stopped "cleanly"
-    // one level down. Correct for that level's own purposes, but this one
-    // must still catch each and bail, since the real grammar keeps going
-    // here.
-    const TokenType next = current_token().get_type();
-    if (is_assignment_operator(next) || next == TokenType::QUESTION) {
-        return false;
-    }
+    if (!try_tape_conditional(tape)) return false;
+    // Closes the one remaining gap between try_tape_conditional
+    // (parse_conditional_expression) and this function's own real
+    // counterpart (parse_assignment_expression): assignment operators,
+    // including plain '=' onto something other than a bare identifier
+    // (e.g. `a.b = 5`) -- not in binary_precedence's table and nothing
+    // below this function has any notion of it, so it would already have
+    // stopped "cleanly" one level down. Correct for that level's own
+    // purposes, but this one must still catch it and bail, since the real
+    // grammar keeps going here.
+    if (is_assignment_operator(current_token().get_type())) return false;
     return true;
 }
 

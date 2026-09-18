@@ -539,6 +539,12 @@ public:
     // the mixing restriction this one enforces in the other direction,
     // against `??`.
     bool try_tape_logical_or(ExprTape& tape);
+    // Mirrors parse_conditional_expression's own structure, one grammar
+    // level above try_tape_logical_or -- the `?`'s consequent and
+    // alternate each mutually recurse into try_tape_assignment, not into
+    // this function, matching the real function calling parse_
+    // assignment_expression() twice rather than itself.
+    bool try_tape_conditional(ExprTape& tape);
     bool try_tape_assignment(ExprTape& tape);
 
     std::unique_ptr<ASTNode> parse_parenthesized_expression();

@@ -12295,6 +12295,31 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             if (!patch_jump(skip)) return 0;
             return failed_ ? 0 : index + e.span;
         }
+        case TapeTag::Conditional: {
+            // Mirrors compile_expression's own CONDITIONAL_EXPRESSION case
+            // exactly (:11641-11658) -- only one of consequent/alternate
+            // ever runs, so each gets its own ThisCacheBarrier same as
+            // that case's own reasoning.
+            size_t after_test = compile_tape_expr(tape, index + 1, false);
+            if (after_test == 0) return 0;
+            size_t else_jump = emit_jump(Op::JumpIfFalse);
+            size_t after_consequent;
+            {
+                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                after_consequent = compile_tape_expr(tape, after_test, false);
+            }
+            if (after_consequent == 0) return 0;
+            size_t end_jump = emit_jump(Op::Jump);
+            if (!patch_jump(else_jump)) return 0;
+            size_t after_alternate;
+            {
+                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                after_alternate = compile_tape_expr(tape, after_consequent, false);
+            }
+            if (after_alternate == 0) return 0;
+            if (!patch_jump(end_jump)) return 0;
+            return failed_ ? 0 : index + e.span;
+        }
     }
     return 0;
 }
