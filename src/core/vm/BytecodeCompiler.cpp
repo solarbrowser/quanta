@@ -12044,17 +12044,16 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             // (:10347-10368) is deliberately not ported yet -- correct
             // either way, just not yet as tight.
             //
-            // LOGICAL_AND/LOGICAL_OR/NULLISH_COALESCING and EXPONENT are
-            // NOT here despite compile_expression handling them as
-            // BinaryExpression/NullishCoalescingExpression nodes: the
-            // logical forms short-circuit (conditional jump, right operand
-            // may never run -- :10295-10303, structurally different from
-            // this tag's "always compute both sides"), and EXPONENT is a
-            // separate, right-associative grammar level in the real parser
+            // NULLISH_COALESCING and EXPONENT are NOT here despite
+            // compile_expression handling them as BinaryExpression/
+            // NullishCoalescingExpression nodes: `??` is its own tree node
+            // type, not a BinaryExpression operator, so it needs its own
+            // tag (not yet added); EXPONENT is a separate, right-
+            // associative grammar level in the real parser
             // (parse_exponentiation_expression, between parse_binary_chain
             // and parse_unary_expression) that try_tape_binary doesn't
             // reach at all. COMMA is likewise a different grammar level
-            // (parse_expression's own top-level loop). All four stay
+            // (parse_expression's own top-level loop). All three stay
             // unsupported until each gets its own deliberate design, not a
             // case added here.
             //
@@ -12068,6 +12067,26 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             // tape-encoded `in` is provably never a private name.
             using BinOp = BinaryExpression::Operator;
             BinOp op = static_cast<BinOp>(e.binary_op);
+            // LOGICAL_AND/LOGICAL_OR short-circuit (the right operand may
+            // never run) -- mirrors compile_expression's own branch for
+            // exactly these two ops (:10293-10304) before the general
+            // "compute both sides" switch below, since this shape doesn't
+            // fit that pattern at all (no temp register, no second vm_op).
+            if (op == BinOp::LOGICAL_AND || op == BinOp::LOGICAL_OR) {
+                size_t left_idx = index + 1;
+                size_t after_left = compile_tape_expr(tape, left_idx, false);
+                if (after_left == 0) return 0;
+                size_t skip = emit_jump(op == BinOp::LOGICAL_AND ? Op::JumpIfFalse
+                                                                  : Op::JumpIfTrue);
+                size_t after_right;
+                {
+                    ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                    after_right = compile_tape_expr(tape, after_left, false);
+                }
+                if (after_right == 0) return 0;
+                if (!patch_jump(skip)) return 0;
+                return failed_ ? 0 : index + e.span;
+            }
             Op vm_op;
             switch (op) {
                 case BinOp::ADD:                  vm_op = Op::Add; break;

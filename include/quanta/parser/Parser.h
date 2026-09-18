@@ -520,6 +520,14 @@ public:
     bool try_tape_primary(ExprTape& tape);
     bool try_tape_call_or_member(ExprTape& tape);
     bool try_tape_binary(ExprTape& tape, int min_precedence);
+    // Mirrors parse_logical_or_expression's own loop on `||`, one grammar
+    // level above try_tape_binary. `??` is skipped entirely (not yet
+    // supported) rather than delegated to a try_tape_nullish layer, so a
+    // `??` seen here must bail, same as any other real-but-unsupported
+    // operator -- this also happens to be exactly the spec's own
+    // unparenthesized-mixing restriction between `||` and `??`, gotten for
+    // free rather than needing its own check.
+    bool try_tape_logical_or(ExprTape& tape);
     bool try_tape_assignment(ExprTape& tape);
 
     std::unique_ptr<ASTNode> parse_parenthesized_expression();

@@ -5379,12 +5379,15 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
 }
 
 // Mirrors parse_binary_chain's precedence-climbing loop (Parser.cpp:1049-
-// 1096). Covers every operator in binary_precedence's own table except
-// LOGICAL_AND (&&), which short-circuits (a conditional jump; the right
-// operand may never run) and so does not fit this tag's "always compute
-// both sides" shape -- see compile_tape_expr's own Binary case comment for
-// the fuller list of what's excluded here for the same reason (||, ??,
-// **, the comma operator) and why each is safe to exclude.
+// 1096). Covers every operator in binary_precedence's own table, including
+// LOGICAL_AND (&&) -- short-circuiting doesn't change how try_tape_binary
+// itself decides where operands start/end, only how compile_tape_expr's
+// Binary case emits it (a conditional jump instead of always computing
+// both sides, see that case's own comment). `||` lives one grammar level
+// up (parse_logical_or_expression) and is handled by try_tape_logical_or
+// instead; `??`/`**`/the comma operator stay unsupported, see
+// compile_tape_expr's own Binary case comment for why each is safe to
+// exclude for now.
 bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
     // Where the left operand chain begins -- stays fixed across every
     // iteration below. Each iteration's new Binary entry is inserted here,
@@ -5412,13 +5415,6 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
         // (Parser.cpp:1066) -- genuinely nothing more at this precedence
         // level, not a gap in tag coverage.
         if (precedence == 0 || precedence < min_precedence) break;
-        if (op_token == TokenType::LOGICAL_AND) {
-            // The one entry in binary_precedence's table this tag doesn't
-            // cover (short-circuits -- see this function's own comment).
-            // Eligible precedence, real grammar would consume it here, so
-            // this must bail, not quietly stop one operand short.
-            return false;
-        }
         advance();
         // Left-associative: the right side may only take operators that
         // bind tighter, same as parse_binary_chain's own right-hand
@@ -5428,6 +5424,36 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
         tape.insert(tape.begin() + start_idx,
                     TapeEntry{TapeTag::Binary, span, 0.0, 0,
                               static_cast<uint8_t>(token_to_binary_operator(op_token)), 0, ""});
+    }
+    return true;
+}
+
+// Mirrors parse_logical_or_expression's own loop (Parser.cpp:917-952) --
+// `||` short-circuits the same way `&&` does, so it reuses the exact same
+// TapeTag::Binary entry shape and compile_tape_expr codegen path, just one
+// grammar level up from try_tape_binary. See this function's own
+// declaration comment (Parser.h) for why a `??` seen here can simply bail
+// rather than needing its own mixing-restriction check.
+bool Parser::try_tape_logical_or(ExprTape& tape) {
+    size_t start_idx = tape.size();
+    if (!try_tape_binary(tape, 2)) return false;
+    for (;;) {
+        if (match(TokenType::LOGICAL_OR)) {
+            advance();
+            if (!try_tape_binary(tape, 2)) return false;
+            uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+            tape.insert(tape.begin() + start_idx,
+                        TapeEntry{TapeTag::Binary, span, 0.0, 0,
+                                  static_cast<uint8_t>(BinaryExpression::Operator::LOGICAL_OR),
+                                  0, ""});
+            continue;
+        }
+        // `??` is a real continuation of the grammar at this exact
+        // position (parse_nullish_coalescing_expression sits directly
+        // below parse_logical_or_expression) that this function doesn't
+        // support -- must bail, not stop early.
+        if (match(TokenType::NULLISH_COALESCING)) return false;
+        break;
     }
     return true;
 }
@@ -5472,21 +5498,19 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
                     TapeEntry{TapeTag::Assign, span, 0.0, name_id, 0, 0, ""});
         return true;
     }
-    if (!try_tape_binary(tape, 2)) return false;
-    // Closes the gaps binary_precedence leaves open, all the way up to this
-    // function's own real counterpart (parse_assignment_expression):
-    // assignment operators (including plain '=' onto something other than a
-    // bare identifier, e.g. `a.b = 5`), and everything between
-    // parse_binary_chain and parse_assignment_expression in the real chain
-    // (parse_nullish_coalescing_expression's `??`, parse_logical_or_
-    // expression's `||`, parse_conditional_expression's `?`) -- none of
-    // these are in binary_precedence's table, so try_tape_binary's own loop
-    // would have already stopped "cleanly" right before one. Correct for
-    // that loop's own purposes, but this level must still catch each one and
-    // bail, since the real grammar keeps going here.
+    if (!try_tape_logical_or(tape)) return false;
+    // Closes the gap between try_tape_logical_or (parse_logical_or_
+    // expression) and this function's own real counterpart
+    // (parse_assignment_expression): assignment operators (including
+    // plain '=' onto something other than a bare identifier, e.g.
+    // `a.b = 5`) and the ternary `?` (parse_conditional_expression) --
+    // neither is in binary_precedence's table and try_tape_logical_or has
+    // no notion of either, so both would already have stopped "cleanly"
+    // one level down. Correct for that level's own purposes, but this one
+    // must still catch each and bail, since the real grammar keeps going
+    // here.
     const TokenType next = current_token().get_type();
-    if (is_assignment_operator(next) || next == TokenType::LOGICAL_OR ||
-        next == TokenType::NULLISH_COALESCING || next == TokenType::QUESTION) {
+    if (is_assignment_operator(next) || next == TokenType::QUESTION) {
         return false;
     }
     return true;
