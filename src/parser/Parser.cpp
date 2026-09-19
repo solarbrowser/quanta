@@ -1494,7 +1494,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                         }
                         arguments.push_back(std::move(spread));
                     } else {
-                        auto arg = parse_assignment_expression();
+                        auto arg = parse_assignment_maybe_tape();
                         if (!arg) {
                             add_error("Expected argument expression");
                             return nullptr;
@@ -1593,7 +1593,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
         } else if (match(TokenType::LEFT_BRACKET)) {
             advance();
             
-            auto property = parse_expression();
+            auto property = parse_expression_maybe_tape();
             if (!property) {
                 add_error("Expected expression inside []");
                 return expr;
@@ -1614,7 +1614,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             if (match(TokenType::LEFT_BRACKET)) {
                 advance();
                 
-                auto property = parse_expression();
+                auto property = parse_expression_maybe_tape();
                 if (!property) {
                     add_error("Expected expression inside []");
                     return expr;
@@ -1640,7 +1640,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                             if (!spread) { add_error("Invalid spread in optional call"); break; }
                             arguments.push_back(std::move(spread));
                         } else {
-                            auto arg = parse_assignment_expression();
+                            auto arg = parse_assignment_maybe_tape();
                             if (!arg) {
                                 add_error("Expected argument in optional call");
                                 break;
@@ -1713,7 +1713,11 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                         }
                         arguments.push_back(std::move(spread));
                     } else {
-                        auto arg = parse_assignment_expression();
+                        // The arguments of `async(...)` may turn out to be an arrow's
+                        // parameters, which need them as parsed nodes.
+                        const bool async_callee = expr && expr->get_type() == ASTNode::Type::IDENTIFIER &&
+                            static_cast<const Identifier*>(expr.get())->get_name() == "async";
+                        auto arg = async_callee ? parse_assignment_expression() : parse_assignment_maybe_tape();
                         if (!arg) {
                             add_error("Expected argument in function call");
                             break;
@@ -1813,7 +1817,7 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
             if (match(TokenType::LEFT_BRACKET)) {
                 advance();
                 
-                auto property = parse_expression();
+                auto property = parse_expression_maybe_tape();
                 if (!property) {
                     add_error("Expected expression inside []");
                     return expr;
@@ -1847,7 +1851,7 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
         } else {
             advance();
             
-            auto property = parse_expression();
+            auto property = parse_expression_maybe_tape();
             if (!property) {
                 add_error("Expected expression inside []");
                 return expr;
@@ -3586,7 +3590,7 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
                 return nullptr;
             }
             
-            auto init = parse_assignment_expression();
+            auto init = parse_assignment_maybe_tape();
             if (!init) {
                 add_error("Expected expression after '=' in destructuring declaration");
                 return nullptr;
@@ -4587,7 +4591,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
 
                 if (current_token().get_type() == TokenType::ASSIGN) {
                     advance();
-                    auto initializer = parse_assignment_expression();
+                    auto initializer = parse_assignment_maybe_tape();
                     if (!initializer) {
                         add_error("Expected expression after '=' in destructuring assignment");
                         return nullptr;
@@ -4668,7 +4672,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 // Use no_in_mode so "0 in {}" doesn't consume the 'in' keyword (Annex B)
                 bool prev_no_in = no_in_mode_;
                 no_in_mode_ = true;
-                initializer = parse_assignment_expression();
+                initializer = parse_assignment_maybe_tape();
                 no_in_mode_ = prev_no_in;
                 if (!initializer) {
                     add_error("Expected expression after '=' in variable declaration");
@@ -4709,7 +4713,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 std::unique_ptr<ASTNode> next_initializer = nullptr;
                 if (match(TokenType::ASSIGN)) {
                     advance();
-                    next_initializer = parse_assignment_expression();
+                    next_initializer = parse_assignment_maybe_tape();
                     if (!next_initializer) {
                         add_error("Expected expression after '=' in variable declaration");
                         return nullptr;
@@ -4737,7 +4741,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             // ('{' or '[' can never start a for-in LHS, so 'in' in defaults is fine).
             bool prev_no_in = no_in_mode_;
             if (!is_await_loop) no_in_mode_ = true;
-            init = parse_expression();
+            init = parse_for_init_maybe_tape();
             no_in_mode_ = prev_no_in;
             if (!init) {
                 add_error("Expected initialization in for loop");
@@ -6071,7 +6075,7 @@ std::unique_ptr<ASTNode> Parser::take_cached_node(CacheKind kind) {
 // on any bail restore the token position and run the real, unmodified
 // parse. `sequence`: a full Expression (commas allowed) rather than one
 // AssignmentExpression.
-std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence) {
+std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence, bool for_init) {
     // TapedExpression's compile-time reparse-on-failure fallback (see its
     // own comment) needs source_ -- without it there is no way to recover
     // when compile_tape_expr's restricted coverage turns out not to apply
@@ -6108,7 +6112,11 @@ std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence) {
     // directive, BlockStatement::has_use_strict_directive, Parser.cpp's own
     // last_body_strict_ scan), which recognize a directive by the
     // STATEMENT's own AST node being STRING_LITERAL-shaped.
-    const bool ok = (sequence ? try_tape_expression(tape) : try_tape_assignment(tape)) && tape.size() > 1;
+    bool ok = (sequence ? try_tape_expression(tape) : try_tape_assignment(tape)) && tape.size() > 1;
+    // A for loop's first expression may be the left side of a for-in or
+    // for-of, which the real parse then reads back as an assignment target or
+    // a pattern; only what turns out to be an ordinary init is kept.
+    if (ok && for_init && (match(TokenType::IN) || match(TokenType::OF))) ok = false;
     tape_attempt_ = outer_attempt;
 
     if (ok) {
@@ -6137,6 +6145,10 @@ std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence) {
 
 std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
     return parse_tape_or_tree(/*sequence=*/true);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_for_init_maybe_tape() {
+    return parse_tape_or_tree(/*sequence=*/true, /*for_init=*/true);
 }
 
 // Same idea as parse_expression_maybe_tape, but for a position that binds
@@ -6463,7 +6475,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             std::unique_ptr<ASTNode> default_value = nullptr;
             if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
-                default_value = parse_assignment_expression();
+                default_value = parse_assignment_maybe_tape();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
                     options_.in_generator_body = saved_gen_for_params_fd;
@@ -6528,7 +6540,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         if (!is_rest && match(TokenType::ASSIGN)) {
             has_non_simple_params = true;
             advance();
-            default_value = parse_assignment_expression();
+            default_value = parse_assignment_maybe_tape();
             if (!default_value) {
                 add_error("Invalid default parameter value");
                 options_.in_generator_body = saved_gen_for_params_fd;
@@ -7716,7 +7728,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         // Computed property keys always allow 'in' regardless of outer for-loop context
         bool saved_no_in = no_in_mode_;
         no_in_mode_ = false;
-        key = parse_assignment_expression();
+        key = parse_assignment_maybe_tape();
         no_in_mode_ = saved_no_in;
 
         if (!key) {
@@ -7759,7 +7771,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
                 advance();
             } else if (nxt == TokenType::LEFT_BRACKET) {
                 computed = true; advance();
-                key = parse_assignment_expression();
+                key = parse_assignment_maybe_tape();
                 if (!key || !consume(TokenType::RIGHT_BRACKET)) { add_error("Expected ']'"); return nullptr; }
             } else if (nxt == TokenType::IDENTIFIER) {
                 key = parse_identifier();
@@ -7788,7 +7800,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
                 // A field initializer runs as its own function body, so the
                 // `arguments` in it is not the enclosing scope's.
                 SubtreeScope field_scope(*this, ~static_cast<uint32_t>(kSubtreeArguments));
-                init = parse_assignment_expression();
+                init = parse_assignment_maybe_tape();
             }
             options_.in_class_field_init = saved_cfi;
             options_.in_class_method = saved_cm_fi;
@@ -7916,7 +7928,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             std::unique_ptr<ASTNode> default_value = nullptr;
             if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
-                default_value = parse_assignment_expression();
+                default_value = parse_assignment_maybe_tape();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
                     return nullptr;
@@ -7973,7 +7985,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         if (!is_rest && match(TokenType::ASSIGN)) {
             method_has_non_simple_params = true;
             advance();
-            default_value = parse_assignment_expression();
+            default_value = parse_assignment_maybe_tape();
             if (!default_value) {
                 add_error("Invalid default parameter value");
                 return nullptr;
@@ -8222,7 +8234,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             std::unique_ptr<ASTNode> default_value = nullptr;
             if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
-                default_value = parse_assignment_expression();
+                default_value = parse_assignment_maybe_tape();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
                     options_.in_generator_body = saved_gen_for_params_fe;
@@ -8287,7 +8299,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         if (!is_rest && match(TokenType::ASSIGN)) {
             has_non_simple_params = true;
             advance();
-            default_value = parse_assignment_expression();
+            default_value = parse_assignment_maybe_tape();
             if (!default_value) {
                 add_error("Invalid default parameter value");
                 options_.in_generator_body = saved_gen_for_params_fe;
@@ -8610,7 +8622,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             std::unique_ptr<ASTNode> default_value = nullptr;
             if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
-                default_value = parse_assignment_expression();
+                default_value = parse_assignment_maybe_tape();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
                     options_.in_generator_body = saved_gen_for_params_afe;
@@ -8671,7 +8683,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         if (!is_rest && match(TokenType::ASSIGN)) {
             has_non_simple_params = true;
             advance();
-            default_value = parse_assignment_expression();
+            default_value = parse_assignment_maybe_tape();
             if (!default_value) {
                 add_error("Invalid default parameter value");
                 options_.in_generator_body = saved_gen_for_params_afe;
@@ -8924,7 +8936,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
             std::unique_ptr<ASTNode> default_value = nullptr;
             if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
-                default_value = parse_assignment_expression();
+                default_value = parse_assignment_maybe_tape();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
                     options_.in_generator_body = saved_gen_for_params_afd;
@@ -8985,7 +8997,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         if (!is_rest && match(TokenType::ASSIGN)) {
             has_non_simple_params = true;
             advance();
-            default_value = parse_assignment_expression();
+            default_value = parse_assignment_maybe_tape();
             if (!default_value) {
                 add_error("Invalid default parameter value");
                 options_.in_generator_body = saved_gen_for_params_afd;
@@ -9165,7 +9177,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                 std::unique_ptr<ASTNode> default_value = nullptr;
                 if (match(TokenType::ASSIGN)) {
                     advance();
-                    default_value = parse_assignment_expression();
+                    default_value = parse_assignment_maybe_tape();
                 }
 
                 Position param_end = get_current_position();
@@ -9257,7 +9269,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             if (match(TokenType::ASSIGN)) {
                 has_non_simple_params = true;
                 advance();
-                default_value = parse_assignment_expression();
+                default_value = parse_assignment_maybe_tape();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
                     return nullptr;
@@ -9999,7 +10011,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
         if (match(TokenType::LEFT_BRACKET)) {
             advance();
             computed = true;
-            key = parse_assignment_expression();
+            key = parse_assignment_maybe_tape();
             if (!key) {
                 add_error("Expected expression for computed property key");
                 return nullptr;
@@ -10095,7 +10107,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                             return nullptr;
                         } else if (!is_rest && match(TokenType::ASSIGN)) {
                             advance();
-                            default_value = parse_assignment_expression();
+                            default_value = parse_assignment_maybe_tape();
                             if (!default_value) {
                                 add_error("Expected expression after '=' in parameter default");
                                 return nullptr;
@@ -10147,7 +10159,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     if (!is_rest && match(TokenType::ASSIGN)) {
                         obj_non_simple = true;
                         advance();
-                        default_value = parse_assignment_expression();
+                        default_value = parse_assignment_maybe_tape();
                         if (!default_value) {
                             add_error("Expected expression after '=' in parameter default");
                             return nullptr;
@@ -11987,7 +11999,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
             std::unique_ptr<ASTNode> default_value = nullptr;
             if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
-                default_value = parse_assignment_expression();
+                default_value = parse_assignment_maybe_tape();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
                     options_.in_async_body = saved_async_aaf_params;
@@ -12023,7 +12035,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         if (!is_rest && match(TokenType::ASSIGN)) {
             has_non_simple_params = true;
             advance();
-            default_value = parse_assignment_expression();
+            default_value = parse_assignment_maybe_tape();
             if (!default_value) {
                 add_error("Invalid default parameter value");
                 return nullptr;

@@ -529,7 +529,8 @@ public:
     std::unique_ptr<ASTNode> take_cached_node(CacheKind kind);
     bool try_tape_call_or_member_inner(ExprTape& tape);
     bool tape_chain_can_start(TokenType type) const;
-    std::unique_ptr<ASTNode> parse_tape_or_tree(bool sequence);
+    std::unique_ptr<ASTNode> parse_tape_or_tree(bool sequence, bool for_init = false);
+    std::unique_ptr<ASTNode> parse_for_init_maybe_tape();
 
     std::unique_ptr<ASTNode> parse_try_statement();
     std::unique_ptr<ASTNode> parse_throw_statement();
