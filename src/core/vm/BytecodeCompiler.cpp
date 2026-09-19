@@ -537,7 +537,7 @@ void collect_assigned_identifiers(const ASTNode* node,
                 if (e.tag == TapeTag::Assign) out.insert(NamePool::text(e.name_id));
             }
             // `x++` writes x too; its operand entry follows the Update entry.
-            const ExprTape& tape = static_cast<const TapedExpression*>(node)->tape();
+            TapeView tape = static_cast<const TapedExpression*>(node)->tape();
             for (size_t i = 0; i + 1 < tape.size(); i++) {
                 if (tape[i].tag == TapeTag::Update && tape[i + 1].tag == TapeTag::Identifier) {
                     out.insert(NamePool::text(tape[i + 1].name_id));
@@ -1239,7 +1239,7 @@ bool contains_hoisted_decl_by_walk(const ASTNode* node) {
 // Conditional hold ThisCacheBarrier-guarded branches and count nothing.
 int count_this_refs(const ASTNode* node);
 
-int count_tape_this_refs(const ExprTape& tape, const std::vector<std::unique_ptr<ASTNode>>& embedded,
+int count_tape_this_refs(TapeView tape, const std::vector<std::unique_ptr<ASTNode>>& embedded,
                          size_t index) {
     const TapeEntry& e = tape[index];
     switch (e.tag) {
@@ -10177,7 +10177,7 @@ bool BytecodeCompiler::operand_cannot_write_registers(const ASTNode* node) {
     }
 }
 
-bool BytecodeCompiler::tape_cannot_write_registers(const ExprTape& tape, size_t index) {
+bool BytecodeCompiler::tape_cannot_write_registers(TapeView tape, size_t index) {
     if (index >= tape.size()) return false;
     const TapeEntry& e = tape[index];
     switch (e.tag) {
@@ -12229,7 +12229,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
     }
 }
 
-std::unique_ptr<ASTNode> BytecodeCompiler::tape_operand_node(const ExprTape& tape, size_t index) const {
+std::unique_ptr<ASTNode> BytecodeCompiler::tape_operand_node(TapeView tape, size_t index) const {
     const TapeEntry& e = tape[index];
     switch (e.tag) {
         case TapeTag::Identifier:
@@ -12243,11 +12243,11 @@ std::unique_ptr<ASTNode> BytecodeCompiler::tape_operand_node(const ExprTape& tap
             if (e.binary_op == 2) return std::make_unique<NullLiteral>(tape_pos_, tape_pos_);
             return std::make_unique<BooleanLiteral>(e.binary_op == 0, tape_pos_, tape_pos_);
         default:
-            return std::make_unique<TapeSlice>(&tape, tape_embedded_, index, tape_pos_);
+            return std::make_unique<TapeSlice>(tape, tape_embedded_, index, tape_pos_);
     }
 }
 
-std::unique_ptr<ASTNode> BytecodeCompiler::tape_target_node(const ExprTape& tape, size_t index) const {
+std::unique_ptr<ASTNode> BytecodeCompiler::tape_target_node(TapeView tape, size_t index) const {
     const TapeEntry& e = tape[index];
     if (e.tag != TapeTag::Member) return tape_operand_node(tape, index);
     const size_t obj_idx = index + 1;
@@ -12263,7 +12263,7 @@ std::unique_ptr<ASTNode> BytecodeCompiler::tape_target_node(const ExprTape& tape
 
 // The diagnostic name the tree records for a constructor: its to_string(),
 // which for the shapes a tape holds is the dotted path.
-static std::string tape_constructor_name(const ExprTape& tape, size_t index) {
+static std::string tape_constructor_name(TapeView tape, size_t index) {
     const TapeEntry& e = tape[index];
     if (e.tag == TapeTag::Identifier) return NamePool::text(e.name_id);
     return tape_constructor_name(tape, index + 1) + "." + NamePool::text(e.name_id);
@@ -12274,7 +12274,7 @@ static std::string tape_constructor_name(const ExprTape& tape, size_t index) {
 // follows would then run every already-emitted effect (a getter, a call)
 // a second time -- so each condition that can make it give up is checked up
 // front instead, before anything is emitted.
-bool BytecodeCompiler::tape_compilable(const ExprTape& tape) {
+bool BytecodeCompiler::tape_compilable(TapeView tape) {
     for (const TapeEntry& e : tape) {
         switch (e.tag) {
             case TapeTag::Identifier: {
@@ -12349,7 +12349,7 @@ bool BytecodeCompiler::emit_tape_identifier_read(const std::string& name, bool t
 // decisions compile_expression makes, not to match its every optimization
 // yet. Returns the index just past this entry's own span (index + the
 // entry's own `span`), or 0 on failure.
-size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, bool discard) {
+size_t BytecodeCompiler::compile_tape_expr(TapeView tape, size_t index, bool discard) {
     if (failed_ || index >= tape.size()) return 0;
     const TapeEntry& e = tape[index];
     switch (e.tag) {

@@ -6117,8 +6117,8 @@ std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence) {
         embedded.reserve(attempt.embedded.size());
         for (auto& e : attempt.embedded) embedded.push_back(std::move(e.node));
         Position tape_end = last_consumed_token_end(tape_start);
-        auto taped = std::make_unique<TapedExpression>(ExprTape(tape.begin(), tape.end()), tape_start, tape_end,
-                                                       source_, options_.strict_mode, std::move(embedded));
+        auto taped = TapedExpression::make(TapeView(tape.data(), tape.size()), tape_start, tape_end,
+                                           source_, options_.strict_mode, std::move(embedded));
         if (use_scratch) tape_scratch_in_use_ = false;
         return taped;
     }

@@ -230,29 +230,54 @@ public:
 // reparse doesn't set up.
 class TapedExpression : public ASTNode {
 private:
-    ExprTape tape_;
     std::shared_ptr<const std::string> source_;
+    // The function, arrow and class nodes the tape refers to (a Node entry
+    // holds an index into this): what a tape cannot hold inline is a whole
+    // parsed subtree, owned here for as long as the tape is. Most tapes have
+    // none, so it costs one pointer until one does.
+    std::unique_ptr<std::vector<std::unique_ptr<ASTNode>>> embedded_;
+    // The entries, in a block of their own sized to the tape. Kept out of the
+    // node on purpose: the node stays one fixed size, so it does not spread
+    // the arena over a size class per tape length.
+    TapeEntry* entries_;
+    uint32_t count_;
     // The strict-mode the parser was in when it built this tape -- captured
     // here because BytecodeCompiler has no strict-mode member of its own to
     // read back at compile time (strict-mode is a grammar concern, resolved
     // at parse time everywhere else too). Needed only for the compile-time
     // reparse fallback, which must re-lex under the same mode.
     bool strict_;
-    // The function, arrow and class nodes the tape refers to (a Node entry
-    // holds an index into this): what a tape cannot hold inline is a whole
-    // parsed subtree, owned here for as long as the tape is.
-    std::vector<std::unique_ptr<ASTNode>> embedded_;
+
+    TapedExpression(TapeView tape, const Position& start, const Position& end,
+                    std::shared_ptr<const std::string> source, bool strict)
+        : ASTNode(Type::TAPED_EXPRESSION, start, end),
+          source_(std::move(source)),
+          entries_(static_cast<TapeEntry*>(::operator new(tape.size() * sizeof(TapeEntry)))),
+          count_(static_cast<uint32_t>(tape.size())), strict_(strict) {
+        std::copy(tape.begin(), tape.end(), entries_);
+    }
 
 public:
-    TapedExpression(ExprTape tape, const Position& start, const Position& end,
-                     std::shared_ptr<const std::string> source, bool strict,
-                     std::vector<std::unique_ptr<ASTNode>> embedded = {})
-        : ASTNode(Type::TAPED_EXPRESSION, start, end),
-          tape_(std::move(tape)), source_(std::move(source)), strict_(strict),
-          embedded_(std::move(embedded)) {}
+    ~TapedExpression() override { ::operator delete(entries_); }
+    TapedExpression(const TapedExpression&) = delete;
+    TapedExpression& operator=(const TapedExpression&) = delete;
 
-    const ExprTape& tape() const { return tape_; }
-    const std::vector<std::unique_ptr<ASTNode>>& embedded() const { return embedded_; }
+    static std::unique_ptr<ASTNode> make(TapeView tape, const Position& start, const Position& end,
+                                         std::shared_ptr<const std::string> source, bool strict,
+                                         std::vector<std::unique_ptr<ASTNode>> embedded = {}) {
+        auto node = std::unique_ptr<TapedExpression>(
+            new TapedExpression(tape, start, end, std::move(source), strict));
+        if (!embedded.empty()) {
+            node->embedded_ = std::make_unique<std::vector<std::unique_ptr<ASTNode>>>(std::move(embedded));
+        }
+        return node;
+    }
+
+    TapeView tape() const { return TapeView(entries_, count_); }
+    const std::vector<std::unique_ptr<ASTNode>>& embedded() const {
+        static const std::vector<std::unique_ptr<ASTNode>> none;
+        return embedded_ ? *embedded_ : none;
+    }
     const std::shared_ptr<const std::string>& source() const { return source_; }
     bool is_strict() const { return strict_; }
 
@@ -266,9 +291,8 @@ public:
     }
     std::unique_ptr<ASTNode> clone() const override {
         std::vector<std::unique_ptr<ASTNode>> copies;
-        copies.reserve(embedded_.size());
-        for (const auto& n : embedded_) copies.push_back(n->clone());
-        return std::make_unique<TapedExpression>(tape_, start_, end_, source_, strict_, std::move(copies));
+        for (const auto& n : embedded()) copies.push_back(n->clone());
+        return make(tape(), start_, end_, source_, strict_, std::move(copies));
     }
 };
 
@@ -279,22 +303,22 @@ public:
 // of a parsed tree, and it does not own the tape.
 class TapeSlice : public ASTNode {
 private:
-    const ExprTape* tape_;
+    TapeView tape_;
     const std::vector<std::unique_ptr<ASTNode>>* embedded_;
     size_t index_;
 
 public:
-    TapeSlice(const ExprTape* tape, const std::vector<std::unique_ptr<ASTNode>>* embedded,
+    TapeSlice(TapeView tape, const std::vector<std::unique_ptr<ASTNode>>* embedded,
               size_t index, const Position& pos)
         : ASTNode(Type::TAPE_SLICE, pos, pos), tape_(tape), embedded_(embedded), index_(index) {}
 
-    const ExprTape& tape() const { return *tape_; }
+    TapeView tape() const { return tape_; }
     size_t index() const { return index_; }
     // The parsed node this slice is, when it is exactly one (a function or
     // class the tape embeds), so the checks that look at an operand's node
     // type (is it an anonymous function?) see through the slice.
     const ASTNode* embedded_node() const {
-        const TapeEntry& e = (*tape_)[index_];
+        const TapeEntry& e = tape_[index_];
         return e.tag == TapeTag::Node && embedded_ ? (*embedded_)[e.name_id].get() : nullptr;
     }
 

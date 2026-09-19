@@ -11,6 +11,7 @@
 #include "quanta/core/vm/Bytecode.h"
 #include "quanta/parser/ScriptUnit.h"
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -195,6 +196,10 @@ struct TapeEntry {
 };
 static_assert(sizeof(TapeEntry) == 16, "TapeEntry is meant to stay compact");
 using ExprTape = std::vector<TapeEntry>;
+// What a finished tape is read through: the entries a TapedExpression keeps
+// inline after itself. The parser builds an ExprTape; everything that reads
+// one takes this.
+using TapeView = std::span<const TapeEntry>;
 
 // Single-pass AST -> bytecode compiler. Returns nullptr for any function it
 // cannot fully compile -- that function then permanently runs on the
@@ -313,19 +318,19 @@ private:
     // recursive call inherits it -- a subexpression's value is always needed.
     bool compile_expression(const ASTNode* node, bool discard = false);  // result in accumulator
     static bool operand_cannot_write_registers(const ASTNode* node);
-    static bool tape_cannot_write_registers(const ExprTape& tape, size_t index);
+    static bool tape_cannot_write_registers(TapeView tape, size_t index);
     bool emit_tape_identifier_read(const std::string& name, bool typeof_operand);
-    bool tape_compilable(const ExprTape& tape);
+    bool tape_compilable(TapeView tape);
     // Where the tape being compiled starts: the position every temporary
     // node built for a delegated form is given.
     Position tape_pos_;
     // A tree node standing for one tape operand: the literal or identifier it
     // is for a leaf (so the tree case's own shape checks and peepholes see
     // what they would in a parsed tree), otherwise a TapeSlice.
-    std::unique_ptr<ASTNode> tape_operand_node(const ExprTape& tape, size_t index) const;
+    std::unique_ptr<ASTNode> tape_operand_node(TapeView tape, size_t index) const;
     // The same for an assignment / update / delete target: additionally a
     // Member becomes a MemberExpression over operand nodes.
-    std::unique_ptr<ASTNode> tape_target_node(const ExprTape& tape, size_t index) const;
+    std::unique_ptr<ASTNode> tape_target_node(TapeView tape, size_t index) const;
     // The source a tape being compiled slices its string literals out of.
     const std::string* tape_source_ = nullptr;
     // The embedded nodes of the tape being compiled, for Node entries.
@@ -336,7 +341,7 @@ private:
     // supports; returns the index just past this entry's own span, or 0 on
     // failure (0 is never a valid "past my span" value for a non-empty
     // tape, since every entry, including the first, has span >= 1).
-    size_t compile_tape_expr(const ExprTape& tape, size_t index, bool discard = false);
+    size_t compile_tape_expr(TapeView tape, size_t index, bool discard = false);
 
     bool compile_for_each_loop(const ASTNode* left, const ASTNode* right,
                                const ASTNode* body, bool is_for_in,
