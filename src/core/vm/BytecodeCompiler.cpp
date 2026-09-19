@@ -2450,14 +2450,18 @@ void collect_free_names(const ASTNode* node,
         }
         ScriptUnit* unit = fn->owning_unit();
         const BodyScopeInfo* info = unit ? unit->scope_info_at(fn->body_source_first()) : nullptr;
-        if (!info) { op.unknown = true; return; }
+        if (!info || !info->free_valid) { op.unknown = true; return; }
         for (uint32_t name_id : info->free_names) {
             const std::string& n = NamePool::text(name_id);
-            if (n == "this" || n == "arguments" || n == "super" || n == "new.target" || n == "eval") continue;
-            if (!is_bound(n)) free_out.insert(n);
+            if (n == "this" || n == "arguments" || n == "super" || n == "new.target") {
+                free_out.insert(n);
+            } else if (!is_bound(n)) {
+                free_out.insert(n);
+            }
         }
-        if (info->eval_anywhere) op.saw_eval = true;
-        if (info->class_expression) op.saw_class = true;
+        if (info->free_unknown) op.unknown = true;
+        if (info->free_saw_eval) op.saw_eval = true;
+        if (info->free_saw_class) op.saw_class = true;
     };
     switch (node->get_type()) {
         case ASTNode::Type::NUMBER_LITERAL:
@@ -2523,6 +2527,7 @@ void collect_free_names(const ASTNode* node,
         }
         case ASTNode::Type::ARROW_FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const ArrowFunctionExpression*>(node);
+            if (!n->get_body()) { free_from_recorded(n); return; }
             recurse_into_function(n->get_params(), n->get_body(), true);
             return;
         }
@@ -3127,16 +3132,12 @@ bool BytecodeCompiler::references_identifier(const ASTNode* node, const std::str
 // linkage (declared in BytecodeCompiler.h): called from FunctionExpression::
 // evaluate, which caches the result per AST node instead of recomputing it
 // on every instantiation.
-bool closure_needs_outer_environment(const ParamList& params,
-                                      const ASTNode* body, bool is_arrow) {
+FreeNameSummary summarize_free_names(const ParamList& params,
+                                     const ASTNode* body, bool is_arrow) {
+    FreeNameSummary summary;
     std::vector<std::unordered_set<std::string>> scope_stack;
     ScanOpacity op;
     std::unordered_set<std::string> free_names;
-    // A parameter's own default/pattern expression is walked against
-    // whatever's in scope so far (nothing of THIS function's own yet --
-    // mirrors recurse_into_function's identical ordering for a nested
-    // function's parameter list, BytecodeCompiler.cpp's collect_free_names).
-    // Its own bound names are never free; they're seeded into `frame` below.
     for (size_t pidx = 0; pidx < params.size(); pidx++) {
         if (params.has_pattern(pidx)) {
             const ASTNode* pat = params.pattern(pidx);
@@ -3150,9 +3151,9 @@ bool closure_needs_outer_environment(const ParamList& params,
             collect_free_names(params.default_value(pidx), scope_stack, is_arrow, free_names, op);
         }
     }
-    if (op.unknown) return true;
+    if (op.unknown) { summary.unknown = true; return summary; }
     std::vector<DeclInfo> declared;
-    if (!prescan_declarations(body, declared)) return true;
+    if (!prescan_declarations(body, declared)) { summary.unknown = true; return summary; }
     std::unordered_set<std::string> frame;
     for (size_t pidx = 0; pidx < params.size(); pidx++) {
         if (params.has_pattern(pidx)) {
@@ -3170,7 +3171,16 @@ bool closure_needs_outer_environment(const ParamList& params,
     }
     scope_stack.push_back(std::move(frame));
     collect_free_names(body, scope_stack, is_arrow, free_names, op);
-    return op.saw_eval || op.saw_class || op.unknown || !free_names.empty();
+    summary.unknown = op.unknown;
+    summary.saw_eval = op.saw_eval;
+    summary.saw_class = op.saw_class;
+    summary.names.assign(free_names.begin(), free_names.end());
+    return summary;
+}
+
+bool closure_needs_outer_environment(const ParamList& params,
+                                      const ASTNode* body, bool is_arrow) {
+    return summarize_free_names(params, body, is_arrow).needs_outer();
 }
 
 bool method_body_references_super(const ASTNode* body) {
@@ -3201,7 +3211,7 @@ bool method_value_references_super(const ASTNode* fn_node) {
     // answer down where a stepped-over body's other facts already live.
     if (ScriptUnit* unit = fe->owning_unit()) {
         if (const BodyScopeInfo* info = unit->scope_info_at(fe->body_source_first())) {
-            return info->super_anywhere;
+            if (info->method_super_valid) return info->method_references_super;
         }
     }
     return true;  // no record: keep the write
@@ -9732,9 +9742,18 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
         // member here reads it, so that scope would hold nothing observable
         // and is not built at all; a member that does read it falls back.
         if (!inner_name.empty() && !reads_own_name) {
-            // A member whose body was stepped over cannot be asked whether it
-            // names the class; the scope holding that name is built anyway.
-            if (!fe->get_body() || references_identifier(fe->get_body(), inner_name)) {
+            // A member whose body was let go is asked through what its parse
+            // recorded of the names it mentioned.
+            bool names_class;
+            if (fe->get_body()) {
+                names_class = references_identifier(fe->get_body(), inner_name);
+            } else {
+                ScriptUnit* unit = fe->owning_unit();
+                const BodyScopeInfo* info = unit ? unit->scope_info_at(fe->body_source_first()) : nullptr;
+                names_class = !info || info->eval_anywhere || info->class_expression ||
+                              info->all_names.count(NamePool::intern(inner_name)) > 0;
+            }
+            if (names_class) {
                 reads_own_name = true;
             } else {
                 for (const auto& prm : fe->get_params()) {

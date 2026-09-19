@@ -131,12 +131,23 @@ struct BodyScopeInfo {
     // from this body's own perspective (nothing nested in it reads `i`), but
     // it is exactly the reference a scan of an enclosing scope needs to see.
     IdSet all_names;
-    // The names this body reads or writes that it does not bind itself: what
-    // an enclosing function's closure_needs_outer_environment has to see when
-    // this body has been let go, since it can no longer walk it. A superset is
-    // safe (the enclosing function keeps its scope alive a little more often);
-    // a name missing from it is not.
+    // What summarize_free_names found for this body while it was still in
+    // hand: the names it reads or writes without binding them, and whether the
+    // scan met something it cannot see through. An enclosing function's own
+    // scan reads this instead of walking a body that has been let go.
+    // free_valid is false when the form that let the body go did not work it
+    // out, and the reader then assumes the worst.
     IdSet free_names;
+    bool free_valid = false;
+    bool free_unknown = false;
+    bool free_saw_eval = false;
+    bool free_saw_class = false;
+    // Whether a method body can reach `super` (method_body_references_super's
+    // answer), filed while the body was in hand. Read only where a method's
+    // [[HomeObject]] write is decided; false means "asked and no", and an
+    // absent record means the write is kept.
+    bool method_super_valid = false;
+    bool method_references_super = true;
     // `eval` named anywhere in the body, nested or not: its text can reach any
     // binding here, so nothing may take a register.
     bool eval_anywhere = false;

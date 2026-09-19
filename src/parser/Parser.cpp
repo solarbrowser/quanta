@@ -108,17 +108,46 @@ namespace {
 // function in the file. The body is read back when the function first runs.
 //
 // Left alone where something still walks it after this point: the outermost
-// function of a `new Function` parse (its caller holds the body), and anything
-// inside a class (the private-name checks at the class's end read method
-// bodies).
+// function of a `new Function` parse, whose caller holds the body.
+//
+// QUANTA_KEEP_BODIES turns the release off, so a program can be compiled both
+// ways and the two sets of bytecode compared: a walker that lost something
+// about a released body shows up as a difference.
 template <typename Lit>
-void release_body_after_parse(Lit& lit, bool detached, bool skipped, bool in_program_unit,
-                              int function_depth, int class_depth) {
-    if (detached || skipped || class_depth > 0) return;
-    if (!in_program_unit && function_depth < 1) return;
+void release_body_after_parse(Lit& lit, bool ok) {
+    static const bool keep = std::getenv("QUANTA_KEEP_BODIES") != nullptr;
+    if (keep || !ok) return;
     if (!ScriptUnit::building() || !lit.has_body_token_range() || !lit.get_body()) return;
     lit.release_body();
 }
+}
+
+void Parser::record_free_summary(FunctionNames& names, const std::vector<std::unique_ptr<Parameter>>& params,
+                                 const ASTNode* body, bool is_arrow) {
+    if (last_body_skipped_ || !body) return;
+    FreeNameSummary summary = summarize_free_names(ParamList::from_nodes(params), body, is_arrow);
+    names.record_free(summary.names, summary.unknown, summary.saw_eval, summary.saw_class);
+}
+
+// A private name is declared by the class body it sits in or by one around it
+// (each body's names were collected before the body was read), or, in an eval,
+// by the class the eval runs in. Answered where the reference is read, so the
+// body holding it need not be kept until the class closes.
+bool Parser::private_name_declared(const std::string& name) const {
+    // A body read back was checked when it was first read, and the class whose
+    // names it answered to is not around it now.
+    if (reading_back_) return true;
+    for (const auto& scope : private_scope_stack_) {
+        if (scope.count(name)) return true;
+    }
+    return options_.in_eval_context && options_.eval_private_names.count(name) > 0;
+}
+
+// Whether the literal just finished may let go of its body. Not one written in
+// a class field's initializer, which the class builds its own function around.
+bool Parser::release_ok() const {
+    return !detached_tokens_ && !last_body_skipped_ && !options_.in_class_field_init &&
+           (in_program_unit_ || options_.function_depth >= 1);
 }
 
 ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
@@ -167,6 +196,7 @@ bool Parser::skip_recorded_body() {
 std::unique_ptr<ASTNode> Parser::parse_concise_body_at(size_t tok_index, bool strict,
                                                        bool is_generator, bool is_async) {
     if (tok_index >= tokens_.size()) return nullptr;
+    reading_back_ = true;
     current_token_index_ = tok_index;
     errors_.clear();
     options_.strict_mode = strict;
@@ -213,6 +243,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_at(size_t tok_index, bool stri
 std::unique_ptr<ASTNode> Parser::parse_body_at(size_t tok_index, bool strict,
                                                bool is_generator, bool is_async) {
     if (tok_index >= tokens_.size()) return nullptr;
+    reading_back_ = true;
     current_token_index_ = tok_index;
     errors_.clear();
     options_.strict_mode = strict;
@@ -1470,6 +1501,10 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                             return nullptr;
                         }
                     }
+                    if (options_.class_depth > 0 && !private_name_declared(name)) {
+                        add_error("SyntaxError: Private name '" + name + "' is not defined");
+                        return nullptr;
+                    }
                 } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
                     const Token& token = current_token();
                     name = token_text(token);
@@ -1600,6 +1635,10 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                         add_error("SyntaxError: Private names are not allowed outside class bodies");
                         return nullptr;
                     }
+                }
+                if (options_.class_depth > 0 && !private_name_declared(name)) {
+                    add_error("SyntaxError: Private name '" + name + "' is not defined");
+                    return nullptr;
                 }
             } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
                 const Token& token = current_token();
@@ -3002,6 +3041,11 @@ std::unique_ptr<ASTNode> Parser::parse_private_field() {
     std::string name = "#" + token_string(token);
     Position end = token.get_end();
     advance();
+
+    if (options_.class_depth > 0 && !private_name_declared(name)) {
+        add_error("SyntaxError: Private name '" + name + "' is not defined");
+        return nullptr;
+    }
 
     return std::make_unique<Identifier>(name, start, end);
 }
@@ -6950,7 +6994,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     if (!detached_tokens_) fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
     fn_names.record_body_span(last_body_src_last_, last_body_strict_);
-    release_body_after_parse(*fn_decl, detached_tokens_, last_body_skipped_, in_program_unit_, options_.function_depth, options_.class_depth);
+    record_free_summary(fn_names, fn_decl->get_params(), fn_decl->get_body(), false);
+    release_body_after_parse(*fn_decl, release_ok());
     return fn_decl;
 }
 
@@ -8346,6 +8391,11 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     if (!detached_tokens_) function_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
     fn_names.record_body_span(last_body_src_last_, last_body_strict_);
+    record_free_summary(fn_names, function_expr->get_params(), function_expr->get_body(), false);
+    if (!last_body_skipped_ && function_expr->get_body()) {
+        fn_names.record_method_super(method_body_references_super(function_expr->get_body()));
+    }
+    release_body_after_parse(*function_expr, release_ok());
 
     Position end = get_current_position();
     auto method = std::make_unique<MethodDefinition>(
@@ -8719,12 +8769,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     fn_names.record_body_span(last_body_src_last_, last_body_strict_);
     // Asked here, where the body is in hand. A generator is not asked: its
     // closure keeps the scope either way.
-    if (!last_body_skipped_ && fn_expr->get_body() && !fn_expr->is_generator()) {
-        fn_names.record_capture(closure_needs_outer_environment(
-            ParamList::from_nodes(fn_expr->get_params()), fn_expr->get_body(),
-            /*is_arrow=*/false));
+    if (fn_expr->get_body() && !fn_expr->is_generator()) {
+        record_free_summary(fn_names, fn_expr->get_params(), fn_expr->get_body(), false);
     }
-    release_body_after_parse(*fn_expr, detached_tokens_, last_body_skipped_, in_program_unit_, options_.function_depth, options_.class_depth);
+    release_body_after_parse(*fn_expr, release_ok());
     return fn_expr;
 }
 
@@ -9034,7 +9082,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         if (!detached_tokens_) gen_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
         if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
     fn_names.record_body_span(last_body_src_last_, last_body_strict_);
-        return gen_expr;
+                    release_body_after_parse(*gen_expr, release_ok());
+    return gen_expr;
     }
     subtree_acc_ |= kSubtreeClosure;
     auto async_expr = std::make_unique<AsyncFunctionExpression>(
@@ -9046,6 +9095,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     if (!detached_tokens_) async_expr->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
     fn_names.record_body_span(last_body_src_last_, last_body_strict_);
+        release_body_after_parse(*async_expr, release_ok());
     return async_expr;
 }
 
@@ -9343,6 +9393,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     if (!detached_tokens_) async_fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
     fn_names.record_body_span(last_body_src_last_, last_body_strict_);
+        record_free_summary(fn_names, async_fn_decl->get_params(), async_fn_decl->get_body(), false);
+    release_body_after_parse(*async_fn_decl, release_ok());
     return async_fn_decl;
 }
 
@@ -9648,6 +9700,10 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             }
         }
     }
+    if (has_concise_body || has_block_body) {
+        record_free_summary(fn_names, arrow_expr->get_params(), arrow_expr->get_body(), true);
+    }
+    release_body_after_parse(*arrow_expr, release_ok());
     return arrow_expr;
 }
 
@@ -10486,10 +10542,10 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 // Asked here, where the body is in hand -- a later parse steps
                 // it over and cannot ask again. A suspendable method keeps the
                 // scope either way, so it is not asked.
-                if (!last_body_skipped_ && body && !is_generator && !is_async) {
-                    method_names.record_capture(closure_needs_outer_environment(
-                        ParamList::from_nodes(params), body.get(), /*is_arrow=*/false));
+                if (body && !is_generator && !is_async) {
+                    record_free_summary(method_names, params, body.get(), false);
                 }
+                if (body && !last_body_skipped_) method_names.record_method_super(method_body_references_super(body.get()));
             }
             options_.function_depth--;
             options_.non_arrow_function_depth--;
@@ -10618,6 +10674,12 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                                                    last_body_src_first_);
                     }
                 }
+            }
+
+            if (method_value->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                release_body_after_parse(*static_cast<FunctionExpression*>(method_value.get()), release_ok());
+            } else if (method_value->get_type() == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION) {
+                release_body_after_parse(*static_cast<AsyncFunctionExpression*>(method_value.get()), release_ok());
             }
 
             ObjectLiteral::PropertyType final_type = property_type;

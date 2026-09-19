@@ -74,6 +74,7 @@ private:
     TokenSequence tokens_;
     bool detached_tokens_ = false;
     bool in_program_unit_ = false;
+    bool reading_back_ = false;
     // Token span of the most recently parsed function body, so the literal
     // built right after it can record where its body lives. Only read
     // immediately after that body's parse returns, before any nested parse
@@ -287,6 +288,25 @@ private:
         // Only the forms that can act on it bother to work this out; the rest
         // leave the safe default standing.
         void record_capture(bool captures) { captures_outer = captures; }
+        IdSet free_names;
+        bool free_valid = false;
+        bool free_unknown = false;
+        bool free_saw_eval = false;
+        bool free_saw_class = false;
+        bool method_super_valid = false;
+        bool method_references_super = true;
+        void record_method_super(bool references) {
+            method_super_valid = true;
+            method_references_super = references;
+        }
+        void record_free(const std::vector<std::string>& names, bool unknown, bool saw_eval, bool saw_class) {
+            for (const auto& n : names) free_names.insert(NamePool::intern(n));
+            free_valid = true;
+            free_unknown = unknown;
+            free_saw_eval = saw_eval;
+            free_saw_class = saw_class;
+            captures_outer = saw_eval || saw_class || unknown || !names.empty();
+        }
         // Called once the parameter list is fully parsed, before the body:
         // a simple (non-destructured) parameter's own name is never one
         // this function needs FROM its enclosing scope, however many times
@@ -314,9 +334,13 @@ private:
             const NameScope& mine = p.name_scopes_.back();
             info.captured = mine.captured;
             info.all_names = mine.all;
-            for (auto n : mine.all) {
-                if (!mine.declared_here.count(n)) info.free_names.insert(n);
-            }
+            info.free_names = free_names;
+            info.free_valid = free_valid;
+            info.free_unknown = free_unknown;
+            info.free_saw_eval = free_saw_eval;
+            info.free_saw_class = free_saw_class;
+            info.method_super_valid = method_super_valid;
+            info.method_references_super = method_references_super;
             info.eval_anywhere = mine.all.count(NamePool::intern("eval")) != 0;
             // Folds up through every nested scope (arrow or not) the same way
             // all_names does, so it sees a `super` however deep an arrow
@@ -343,6 +367,12 @@ private:
             mine.fold_into(p.name_scopes_.back());
         }
     };
+    bool private_name_declared(const std::string& name) const;
+    bool release_ok() const;
+    // Files, with a function literal's record, what summarize_free_names says of
+    // its body. Has to run while the body is still in hand.
+    void record_free_summary(FunctionNames& names, const std::vector<std::unique_ptr<Parameter>>& params,
+                             const ASTNode* body, bool is_arrow);
     // Opens a plain lexical block's own scope: a `{}` BlockStatement, a
     // catch clause's parameter list, a switch body, or a for(let/const)
     // head -- anything that can hold its own let/const/class/catch-param

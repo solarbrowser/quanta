@@ -221,6 +221,11 @@ static bool contains_direct_eval(ASTNode* node) {
     }
 }
 
+template <typename Literal>
+static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fresh,
+                            bool strict, bool is_generator, bool is_async,
+                            bool concise = false);
+
 // Builds (once per decl site) the executable every instance of this literal
 // shares: a durable clone of the body and parameters, plus the source text
 // toString() reports. Callers pass the node's own cached_executable_ slot.
@@ -237,6 +242,12 @@ static void install_literal_body(FunctionExecutable* exe, ASTNode* value_node) {
     if (value_node && value_node->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
         auto* fe = static_cast<FunctionExpression*>(value_node);
         if (ScriptUnit* unit = fe->owning_unit()) {
+            // A body let go when it was parsed is read back from its range,
+            // like any other literal's. Class members are strict.
+            if (!fe->get_body()) {
+                defer_leaf_body(fe, exe, /*fresh=*/true, /*strict=*/true, fe->is_generator(), fe->is_async());
+                if (exe->body_is_deferred()) return;
+            }
             exe->borrow_body(ExecutableRef<ScriptUnit>(unit), fe->get_body());
             return;
         }
@@ -358,7 +369,7 @@ static void load_body_facts(const Literal* lit, bool& is_strict, bool& has_eval)
 template <typename Literal>
 static void defer_leaf_body(const Literal* lit, FunctionExecutable* exe, bool fresh,
                             bool strict, bool is_generator, bool is_async,
-                            bool concise = false) {
+                            bool concise) {
     // Only the instantiation that built the executable may do this. A later one
     // would reach an executable that has since materialized its body and
     // compiled from it, and dropping that tree leaves the chunk's own AST
@@ -2131,6 +2142,7 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
         cloned->body_tok_first_ = body_tok_first_;
         cloned->body_tok_last_ = body_tok_last_;
         cloned->body_src_first_ = body_src_first_;
+        cloned->body_is_concise_ = body_is_concise_;
         // And the source it refers into: with no body of its own, that is the
         // whole of what this literal is. Whatever turns the copy into an
         // executable holds the unit alive from there on.
@@ -3466,6 +3478,16 @@ std::unique_ptr<ASTNode> AsyncFunctionExpression::clone() const {
             body_ ? static_cast<BlockStatement*>(body_->clone().release()) : nullptr),
         start_, end_, is_arrow_
     );
+    cloned->set_source_ref(
+        ast_detail::clone_keeps_source() ? owning_unit_ : nullptr, src_start_, src_end_);
+    // A body let go leaves only its range, and a copy that loses it can never
+    // be read back.
+    if (!body_) {
+        cloned->body_tok_first_ = body_tok_first_;
+        cloned->body_tok_last_ = body_tok_last_;
+        cloned->body_src_first_ = body_src_first_;
+        cloned->set_source_ref(owning_unit_, src_start_, src_end_);
+    }
     cloned->set_decl_form(is_decl_form_);
     return cloned;
 }

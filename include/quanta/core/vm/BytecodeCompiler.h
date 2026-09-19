@@ -739,6 +739,20 @@ private:
 bool closure_needs_outer_environment(const ParamList& params,
                                       const ASTNode* body, bool is_arrow);
 
+// What closure_needs_outer_environment works out, before it is reduced to a
+// yes or no: the names the body reads or writes that it does not bind, and
+// whether the scan met something it cannot see through. An enclosing function
+// asks the same question of a nested body it can no longer walk, so the answer
+// is filed with the body when it is let go.
+struct FreeNameSummary {
+    std::vector<std::string> names;
+    bool unknown = false;
+    bool saw_eval = false;
+    bool saw_class = false;
+    bool needs_outer() const { return saw_eval || saw_class || unknown || !names.empty(); }
+};
+FreeNameSummary summarize_free_names(const ParamList& params, const ASTNode* body, bool is_arrow);
+
 // Whether a method's own body -- not any function nested inside it -- can
 // ever reach `super`. Used to skip a method's [[HomeObject]] write (needed
 // only for super's resolution) when it is proven no method body could ever
