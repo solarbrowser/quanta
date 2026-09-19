@@ -5268,7 +5268,7 @@ bool Parser::try_tape_primary(ExprTape& tape) {
     switch (token.get_type()) {
         case TokenType::NUMBER: {
             double value = token.has_numeric_value() ? tokens_.numeric_value_of(token) : 0.0;
-            tape.push_back(TapeEntry{TapeTag::Number, 1, value, 0, 0, 0, ""});
+            tape.push_back(TapeEntry::number(value));
             advance();
             return true;
         }
@@ -5280,8 +5280,10 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             // "use strict" apart from a real one -- simplest to just never
             // produce an ambiguous entry in the first place.
             if (token.string_has_escapes()) return false;
-            std::string value = token_string(token);
-            tape.push_back(TapeEntry{TapeTag::String, 1, 0.0, 0, 0, 0, value});
+            const size_t open_quote = token.get_start().offset;
+            const size_t close_quote = token.get_end().offset - 1;
+            tape.push_back(TapeEntry::string(static_cast<uint32_t>(open_quote + 1),
+                                             static_cast<uint32_t>(close_quote - open_quote - 1)));
             advance();
             return true;
         }
@@ -5290,19 +5292,19 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             // expression builds an Identifier node, so every name-based
             // analysis treats the two alike.
             uint32_t name_id = NamePool::intern("this");
-            tape.push_back(TapeEntry{TapeTag::Identifier, 1, 0.0, name_id, 0, 0, ""});
+            tape.push_back(TapeEntry::named(TapeTag::Identifier, 1, name_id));
             note_name("this");
             advance();
             return true;
         }
         case TokenType::BOOLEAN: {
             uint8_t kind = token_text(token) == "true" ? 0 : 1;
-            tape.push_back(TapeEntry{TapeTag::Constant, 1, 0.0, 0, kind, 0, ""});
+            tape.push_back(TapeEntry::with_op(TapeTag::Constant, 1, kind));
             advance();
             return true;
         }
         case TokenType::NULL_LITERAL: {
-            tape.push_back(TapeEntry{TapeTag::Constant, 1, 0.0, 0, 2, 0, ""});
+            tape.push_back(TapeEntry::with_op(TapeTag::Constant, 1, 2));
             advance();
             return true;
         }
@@ -5325,7 +5327,7 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             // note_name/arguments check (Parser.cpp:2859-2874), no
             // previous_token_is_dot() suppression needed.
             uint32_t name_id = NamePool::intern(name);
-            tape.push_back(TapeEntry{TapeTag::Identifier, 1, 0.0, name_id, 0, 0, ""});
+            tape.push_back(TapeEntry::named(TapeTag::Identifier, 1, name_id));
             note_name(name);
             if (name.size() == 9 && name == "arguments") subtree_acc_ |= kSubtreeArguments;
             advance();
@@ -5358,7 +5360,7 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
             uint32_t name_id = NamePool::intern(prop);
             uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
             tape.insert(tape.begin() + start_idx,
-                        TapeEntry{TapeTag::Member, span, 0.0, name_id, 0, 0, ""});
+                        TapeEntry::named(TapeTag::Member, span, name_id));
             continue;
         }
         if (match(TokenType::LEFT_BRACKET)) {
@@ -5373,7 +5375,7 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
             advance();
             uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
             tape.insert(tape.begin() + start_idx,
-                        TapeEntry{TapeTag::Member, span, 0.0, 0, 0, /*computed=*/1, ""});
+                        TapeEntry::with_argc(TapeTag::Member, span, /*computed=*/1));
             continue;
         }
         if (match(TokenType::LEFT_PAREN)) {
@@ -5400,7 +5402,7 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
             advance();
             uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
             tape.insert(tape.begin() + start_idx,
-                        TapeEntry{TapeTag::Call, span, 0.0, 0, 0, argc, ""});
+                        TapeEntry::with_argc(TapeTag::Call, span, argc));
             continue;
         }
         // Each of these IS part of parse_call_expression's own suffix loop
@@ -5441,7 +5443,7 @@ bool Parser::try_tape_unary(ExprTape& tape) {
     if (!try_tape_unary(tape)) return false;
     uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
     tape.insert(tape.begin() + start_idx,
-                TapeEntry{TapeTag::Unary, span, 0.0, 0, static_cast<uint8_t>(op), 0, ""});
+                TapeEntry::with_op(TapeTag::Unary, span, static_cast<uint8_t>(op)));
     return true;
 }
 
@@ -5492,8 +5494,8 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
         if (!try_tape_binary(tape, precedence + 1)) return false;
         uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
         tape.insert(tape.begin() + start_idx,
-                    TapeEntry{TapeTag::Binary, span, 0.0, 0,
-                              static_cast<uint8_t>(token_to_binary_operator(op_token)), 0, ""});
+                    TapeEntry::with_op(TapeTag::Binary, span,
+                                       static_cast<uint8_t>(token_to_binary_operator(op_token))));
     }
     return true;
 }
@@ -5527,7 +5529,7 @@ bool Parser::try_tape_nullish(ExprTape& tape) {
         if (!try_tape_binary(tape, 2)) return false;
         if (is_unparenthesized_and(right_idx)) return false;
         uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
-        tape.insert(tape.begin() + start_idx, TapeEntry{TapeTag::Nullish, span, 0.0, 0, 0, 0, ""});
+        tape.insert(tape.begin() + start_idx, TapeEntry::plain(TapeTag::Nullish, span));
     }
     return true;
 }
@@ -5553,9 +5555,8 @@ bool Parser::try_tape_logical_or(ExprTape& tape) {
         if (tape[right_idx].tag == TapeTag::Nullish) return false;
         uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
         tape.insert(tape.begin() + start_idx,
-                    TapeEntry{TapeTag::Binary, span, 0.0, 0,
-                              static_cast<uint8_t>(BinaryExpression::Operator::LOGICAL_OR),
-                              0, ""});
+                    TapeEntry::with_op(TapeTag::Binary, span,
+                                       static_cast<uint8_t>(BinaryExpression::Operator::LOGICAL_OR)));
     }
     return true;
 }
@@ -5577,7 +5578,7 @@ bool Parser::try_tape_conditional(ExprTape& tape) {
     advance();
     if (!try_tape_assignment(tape)) return false;
     uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
-    tape.insert(tape.begin() + start_idx, TapeEntry{TapeTag::Conditional, span, 0.0, 0, 0, 0, ""});
+    tape.insert(tape.begin() + start_idx, TapeEntry::plain(TapeTag::Conditional, span));
     return true;
 }
 
@@ -5618,7 +5619,7 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
         if (!try_tape_assignment(tape)) return false;  // rhs, right-associative
         uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
         tape.insert(tape.begin() + start_idx,
-                    TapeEntry{TapeTag::Assign, span, 0.0, name_id, 0, 0, ""});
+                    TapeEntry::named(TapeTag::Assign, span, name_id));
         return true;
     }
     size_t lhs_start = tape.size();
@@ -5677,7 +5678,8 @@ std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
     if (!source_) return parse_expression();
     size_t saved_pos = current_token_index_;
     Position tape_start = get_current_position();
-    ExprTape tape;
+    ExprTape& tape = tape_scratch_;
+    tape.clear();
     // try_tape_assignment mirrors parse_assignment_expression, not
     // parse_expression -- it has no comma-awareness of its own (a comma
     // inside a call's argument list is normal and handled by
@@ -5686,27 +5688,19 @@ std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
     // (Parser.cpp:709) has to happen here instead, once, after a successful
     // top-level attempt.
     //
-    // A tape that ends up being nothing but a single String entry is
-    // rejected too, unconditionally, and re-parsed as a real tree instead:
-    // a solo string-literal statement is a directive-prologue candidate
-    // ("use strict", or any other directive a future spec/host adds), and
-    // several places (Program::check_use_strict_directive, BlockStatement::
-    // has_use_strict_directive, Parser.cpp's own last_body_strict_ scan, and
-    // possibly others not all found by one search) recognize a directive by
-    // the STATEMENT's own AST node being STRING_LITERAL-shaped, not by its
-    // text alone. Refusing this one specific tape shape keeps every one of
-    // those working with no changes anywhere else -- the statement parses
-    // as a real StringLiteral tree, exactly as if this hook did not exist.
-    // This check only matters at true statement-expression granularity, but
-    // costs nothing to keep here even for callers (like
-    // parse_assignment_maybe_tape) that never reach this function in a
-    // directive-prologue position at all.
+    // A tape of a single entry is rejected too, and re-parsed as a real tree:
+    // one AST node is smaller than a TapedExpression plus its entry, so
+    // there is nothing to save. For a lone string literal this also keeps
+    // directive-prologue detection working (Program::check_use_strict_
+    // directive, BlockStatement::has_use_strict_directive, Parser.cpp's own
+    // last_body_strict_ scan), which recognize a directive by the
+    // STATEMENT's own AST node being STRING_LITERAL-shaped.
     bool ok = try_tape_assignment(tape) &&
               current_token().get_type() != TokenType::COMMA &&
-              !(tape.size() == 1 && tape[0].tag == TapeTag::String);
+              tape.size() > 1;
     if (ok) {
         Position tape_end = last_consumed_token_end(tape_start);
-        return std::make_unique<TapedExpression>(std::move(tape), tape_start, tape_end,
+        return std::make_unique<TapedExpression>(ExprTape(tape.begin(), tape.end()), tape_start, tape_end,
                                                   source_, options_.strict_mode);
     }
     current_token_index_ = saved_pos;
@@ -5728,10 +5722,11 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_maybe_tape() {
     if (!source_) return parse_assignment_expression();
     size_t saved_pos = current_token_index_;
     Position tape_start = get_current_position();
-    ExprTape tape;
-    if (try_tape_assignment(tape)) {
+    ExprTape& tape = tape_scratch_;
+    tape.clear();
+    if (try_tape_assignment(tape) && tape.size() > 1) {
         Position tape_end = last_consumed_token_end(tape_start);
-        return std::make_unique<TapedExpression>(std::move(tape), tape_start, tape_end,
+        return std::make_unique<TapedExpression>(ExprTape(tape.begin(), tape.end()), tape_start, tape_end,
                                                   source_, options_.strict_mode);
     }
     current_token_index_ = saved_pos;

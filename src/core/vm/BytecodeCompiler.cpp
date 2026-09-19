@@ -12092,7 +12092,13 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
         case ASTNode::Type::TAPED_EXPRESSION: {
             const auto* tp = static_cast<const TapedExpression*>(node);
-            if (tape_compilable(tp->tape()) && compile_tape_expr(tp->tape(), 0, discard) != 0) return !failed_;
+            if (tape_compilable(tp->tape())) {
+                const std::string* saved_source = tape_source_;
+                tape_source_ = tp->source().get();
+                const size_t done = compile_tape_expr(tp->tape(), 0, discard);
+                tape_source_ = saved_source;
+                if (done != 0) return !failed_;
+            }
             if (failed_) return false;
             // compile_tape_expr's own restricted coverage didn't cover this
             // tape after all -- most commonly a name the parser had no way
@@ -12507,7 +12513,7 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::String: {
-            emit_load_const(Value(e.string_value));
+            emit_load_const(Value(tape_source_->substr(e.name_id, e.str_len)));
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::MemberAssign: {

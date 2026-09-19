@@ -476,6 +476,10 @@ public:
     std::unique_ptr<ASTNode> parse_expression_maybe_tape();
     std::unique_ptr<ASTNode> parse_assignment_maybe_tape();
     Position last_consumed_token_end(const Position& fallback) const;
+    // One buffer every tape attempt builds into: a bail then costs no
+    // allocation, and a successful tape is copied out at exactly its size
+    // instead of carrying a growth vector's spare capacity.
+    ExprTape tape_scratch_;
 
     std::unique_ptr<ASTNode> parse_try_statement();
     std::unique_ptr<ASTNode> parse_throw_statement();

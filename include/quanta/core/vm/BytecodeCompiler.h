@@ -91,10 +91,10 @@ enum class TapeTag : uint8_t {
     // expression), so it's correctly just absent rather than skipped.
     Assign,
     // A string literal -- next-highest-volume literal kind after Number.
-    // Holds its own text directly (string_value below), same as AST.h's own
-    // StringLiteral does (unlike Identifier/Member, nothing here is deduped
-    // through NamePool -- literal text isn't drawn from the same small,
-    // repeated-name vocabulary NamePool exists to shrink).
+    // Holds no text of its own: only the literal's offset and length in the
+    // tape's source (an escaped literal is never tape-encoded, so the source
+    // slice is the value). Not interned through NamePool -- literal text
+    // isn't drawn from the small repeated-name vocabulary it exists for.
     String,
     // A prefix unary operator -- +, -, !, ~, typeof, void only (delete and
     // prefix ++/-- need an assignable target this tape can't represent as
@@ -139,13 +139,31 @@ enum class TapeTag : uint8_t {
 // BytecodeCompiler.cpp:10319-10330) already rely on today.
 struct TapeEntry {
     TapeTag tag;
-    uint32_t span = 1;
-    double number_value = 0.0;
-    uint32_t name_id = 0;       // Identifier: NamePool id; Member (non-computed): property NamePool id, unused when computed
     uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator; Unary: UnaryExpression::Operator; Constant: 0 true, 1 false, 2 null
     uint8_t call_argc = 0;      // Call: argument count (the callee, then argc argument subtrees, follow this entry); Member: 1 if computed (obj[expr], key subtree follows the object's), 0 if not (obj.prop, name_id holds the property)
-    std::string string_value;   // String: the literal's own text
+    uint32_t span = 1;
+    // An entry uses at most one of these payloads. The struct is 16 bytes on
+    // purpose: an entry that costs as much as the AST node it replaces saves
+    // nothing.
+    union {
+        double number_value;    // Number
+        struct {
+            uint32_t name_id;   // Identifier: NamePool id; Member (non-computed): property NamePool id; Assign/MemberAssign: target name / property name
+            uint32_t str_len;   // String: byte length of the literal's text
+        };                      // String: name_id holds the text's byte offset into the tape's source, past the opening quote
+    };
+
+    TapeEntry(TapeTag t, uint32_t s) : tag(t), span(s), number_value(0.0) {}
+    static TapeEntry plain(TapeTag t, uint32_t s) { return TapeEntry(t, s); }
+    static TapeEntry with_op(TapeTag t, uint32_t s, uint8_t op) { TapeEntry e(t, s); e.binary_op = op; return e; }
+    static TapeEntry with_argc(TapeTag t, uint32_t s, uint8_t argc) { TapeEntry e(t, s); e.call_argc = argc; return e; }
+    static TapeEntry named(TapeTag t, uint32_t s, uint32_t id) { TapeEntry e(t, s); e.name_id = id; return e; }
+    static TapeEntry number(double v) { TapeEntry e(TapeTag::Number, 1); e.number_value = v; return e; }
+    static TapeEntry string(uint32_t src_offset, uint32_t len) {
+        TapeEntry e(TapeTag::String, 1); e.name_id = src_offset; e.str_len = len; return e;
+    }
 };
+static_assert(sizeof(TapeEntry) == 16, "TapeEntry is meant to stay compact");
 using ExprTape = std::vector<TapeEntry>;
 
 // Single-pass AST -> bytecode compiler. Returns nullptr for any function it
@@ -268,6 +286,8 @@ private:
     static bool tape_cannot_write_registers(const ExprTape& tape, size_t index);
     bool emit_tape_identifier_read(const std::string& name, bool typeof_operand);
     bool tape_compilable(const ExprTape& tape);
+    // The source a tape being compiled slices its string literals out of.
+    const std::string* tape_source_ = nullptr;
     // Proof-of-concept tape consumer -- see ExprTape's own comment. Mirrors
     // compile_expression's own logic (same private helpers, same
     // register/env decisions) for exactly the tags ExprTape currently
