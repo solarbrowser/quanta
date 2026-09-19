@@ -784,6 +784,9 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
             }
         }
 
+        // Elements and values parsed as tapes are read below as targets and
+        // defaults, which needs the nodes.
+        if (current_token().get_type() == TokenType::ASSIGN) untape_pattern(left.get());
         if (current_token().get_type() == TokenType::ASSIGN &&
             left->get_type() == ASTNode::Type::ARRAY_LITERAL) {
             if (!validate_array_destructuring(static_cast<ArrayLiteral*>(left.get())))
@@ -4775,6 +4778,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 }
             }
             // validate destructuring patterns
+            untape_pattern(init.get());
             if (t == ASTNode::Type::ARRAY_LITERAL) {
                 if (!validate_array_destructuring(static_cast<ArrayLiteral*>(init.get())))
                     return nullptr;
@@ -4956,6 +4960,7 @@ check_for_of:
             }
         }
         // validate array/object destructuring LHS
+        untape_pattern(init.get());
         if (init && init->get_type() == ASTNode::Type::ARRAY_LITERAL) {
             if (!validate_array_destructuring(static_cast<ArrayLiteral*>(init.get())))
                 return nullptr;
@@ -5373,6 +5378,7 @@ bool Parser::try_tape_primary(ExprTape& tape) {
                     if (options_.strict_mode && (key_text == "eval" || key_text == "arguments")) return false;
                     note_name(key_text);
                     if (key_text.size() == 9 && key_text == "arguments") subtree_acc_ |= kSubtreeArguments;
+                    prop.flags |= kTapeShorthand;
                     tape.push_back(prop);
                     tape.push_back(TapeEntry::named(TapeTag::Identifier, 1, key_a));
                 } else {
@@ -6039,6 +6045,183 @@ Position Parser::last_consumed_token_end(const Position& fallback) const {
         return tokens_[i].get_end();
     }
     return fallback;
+}
+
+namespace {
+
+// One tape rebuilt as tree nodes. Every node is given the tape's own
+// position: a tape records none for its parts.
+struct TapeMaterializer {
+    TapedExpression& taped;
+    TapeView tape;
+    const std::string& source;
+    const Position start;
+    const Position end;
+
+    std::unique_ptr<ASTNode> identifier(const std::string& name) {
+        return std::make_unique<Identifier>(name, start, end);
+    }
+
+    std::vector<std::unique_ptr<ASTNode>> arguments(size_t first, size_t count) {
+        std::vector<std::unique_ptr<ASTNode>> args;
+        args.reserve(count);
+        size_t at = first;
+        for (size_t i = 0; i < count; i++) {
+            args.push_back(build(at));
+            at += tape[at].span;
+        }
+        return args;
+    }
+
+    std::unique_ptr<ASTNode> member(const TapeEntry& e, size_t index, size_t& after) {
+        const size_t obj = index + 1;
+        auto object = build(obj);
+        after = obj + tape[obj].span;
+        std::unique_ptr<ASTNode> property;
+        if (e.call_argc != 0) {
+            property = build(after);
+            after += tape[after].span;
+        } else {
+            property = identifier(NamePool::text(e.name_id));
+        }
+        return std::make_unique<MemberExpression>(std::move(object), std::move(property),
+                                                  e.call_argc != 0, start, end);
+    }
+
+    std::unique_ptr<ASTNode> build(size_t index) {
+        const TapeEntry& e = tape[index];
+        switch (e.tag) {
+            case TapeTag::Number:
+                return std::make_unique<NumberLiteral>(e.number_value, start, end);
+            case TapeTag::String:
+                return std::make_unique<StringLiteral>(source.substr(e.name_id, e.str_len), start, end);
+            case TapeTag::Constant:
+                if (e.binary_op == 2) return std::make_unique<NullLiteral>(start, end);
+                return std::make_unique<BooleanLiteral>(e.binary_op == 0, start, end);
+            case TapeTag::Identifier:
+                return identifier(NamePool::text(e.name_id));
+            case TapeTag::Binary: {
+                auto left = build(index + 1);
+                auto right = build(index + 1 + tape[index + 1].span);
+                return std::make_unique<BinaryExpression>(std::move(left),
+                    static_cast<BinaryExpression::Operator>(e.binary_op), std::move(right), start, end);
+            }
+            case TapeTag::Nullish: {
+                auto left = build(index + 1);
+                auto right = build(index + 1 + tape[index + 1].span);
+                return std::make_unique<NullishCoalescingExpression>(std::move(left), std::move(right), start, end);
+            }
+            case TapeTag::Conditional: {
+                const size_t consequent = index + 1 + tape[index + 1].span;
+                const size_t alternate = consequent + tape[consequent].span;
+                auto test = build(index + 1);
+                auto yes = build(consequent);
+                auto no = build(alternate);
+                return std::make_unique<ConditionalExpression>(std::move(test), std::move(yes), std::move(no), start, end);
+            }
+            case TapeTag::Unary:
+                return std::make_unique<UnaryExpression>(static_cast<UnaryExpression::Operator>(e.binary_op),
+                                                         build(index + 1), true, start, end);
+            case TapeTag::Update: {
+                const auto op = static_cast<UnaryExpression::Operator>(e.binary_op);
+                const bool prefix = op == UnaryExpression::Operator::PRE_INCREMENT ||
+                                    op == UnaryExpression::Operator::PRE_DECREMENT;
+                return std::make_unique<UnaryExpression>(op, build(index + 1), prefix, start, end);
+            }
+            case TapeTag::Member: {
+                size_t after;
+                return member(e, index, after);
+            }
+            case TapeTag::Call: {
+                auto callee = build(index + 1);
+                return std::make_unique<CallExpression>(std::move(callee),
+                    arguments(index + 1 + tape[index + 1].span, e.call_argc), start, end);
+            }
+            case TapeTag::New: {
+                auto ctor = build(index + 1);
+                return std::make_unique<NewExpression>(std::move(ctor),
+                    arguments(index + 1 + tape[index + 1].span, e.call_argc), start, end);
+            }
+            case TapeTag::Assign:
+                return std::make_unique<AssignmentExpression>(identifier(NamePool::text(e.name_id)),
+                    static_cast<AssignmentExpression::Operator>(e.binary_op), build(index + 1), start, end);
+            case TapeTag::MemberAssign: {
+                // The target's subtrees are the entry's own children, as in a
+                // Member entry; the right-hand side follows them.
+                TapeEntry as_member = e;
+                as_member.tag = TapeTag::Member;
+                size_t after;
+                auto target = member(as_member, index, after);
+                return std::make_unique<AssignmentExpression>(std::move(target),
+                    static_cast<AssignmentExpression::Operator>(e.binary_op), build(after), start, end);
+            }
+            case TapeTag::Object: {
+                std::vector<std::unique_ptr<ObjectLiteral::Property>> properties;
+                size_t at = index + 1;
+                for (uint32_t i = 0; i < e.name_id; i++) {
+                    const TapeEntry& prop = tape[at];
+                    std::unique_ptr<ASTNode> key;
+                    if (prop.binary_op == 0) {
+                        key = identifier(NamePool::text(prop.name_id));
+                    } else {
+                        key = std::make_unique<StringLiteral>(source.substr(prop.name_id, prop.str_len), start, end);
+                    }
+                    auto property = std::make_unique<ObjectLiteral::Property>(
+                        std::move(key), build(at + 1), false, ObjectLiteral::PropertyType::Value);
+                    property->shorthand = (prop.flags & kTapeShorthand) != 0;
+                    properties.push_back(std::move(property));
+                    at += prop.span;
+                }
+                return std::make_unique<ObjectLiteral>(std::move(properties), start, end);
+            }
+            case TapeTag::Array: {
+                std::vector<std::unique_ptr<ASTNode>> elements;
+                size_t at = index + 1;
+                for (uint32_t i = 0; i < e.name_id; i++) {
+                    elements.push_back(build(at));
+                    at += tape[at].span;
+                }
+                return std::make_unique<ArrayLiteral>(std::move(elements), start, end);
+            }
+            case TapeTag::Node:
+                return taped.take_embedded(e.name_id);
+            case TapeTag::Prop:
+                break;
+        }
+        return nullptr;
+    }
+};
+
+}  // namespace
+
+std::unique_ptr<ASTNode> Parser::materialize_tape(TapedExpression& taped) {
+    static const std::string kNoSource;
+    TapeMaterializer materializer{taped, taped.tape(), taped.source() ? *taped.source() : kNoSource,
+                                  taped.get_start(), taped.get_end()};
+    return materializer.build(0);
+}
+
+void Parser::untape_pattern(ASTNode* node) {
+    if (!node) return;
+    auto convert = [](std::unique_ptr<ASTNode>& child) {
+        if (child && child->get_type() == ASTNode::Type::TAPED_EXPRESSION) {
+            child = materialize_tape(static_cast<TapedExpression&>(*child));
+        }
+        untape_pattern(child.get());
+    };
+    switch (node->get_type()) {
+        case ASTNode::Type::ARRAY_LITERAL:
+            for (auto& element : static_cast<ArrayLiteral*>(node)->mutable_elements()) convert(element);
+            break;
+        case ASTNode::Type::OBJECT_LITERAL:
+            for (const auto& property : static_cast<ObjectLiteral*>(node)->get_properties()) convert(property->value);
+            break;
+        case ASTNode::Type::SPREAD_ELEMENT:
+            convert(static_cast<SpreadElement*>(node)->mutable_argument());
+            break;
+        default:
+            break;
+    }
 }
 
 bool Parser::tape_gap_exhausted() const {
@@ -10508,7 +10691,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             } else if (match(TokenType::ASSIGN) && dynamic_cast<Identifier*>(key.get())) {
                 // CoverInitializedName: {a = expr} - valid in destructuring assignment patterns
                 advance();
-                auto default_expr = parse_assignment_expression();
+                auto default_expr = parse_assignment_maybe_tape();
                 if (!default_expr) {
                     add_error("Expected expression after '=' in shorthand default");
                     return nullptr;
@@ -10534,7 +10717,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
                 bool saved_iae2 = options_.in_array_element;
                 options_.in_array_element = true;
-                auto value = parse_assignment_expression();
+                auto value = parse_assignment_maybe_tape();
                 options_.in_array_element = saved_iae2;
                 if (!value) {
                     add_error("Expected property value");
@@ -10632,7 +10815,7 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
             } else {
                 bool saved_iae = options_.in_array_element;
                 options_.in_array_element = true;
-                auto element = parse_assignment_expression();
+                auto element = parse_assignment_maybe_tape();
                 options_.in_array_element = saved_iae;
                 if (!element) {
                     add_error("Expected array element");
@@ -11736,6 +11919,9 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
         return nullptr;
     }
     if (!literal) return nullptr;
+    // Its elements and values were tried as tapes; a pattern reads them as
+    // targets and defaults.
+    untape_pattern(literal.get());
     // Refine the cover grammar: the literal parser accepts forms that are legal
     // as an expression but not as a pattern.
     if (!validate_binding_pattern(literal.get())) return nullptr;
@@ -11759,7 +11945,7 @@ std::unique_ptr<ASTNode> Parser::parse_spread_element() {
 
     bool saved_iae = options_.in_array_element;
     options_.in_array_element = true;
-    auto argument = parse_assignment_expression();
+    auto argument = parse_assignment_maybe_tape();
     options_.in_array_element = saved_iae;
     if (!argument) {
         add_error("Expected expression after '...'");

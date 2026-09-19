@@ -531,6 +531,15 @@ public:
     bool tape_chain_can_start(TokenType type) const;
     std::unique_ptr<ASTNode> parse_tape_or_tree(bool sequence, bool for_init = false);
     std::unique_ptr<ASTNode> parse_for_init_maybe_tape();
+    // A tape rebuilt as the tree the real parser would have made for the same
+    // source, for the places that read a parsed expression back as something
+    // else (an assignment pattern reads its elements as targets and defaults).
+    // Consumes the tape's embedded nodes.
+    static std::unique_ptr<ASTNode> materialize_tape(TapedExpression& tape);
+    // Rebuilds, in place, every tape among the elements and values of an
+    // array or object literal about to be read as a pattern (nested
+    // literals and rest elements included).
+    static void untape_pattern(ASTNode* node);
 
     std::unique_ptr<ASTNode> parse_try_statement();
     std::unique_ptr<ASTNode> parse_throw_statement();

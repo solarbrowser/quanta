@@ -159,6 +159,9 @@ enum class TapeTag : uint8_t {
 // `&&` / `??` / `||` mixing restriction only applies to unparenthesized
 // operands, and the tape has no other trace of a paren.
 constexpr uint8_t kTapeParenthesized = 1;
+// Set on an Object property entry written in shorthand (`{a}`), so a tape can
+// be turned back into the tree the real parser would have built for it.
+constexpr uint8_t kTapeShorthand = 2;
 
 // `span`: how many entries (including this one) this entry's whole subtree
 // occupies -- e.g. a Binary entry's span is 1 + left's span + right's span.

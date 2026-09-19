@@ -274,6 +274,9 @@ public:
     }
 
     TapeView tape() const { return TapeView(entries_, count_); }
+    // Hands an embedded node over, for the parser rebuilding this tape as a
+    // tree; the tape is spent afterwards.
+    std::unique_ptr<ASTNode> take_embedded(size_t index) { return std::move((*embedded_)[index]); }
     const std::vector<std::unique_ptr<ASTNode>>& embedded() const {
         static const std::vector<std::unique_ptr<ASTNode>> none;
         return embedded_ ? *embedded_ : none;
@@ -2104,6 +2107,7 @@ public:
         : ASTNode(Type::ARRAY_LITERAL, start, end), elements_(std::move(elements)) {}
     
     const std::vector<std::unique_ptr<ASTNode>>& get_elements() const { return elements_; }
+    std::vector<std::unique_ptr<ASTNode>>& mutable_elements() { return elements_; }
     size_t element_count() const { return elements_.size(); }
     bool has_trailing_comma_after_spread() const { return trailing_comma_after_spread_; }
     void set_trailing_comma_after_spread(bool v) { trailing_comma_after_spread_ = v; }
@@ -2122,6 +2126,7 @@ public:
         : ASTNode(Type::SPREAD_ELEMENT, start, end), argument_(std::move(argument)) {}
     
     ASTNode* get_argument() const { return argument_.get(); }
+    std::unique_ptr<ASTNode>& mutable_argument() { return argument_; }
     
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
