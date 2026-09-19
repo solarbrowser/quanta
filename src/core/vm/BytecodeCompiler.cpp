@@ -1213,9 +1213,35 @@ bool contains_hoisted_decl_by_walk(const ASTNode* node) {
 // Never descends into a nested function/class -- a closure's own `this`
 // (or, for an arrow, an outer one reached through ITS OWN chunk's LdaThis)
 // is never this chunk's business.
+// The same shapes count_this_refs recognizes in the tree: Nullish and
+// Conditional hold ThisCacheBarrier-guarded branches and count nothing.
+int count_tape_this_refs(const ExprTape& tape, size_t index) {
+    const TapeEntry& e = tape[index];
+    switch (e.tag) {
+        case TapeTag::Identifier:
+            return NamePool::text(e.name_id) == "this" ? 1 : 0;
+        case TapeTag::Binary:
+        case TapeTag::Unary:
+        case TapeTag::Member:
+        case TapeTag::Call:
+        case TapeTag::Assign:
+        case TapeTag::MemberAssign: {
+            int total = 0;
+            for (size_t child = index + 1; child < index + e.span; child += tape[child].span) {
+                total += count_tape_this_refs(tape, child);
+            }
+            return total;
+        }
+        default:
+            return 0;
+    }
+}
+
 int count_this_refs(const ASTNode* node) {
     if (!node) return 0;
     switch (node->get_type()) {
+        case ASTNode::Type::TAPED_EXPRESSION:
+            return count_tape_this_refs(static_cast<const TapedExpression*>(node)->tape(), 0);
         case ASTNode::Type::IDENTIFIER:
             return static_cast<const Identifier*>(node)->get_name() == "this" ? 1 : 0;
         case ASTNode::Type::BLOCK_STATEMENT: {
@@ -2409,7 +2435,7 @@ void collect_free_names(const ASTNode* node,
                 if (e.tag != TapeTag::Identifier && e.tag != TapeTag::Assign) continue;
                 const std::string& n = NamePool::text(e.name_id);
                 if (n == "eval") { op.saw_eval = true; return; }
-                if (n == "arguments") {
+                if (n == "arguments" || n == "this") {
                     if (in_arrow) free_out.insert(n);
                     continue;
                 }
@@ -12117,10 +12143,27 @@ bool BytecodeCompiler::tape_compilable(const ExprTape& tape) {
 }
 
 // Mirrors compile_expression's IDENTIFIER case (and, for `typeof x`, the
-// identifier branch of its TYPEOF case) for every name a tape can hold --
-// `this` is never one, it lexes as its own token. Returns false where the
-// tree case would.
+// identifier branch of its TYPEOF case) for every name a tape can hold,
+// `this` included. Returns false where the tree case would.
 bool BytecodeCompiler::emit_tape_identifier_read(const std::string& name, bool typeof_operand) {
+    if (name == "this") {
+        if (typeof_operand) {
+            emit(Op::LdaThis);
+            return true;
+        }
+        if (this_cache_reg_ >= 0 && this_cache_valid_) {
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(this_cache_reg_));
+            return true;
+        }
+        emit(Op::LdaThis);
+        if (this_cache_reg_ >= 0) {
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(this_cache_reg_));
+            this_cache_valid_ = true;
+        }
+        return true;
+    }
     if (with_depth_ > 0) {
         emit(Op::LdaWith);
         emit_u16(add_name(name));

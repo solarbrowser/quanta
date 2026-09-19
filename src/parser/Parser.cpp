@@ -5285,6 +5285,16 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             advance();
             return true;
         }
+        case TokenType::THIS: {
+            // An Identifier entry named "this", exactly as parse_this_
+            // expression builds an Identifier node, so every name-based
+            // analysis treats the two alike.
+            uint32_t name_id = NamePool::intern("this");
+            tape.push_back(TapeEntry{TapeTag::Identifier, 1, 0.0, name_id, 0, 0, ""});
+            note_name("this");
+            advance();
+            return true;
+        }
         case TokenType::BOOLEAN: {
             uint8_t kind = token_text(token) == "true" ? 0 : 1;
             tape.push_back(TapeEntry{TapeTag::Constant, 1, 0.0, 0, kind, 0, ""});
