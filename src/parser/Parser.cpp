@@ -5367,7 +5367,6 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
             continue;
         }
         if (match(TokenType::LEFT_PAREN)) {
-            if (tape[start_idx].tag == TapeTag::Member) return false;
             if (tape[start_idx].tag == TapeTag::Identifier) {
                 const std::string& callee_name = NamePool::text(tape[start_idx].name_id);
                 if (callee_name == "super" || callee_name == "eval") return false;

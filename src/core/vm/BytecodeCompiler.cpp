@@ -12066,7 +12066,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
 
         case ASTNode::Type::TAPED_EXPRESSION: {
             const auto* tp = static_cast<const TapedExpression*>(node);
-            if (compile_tape_expr(tp->tape(), 0, discard) != 0) return !failed_;
+            if (tape_compilable(tp->tape()) && compile_tape_expr(tp->tape(), 0, discard) != 0) return !failed_;
             if (failed_) return false;
             // compile_tape_expr's own restricted coverage didn't cover this
             // tape after all -- most commonly a name the parser had no way
@@ -12084,6 +12084,66 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         default:
             return false;
     }
+}
+
+// Whether compile_tape_expr can finish this tape. It emits as it goes, and a
+// mid-tape failure leaves that partial code behind -- the tree reparse that
+// follows would then run every already-emitted effect (a getter, a call)
+// a second time -- so each condition that can make it give up is checked up
+// front instead, before anything is emitted.
+bool BytecodeCompiler::tape_compilable(const ExprTape& tape) {
+    for (const TapeEntry& e : tape) {
+        switch (e.tag) {
+            case TapeTag::Identifier: {
+                if (with_depth_ > 0) break;
+                const std::string& name = NamePool::text(e.name_id);
+                if (is_local(name) && !lexical_out_of_scope(name)) break;
+                if ((name == "arguments" && !allow_arguments_) || name == "super" || name == "new") return false;
+                break;
+            }
+            case TapeTag::Assign: {
+                const std::string& name = NamePool::text(e.name_id);
+                if (with_depth_ > 0 || !is_local(name) || lexical_out_of_scope(name)) return false;
+                break;
+            }
+            case TapeTag::Call:
+                if (e.call_argc > 200) return false;
+                break;
+            default:
+                break;
+        }
+    }
+    return true;
+}
+
+// Mirrors compile_expression's IDENTIFIER case (and, for `typeof x`, the
+// identifier branch of its TYPEOF case) for every name a tape can hold --
+// `this` is never one, it lexes as its own token. Returns false where the
+// tree case would.
+bool BytecodeCompiler::emit_tape_identifier_read(const std::string& name, bool typeof_operand) {
+    if (with_depth_ > 0) {
+        emit(Op::LdaWith);
+        emit_u16(add_name(name));
+        emit_u8(typeof_operand ? 1 : 0);
+        return !failed_;
+    }
+    if (is_local(name) && !lexical_out_of_scope(name)) {
+        emit_read_local(name);
+        return !failed_;
+    }
+    if ((name == "arguments" && !allow_arguments_) || name == "super" || name == "new") return false;
+    if (typeof_operand) {
+        emit(Op::LdaLookupTypeof);
+        emit_u16(add_name(name));
+        return !failed_;
+    }
+    int hops; uint8_t slot;
+    if (ancestor_chain_ && find_ancestor_slot(name, hops, slot)) {
+        emit_ancestor_read(hops, slot, name);
+        return !failed_;
+    }
+    emit_lookup_ref(Op::LdaLookup, Op::LdaLookupWide, name);
+    return !failed_;
 }
 
 // Proof-of-concept tape consumer -- see ExprTape's own comment
@@ -12111,17 +12171,8 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::Identifier: {
-            const std::string& name = NamePool::text(e.name_id);
-            // Mirrors compile_expression's own IDENTIFIER case, narrowed to
-            // the one path this proof-of-concept needs to exercise: an
-            // ordinary declared local, in scope, past its TDZ. Every other
-            // form (this/with/lookup/ancestor-chain) is exactly what a real
-            // port would add next, using the same private helpers.
-            if (with_depth_ == 0 && is_local(name) && !lexical_out_of_scope(name)) {
-                emit_read_local(name);
-                return failed_ ? 0 : index + e.span;
-            }
-            return 0;
+            if (!emit_tape_identifier_read(NamePool::text(e.name_id), /*typeof_operand=*/false)) return 0;
+            return failed_ ? 0 : index + e.span;
         }
         case TapeTag::Binary: {
             // Mirrors compile_expression's own BINARY_EXPRESSION case for
@@ -12278,16 +12329,86 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::Call: {
-            // Mirrors compile_expression's own plain-call fallback (callee
-            // compiled and Star'd into its own register, arguments compiled
-            // into consecutive temps, Op::Call) -- narrowed to exclude
-            // member-callee (obj.method(), needs CallResolved), "super"/
-            // "eval" callees (each need their own ceremony), spread,
-            // optional chaining, and tagged templates, exactly as TapeTag::
-            // Call's own comment says.
+            // Mirrors compile_expression's own CALL_EXPRESSION case: a
+            // member callee takes the receiver-carrying forms (CallResolved,
+            // or CallViaFunctionCall/Apply for `.call`/`.apply`), anything
+            // else the plain-call fallback (callee compiled and Star'd into
+            // its own register, arguments compiled into consecutive temps,
+            // Op::Call). "super"/"eval" callees (each need their own
+            // ceremony), spread, optional chaining and tagged templates are
+            // never represented.
+            if (e.call_argc > 200) return 0;
             size_t callee_idx = index + 1;
             const TapeEntry& callee_e = tape[callee_idx];
-            if (callee_e.tag == TapeTag::Member) return 0;
+            if (callee_e.tag == TapeTag::Member) {
+                const bool computed = callee_e.call_argc != 0;
+                static const std::string kNoProp;
+                const std::string& prop = computed ? kNoProp : NamePool::text(callee_e.name_id);
+                size_t obj_idx = callee_idx + 1;
+                size_t after_obj = obj_idx + tape[obj_idx].span;
+                size_t args_idx = callee_idx + callee_e.span;
+                auto compile_args = [&]() -> bool {
+                    size_t arg_idx = args_idx;
+                    for (uint8_t i = 0; i < e.call_argc; i++) {
+                        int arg_reg = alloc_temp();
+                        if (failed_) return false;
+                        size_t after_arg = compile_tape_expr(tape, arg_idx, false);
+                        if (after_arg == 0) return false;
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(arg_reg));
+                        arg_idx = after_arg;
+                    }
+                    return true;
+                };
+                const bool is_call_form = !computed && prop == "call";
+                const bool is_apply_form = !computed && prop == "apply" && e.call_argc == 2;
+                if (compile_tape_expr(tape, obj_idx, false) == 0) return 0;
+                int obj_reg = alloc_temp();
+                if (failed_) return 0;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(obj_reg));
+                if (is_call_form || is_apply_form) {
+                    int args_start = next_register_;
+                    if (!compile_args()) return 0;
+                    uint32_t fb_idx = alloc_feedback_slot();
+                    if (is_call_form) {
+                        emit(fb_idx <= 0xFFFFu ? Op::CallViaFunctionCall : Op::CallViaFunctionCallWide);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        emit_u8(static_cast<uint8_t>(args_start));
+                        emit_u8(e.call_argc);
+                    } else {
+                        emit(fb_idx <= 0xFFFFu ? Op::CallViaFunctionApply : Op::CallViaFunctionApplyWide);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        emit_u8(static_cast<uint8_t>(args_start));
+                    }
+                    if (fb_idx <= 0xFFFFu) emit_u16(static_cast<uint16_t>(fb_idx));
+                    else emit_u32(fb_idx);
+                    free_temp(obj_reg);
+                    return failed_ ? 0 : index + e.span;
+                }
+                if (!computed) {
+                    emit_named_ic(Op::GetNamed, Op::GetNamedWide, static_cast<uint8_t>(obj_reg),
+                                  add_name(prop), alloc_feedback_slot());
+                } else {
+                    if (compile_tape_expr(tape, after_obj, false) == 0) return 0;
+                    emit_keyed_ic(Op::GetKeyed, Op::GetKeyedWide, static_cast<uint8_t>(obj_reg),
+                                  alloc_keyed_feedback());
+                }
+                int func_reg = alloc_temp();
+                if (failed_) return 0;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(func_reg));
+                int args_start = next_register_;
+                if (!compile_args()) return 0;
+                emit(Op::CallResolved);
+                emit_u8(static_cast<uint8_t>(func_reg));
+                emit_u8(static_cast<uint8_t>(obj_reg));
+                emit_u8(static_cast<uint8_t>(args_start));
+                emit_u8(e.call_argc);
+                emit_u16(add_name(computed ? std::string("<computed>") : prop));
+                free_temp(obj_reg);
+                return failed_ ? 0 : index + e.span;
+            }
             std::string callee_name;
             if (callee_e.tag == TapeTag::Identifier) {
                 callee_name = NamePool::text(callee_e.name_id);
@@ -12352,24 +12473,21 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
         }
         case TapeTag::Unary: {
             // Mirrors compile_expression's own UNARY_EXPRESSION case for
-            // exactly these six ops (:10385-10434) -- each is just "compile
-            // the operand, emit one op," no temp register needed. TYPEOF's
-            // real case looks special (:10401-10429, a multi-branch check
-            // for an Identifier operand: this/with/local/arguments-super-
-            // new-bail/lookup) but needs no separate mirror here: that
-            // whole branch exists ONLY to give a non-local identifier a
-            // path that doesn't throw on typeof-of-an-unresolved-global,
-            // and every one of those non-local shapes already fails
-            // compile_tape_expr's own Identifier case (its is_local/
-            // lexical_out_of_scope/with_depth_==0 checks) -- so compiling
-            // the operand generically through this same function already
-            // produces the identical bytecode for the one shape this tape
-            // supports (a plain local read), and correctly returns 0
-            // (triggering the reparse fallback, which has every real
-            // branch) for every shape it doesn't.
+            // exactly these six ops -- each is just "compile the operand,
+            // emit one op," no temp register needed. `typeof <identifier>`
+            // reads its operand through the non-throwing variant, since an
+            // unresolved global must yield "undefined" rather than a
+            // ReferenceError.
             using UnOp = UnaryExpression::Operator;
             UnOp op = static_cast<UnOp>(e.binary_op);
-            size_t after_operand = compile_tape_expr(tape, index + 1, false);
+            size_t after_operand;
+            if (op == UnOp::TYPEOF && tape[index + 1].tag == TapeTag::Identifier) {
+                if (!emit_tape_identifier_read(NamePool::text(tape[index + 1].name_id),
+                                               /*typeof_operand=*/true)) return 0;
+                after_operand = index + 1 + tape[index + 1].span;
+            } else {
+                after_operand = compile_tape_expr(tape, index + 1, false);
+            }
             if (after_operand == 0) return 0;
             switch (op) {
                 case UnOp::PLUS:        emit(Op::ToNumber); break;

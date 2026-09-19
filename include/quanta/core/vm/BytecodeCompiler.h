@@ -75,11 +75,11 @@ enum class TapeTag : uint8_t {
     // compile_expression returning false falls the whole containing body
     // back to the general path.
     Member,
-    // Plain `f(a, b, c)` only -- callee is anything except a Member entry
-    // (obj.method() needs the receiver-passing CallResolved form, out of
-    // scope here) and not the identifiers "super"/"eval" (each need their
-    // own ceremony compile_expression's CALL_EXPRESSION case special-cases
-    // first). No spread, no optional chaining, no tagged template.
+    // Plain `f(a, b, c)` and `obj.method(a, b)` / `obj[key](a, b)` (a Member
+    // callee takes the receiver-passing form) -- the callee is never the
+    // identifiers "super"/"eval" (each need their own ceremony
+    // compile_expression's CALL_EXPRESSION case special-cases first). No
+    // spread, no optional chaining, no tagged template.
     Call,
     // Plain `x = <rhs>` only -- `x` must already be a register-resident
     // local, past its TDZ (the outer/global/with/direct-eval-park/compound
@@ -260,6 +260,8 @@ private:
     bool compile_expression(const ASTNode* node, bool discard = false);  // result in accumulator
     static bool operand_cannot_write_registers(const ASTNode* node);
     static bool tape_cannot_write_registers(const ExprTape& tape, size_t index);
+    bool emit_tape_identifier_read(const std::string& name, bool typeof_operand);
+    bool tape_compilable(const ExprTape& tape);
     // Proof-of-concept tape consumer -- see ExprTape's own comment. Mirrors
     // compile_expression's own logic (same private helpers, same
     // register/env decisions) for exactly the tags ExprTape currently
