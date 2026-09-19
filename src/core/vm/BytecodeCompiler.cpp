@@ -519,6 +519,19 @@ void collect_assigned_identifiers(const ASTNode* node,
             collect_assigned_identifiers(n->get_right(), candidates, out);
             return;
         }
+        // The only store a tape can hold is an Assign entry's own target
+        // (plain `=` to a name) -- no compound/update/destructuring form is
+        // representable -- so unlike the conservative default below, which
+        // marks every candidate const as assigned (and so pushes it into
+        // the environment, turning every read of it inside a hot loop into
+        // an Environment lookup instead of a register read), a tape can name
+        // exactly what it assigns.
+        case ASTNode::Type::TAPED_EXPRESSION: {
+            for (const auto& e : static_cast<const TapedExpression*>(node)->tape()) {
+                if (e.tag == TapeTag::Assign) out.insert(NamePool::text(e.name_id));
+            }
+            return;
+        }
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
             // Reached as a real assignment target (`({a, b} = x)` -- the
             // VARIABLE_DECLARATION case above intercepts the declaring form
@@ -908,6 +921,16 @@ bool contains_closure_by_walk(const ASTNode* node) {
             }
             return false;
         }
+        // None of the 12 tags a tape can hold can ever be a closure --
+        // unlike every other type this default falls through for, this one
+        // is provably safe to answer "no" for, not just conveniently absent
+        // from this switch yet. Needed explicitly, not just for its own
+        // sake: `const u = users[i];` forcing its whole enclosing scope
+        // into env_mode purely because its init is a TapedExpression (an
+        // "unknown shape" to this function) turned every local in a hot
+        // loop into an Environment lookup instead of a register read.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            return false;
 
         default:
             // An unknown shape could hold a closure, and answering "no" leaves
@@ -1160,6 +1183,12 @@ bool contains_hoisted_decl_by_walk(const ASTNode* node) {
             }
             return false;
         }
+        // Same reasoning as contains_closure_by_walk's own TAPED_EXPRESSION
+        // case just above -- none of the 12 tags can represent a function/
+        // class declaration, provably, so this is safe to answer "no" for
+        // rather than falling through to the conservative default below.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            return false;
 
         default:
             // An unknown shape could hold a hoisted declaration, and
@@ -1489,6 +1518,25 @@ bool uses_arguments_by_walk(const ASTNode* node) {
     switch (node->get_type()) {
         case ASTNode::Type::IDENTIFIER:
             return static_cast<const Identifier*>(node)->get_name() == "arguments";
+        // Same check as IDENTIFIER above, run over the tape's own
+        // Identifier entries plus Assign entries' own target name_id --
+        // same reasoning as collect_closure_names/references_outside's own
+        // TAPED_EXPRESSION cases (`arguments = 5` in sloppy mode is a
+        // perfectly ordinary tape-eligible Assign). This one mostly matters
+        // when uses_arguments's own subtree_flags cache-check (which
+        // TapedExpression's construction always satisfies directly) is
+        // bypassed by a caller walking a larger, uncached tree that
+        // happens to contain one -- but is correct to have regardless of
+        // when it's actually reached.
+        case ASTNode::Type::TAPED_EXPRESSION: {
+            for (const auto& e : static_cast<const TapedExpression*>(node)->tape()) {
+                if ((e.tag == TapeTag::Identifier || e.tag == TapeTag::Assign) &&
+                    NamePool::text(e.name_id) == "arguments") {
+                    return true;
+                }
+            }
+            return false;
+        }
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::FUNCTION_DECLARATION:
             return false;
@@ -2346,6 +2394,27 @@ void collect_free_names(const ASTNode* node,
                 return;  // ordinary function/method: own per-call binding, no environment needed
             }
             if (!is_bound(n)) free_out.insert(n);
+            return;
+        }
+        // Each Identifier entry and each Assign entry's own target gets
+        // exactly the IDENTIFIER case's treatment above (the tree's
+        // ASSIGNMENT_EXPRESSION recurses into its LHS the same way). A tape
+        // never names `this`/`super`/`new.target` -- those lex as their own
+        // tokens try_tape_primary never matches -- but `arguments` and
+        // `eval` are plain identifiers and can appear. Without this case the
+        // conservative default below marked the whole closure as needing its
+        // outer environment for merely containing a tape-encoded expression.
+        case ASTNode::Type::TAPED_EXPRESSION: {
+            for (const auto& e : static_cast<const TapedExpression*>(node)->tape()) {
+                if (e.tag != TapeTag::Identifier && e.tag != TapeTag::Assign) continue;
+                const std::string& n = NamePool::text(e.name_id);
+                if (n == "eval") { op.saw_eval = true; return; }
+                if (n == "arguments") {
+                    if (in_arrow) free_out.insert(n);
+                    continue;
+                }
+                if (!is_bound(n)) free_out.insert(n);
+            }
             return;
         }
         case ASTNode::Type::FUNCTION_EXPRESSION: {
