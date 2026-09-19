@@ -554,6 +554,7 @@ public:
     // assignment_expression() twice rather than itself.
     bool try_tape_conditional(ExprTape& tape);
     bool try_tape_assignment(ExprTape& tape);
+    bool try_tape_expression(ExprTape& tape);
 
     std::unique_ptr<ASTNode> parse_parenthesized_expression();
     std::unique_ptr<ASTNode> parse_function_expression();

@@ -5287,6 +5287,20 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             advance();
             return true;
         }
+        case TokenType::LEFT_PAREN: {
+            // parse_parenthesized_expression, minus what only matters where
+            // the tape already bails (`(a) = 1`'s paren flag, `(-x) ** y`).
+            // `(...)` followed by `=>` is an arrow's parameter list, which
+            // the real parser tells apart up front.
+            advance();
+            const size_t start_idx = tape.size();
+            if (!try_tape_expression(tape)) return false;
+            if (!match(TokenType::RIGHT_PAREN)) return false;
+            advance();
+            if (match(TokenType::ARROW)) return false;
+            tape[start_idx].flags |= kTapeParenthesized;
+            return true;
+        }
         case TokenType::THIS: {
             // An Identifier entry named "this", exactly as parse_this_
             // expression builds an Identifier node, so every name-based
@@ -5515,7 +5529,7 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
 // have been folded into a try_tape_binary result).
 bool Parser::try_tape_nullish(ExprTape& tape) {
     auto is_unparenthesized_and = [&](size_t at) {
-        return tape[at].tag == TapeTag::Binary &&
+        return tape[at].tag == TapeTag::Binary && !(tape[at].flags & kTapeParenthesized) &&
                static_cast<BinaryExpression::Operator>(tape[at].binary_op) ==
                    BinaryExpression::Operator::LOGICAL_AND;
     };
@@ -5548,11 +5562,11 @@ bool Parser::try_tape_logical_or(ExprTape& tape) {
     if (!try_tape_nullish(tape)) return false;
     for (;;) {
         if (!match(TokenType::LOGICAL_OR)) break;
-        if (tape[start_idx].tag == TapeTag::Nullish) return false;
+        if (tape[start_idx].tag == TapeTag::Nullish && !(tape[start_idx].flags & kTapeParenthesized)) return false;
         advance();
         size_t right_idx = tape.size();
         if (!try_tape_nullish(tape)) return false;
-        if (tape[right_idx].tag == TapeTag::Nullish) return false;
+        if (tape[right_idx].tag == TapeTag::Nullish && !(tape[right_idx].flags & kTapeParenthesized)) return false;
         uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
         tape.insert(tape.begin() + start_idx,
                     TapeEntry::with_op(TapeTag::Binary, span,
@@ -5649,6 +5663,22 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
     return true;
 }
 
+// Mirrors parse_expression's own sequence loop: `a, b, c` is a left-
+// associative chain of COMMA binaries.
+bool Parser::try_tape_expression(ExprTape& tape) {
+    size_t start_idx = tape.size();
+    if (!try_tape_assignment(tape)) return false;
+    while (match(TokenType::COMMA)) {
+        advance();
+        if (!try_tape_assignment(tape)) return false;
+        uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+        tape.insert(tape.begin() + start_idx,
+                    TapeEntry::with_op(TapeTag::Binary, span,
+                                       static_cast<uint8_t>(BinaryExpression::Operator::COMMA)));
+    }
+    return true;
+}
+
 // The real last-consumed token's own end, scanned back past whitespace/
 // newline/comment exactly like previous_token_is_dot() does (Parser.cpp:
 // 3043) -- get_current_position() would instead give the START of
@@ -5695,9 +5725,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
     // directive, BlockStatement::has_use_strict_directive, Parser.cpp's own
     // last_body_strict_ scan), which recognize a directive by the
     // STATEMENT's own AST node being STRING_LITERAL-shaped.
-    bool ok = try_tape_assignment(tape) &&
-              current_token().get_type() != TokenType::COMMA &&
-              tape.size() > 1;
+    bool ok = try_tape_expression(tape) && tape.size() > 1;
     if (ok) {
         Position tape_end = last_consumed_token_end(tape_start);
         return std::make_unique<TapedExpression>(ExprTape(tape.begin(), tape.end()), tape_start, tape_end,

@@ -12231,18 +12231,10 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             // compile left, Star into a temp, compile right, emit vm_op
             // against the temp.
             //
-            // NULLISH_COALESCING and EXPONENT are NOT here despite
-            // compile_expression handling them as BinaryExpression/
-            // NullishCoalescingExpression nodes: `??` is its own tree node
-            // type, not a BinaryExpression operator, so it needs its own
-            // tag (not yet added); EXPONENT is a separate, right-
-            // associative grammar level in the real parser
-            // (parse_exponentiation_expression, between parse_binary_chain
-            // and parse_unary_expression) that try_tape_binary doesn't
-            // reach at all. COMMA is likewise a different grammar level
-            // (parse_expression's own top-level loop). All three stay
-            // unsupported until each gets its own deliberate design, not a
-            // case added here.
+            // `??` is its own tag (NullishCoalescingExpression is a separate
+            // tree node, not a BinaryExpression operator) and EXPONENT is a
+            // separate right-associative grammar level the tape does not
+            // build; COMMA is handled just below.
             //
             // IN's one special case (:10309-10317, `#name in obj` as a
             // brand check rather than a property lookup) needs no mirror
@@ -12272,6 +12264,12 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
                 }
                 if (after_right == 0) return 0;
                 if (!patch_jump(skip)) return 0;
+                return failed_ ? 0 : index + e.span;
+            }
+            if (op == BinOp::COMMA) {
+                size_t after_left = compile_tape_expr(tape, index + 1, false);
+                if (after_left == 0) return 0;
+                if (compile_tape_expr(tape, after_left, false) == 0) return 0;
                 return failed_ ? 0 : index + e.span;
             }
             Op vm_op;

@@ -130,6 +130,11 @@ enum class TapeTag : uint8_t {
     MemberAssign,
 };
 
+// Set on the root entry of a subtree written in parentheses. The grammar's
+// `&&` / `??` / `||` mixing restriction only applies to unparenthesized
+// operands, and the tape has no other trace of a paren.
+constexpr uint8_t kTapeParenthesized = 1;
+
 // `span`: how many entries (including this one) this entry's whole subtree
 // occupies -- e.g. a Binary entry's span is 1 + left's span + right's span.
 // This is what lets a consumer jump straight to a sibling by index instead
@@ -141,6 +146,7 @@ struct TapeEntry {
     TapeTag tag;
     uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator; Unary: UnaryExpression::Operator; Constant: 0 true, 1 false, 2 null
     uint8_t call_argc = 0;      // Call: argument count (the callee, then argc argument subtrees, follow this entry); Member: 1 if computed (obj[expr], key subtree follows the object's), 0 if not (obj.prop, name_id holds the property)
+    uint8_t flags = 0;          // kTapeParenthesized: this entry roots a subtree that was written in parentheses
     uint32_t span = 1;
     // An entry uses at most one of these payloads. The struct is 16 bytes on
     // purpose: an entry that costs as much as the AST node it replaces saves
