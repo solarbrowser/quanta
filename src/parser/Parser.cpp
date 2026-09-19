@@ -1325,6 +1325,7 @@ std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_call_expression() {
+    if (auto cached = take_cached_node(CacheKind::Chain)) return cached;
     std::unique_ptr<ASTNode> expr;
 
     if (current_token().get_type() == TokenType::NEW) {
@@ -1868,6 +1869,7 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
+    if (auto cached = take_cached_node(CacheKind::Primary)) return cached;
     // Every form that nests -- parentheses, array and object literals,
     // function expressions, a conditional's branches -- comes back through
     // here once per level, so one check here bounds all of them.
@@ -5265,10 +5267,26 @@ bool Parser::try_tape_identifier_ref_ok(const std::string& name) const {
 }
 bool Parser::try_tape_primary(ExprTape& tape) {
     if (tape_gap_exhausted()) return false;
+    const char stack_probe = 0;
+    if (stack_exhausted(&stack_probe)) return false;
     const Token& token = current_token();
     switch (token.get_type()) {
+        // Read by the real parser and embedded whole: none of these has a
+        // tape encoding, and the tape goes on around them.
+        case TokenType::TEMPLATE_LITERAL:
+        case TokenType::REGEX:
+        case TokenType::CLASS:
+        case TokenType::BIGINT_LITERAL:
+            return try_tape_embed(tape, &Parser::parse_primary_expression, CacheKind::Primary);
+        case TokenType::UNDEFINED: {
+            uint32_t name_id = NamePool::intern("undefined");
+            tape.push_back(TapeEntry::named(TapeTag::Identifier, 1, name_id));
+            note_name("undefined");
+            advance();
+            return true;
+        }
         case TokenType::FUNCTION:
-            return try_tape_embed(tape, &Parser::parse_function_expression);
+            return try_tape_embed(tape, &Parser::parse_function_expression, CacheKind::Function);
         case TokenType::NUMBER: {
             double value = token.has_numeric_value() ? tokens_.numeric_value_of(token) : 0.0;
             tape.push_back(TapeEntry::number(value));
@@ -5282,7 +5300,9 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             // BlockStatement::has_use_strict_directive) must tell an escaped
             // "use strict" apart from a real one -- simplest to just never
             // produce an ambiguous entry in the first place.
-            if (token.string_has_escapes()) return false;
+            if (token.string_has_escapes()) {
+                return try_tape_embed(tape, &Parser::parse_primary_expression, CacheKind::Primary);
+            }
             const size_t open_quote = token.get_start().offset;
             const size_t close_quote = token.get_end().offset - 1;
             tape.push_back(TapeEntry::string(static_cast<uint32_t>(open_quote + 1),
@@ -5406,7 +5426,7 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             if (!try_tape_primary(tape) || tape[start_idx].tag != TapeTag::Identifier) return false;
             while (match(TokenType::DOT)) {
                 advance();
-                if (!match(TokenType::IDENTIFIER)) return false;
+                if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) return false;
                 uint32_t prop_id = NamePool::intern(token_string(current_token()));
                 advance();
                 uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
@@ -5519,15 +5539,15 @@ bool Parser::try_tape_primary(ExprTape& tape) {
 // and plain `(args)` (no spread/optional/tagged-template, and the callee
 // must not itself be a Member entry or the bare identifier "super"/"eval" --
 // exactly compile_tape_expr's own Member/Call restrictions).
-bool Parser::try_tape_call_or_member(ExprTape& tape) {
+bool Parser::try_tape_call_or_member_inner(ExprTape& tape) {
     size_t start_idx = tape.size();
     if (!try_tape_primary(tape)) return false;
     for (;;) {
         if (match(TokenType::DOT)) {
             advance();
-            // Bails on '#' (private) and a keyword-as-property-name too --
-            // both fail this same "must be a plain IDENTIFIER" check.
-            if (!match(TokenType::IDENTIFIER)) return false;
+            // Bails on '#' (private). A keyword is a valid property name here,
+            // as it is in the real suffix loop.
+            if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) return false;
             std::string prop = token_string(current_token());
             advance();
             uint32_t name_id = NamePool::intern(prop);
@@ -5555,6 +5575,17 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
             if (tape[start_idx].tag == TapeTag::Identifier) {
                 const std::string& callee_name = NamePool::text(tape[start_idx].name_id);
                 if (callee_name == "super" || callee_name == "eval") return false;
+            }
+            // A member the tape holds as a whole node is called with itself
+            // as the receiver, which only the tree case for a call knows how
+            // to do.
+            if (tape[start_idx].tag == TapeTag::Node) {
+                const ASTNode::Type callee_type =
+                    tape_attempt_->embedded[tape[start_idx].name_id].node->get_type();
+                if (callee_type == ASTNode::Type::MEMBER_EXPRESSION ||
+                    callee_type == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
+                    return false;
+                }
             }
             advance();
             uint8_t argc = 0;
@@ -5586,6 +5617,67 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
             return false;
         }
         break;
+    }
+    return true;
+}
+
+// Whether the real parse_call_expression is what would read a chain starting
+// at a token of this type. `await` and `yield` are read a level up or as
+// their own expressions, and the rest cannot start an expression at all.
+bool Parser::tape_chain_can_start(TokenType type) const {
+    switch (type) {
+        case TokenType::AWAIT:
+        case TokenType::YIELD:
+        case TokenType::HASH:
+            return false;
+        case TokenType::THIS: case TokenType::SUPER: case TokenType::NEW: case TokenType::IMPORT:
+        case TokenType::NUMBER: case TokenType::STRING: case TokenType::TEMPLATE_LITERAL:
+        case TokenType::REGEX: case TokenType::BIGINT_LITERAL: case TokenType::BOOLEAN:
+        case TokenType::NULL_LITERAL: case TokenType::UNDEFINED: case TokenType::LEFT_PAREN:
+        case TokenType::LEFT_BRACKET: case TokenType::LEFT_BRACE: case TokenType::FUNCTION:
+        case TokenType::CLASS: case TokenType::ASYNC:
+            return true;
+        default:
+            return token_names_a_binding(type);
+    }
+}
+
+// The call/member chain the tape can hold, or -- when the chain has a piece
+// it cannot (`?.`, a tagged template, a spread, `super`, an array or object
+// literal with members it does not represent, ...) -- the whole chain as
+// the real parser reads it, embedded as one node. Everything above the chain
+// (operators, conditionals, assignments) stays in the tape either way, and
+// the give-up is local to the chain instead of taking the whole expression
+// back to a tree.
+bool Parser::try_tape_call_or_member(ExprTape& tape) {
+    const size_t start_idx = tape.size();
+    const size_t start_token = current_token_index_;
+    const TokenType start_type = current_token().get_type();
+    if (try_tape_call_or_member_inner(tape)) return true;
+    if (!tape_attempt_ || !tape_chain_can_start(start_type)) return false;
+
+    // Nodes the discarded part had already parsed go back for the real read
+    // of the same tokens to pick up, not to be parsed a second time.
+    TapeAttempt& attempt = *tape_attempt_;
+    while (!attempt.embedded.empty() && attempt.embedded.back().start_token >= start_token) {
+        TapeEmbedded& e = attempt.embedded.back();
+        tape_node_cache_[tape_cache_key(e.start_token, e.kind)] = CachedNode{std::move(e.node), e.end_token};
+        attempt.embedded.pop_back();
+    }
+    tape.erase(tape.begin() + start_idx, tape.end());
+    current_token_index_ = start_token;
+    if (!try_tape_embed(tape, &Parser::parse_call_expression, CacheKind::Chain)) return false;
+
+    // An object literal read here as a whole may be `{a = 1}`, which is only
+    // valid as a pattern; parse_assignment_expression rejects it unless an
+    // assignment follows, and the tape has no pattern to give it to.
+    const ASTNode* node = attempt.embedded.back().node.get();
+    if (node->get_type() == ASTNode::Type::OBJECT_LITERAL && !match(TokenType::ASSIGN)) {
+        for (const auto& prop : static_cast<const ObjectLiteral*>(node)->get_properties()) {
+            if (prop->shorthand && prop->value && prop->value->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -5675,6 +5767,9 @@ bool Parser::try_tape_unary(ExprTape& tape) {
         tape[start_idx].tag == TapeTag::Identifier) {
         return false;
     }
+    // `delete` looks at what its operand is (a member, a name), which a
+    // node the tape holds whole does not tell it.
+    if (op == UnaryExpression::Operator::DELETE && tape[start_idx].tag == TapeTag::Node) return false;
     uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
     tape.insert(tape.begin() + start_idx,
                 TapeEntry::with_op(is_update ? TapeTag::Update : TapeTag::Unary, span,
@@ -5829,13 +5924,13 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
     // priority over everything else here.
     if (tape_gap_exhausted()) return false;
     if (token_names_a_binding(current_token().get_type()) && peek_token(1).get_type() == TokenType::ARROW) {
-        return try_tape_embed(tape, &Parser::parse_arrow_function);
+        return try_tape_embed(tape, &Parser::parse_arrow_function, CacheKind::Arrow);
     }
     if (match(TokenType::LEFT_PAREN)) {
         const size_t saved_pos = current_token_index_;
         const bool is_arrow = try_parse_arrow_function_params();
         current_token_index_ = saved_pos;
-        if (is_arrow) return try_tape_embed(tape, &Parser::parse_arrow_function);
+        if (is_arrow) return try_tape_embed(tape, &Parser::parse_arrow_function, CacheKind::Arrow);
     }
     AssignmentExpression::Operator ident_op;
     if (match(TokenType::IDENTIFIER) &&
@@ -5935,7 +6030,7 @@ bool Parser::tape_gap_exhausted() const {
 // Parses a function, arrow or class the real way and embeds the result in
 // the tape. The tokens read since the last such node are set aside first, so
 // that reading the node itself, however long, does not let them go.
-bool Parser::try_tape_embed(ExprTape& tape, std::unique_ptr<ASTNode> (Parser::*parse)()) {
+bool Parser::try_tape_embed(ExprTape& tape, std::unique_ptr<ASTNode> (Parser::*parse)(), CacheKind kind) {
     TapeAttempt& attempt = *tape_attempt_;
     const size_t start_token = current_token_index_;
     if (start_token > attempt.gap_start) {
@@ -5946,15 +6041,15 @@ bool Parser::try_tape_embed(ExprTape& tape, std::unique_ptr<ASTNode> (Parser::*p
     if (!node) return false;
     attempt.gap_start = current_token_index_;
     tape.push_back(TapeEntry::named(TapeTag::Node, 1, static_cast<uint32_t>(attempt.embedded.size())));
-    attempt.embedded.push_back(TapeEmbedded{std::move(node), start_token, current_token_index_});
+    attempt.embedded.push_back(TapeEmbedded{std::move(node), start_token, current_token_index_, kind});
     return true;
 }
 
 // The real parse of a token an attempt already read as a function: takes the
 // node the attempt made and moves past it, instead of reading it again.
-std::unique_ptr<ASTNode> Parser::take_cached_node() {
+std::unique_ptr<ASTNode> Parser::take_cached_node(CacheKind kind) {
     if (tape_node_cache_.empty()) return nullptr;
-    auto it = tape_node_cache_.find(current_token_index_);
+    auto it = tape_node_cache_.find(tape_cache_key(current_token_index_, kind));
     if (it == tape_node_cache_.end()) return nullptr;
     auto node = std::move(it->second.node);
     current_token_index_ = it->second.end_token;
@@ -6021,7 +6116,7 @@ std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence) {
     // Everything the attempt parsed waits, keyed by where it began, for the
     // real parse to reach the same tokens.
     for (auto& e : attempt.embedded) {
-        tape_node_cache_[e.start_token] = CachedNode{std::move(e.node), e.end_token};
+        tape_node_cache_[tape_cache_key(e.start_token, e.kind)] = CachedNode{std::move(e.node), e.end_token};
     }
     current_token_index_ = saved_pos;
     if (use_scratch) tape_scratch_in_use_ = false;
@@ -8023,7 +8118,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_expression() {
-    if (auto cached = take_cached_node()) return cached;
+    if (auto cached = take_cached_node(CacheKind::Function)) return cached;
     // A nested function owns its own suspensions, its own `arguments` and its
     // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
@@ -9011,7 +9106,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
-    if (auto cached = take_cached_node()) return cached;
+    if (auto cached = take_cached_node(CacheKind::Arrow)) return cached;
     // An arrow is transparent to a suspension and to `arguments`, which
     // belong to the body around it, but what it binds is its own, and it is a
     // closure like any other for what it can see.

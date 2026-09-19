@@ -488,10 +488,16 @@ public:
     // A function, arrow or class parsed while a tape attempt is running,
     // waiting to be embedded in the tape or, if the attempt gives up, to be
     // handed back to the real parse of the same tokens.
+    // Which grammar production read the node. A cached node is only handed
+    // back to the same production at the same token: the real parse reading a
+    // `function` keyword as part of a longer call chain must not be given the
+    // bare function.
+    enum class CacheKind : uint8_t { Function, Arrow, Primary, Chain };
     struct TapeEmbedded {
         std::unique_ptr<ASTNode> node;
         size_t start_token;
         size_t end_token;
+        CacheKind kind;
     };
     struct TapeAttempt {
         std::vector<TapeEmbedded> embedded;
@@ -505,8 +511,8 @@ public:
     };
     TapeAttempt* tape_attempt_ = nullptr;
     // What an attempt that gave up parsed, keyed by the token the node
-    // starts at. The real parse takes a node from here instead of reading
-    // the same function twice.
+    // starts at and the production that read it. The real parse takes a node
+    // from here instead of reading the same source twice.
     struct CachedNode {
         std::unique_ptr<ASTNode> node;
         size_t end_token;
@@ -518,8 +524,11 @@ public:
     // from further back than the token stream keeps.
     static constexpr size_t kTapeGapBudget = 4096;
     bool tape_gap_exhausted() const;
-    bool try_tape_embed(ExprTape& tape, std::unique_ptr<ASTNode> (Parser::*parse)());
-    std::unique_ptr<ASTNode> take_cached_node();
+    static size_t tape_cache_key(size_t token, CacheKind kind) { return token * 4 + static_cast<size_t>(kind); }
+    bool try_tape_embed(ExprTape& tape, std::unique_ptr<ASTNode> (Parser::*parse)(), CacheKind kind);
+    std::unique_ptr<ASTNode> take_cached_node(CacheKind kind);
+    bool try_tape_call_or_member_inner(ExprTape& tape);
+    bool tape_chain_can_start(TokenType type) const;
     std::unique_ptr<ASTNode> parse_tape_or_tree(bool sequence);
 
     std::unique_ptr<ASTNode> parse_try_statement();

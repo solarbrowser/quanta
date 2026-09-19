@@ -276,6 +276,12 @@ bool prescan_declarations(const ASTNode* node, std::vector<DeclInfo>& out) {
 bool pattern_contains_suspension(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
+        // A node the tape embeds is walked as it would be in a parsed tree.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& embedded_node : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (pattern_contains_suspension(embedded_node.get())) return true;
+            }
+            return false;
         case ASTNode::Type::YIELD_EXPRESSION:
         case ASTNode::Type::AWAIT_EXPRESSION:
             return true;
@@ -1231,9 +1237,14 @@ bool contains_hoisted_decl_by_walk(const ASTNode* node) {
 // is never this chunk's business.
 // The same shapes count_this_refs recognizes in the tree: Nullish and
 // Conditional hold ThisCacheBarrier-guarded branches and count nothing.
-int count_tape_this_refs(const ExprTape& tape, size_t index) {
+int count_this_refs(const ASTNode* node);
+
+int count_tape_this_refs(const ExprTape& tape, const std::vector<std::unique_ptr<ASTNode>>& embedded,
+                         size_t index) {
     const TapeEntry& e = tape[index];
     switch (e.tag) {
+        case TapeTag::Node:
+            return count_this_refs(embedded[e.name_id].get());
         case TapeTag::Identifier:
             return NamePool::text(e.name_id) == "this" ? 1 : 0;
         case TapeTag::Binary:
@@ -1245,7 +1256,7 @@ int count_tape_this_refs(const ExprTape& tape, size_t index) {
         case TapeTag::MemberAssign: {
             int total = 0;
             for (size_t child = index + 1; child < index + e.span; child += tape[child].span) {
-                total += count_tape_this_refs(tape, child);
+                total += count_tape_this_refs(tape, embedded, child);
             }
             return total;
         }
@@ -1258,7 +1269,8 @@ int count_this_refs(const ASTNode* node) {
     if (!node) return 0;
     switch (node->get_type()) {
         case ASTNode::Type::TAPED_EXPRESSION:
-            return count_tape_this_refs(static_cast<const TapedExpression*>(node)->tape(), 0);
+            return count_tape_this_refs(static_cast<const TapedExpression*>(node)->tape(),
+                                        static_cast<const TapedExpression*>(node)->embedded(), 0);
         case ASTNode::Type::IDENTIFIER:
             return static_cast<const Identifier*>(node)->get_name() == "this" ? 1 : 0;
         case ASTNode::Type::BLOCK_STATEMENT: {
@@ -3784,6 +3796,12 @@ bool contains_suspend(const ASTNode* node) {
 bool contains_destructuring(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
+        // A node the tape embeds is walked as it would be in a parsed tree.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& embedded_node : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (contains_destructuring(embedded_node.get())) return true;
+            }
+            return false;
         case ASTNode::Type::BLOCK_STATEMENT: {
             const auto* n = static_cast<const BlockStatement*>(node);
             for (const auto& stmt : n->get_statements()) {
@@ -3852,6 +3870,12 @@ bool contains_destructuring(const ASTNode* node) {
 bool contains_lexical_decl(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
+        // A node the tape embeds is walked as it would be in a parsed tree.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& embedded_node : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (contains_lexical_decl(embedded_node.get())) return true;
+            }
+            return false;
         case ASTNode::Type::VARIABLE_DECLARATION:
             return static_cast<const VariableDeclaration*>(node)->get_kind() !=
                    VariableDeclarator::Kind::VAR;
