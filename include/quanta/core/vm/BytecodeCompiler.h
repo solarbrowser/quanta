@@ -122,6 +122,12 @@ enum class TapeTag : uint8_t {
     // `true` / `false` / `null`, the kind in binary_op (0/1/2). `undefined`
     // is deliberately not here: it parses as a reassignable identifier.
     Constant,
+    // Plain `obj.prop = rhs` / `obj[key] = rhs`, built by rewriting the
+    // Member entry the left-hand side parsed to (same name_id/call_argc
+    // meaning, span grown to cover the rhs): the object subtree, then the key
+    // subtree when computed, then the rhs subtree follow. Compound operators
+    // are not represented.
+    MemberAssign,
 };
 
 // `span`: how many entries (including this one) this entry's whole subtree

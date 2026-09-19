@@ -12467,6 +12467,44 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             emit_load_const(Value(e.string_value));
             return failed_ ? 0 : index + e.span;
         }
+        case TapeTag::MemberAssign: {
+            // Mirrors compile_expression's ASSIGNMENT_EXPRESSION case for a
+            // plain `=` onto a non-private, non-super member: the object (and
+            // key) are evaluated and parked first, then the rhs, and a
+            // computed key is only converted by the store itself.
+            const bool computed = e.call_argc != 0;
+            size_t obj_idx = index + 1;
+            size_t after_obj = compile_tape_expr(tape, obj_idx, false);
+            if (after_obj == 0) return 0;
+            int obj_reg = alloc_temp();
+            if (failed_) return 0;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(obj_reg));
+            uint16_t name_idx = 0;
+            int key_reg = -1;
+            size_t rhs_idx = after_obj;
+            if (!computed) {
+                name_idx = add_name(NamePool::text(e.name_id));
+            } else {
+                rhs_idx = compile_tape_expr(tape, after_obj, false);
+                if (rhs_idx == 0) return 0;
+                key_reg = alloc_temp();
+                if (failed_) return 0;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(key_reg));
+            }
+            if (compile_tape_expr(tape, rhs_idx, false) == 0) return 0;
+            if (!computed) {
+                emit_named_ic(Op::SetNamed, Op::SetNamedWide, static_cast<uint8_t>(obj_reg),
+                              name_idx, alloc_feedback_slot());
+            } else {
+                emit_keyed_ic2(Op::SetKeyed, Op::SetKeyedWide, static_cast<uint8_t>(obj_reg),
+                               static_cast<uint8_t>(key_reg), alloc_keyed_feedback());
+                free_temp(key_reg);
+            }
+            free_temp(obj_reg);
+            return failed_ ? 0 : index + e.span;
+        }
         case TapeTag::Constant: {
             emit(e.binary_op == 0 ? Op::LdaTrue : e.binary_op == 1 ? Op::LdaFalse : Op::LdaNull);
             return index + e.span;

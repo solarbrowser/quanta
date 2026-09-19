@@ -5611,7 +5611,20 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
                     TapeEntry{TapeTag::Assign, span, 0.0, name_id, 0, 0, ""});
         return true;
     }
+    size_t lhs_start = tape.size();
     if (!try_tape_conditional(tape)) return false;
+    // `obj.prop = rhs` / `obj[key] = rhs`: the left side must have parsed to
+    // exactly one Member subtree (`a.b + c = d` is not a target), which is
+    // then rewritten in place -- its children are already the first entries
+    // MemberAssign needs, the rhs just follows.
+    if (match(TokenType::ASSIGN) && tape[lhs_start].tag == TapeTag::Member &&
+        tape[lhs_start].span == tape.size() - lhs_start) {
+        advance();
+        if (!try_tape_assignment(tape)) return false;  // rhs, right-associative
+        tape[lhs_start].tag = TapeTag::MemberAssign;
+        tape[lhs_start].span = static_cast<uint32_t>(tape.size() - lhs_start);
+        return true;
+    }
     // Closes the one remaining gap between try_tape_conditional
     // (parse_conditional_expression) and this function's own real
     // counterpart (parse_assignment_expression): assignment operators,
