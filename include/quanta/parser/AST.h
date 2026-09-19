@@ -1184,39 +1184,52 @@ public:
 
 class Parameter : public ASTNode {
 private:
+    // What most parameters (a plain name) never have: kept behind one pointer
+    // so they do not pay for it.
+    struct Extra {
+        std::unique_ptr<ASTNode> default_value;
+        std::unique_ptr<ASTNode> destructuring_pattern;
+        // A suspendable function binds its parameters outside the chunk that
+        // owns its body, so the default is a chunk of its own. It is decl-site
+        // data like the expression it came from: compiled once, shared by
+        // every call.
+        std::unique_ptr<BytecodeChunk> default_chunk;
+        bool default_chunk_tried = false;
+        std::unique_ptr<BytecodeChunk> pattern_chunk;
+        bool pattern_chunk_tried = false;
+    };
     std::unique_ptr<Identifier> name_;
-    std::unique_ptr<ASTNode> default_value_;
-    std::unique_ptr<ASTNode> destructuring_pattern_;
-    // A suspendable function binds its parameters outside the chunk that owns
-    // its body, so the default is a chunk of its own. It is decl-site data
-    // like the expression it came from: compiled once, shared by every call.
-    mutable std::unique_ptr<BytecodeChunk> default_chunk_;
-    mutable bool default_chunk_tried_ = false;
-    mutable std::unique_ptr<BytecodeChunk> pattern_chunk_;
-    mutable bool pattern_chunk_tried_ = false;
+    mutable std::unique_ptr<Extra> extra_;
     bool is_rest_;
+
+    Extra& ensure_extra() const {
+        if (!extra_) extra_ = std::make_unique<Extra>();
+        return *extra_;
+    }
 
 public:
     Parameter(std::unique_ptr<Identifier> name, std::unique_ptr<ASTNode> default_value,
               bool is_rest, const Position& start, const Position& end)
         : ASTNode(Type::PARAMETER, start, end),
-          name_(std::move(name)), default_value_(std::move(default_value)), is_rest_(is_rest) {}
+          name_(std::move(name)), is_rest_(is_rest) {
+        if (default_value) ensure_extra().default_value = std::move(default_value);
+    }
 
     Identifier* get_name() const { return name_.get(); }
-    ASTNode* get_default_value() const { return default_value_.get(); }
-    BytecodeChunk* default_chunk() const { return default_chunk_.get(); }
-    void set_default_chunk(std::unique_ptr<BytecodeChunk> c) const { default_chunk_ = std::move(c); }
-    bool default_chunk_tried() const { return default_chunk_tried_; }
-    void mark_default_chunk_tried() const { default_chunk_tried_ = true; }
-    BytecodeChunk* pattern_chunk() const { return pattern_chunk_.get(); }
-    void set_pattern_chunk(std::unique_ptr<BytecodeChunk> c) const { pattern_chunk_ = std::move(c); }
-    bool pattern_chunk_tried() const { return pattern_chunk_tried_; }
-    void mark_pattern_chunk_tried() const { pattern_chunk_tried_ = true; }
-    bool has_default() const { return default_value_ != nullptr; }
+    ASTNode* get_default_value() const { return extra_ ? extra_->default_value.get() : nullptr; }
+    BytecodeChunk* default_chunk() const { return extra_ ? extra_->default_chunk.get() : nullptr; }
+    void set_default_chunk(std::unique_ptr<BytecodeChunk> c) const { ensure_extra().default_chunk = std::move(c); }
+    bool default_chunk_tried() const { return extra_ && extra_->default_chunk_tried; }
+    void mark_default_chunk_tried() const { ensure_extra().default_chunk_tried = true; }
+    BytecodeChunk* pattern_chunk() const { return extra_ ? extra_->pattern_chunk.get() : nullptr; }
+    void set_pattern_chunk(std::unique_ptr<BytecodeChunk> c) const { ensure_extra().pattern_chunk = std::move(c); }
+    bool pattern_chunk_tried() const { return extra_ && extra_->pattern_chunk_tried; }
+    void mark_pattern_chunk_tried() const { ensure_extra().pattern_chunk_tried = true; }
+    bool has_default() const { return get_default_value() != nullptr; }
     bool is_rest() const { return is_rest_; }
-    ASTNode* get_destructuring_pattern() const { return destructuring_pattern_.get(); }
-    bool has_destructuring() const { return destructuring_pattern_ != nullptr; }
-    void set_destructuring_pattern(std::unique_ptr<ASTNode> pattern) { destructuring_pattern_ = std::move(pattern); }
+    ASTNode* get_destructuring_pattern() const { return extra_ ? extra_->destructuring_pattern.get() : nullptr; }
+    bool has_destructuring() const { return get_destructuring_pattern() != nullptr; }
+    void set_destructuring_pattern(std::unique_ptr<ASTNode> pattern) { ensure_extra().destructuring_pattern = std::move(pattern); }
 
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -1610,8 +1623,24 @@ private:
     std::unique_ptr<Identifier> id_;
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
+    // The one-byte fields sit together ahead of the 32-bit ones: the arena
+    // rounds a node up to 16 bytes, and scattered they cost 136 -> 144.
     bool is_generator_;
     bool is_async_;
+    bool is_decl_form_ = false; // `export default function fn(){}`: HoistableDeclaration, not NamedEvaluation
+    bool is_method_shorthand_ = false; // `{m(){}}`/`get x(){}`: non-constructible, skip the .prototype build
+    // Whether this body holds no nested function literal. Only a leaf is
+    // released: releasing an outer body means re-parsing every body inside it
+    // on the next call, and that was measured to cost more time than the
+    // memory it returns is worth -- a trade this engine does not want.
+    mutable int8_t body_strict_state_ = -1;
+    mutable int8_t body_direct_eval_state_ = -1;
+    // -1 unknown, 0 needs the outer environment kept alive, 1 doesn't --
+    // see closure_needs_outer_environment's doc comment (BytecodeCompiler.h).
+    // Resolved once per literal site, reused by every instantiation (the
+    // same closure body is scanned whether this expression runs once or
+    // 100000 times).
+    mutable int8_t needs_outer_env_state_ = -1;
     uint32_t src_start_ = 0;
     uint32_t src_end_ = 0;
     uint32_t body_tok_first_ = 0;
@@ -1621,33 +1650,15 @@ private:
     // the ones the first parse handed out, but its offsets are.
     uint32_t body_src_first_ = 0;
     uint32_t body_tok_last_ = 0;
-    // Whether this body holds no nested function literal. Only a leaf is
-    // released: releasing an outer body means re-parsing every body inside it
-    // on the next call, and that was measured to cost more time than the
-    // memory it returns is worth -- a trade this engine does not want.
-    mutable int8_t body_strict_state_ = -1;
-    mutable int8_t body_direct_eval_state_ = -1;
-    bool is_decl_form_ = false; // `export default function fn(){}`: HoistableDeclaration, not NamedEvaluation
-    bool is_method_shorthand_ = false; // `{m(){}}`/`get x(){}`: non-constructible, skip the .prototype build
 
     // params_ never changes after parsing, so both are pure functions of it --
     // computed once on first evaluate() (clone-elision path) instead of
     // rebuilt on every closure instantiation. Mirrors BlockStatement's own
     // needs_scope_ tri-state cache idiom.
-    mutable std::vector<std::string> cached_param_names_;
-    mutable bool param_cache_ready_ = false;
-    mutable size_t cached_spec_length_ = 0;
-    // -1 unknown, 0 needs the outer environment kept alive, 1 doesn't --
-    // see closure_needs_outer_environment's doc comment (BytecodeCompiler.h).
-    // Resolved once per literal site, reused by every instantiation (the
-    // same closure body is scanned whether this expression runs once or
-    // 100000 times).
-    mutable int8_t needs_outer_env_state_ = -1;
-
+    mutable int32_t cached_spec_length_ = -1;
     // Built once on first evaluate(), reused by every instantiation --
     // FunctionExecutable's own doc comment explains why a durable clone
-    // (not a borrow) is required. Same lazy-cache idiom as
-    // cached_param_names_ above.
+    // (not a borrow) is required.
     mutable ExecutableRef<FunctionExecutable> cached_executable_;
     // Which parse tree this literal belongs to, recorded when the node was
     // built (see ScriptUnit::BuildScope). Null for trees built outside a unit,
@@ -1726,13 +1737,16 @@ public:
     bool is_method_shorthand() const { return is_method_shorthand_; }
 
     // Lazily computed, cached forever after (params_ is immutable post-parse).
-    const std::vector<std::string>& get_cached_param_names() const {
-        ensure_param_cache();
-        return cached_param_names_;
-    }
     size_t get_cached_spec_length() const {
-        ensure_param_cache();
-        return cached_spec_length_;
+        if (cached_spec_length_ < 0) {
+            int32_t length = 0;
+            for (const auto& p : params_) {
+                if (p->is_rest() || p->has_default()) break;
+                length++;
+            }
+            cached_spec_length_ = length;
+        }
+        return static_cast<size_t>(cached_spec_length_);
     }
     // Raw cache slot for closure_needs_outer_environment's result (computed
     // in FunctionExpression::evaluate, which already links against
@@ -1766,18 +1780,6 @@ public:
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 
-private:
-    void ensure_param_cache() const {
-        if (param_cache_ready_) return;
-        cached_param_names_.reserve(params_.size());
-        for (const auto& p : params_) cached_param_names_.push_back(p->get_name()->get_name());
-        cached_spec_length_ = 0;
-        for (const auto& p : params_) {
-            if (p->is_rest() || p->has_default()) break;
-            cached_spec_length_++;
-        }
-        param_cache_ready_ = true;
-    }
 };
 
 class ArrowFunctionExpression : public ASTNode {

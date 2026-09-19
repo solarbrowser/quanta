@@ -246,19 +246,19 @@ std::string Parameter::to_string() const {
     }
     result += name_->get_name();
     if (has_default()) {
-        result += " = " + default_value_->to_string();
+        result += " = " + get_default_value()->to_string();
     }
     return result;
 }
 
 std::unique_ptr<ASTNode> Parameter::clone() const {
-    std::unique_ptr<ASTNode> cloned_default = default_value_ ? default_value_->clone() : nullptr;
+    std::unique_ptr<ASTNode> cloned_default = has_default() ? get_default_value()->clone() : nullptr;
     auto cloned = std::make_unique<Parameter>(
         std::unique_ptr<Identifier>(static_cast<Identifier*>(name_->clone().release())),
         std::move(cloned_default), is_rest_, start_, end_
     );
-    if (destructuring_pattern_) {
-        cloned->set_destructuring_pattern(destructuring_pattern_->clone());
+    if (has_destructuring()) {
+        cloned->set_destructuring_pattern(get_destructuring_pattern()->clone());
     }
     return cloned;
 }
