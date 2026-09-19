@@ -5521,9 +5521,9 @@ bool Parser::try_tape_nullish(ExprTape& tape) {
     };
     size_t start_idx = tape.size();
     if (!try_tape_binary(tape, 2)) return false;
-    if (is_unparenthesized_and(start_idx)) return false;
     for (;;) {
         if (!match(TokenType::NULLISH_COALESCING)) break;
+        if (is_unparenthesized_and(start_idx)) return false;
         advance();
         size_t right_idx = tape.size();
         if (!try_tape_binary(tape, 2)) return false;
@@ -5546,9 +5546,9 @@ bool Parser::try_tape_nullish(ExprTape& tape) {
 bool Parser::try_tape_logical_or(ExprTape& tape) {
     size_t start_idx = tape.size();
     if (!try_tape_nullish(tape)) return false;
-    if (tape[start_idx].tag == TapeTag::Nullish) return false;
     for (;;) {
         if (!match(TokenType::LOGICAL_OR)) break;
+        if (tape[start_idx].tag == TapeTag::Nullish) return false;
         advance();
         size_t right_idx = tape.size();
         if (!try_tape_nullish(tape)) return false;
