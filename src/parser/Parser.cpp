@@ -165,7 +165,7 @@ std::unique_ptr<ASTNode> Parser::parse_concise_body_at(size_t tok_index, bool st
     const int saved_lazy_depth = lazy_base_depth_;
     lazy_inner_bodies_ = true;
     lazy_base_depth_ = options_.function_depth;
-    auto expr = parse_assignment_expression();
+    auto expr = parse_assignment_maybe_tape();
     lazy_inner_bodies_ = saved_lazy;
     lazy_base_depth_ = saved_lazy_depth;
     options_.class_has_heritage = saved_class_has_heritage;
@@ -4798,7 +4798,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             return nullptr;
         }
 
-        auto object = parse_expression();
+        auto object = parse_expression_maybe_tape();
         if (!object) {
             add_error("Expected expression after 'in' in for...in loop");
             return nullptr;
@@ -4858,7 +4858,7 @@ check_for_of:
             return nullptr;
         }
 
-        auto object = parse_expression();
+        auto object = parse_expression_maybe_tape();
         if (!object) {
             add_error("Expected expression after 'in' in for...in loop");
             return nullptr;
@@ -4963,7 +4963,7 @@ check_for_of:
             return nullptr;
         }
 
-        auto iterable = parse_assignment_expression();
+        auto iterable = parse_assignment_maybe_tape();
         if (!iterable) {
             add_error("Expected expression after 'of' in for...of loop");
             return nullptr;
@@ -5059,7 +5059,7 @@ for_semicolon:
     
     std::unique_ptr<ASTNode> update = nullptr;
     if (!match(TokenType::RIGHT_PAREN)) {
-        update = parse_expression();
+        update = parse_expression_maybe_tape();
         if (!update) {
             add_error("Expected update expression in for loop");
             return nullptr;
@@ -5314,6 +5314,8 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             advance();
             const size_t start_idx = tape.size();
             uint32_t count = 0;
+            struct NoInReset { bool& flag; bool saved; ~NoInReset() { flag = saved; } } no_in_reset{no_in_mode_, no_in_mode_};
+            no_in_mode_ = false;
             if (match(TokenType::RIGHT_BRACE)) {
                 advance();
                 tape.push_back(TapeEntry::named(TapeTag::Object, 1, 0));
@@ -5387,6 +5389,8 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             advance();
             const size_t start_idx = tape.size();
             uint32_t count = 0;
+            struct NoInReset { bool& flag; bool saved; ~NoInReset() { flag = saved; } } no_in_reset{no_in_mode_, no_in_mode_};
+            no_in_mode_ = false;
             if (match(TokenType::RIGHT_BRACKET)) {
                 advance();
                 tape.push_back(TapeEntry::named(TapeTag::Array, 1, 0));
@@ -5907,7 +5911,13 @@ bool Parser::try_tape_conditional(ExprTape& tape) {
     if (!try_tape_logical_or(tape)) return false;
     if (!match(TokenType::QUESTION)) return true;
     advance();
-    if (!try_tape_assignment(tape)) return false;
+    // `in` is allowed in the consequent whatever the surrounding context, as
+    // in the real parse_conditional_expression.
+    const bool saved_no_in = no_in_mode_;
+    no_in_mode_ = false;
+    const bool consequent_ok = try_tape_assignment(tape);
+    no_in_mode_ = saved_no_in;
+    if (!consequent_ok) return false;
     if (!match(TokenType::COLON)) return false;
     advance();
     if (!try_tape_assignment(tape)) return false;
@@ -9331,7 +9341,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         const size_t concise_tok_first = current_token_index_;
         const Position concise_start = get_current_position();
         SubtreeScope concise(*this);
-        body = parse_assignment_expression();
+        body = parse_assignment_maybe_tape();
         if (body) body->set_subtree_flags(concise.flags());
         if (body) {
             // A concise body is one expression rather than a block, but it
@@ -10802,7 +10812,7 @@ std::unique_ptr<ASTNode> Parser::parse_throw_statement() {
         return nullptr;
     }
 
-    auto expression = parse_expression();
+    auto expression = parse_expression_maybe_tape();
     if (!expression) {
         add_error("Expected expression after 'throw'");
         return nullptr;
