@@ -12523,6 +12523,68 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             emit_load_const(Value(tape_source_->substr(e.name_id, e.str_len)));
             return failed_ ? 0 : index + e.span;
         }
+        case TapeTag::Object: {
+            // Mirrors compile_expression's OBJECT_LITERAL case for static-key
+            // value properties: each is defined with CreateDataProperty
+            // (DefineOwn), in source order. Nothing here is an anonymous
+            // function, so no NamedEvaluation step applies.
+            const uint32_t count = e.name_id;
+            emit(Op::CreateObject);
+            emit_u16(static_cast<uint16_t>(count));
+            int obj_reg = alloc_temp();
+            if (failed_) return 0;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(obj_reg));
+            size_t child = index + 1;
+            for (uint32_t i = 0; i < count; i++) {
+                const TapeEntry& prop = tape[child];
+                std::string key = prop.binary_op == 0 ? NamePool::text(prop.name_id)
+                                                      : tape_source_->substr(prop.name_id, prop.str_len);
+                if (compile_tape_expr(tape, child + 1, false) == 0) return 0;
+                emit_named_ic(Op::DefineOwn, Op::DefineOwnWide, static_cast<uint8_t>(obj_reg),
+                              add_name(key), alloc_feedback_slot());
+                child += prop.span;
+            }
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(obj_reg));
+            free_temp(obj_reg);
+            return failed_ ? 0 : index + e.span;
+        }
+        case TapeTag::Array: {
+            // Mirrors compile_expression's ARRAY_LITERAL case for a literal
+            // with neither holes nor spread: each element is an own data
+            // property at its index (DefineElement).
+            const uint32_t count = e.name_id;
+            emit(Op::CreateArray);
+            emit_u16(static_cast<uint16_t>(count));
+            int obj_reg = alloc_temp();
+            if (failed_) return 0;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(obj_reg));
+            size_t child = index + 1;
+            for (uint32_t i = 0; i < count; i++) {
+                int key_reg = alloc_temp();
+                if (failed_) return 0;
+                if (i <= static_cast<uint32_t>(INT8_MAX)) {
+                    emit(Op::LdaSmi);
+                    emit_u8(static_cast<uint8_t>(static_cast<int8_t>(i)));
+                } else {
+                    emit_load_const(Value(static_cast<double>(i)));
+                }
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(key_reg));
+                child = compile_tape_expr(tape, child, false);
+                if (child == 0) return 0;
+                emit(Op::DefineElement);
+                emit_u8(static_cast<uint8_t>(obj_reg));
+                emit_u8(static_cast<uint8_t>(key_reg));
+                free_temp(key_reg);
+            }
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(obj_reg));
+            free_temp(obj_reg);
+            return failed_ ? 0 : index + e.span;
+        }
         case TapeTag::New: {
             // Mirrors compile_expression's NEW_EXPRESSION case: constructor
             // into its own register, arguments into consecutive temps,

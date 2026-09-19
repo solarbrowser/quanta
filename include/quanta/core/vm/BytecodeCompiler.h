@@ -133,6 +133,19 @@ enum class TapeTag : uint8_t {
     // Members only) and then the arguments, exactly like Call. No spread, no
     // nested `new`, no `new.target`.
     New,
+    // `{ k: v, ... }` -- name_id holds the property count, then one Prop
+    // entry per property. Only plain static-key value properties (and
+    // shorthand) are represented: no spread, computed or numeric keys,
+    // methods, accessors, or a non-shorthand `__proto__`.
+    Object,
+    // One Object property: the key lives in this entry (binary_op 0: name_id
+    // is the key's NamePool id; 1: name_id/str_len slice a string-literal key
+    // out of the tape's source), and its value is the subtree that follows.
+    // Never an Identifier entry, so the key is not seen as a reference.
+    Prop,
+    // `[a, b, ...]` -- name_id holds the element count, then the elements'
+    // subtrees. No holes, no spread.
+    Array,
 };
 
 // Set on the root entry of a subtree written in parentheses. The grammar's

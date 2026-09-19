@@ -5287,6 +5287,107 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             advance();
             return true;
         }
+        case TokenType::LEFT_BRACE: {
+            advance();
+            const size_t start_idx = tape.size();
+            uint32_t count = 0;
+            if (match(TokenType::RIGHT_BRACE)) {
+                advance();
+                tape.push_back(TapeEntry::named(TapeTag::Object, 1, 0));
+                return true;
+            }
+            for (;;) {
+                const Token& key_token = current_token();
+                const TokenType key_type = key_token.get_type();
+                uint8_t key_kind = 0;
+                uint32_t key_a = 0, key_b = 0;
+                std::string key_text;
+                bool ident_key = false;
+                if (key_type == TokenType::IDENTIFIER) {
+                    if (key_token.has_escaped_keyword()) return false;
+                    key_text = token_string(key_token);
+                    if (!try_tape_identifier_ref_ok(key_text)) return false;
+                    key_a = NamePool::intern(key_text);
+                    ident_key = true;
+                } else if (key_type == TokenType::STRING) {
+                    if (key_token.string_has_escapes()) return false;
+                    const size_t open_quote = key_token.get_start().offset;
+                    const size_t close_quote = key_token.get_end().offset - 1;
+                    key_kind = 1;
+                    key_a = static_cast<uint32_t>(open_quote + 1);
+                    key_b = static_cast<uint32_t>(close_quote - open_quote - 1);
+                    key_text = source_->substr(key_a, key_b);
+                } else if (is_keyword_token(key_type)) {
+                    key_text = token_string(key_token);
+                    key_a = NamePool::intern(key_text);
+                } else {
+                    return false;
+                }
+                advance();
+                const size_t prop_idx = tape.size();
+                TapeEntry prop = TapeEntry::with_op(TapeTag::Prop, 1, key_kind);
+                prop.name_id = key_a;
+                prop.str_len = key_b;
+                if (match(TokenType::COLON)) {
+                    // `__proto__: v` sets the prototype instead of defining a
+                    // property, a path the tape does not have.
+                    if (key_text == "__proto__") return false;
+                    advance();
+                    tape.push_back(prop);
+                    if (!try_tape_assignment(tape)) return false;
+                } else if (ident_key && (match(TokenType::COMMA) || match(TokenType::RIGHT_BRACE))) {
+                    // Shorthand reads the binding its key names.
+                    if (options_.strict_mode && (key_text == "eval" || key_text == "arguments")) return false;
+                    note_name(key_text);
+                    if (key_text.size() == 9 && key_text == "arguments") subtree_acc_ |= kSubtreeArguments;
+                    tape.push_back(prop);
+                    tape.push_back(TapeEntry::named(TapeTag::Identifier, 1, key_a));
+                } else {
+                    return false;
+                }
+                tape[prop_idx].span = static_cast<uint32_t>(tape.size() - prop_idx);
+                if (++count > 0xFFFF) return false;
+                if (match(TokenType::COMMA)) {
+                    advance();
+                    if (match(TokenType::RIGHT_BRACE)) break;
+                    continue;
+                }
+                break;
+            }
+            if (!match(TokenType::RIGHT_BRACE)) return false;
+            advance();
+            uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+            tape.insert(tape.begin() + start_idx, TapeEntry::named(TapeTag::Object, span, count));
+            return true;
+        }
+        case TokenType::LEFT_BRACKET: {
+            advance();
+            const size_t start_idx = tape.size();
+            uint32_t count = 0;
+            if (match(TokenType::RIGHT_BRACKET)) {
+                advance();
+                tape.push_back(TapeEntry::named(TapeTag::Array, 1, 0));
+                return true;
+            }
+            for (;;) {
+                // A hole or a spread is not represented; try_tape_assignment
+                // bails on the spread's `...` itself.
+                if (match(TokenType::COMMA)) return false;
+                if (!try_tape_assignment(tape)) return false;
+                if (++count > 0xFFFF) return false;
+                if (match(TokenType::COMMA)) {
+                    advance();
+                    if (match(TokenType::RIGHT_BRACKET)) break;
+                    continue;
+                }
+                break;
+            }
+            if (!match(TokenType::RIGHT_BRACKET)) return false;
+            advance();
+            uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+            tape.insert(tape.begin() + start_idx, TapeEntry::named(TapeTag::Array, span, count));
+            return true;
+        }
         case TokenType::NEW: {
             // A NewExpression is parsed by parse_call_expression, and the
             // call/member suffix loop then continues on its result -- which
