@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <algorithm>
 #include <unordered_set>
 #include <vector>
 
@@ -94,6 +95,46 @@ private:
     std::unique_ptr<std::unordered_set<uint32_t>> overflow_;
 };
 
+// An IdSet that will not change again, kept as one exact-size sorted array.
+// A parse files three of these per function and a bundle has tens of thousands
+// of functions, so what an IdSet spends on growth room, a hash table's buckets
+// and a node per entry was the largest thing the parse kept once its trees
+// went. Lookup is a binary search; an empty set holds nothing.
+class FrozenIds {
+public:
+    FrozenIds() = default;
+    explicit FrozenIds(const IdSet& set) {
+        n_ = static_cast<uint32_t>(set.size());
+        if (!n_) return;
+        ids_ = std::make_unique<uint32_t[]>(n_);
+        uint32_t* out = ids_.get();
+        for (uint32_t id : set) *out++ = id;
+        std::sort(ids_.get(), ids_.get() + n_);
+    }
+    FrozenIds(FrozenIds&&) = default;
+    FrozenIds& operator=(FrozenIds&&) = default;
+    FrozenIds(const FrozenIds& other) : n_(other.n_) {
+        if (n_) {
+            ids_ = std::make_unique<uint32_t[]>(n_);
+            std::copy(other.ids_.get(), other.ids_.get() + n_, ids_.get());
+        }
+    }
+    FrozenIds& operator=(const FrozenIds& other) {
+        if (this != &other) { FrozenIds copy(other); *this = std::move(copy); }
+        return *this;
+    }
+
+    const uint32_t* begin() const { return ids_.get(); }
+    const uint32_t* end() const { return ids_.get() + n_; }
+    size_t size() const { return n_; }
+    bool empty() const { return n_ == 0; }
+    size_t count(uint32_t id) const { return std::binary_search(begin(), end(), id) ? 1 : 0; }
+
+private:
+    std::unique_ptr<uint32_t[]> ids_;
+    uint32_t n_ = 0;
+};
+
 // Owns one parse tree and keeps it alive for exactly as long as anything still
 // points into it.
 //
@@ -123,21 +164,21 @@ struct BodyScopeInfo {
     // these per function, tens of thousands of them, all pulling from the
     // same few thousand names, so an id set both dedupes across bodies and
     // costs a quarter the bytes per entry of a string in a hash set.
-    IdSet captured;
+    FrozenIds captured;
     // Every identifier this body itself names, at its own top level or
     // nested inside it -- the superset `captured` folds into a caller's own
     // set when THIS body is the thing found nested (see collect_closure_names'
     // dropped-body fallback): a direct `return i;` here is not "captured"
     // from this body's own perspective (nothing nested in it reads `i`), but
     // it is exactly the reference a scan of an enclosing scope needs to see.
-    IdSet all_names;
+    FrozenIds all_names;
     // What summarize_free_names found for this body while it was still in
     // hand: the names it reads or writes without binding them, and whether the
     // scan met something it cannot see through. An enclosing function's own
     // scan reads this instead of walking a body that has been let go.
     // free_valid is false when the form that let the body go did not work it
     // out, and the reader then assumes the worst.
-    IdSet free_names;
+    FrozenIds free_names;
     bool free_valid = false;
     bool free_unknown = false;
     bool free_saw_eval = false;

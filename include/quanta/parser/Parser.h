@@ -332,9 +332,9 @@ private:
         BodyScopeInfo take() const {
             BodyScopeInfo info;
             const NameScope& mine = p.name_scopes_.back();
-            info.captured = mine.captured;
-            info.all_names = mine.all;
-            info.free_names = free_names;
+            info.captured = FrozenIds(mine.captured);
+            info.all_names = FrozenIds(mine.all);
+            info.free_names = FrozenIds(free_names);
             info.free_valid = free_valid;
             info.free_unknown = free_unknown;
             info.free_saw_eval = free_saw_eval;
