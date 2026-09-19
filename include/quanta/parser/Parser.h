@@ -555,6 +555,13 @@ public:
     bool try_tape_conditional(ExprTape& tape);
     bool try_tape_assignment(ExprTape& tape);
     bool try_tape_expression(ExprTape& tape);
+    // Whether the subtree at `index` is something `++`/`--` may write to: a
+    // member, or an identifier other than `this` (and, in strict mode, `eval`
+    // / `arguments`).
+    bool tape_update_target_ok(const ExprTape& tape, size_t index) const;
+    // The AssignmentExpression operator for an assignment token, false for
+    // `**=` (which the real parser rewrites into `a = a ** b`).
+    static bool tape_assignment_operator(TokenType type, AssignmentExpression::Operator& op);
 
     std::unique_ptr<ASTNode> parse_parenthesized_expression();
     std::unique_ptr<ASTNode> parse_function_expression();

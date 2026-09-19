@@ -81,14 +81,14 @@ enum class TapeTag : uint8_t {
     // compile_expression's CALL_EXPRESSION case special-cases first). No
     // spread, no optional chaining, no tagged template.
     Call,
-    // Plain `x = <rhs>` only -- `x` must already be a register-resident
-    // local, past its TDZ (the outer/global/with/direct-eval-park/compound
-    // forms compile_expression's own ASSIGNMENT_EXPRESSION case handles are
-    // all out of scope here). The named-evaluation step
+    // `x = <rhs>` and the compound / logical forms (`x += <rhs>`,
+    // `x ||= <rhs>`), the operator (AssignmentExpression::Operator) in
+    // binary_op and the rhs as the one subtree. A plain `=` to a register-
+    // resident local is emitted directly; every other form is compiled
+    // through the tree case (see compile_tape_expr), which has all of its
+    // outer/global/`with`/direct-eval variants. The named-evaluation step
     // (stamp_inferred_class_name/is_named_evaluation_rhs) never applies to
-    // any RHS shape this tape can currently represent (none of Number/
-    // Identifier/Binary/Member/Call is an anonymous function/class
-    // expression), so it's correctly just absent rather than skipped.
+    // any RHS shape the tape can currently hold.
     Assign,
     // A string literal -- next-highest-volume literal kind after Number.
     // Holds no text of its own: only the literal's offset and length in the
@@ -96,14 +96,11 @@ enum class TapeTag : uint8_t {
     // slice is the value). Not interned through NamePool -- literal text
     // isn't drawn from the small repeated-name vocabulary it exists for.
     String,
-    // A prefix unary operator -- +, -, !, ~, typeof, void only (delete and
-    // prefix ++/-- need an assignable target this tape can't represent as
-    // an update yet, and neither lexes as a token try_tape_unary's switch
-    // matches, so both already bail on sight rather than needing an
-    // explicit exclusion here). Reuses binary_op for the operator code
-    // (UnaryExpression::Operator) -- never coexists with Binary in the
-    // same entry, same reuse pattern name_id already has across Identifier/
-    // Member/Assign.
+    // A prefix unary operator -- +, -, !, ~, typeof, void, delete. Reuses
+    // binary_op for the operator code (UnaryExpression::Operator) -- never
+    // coexists with Binary in the same entry, same reuse pattern name_id
+    // already has across Identifier/Member/Assign. `delete` is compiled
+    // through the tree case (see compile_tape_expr).
     Unary,
     // `??` -- structurally almost identical to Binary's own LOGICAL_AND/OR
     // short-circuit branch (compile left, conditional jump, maybe compile
@@ -122,17 +119,22 @@ enum class TapeTag : uint8_t {
     // `true` / `false` / `null`, the kind in binary_op (0/1/2). `undefined`
     // is deliberately not here: it parses as a reassignable identifier.
     Constant,
-    // Plain `obj.prop = rhs` / `obj[key] = rhs`, built by rewriting the
-    // Member entry the left-hand side parsed to (same name_id/call_argc
-    // meaning, span grown to cover the rhs): the object subtree, then the key
-    // subtree when computed, then the rhs subtree follow. Compound operators
-    // are not represented.
+    // `obj.prop = rhs` / `obj[key] = rhs` and the compound / logical forms,
+    // built by rewriting the Member entry the left-hand side parsed to (same
+    // name_id/call_argc meaning, span grown to cover the rhs, the operator in
+    // binary_op): the object subtree, then the key subtree when computed,
+    // then the rhs subtree follow. A plain `=` is emitted directly, the rest
+    // go through the tree case.
     MemberAssign,
     // `new C(a, b)` / `new a.b.C` -- call_argc arguments, the constructor
     // subtree first (an Identifier root, `this` included, with plain `.name`
     // Members only) and then the arguments, exactly like Call. No spread, no
     // nested `new`, no `new.target`.
     New,
+    // `++x` / `x++` / `--x` / `x--`, the operator (UnaryExpression::Operator)
+    // in binary_op and the operand (an Identifier or a Member) as the one
+    // subtree. Compiled through the tree case, see compile_tape_expr.
+    Update,
     // `{ k: v, ... }` -- name_id holds the property count, then one Prop
     // entry per property. Only plain static-key value properties (and
     // shorthand) are represented: no spread, computed or numeric keys,
@@ -310,6 +312,16 @@ private:
     static bool tape_cannot_write_registers(const ExprTape& tape, size_t index);
     bool emit_tape_identifier_read(const std::string& name, bool typeof_operand);
     bool tape_compilable(const ExprTape& tape);
+    // Where the tape being compiled starts: the position every temporary
+    // node built for a delegated form is given.
+    Position tape_pos_;
+    // A tree node standing for one tape operand: the literal or identifier it
+    // is for a leaf (so the tree case's own shape checks and peepholes see
+    // what they would in a parsed tree), otherwise a TapeSlice.
+    std::unique_ptr<ASTNode> tape_operand_node(const ExprTape& tape, size_t index) const;
+    // The same for an assignment / update / delete target: additionally a
+    // Member becomes a MemberExpression over operand nodes.
+    std::unique_ptr<ASTNode> tape_target_node(const ExprTape& tape, size_t index) const;
     // The source a tape being compiled slices its string literals out of.
     const std::string* tape_source_ = nullptr;
     // Proof-of-concept tape consumer -- see ExprTape's own comment. Mirrors

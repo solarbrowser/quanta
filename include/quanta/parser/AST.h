@@ -159,7 +159,11 @@ public:
         JSX_EXPRESSION,
         JSX_ATTRIBUTE,
         
-        PROGRAM
+        PROGRAM,
+
+        // A stand-in for one subtree of a tape, alive only while the compiler
+        // hands a form to compile_expression (see TapeSlice).
+        TAPE_SLICE
     };
 
 protected:
@@ -255,6 +259,29 @@ public:
     }
     std::unique_ptr<ASTNode> clone() const override {
         return std::make_unique<TapedExpression>(tape_, start_, end_, source_, strict_);
+    }
+};
+
+// A reference to one subtree of a tape, standing in for an operand while a
+// form the tape has no native code for is compiled through the ordinary tree
+// case: the compiler builds the outer node (an assignment, an update) around
+// slices of the tape, so that case's every path applies unchanged. Never part
+// of a parsed tree, and it does not own the tape.
+class TapeSlice : public ASTNode {
+private:
+    const ExprTape* tape_;
+    size_t index_;
+
+public:
+    TapeSlice(const ExprTape* tape, size_t index, const Position& pos)
+        : ASTNode(Type::TAPE_SLICE, pos, pos), tape_(tape), index_(index) {}
+
+    const ExprTape& tape() const { return *tape_; }
+    size_t index() const { return index_; }
+
+    std::string to_string() const override { return ""; }
+    std::unique_ptr<ASTNode> clone() const override {
+        return std::make_unique<TapeSlice>(tape_, index_, start_);
     }
 };
 

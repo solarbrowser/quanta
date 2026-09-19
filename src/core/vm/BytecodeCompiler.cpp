@@ -530,6 +530,13 @@ void collect_assigned_identifiers(const ASTNode* node,
             for (const auto& e : static_cast<const TapedExpression*>(node)->tape()) {
                 if (e.tag == TapeTag::Assign) out.insert(NamePool::text(e.name_id));
             }
+            // `x++` writes x too; its operand entry follows the Update entry.
+            const ExprTape& tape = static_cast<const TapedExpression*>(node)->tape();
+            for (size_t i = 0; i + 1 < tape.size(); i++) {
+                if (tape[i].tag == TapeTag::Update && tape[i + 1].tag == TapeTag::Identifier) {
+                    out.insert(NamePool::text(tape[i + 1].name_id));
+                }
+            }
             return;
         }
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
@@ -1222,6 +1229,7 @@ int count_tape_this_refs(const ExprTape& tape, size_t index) {
             return NamePool::text(e.name_id) == "this" ? 1 : 0;
         case TapeTag::Binary:
         case TapeTag::Unary:
+        case TapeTag::Update:
         case TapeTag::Member:
         case TapeTag::Call:
         case TapeTag::Assign:
@@ -12090,13 +12098,21 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             return emit_pattern_assign(lit, n->get_source());
         }
 
+        case ASTNode::Type::TAPE_SLICE: {
+            const auto* slice = static_cast<const TapeSlice*>(node);
+            return compile_tape_expr(slice->tape(), slice->index(), discard) != 0 && !failed_;
+        }
+
         case ASTNode::Type::TAPED_EXPRESSION: {
             const auto* tp = static_cast<const TapedExpression*>(node);
             if (tape_compilable(tp->tape())) {
                 const std::string* saved_source = tape_source_;
+                const Position saved_pos = tape_pos_;
                 tape_source_ = tp->source().get();
+                tape_pos_ = tp->get_start();
                 const size_t done = compile_tape_expr(tp->tape(), 0, discard);
                 tape_source_ = saved_source;
+                tape_pos_ = saved_pos;
                 if (done != 0) return !failed_;
             }
             if (failed_) return false;
@@ -12116,6 +12132,38 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         default:
             return false;
     }
+}
+
+std::unique_ptr<ASTNode> BytecodeCompiler::tape_operand_node(const ExprTape& tape, size_t index) const {
+    const TapeEntry& e = tape[index];
+    switch (e.tag) {
+        case TapeTag::Identifier:
+            return std::make_unique<Identifier>(NamePool::text(e.name_id), tape_pos_, tape_pos_);
+        case TapeTag::Number:
+            return std::make_unique<NumberLiteral>(e.number_value, tape_pos_, tape_pos_);
+        case TapeTag::String:
+            return std::make_unique<StringLiteral>(tape_source_->substr(e.name_id, e.str_len),
+                                                   tape_pos_, tape_pos_);
+        case TapeTag::Constant:
+            if (e.binary_op == 2) return std::make_unique<NullLiteral>(tape_pos_, tape_pos_);
+            return std::make_unique<BooleanLiteral>(e.binary_op == 0, tape_pos_, tape_pos_);
+        default:
+            return std::make_unique<TapeSlice>(&tape, index, tape_pos_);
+    }
+}
+
+std::unique_ptr<ASTNode> BytecodeCompiler::tape_target_node(const ExprTape& tape, size_t index) const {
+    const TapeEntry& e = tape[index];
+    if (e.tag != TapeTag::Member) return tape_operand_node(tape, index);
+    const size_t obj_idx = index + 1;
+    std::unique_ptr<ASTNode> property;
+    if (e.call_argc != 0) {
+        property = tape_operand_node(tape, obj_idx + tape[obj_idx].span);
+    } else {
+        property = std::make_unique<Identifier>(NamePool::text(e.name_id), tape_pos_, tape_pos_);
+    }
+    return std::make_unique<MemberExpression>(tape_operand_node(tape, obj_idx), std::move(property),
+                                              e.call_argc != 0, tape_pos_, tape_pos_);
 }
 
 // The diagnostic name the tree records for a constructor: its to_string(),
@@ -12139,11 +12187,6 @@ bool BytecodeCompiler::tape_compilable(const ExprTape& tape) {
                 const std::string& name = NamePool::text(e.name_id);
                 if (is_local(name) && !lexical_out_of_scope(name)) break;
                 if ((name == "arguments" && !allow_arguments_) || name == "super" || name == "new") return false;
-                break;
-            }
-            case TapeTag::Assign: {
-                const std::string& name = NamePool::text(e.name_id);
-                if (with_depth_ > 0 || !is_local(name) || lexical_out_of_scope(name)) return false;
                 break;
             }
             case TapeTag::Call:
@@ -12497,26 +12540,21 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::Assign: {
-            // Mirrors compile_expression's own ASSIGNMENT_EXPRESSION case,
-            // narrowed to the plain-`=`-to-an-already-local-register path
-            // (`!compound` branch reached when `is_local(name) &&
-            // !lexical_out_of_scope(name)`) -- outer/global writes, `with`,
-            // direct-eval parking, and compound operators are all out of
-            // scope, matching TapeTag::Assign's own comment.
+            using AsOp = AssignmentExpression::Operator;
             const std::string& name = NamePool::text(e.name_id);
-            // with_depth_ > 0 was documented above as out of scope but never
-            // actually checked -- a real bug, caught only once real tapes
-            // started reaching this case (Phase 1a). Inside a `with`, the
-            // object can shadow the local at runtime (compile_expression's
-            // own !compound branch takes a completely different
-            // ResolveWithTarget/StaWithResolved path for exactly this
-            // reason, :10917) -- is_local/lexical_out_of_scope alone don't
-            // account for that, so this must bail whenever with_depth_ > 0,
-            // same as the Identifier case above already does.
-            if (with_depth_ > 0 || !is_local(name) || lexical_out_of_scope(name)) return 0;
-            size_t after_rhs = compile_tape_expr(tape, index + 1, false);
-            if (after_rhs == 0) return 0;
-            emit_write_local(name, /*is_declaration=*/false);
+            const AsOp op = static_cast<AsOp>(e.binary_op);
+            // A plain `=` to a register-resident local is the tree case's
+            // last branch (its `with` and outer/global branches, taken when
+            // either condition fails, are the delegated path below).
+            if (op == AsOp::ASSIGN && with_depth_ == 0 && is_local(name) && !lexical_out_of_scope(name)) {
+                size_t after_rhs = compile_tape_expr(tape, index + 1, false);
+                if (after_rhs == 0) return 0;
+                emit_write_local(name, /*is_declaration=*/false);
+                return failed_ ? 0 : index + e.span;
+            }
+            AssignmentExpression expr(std::make_unique<Identifier>(name, tape_pos_, tape_pos_), op,
+                                      tape_operand_node(tape, index + 1), tape_pos_, tape_pos_);
+            if (!compile_expression(&expr, discard)) return 0;
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::String: {
@@ -12585,6 +12623,15 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             free_temp(obj_reg);
             return failed_ ? 0 : index + e.span;
         }
+        case TapeTag::Update: {
+            using UnOp = UnaryExpression::Operator;
+            const UnOp op = static_cast<UnOp>(e.binary_op);
+            UnaryExpression expr(op, tape_target_node(tape, index + 1),
+                                 op == UnOp::PRE_INCREMENT || op == UnOp::PRE_DECREMENT,
+                                 tape_pos_, tape_pos_);
+            if (!compile_expression(&expr, discard)) return 0;
+            return failed_ ? 0 : index + e.span;
+        }
         case TapeTag::New: {
             // Mirrors compile_expression's NEW_EXPRESSION case: constructor
             // into its own register, arguments into consecutive temps,
@@ -12620,8 +12667,26 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             // plain `=` onto a non-private, non-super member: the object (and
             // key) are evaluated and parked first, then the rhs, and a
             // computed key is only converted by the store itself.
+            using AsOp = AssignmentExpression::Operator;
             const bool computed = e.call_argc != 0;
             size_t obj_idx = index + 1;
+            if (static_cast<AsOp>(e.binary_op) != AsOp::ASSIGN) {
+                const size_t after_target = obj_idx + tape[obj_idx].span;
+                std::unique_ptr<ASTNode> property;
+                size_t rhs_idx = after_target;
+                if (computed) {
+                    property = tape_operand_node(tape, after_target);
+                    rhs_idx = after_target + tape[after_target].span;
+                } else {
+                    property = std::make_unique<Identifier>(NamePool::text(e.name_id), tape_pos_, tape_pos_);
+                }
+                AssignmentExpression expr(
+                    std::make_unique<MemberExpression>(tape_operand_node(tape, obj_idx), std::move(property),
+                                                       computed, tape_pos_, tape_pos_),
+                    static_cast<AsOp>(e.binary_op), tape_operand_node(tape, rhs_idx), tape_pos_, tape_pos_);
+                if (!compile_expression(&expr, discard)) return 0;
+                return failed_ ? 0 : index + e.span;
+            }
             size_t after_obj = compile_tape_expr(tape, obj_idx, false);
             if (after_obj == 0) return 0;
             int obj_reg = alloc_temp();
@@ -12666,6 +12731,11 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             // ReferenceError.
             using UnOp = UnaryExpression::Operator;
             UnOp op = static_cast<UnOp>(e.binary_op);
+            if (op == UnOp::DELETE) {
+                UnaryExpression expr(op, tape_target_node(tape, index + 1), true, tape_pos_, tape_pos_);
+                if (!compile_expression(&expr, discard)) return 0;
+                return failed_ ? 0 : index + e.span;
+            }
             size_t after_operand;
             if (op == UnOp::TYPEOF && tape[index + 1].tag == TapeTag::Identifier) {
                 if (!emit_tape_identifier_read(NamePool::text(tape[index + 1].name_id),

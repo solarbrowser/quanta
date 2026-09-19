@@ -5579,11 +5579,42 @@ bool Parser::try_tape_call_or_member(ExprTape& tape) {
     return true;
 }
 
+bool Parser::tape_update_target_ok(const ExprTape& tape, size_t index) const {
+    const TapeEntry& t = tape[index];
+    if (t.tag == TapeTag::Member) return true;
+    if (t.tag != TapeTag::Identifier) return false;
+    const std::string& name = NamePool::text(t.name_id);
+    if (name == "this") return false;
+    return !(options_.strict_mode && (name == "eval" || name == "arguments"));
+}
+
+bool Parser::tape_assignment_operator(TokenType type, AssignmentExpression::Operator& op) {
+    using AsOp = AssignmentExpression::Operator;
+    switch (type) {
+        case TokenType::ASSIGN:                     op = AsOp::ASSIGN; return true;
+        case TokenType::PLUS_ASSIGN:                op = AsOp::PLUS_ASSIGN; return true;
+        case TokenType::MINUS_ASSIGN:               op = AsOp::MINUS_ASSIGN; return true;
+        case TokenType::MULTIPLY_ASSIGN:            op = AsOp::MUL_ASSIGN; return true;
+        case TokenType::DIVIDE_ASSIGN:              op = AsOp::DIV_ASSIGN; return true;
+        case TokenType::MODULO_ASSIGN:              op = AsOp::MOD_ASSIGN; return true;
+        case TokenType::BITWISE_AND_ASSIGN:         op = AsOp::BITWISE_AND_ASSIGN; return true;
+        case TokenType::BITWISE_OR_ASSIGN:          op = AsOp::BITWISE_OR_ASSIGN; return true;
+        case TokenType::BITWISE_XOR_ASSIGN:         op = AsOp::BITWISE_XOR_ASSIGN; return true;
+        case TokenType::LEFT_SHIFT_ASSIGN:          op = AsOp::LEFT_SHIFT_ASSIGN; return true;
+        case TokenType::RIGHT_SHIFT_ASSIGN:         op = AsOp::RIGHT_SHIFT_ASSIGN; return true;
+        case TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN: op = AsOp::UNSIGNED_RIGHT_SHIFT_ASSIGN; return true;
+        case TokenType::LOGICAL_AND_ASSIGN:         op = AsOp::LOGICAL_AND_ASSIGN; return true;
+        case TokenType::LOGICAL_OR_ASSIGN:          op = AsOp::LOGICAL_OR_ASSIGN; return true;
+        case TokenType::NULLISH_ASSIGN:             op = AsOp::NULLISH_ASSIGN; return true;
+        default: return false;
+    }
+}
+
 // Mirrors parse_unary_expression's own recursive structure (Parser.cpp:
-// 1138-1250) for the six prefix operators compile_tape_expr's Unary case
-// supports. Right-associative by direct recursion (`!!x` -> LOGICAL_NOT(
-// LOGICAL_NOT(x))), same as the real function calling itself for its own
-// operand.
+// 1138-1250) for the prefix operators the tape holds, and parse_postfix_
+// expression for `x++` / `x--`. Right-associative by direct recursion (`!!x`
+// -> LOGICAL_NOT(LOGICAL_NOT(x))), same as the real function calling itself
+// for its own operand.
 bool Parser::try_tape_unary(ExprTape& tape) {
     UnaryExpression::Operator op;
     switch (current_token().get_type()) {
@@ -5593,19 +5624,46 @@ bool Parser::try_tape_unary(ExprTape& tape) {
         case TokenType::BITWISE_NOT: op = UnaryExpression::Operator::BITWISE_NOT; break;
         case TokenType::TYPEOF:      op = UnaryExpression::Operator::TYPEOF; break;
         case TokenType::VOID:        op = UnaryExpression::Operator::VOID; break;
-        default:
-            // delete, prefix ++/--, await -- none lex as a token this
-            // switch matches, so they fall through here and bail exactly
-            // like any other unsupported primary would (try_tape_primary
-            // only ever matches NUMBER/STRING/IDENTIFIER).
-            return try_tape_call_or_member(tape);
+        case TokenType::DELETE:      op = UnaryExpression::Operator::DELETE; break;
+        case TokenType::INCREMENT:   op = UnaryExpression::Operator::PRE_INCREMENT; break;
+        case TokenType::DECREMENT:   op = UnaryExpression::Operator::PRE_DECREMENT; break;
+        default: {
+            // await is the one prefix operator left; it does not lex as a token
+            // this switch matches, so it bails like any unsupported primary.
+            const size_t operand_idx = tape.size();
+            if (!try_tape_call_or_member(tape)) return false;
+            if (!match(TokenType::INCREMENT) && !match(TokenType::DECREMENT)) return true;
+            // A line terminator before the operator ends the statement (ASI).
+            if (last_consumed_token_end(current_token().get_start()).line <
+                current_token().get_start().line) {
+                return false;
+            }
+            if (!tape_update_target_ok(tape, operand_idx)) return false;
+            const auto post = match(TokenType::INCREMENT) ? UnaryExpression::Operator::POST_INCREMENT
+                                                          : UnaryExpression::Operator::POST_DECREMENT;
+            advance();
+            uint32_t span = static_cast<uint32_t>(tape.size() - operand_idx + 1);
+            tape.insert(tape.begin() + operand_idx,
+                        TapeEntry::with_op(TapeTag::Update, span, static_cast<uint8_t>(post)));
+            // A second update on the result is an invalid target.
+            return !(match(TokenType::INCREMENT) || match(TokenType::DECREMENT));
+        }
     }
     advance();
     size_t start_idx = tape.size();
     if (!try_tape_unary(tape)) return false;
+    const bool is_update = op == UnaryExpression::Operator::PRE_INCREMENT ||
+                           op == UnaryExpression::Operator::PRE_DECREMENT;
+    if (is_update && !tape_update_target_ok(tape, start_idx)) return false;
+    // Delete of an unqualified identifier is an early error in strict mode.
+    if (op == UnaryExpression::Operator::DELETE && options_.strict_mode &&
+        tape[start_idx].tag == TapeTag::Identifier) {
+        return false;
+    }
     uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
     tape.insert(tape.begin() + start_idx,
-                TapeEntry::with_op(TapeTag::Unary, span, static_cast<uint8_t>(op)));
+                TapeEntry::with_op(is_update ? TapeTag::Update : TapeTag::Unary, span,
+                                   static_cast<uint8_t>(op)));
     return true;
 }
 
@@ -5756,7 +5814,9 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
     if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ARROW) {
         return false;
     }
-    if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ASSIGN) {
+    AssignmentExpression::Operator ident_op;
+    if (match(TokenType::IDENTIFIER) &&
+        tape_assignment_operator(peek_token(1).get_type(), ident_op)) {
         // An escaped identifier is never a valid assignment target
         // (is_valid_assignment_target, Parser.cpp:3456) -- checked directly
         // against the Token since try_tape_identifier_ref_ok only takes the
@@ -5775,13 +5835,14 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
         size_t start_idx = tape.size();
         uint32_t name_id = NamePool::intern(name);
         advance();  // past the identifier
-        advance();  // past '='
+        advance();  // past the operator
         note_name(name);
         if (name.size() == 9 && name == "arguments") subtree_acc_ |= kSubtreeArguments;
         if (!try_tape_assignment(tape)) return false;  // rhs, right-associative
         uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
-        tape.insert(tape.begin() + start_idx,
-                    TapeEntry::named(TapeTag::Assign, span, name_id));
+        TapeEntry entry = TapeEntry::named(TapeTag::Assign, span, name_id);
+        entry.binary_op = static_cast<uint8_t>(ident_op);
+        tape.insert(tape.begin() + start_idx, entry);
         return true;
     }
     size_t lhs_start = tape.size();
@@ -5790,11 +5851,13 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
     // exactly one Member subtree (`a.b + c = d` is not a target), which is
     // then rewritten in place -- its children are already the first entries
     // MemberAssign needs, the rhs just follows.
-    if (match(TokenType::ASSIGN) && tape[lhs_start].tag == TapeTag::Member &&
-        tape[lhs_start].span == tape.size() - lhs_start) {
+    AssignmentExpression::Operator member_op;
+    if (tape_assignment_operator(current_token().get_type(), member_op) &&
+        tape[lhs_start].tag == TapeTag::Member && tape[lhs_start].span == tape.size() - lhs_start) {
         advance();
         if (!try_tape_assignment(tape)) return false;  // rhs, right-associative
         tape[lhs_start].tag = TapeTag::MemberAssign;
+        tape[lhs_start].binary_op = static_cast<uint8_t>(member_op);
         tape[lhs_start].span = static_cast<uint32_t>(tape.size() - lhs_start);
         return true;
     }
