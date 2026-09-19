@@ -73,6 +73,7 @@ public:
 private:
     TokenSequence tokens_;
     bool detached_tokens_ = false;
+    bool in_program_unit_ = false;
     // Token span of the most recently parsed function body, so the literal
     // built right after it can record where its body lives. Only read
     // immediately after that body's parse returns, before any nested parse
@@ -313,6 +314,9 @@ private:
             const NameScope& mine = p.name_scopes_.back();
             info.captured = mine.captured;
             info.all_names = mine.all;
+            for (auto n : mine.all) {
+                if (!mine.declared_here.count(n)) info.free_names.insert(n);
+            }
             info.eval_anywhere = mine.all.count(NamePool::intern("eval")) != 0;
             // Folds up through every nested scope (arrow or not) the same way
             // all_names does, so it sees a `super` however deep an arrow

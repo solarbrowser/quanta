@@ -2440,6 +2440,25 @@ void collect_free_names(const ASTNode* node,
         collect_free_names(body, scope_stack, in_arrow || nested_is_arrow, free_out, op);
         scope_stack.pop_back();
     };
+    // A function literal whose body has been let go: what it would have shown
+    // a walk is on record instead.
+    auto free_from_recorded = [&](const auto* fn) {
+        for (const auto& p : fn->get_params()) {
+            if (!p) continue;
+            if (p->has_destructuring()) { op.unknown = true; return; }
+            if (p->has_default()) collect_free_names(p->get_default_value(), scope_stack, in_arrow, free_out, op);
+        }
+        ScriptUnit* unit = fn->owning_unit();
+        const BodyScopeInfo* info = unit ? unit->scope_info_at(fn->body_source_first()) : nullptr;
+        if (!info) { op.unknown = true; return; }
+        for (uint32_t name_id : info->free_names) {
+            const std::string& n = NamePool::text(name_id);
+            if (n == "this" || n == "arguments" || n == "super" || n == "new.target" || n == "eval") continue;
+            if (!is_bound(n)) free_out.insert(n);
+        }
+        if (info->eval_anywhere) op.saw_eval = true;
+        if (info->class_expression) op.saw_class = true;
+    };
     switch (node->get_type()) {
         case ASTNode::Type::NUMBER_LITERAL:
         case ASTNode::Type::STRING_LITERAL:
@@ -2492,11 +2511,13 @@ void collect_free_names(const ASTNode* node,
         case ASTNode::Type::FUNCTION_EXPRESSION: {
             const auto* n = static_cast<const FunctionExpression*>(node);
             if (n->is_generator() || n->is_async()) { op.unknown = true; return; }
+            if (!n->get_body()) { free_from_recorded(n); return; }
             recurse_into_function(n->get_params(), n->get_body(), false);
             return;
         }
         case ASTNode::Type::FUNCTION_DECLARATION: {
             const auto* n = static_cast<const FunctionDeclaration*>(node);
+            if (!n->get_body()) { free_from_recorded(n); return; }
             recurse_into_function(n->get_params(), n->get_body(), false);
             return;
         }

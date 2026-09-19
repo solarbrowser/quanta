@@ -131,6 +131,12 @@ struct BodyScopeInfo {
     // from this body's own perspective (nothing nested in it reads `i`), but
     // it is exactly the reference a scan of an enclosing scope needs to see.
     IdSet all_names;
+    // The names this body reads or writes that it does not bind itself: what
+    // an enclosing function's closure_needs_outer_environment has to see when
+    // this body has been let go, since it can no longer walk it. A superset is
+    // safe (the enclosing function keeps its scope alive a little more often);
+    // a name missing from it is not.
+    IdSet free_names;
     // `eval` named anywhere in the body, nested or not: its text can reach any
     // binding here, so nothing may take a register.
     bool eval_anywhere = false;

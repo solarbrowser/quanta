@@ -100,6 +100,27 @@ void append_declarator_names(const VariableDeclarator* d, std::vector<std::strin
 
 }
 
+
+namespace {
+// A function body is let go the moment its parse is finished, leaving the
+// range to read it from and what the parse learned about it (BodyScopeInfo),
+// so a program holds the trees of the function being read and not of every
+// function in the file. The body is read back when the function first runs.
+//
+// Left alone where something still walks it after this point: the outermost
+// function of a `new Function` parse (its caller holds the body), and anything
+// inside a class (the private-name checks at the class's end read method
+// bodies).
+template <typename Lit>
+void release_body_after_parse(Lit& lit, bool detached, bool skipped, bool in_program_unit,
+                              int function_depth, int class_depth) {
+    if (detached || skipped || class_depth > 0) return;
+    if (!in_program_unit && function_depth < 1) return;
+    if (!ScriptUnit::building() || !lit.has_body_token_range() || !lit.get_body()) return;
+    lit.release_body();
+}
+}
+
 ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
     // The unit has to exist before the parse so BuildScope can stamp literals
     // as they are built; the root is handed over once the parse finishes.
@@ -107,7 +128,9 @@ ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
     std::unique_ptr<Program> program;
     {
         ScriptUnit::BuildScope scope(unit.get());
+        in_program_unit_ = true;
         program = parse_program();
+        in_program_unit_ = false;
     }
     // The literals inside recorded ranges into this text, so the unit keeps it.
     unit->set_source(source_);
@@ -4072,12 +4095,11 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         last_body_src_first_ = static_cast<uint32_t>(start.offset);
         last_body_src_last_ = static_cast<uint32_t>(end.offset);
         last_body_strict_ = false;
-        if (!statements.empty()) {
-            if (auto* es = dynamic_cast<ExpressionStatement*>(statements[0].get())) {
-                if (auto* sl = dynamic_cast<StringLiteral*>(es->get_expression())) {
-                    last_body_strict_ = sl->get_value() == "use strict";
-                }
-            }
+        for (const auto& stmt : statements) {
+            auto* es = dynamic_cast<ExpressionStatement*>(stmt.get());
+            auto* sl = es ? dynamic_cast<StringLiteral*>(es->get_expression()) : nullptr;
+            if (!sl) break;
+            if (sl->get_value() == "use strict" && !sl->has_escapes()) { last_body_strict_ = true; break; }
         }
     }
     auto block = std::make_unique<BlockStatement>(std::move(statements), start, end);
@@ -6928,6 +6950,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     if (!detached_tokens_) fn_decl->set_body_token_range(last_body_tok_first_, last_body_tok_last_, last_body_src_first_);
     if (!last_body_skipped_) fn_names.record_body(last_body_src_first_);
     fn_names.record_body_span(last_body_src_last_, last_body_strict_);
+    release_body_after_parse(*fn_decl, detached_tokens_, last_body_skipped_, in_program_unit_, options_.function_depth, options_.class_depth);
     return fn_decl;
 }
 
@@ -8701,6 +8724,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             ParamList::from_nodes(fn_expr->get_params()), fn_expr->get_body(),
             /*is_arrow=*/false));
     }
+    release_body_after_parse(*fn_expr, detached_tokens_, last_body_skipped_, in_program_unit_, options_.function_depth, options_.class_depth);
     return fn_expr;
 }
 

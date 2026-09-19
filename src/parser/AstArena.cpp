@@ -111,8 +111,16 @@ void free_chunk_bytes(void* p) {
 #endif
 }
 
+// Chunks that emptied and are waiting to be reused. A body parsed and let go
+// again as soon as it is read empties chunks about as fast as the next one
+// fills them, and handing each back to the system only to take it again cost
+// more in page faults than the tree it held.
+constexpr size_t kPoolMax = 16;
+thread_local void* g_pool[kPoolMax];
+thread_local size_t g_pool_size = 0;
+
 Chunk* new_chunk(size_t class_index, size_t node_size) {
-    void* raw = alloc_chunk_bytes();
+    void* raw = g_pool_size ? g_pool[--g_pool_size] : alloc_chunk_bytes();
     if (!raw) return nullptr;
     auto* c = static_cast<Chunk*>(raw);
     c->next_open = nullptr;
@@ -130,6 +138,7 @@ Chunk* new_chunk(size_t class_index, size_t node_size) {
 void release(Chunk* c) {
     unlink_open(c);
     registry().erase(reinterpret_cast<uintptr_t>(c));
+    if (g_pool_size < kPoolMax) { g_pool[g_pool_size++] = c; return; }
     free_chunk_bytes(c);
 }
 
