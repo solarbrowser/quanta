@@ -3425,6 +3425,10 @@ std::string Parser::find_forbidden_expr_in_params(
             case T::MEMBER_EXPRESSION: { auto* me = static_cast<const MemberExpression*>(nd); walk(me->get_object()); if (me->is_computed()) walk(me->get_property()); break; }
             case T::OPTIONAL_CHAINING_EXPRESSION: { auto* oc = static_cast<const OptionalChainingExpression*>(nd); walk(oc->get_object()); if (oc->is_computed()) walk(oc->get_property()); break; }
             case T::SPREAD_ELEMENT: walk(static_cast<const SpreadElement*>(nd)->get_argument()); break;
+            // The tape's own entries hold no yield or await; what it embeds may.
+            case T::TAPED_EXPRESSION:
+                for (const auto& embedded : static_cast<const TapedExpression*>(nd)->embedded()) walk(embedded.get());
+                break;
             case T::ARRAY_LITERAL: for (const auto& e : static_cast<const ArrayLiteral*>(nd)->get_elements()) walk(e.get()); break;
             case T::OBJECT_LITERAL: for (const auto& pr : static_cast<const ObjectLiteral*>(nd)->get_properties()) { if (pr->computed) walk(pr->key.get()); walk(pr->value.get()); } break;
             case T::TEMPLATE_LITERAL:
@@ -7063,6 +7067,11 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             using T = ASTNode::Type;
             switch (nd->get_type()) {
                 case T::CLASS_DECLARATION: return; // nested class has its own private scope
+                // A private name is never encoded in the tape itself; a chain
+                // that uses one is embedded whole.
+                case T::TAPED_EXPRESSION:
+                    for (const auto& embedded : static_cast<const TapedExpression*>(nd)->embedded()) chk(embedded.get());
+                    break;
                 case T::MEMBER_EXPRESSION: {
                     auto* me = static_cast<const MemberExpression*>(nd);
                     if (!me->is_computed()) {
@@ -7470,6 +7479,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             using T = ASTNode::Type;
             switch (nd->get_type()) {
                 case T::CLASS_DECLARATION: return;
+                case T::TAPED_EXPRESSION:
+                    for (const auto& embedded : static_cast<const TapedExpression*>(nd)->embedded()) chk(embedded.get());
+                    break;
                 case T::MEMBER_EXPRESSION: { auto* me = static_cast<const MemberExpression*>(nd); if (!me->is_computed()) { auto* p = me->get_property(); if (p && p->get_type() == T::IDENTIFIER) { const auto& nm = static_cast<const Identifier*>(p)->get_name(); if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; } } } chk(me->get_object()); if (me->is_computed()) chk(me->get_property()); break; }
                 case T::OPTIONAL_CHAINING_EXPRESSION: { auto* oc = static_cast<const OptionalChainingExpression*>(nd); if (!oc->is_computed()) { auto* p = oc->get_property(); if (p && p->get_type() == T::IDENTIFIER) { const auto& nm = static_cast<const Identifier*>(p)->get_name(); if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; } } } chk(oc->get_object()); if (oc->is_computed()) chk(oc->get_property()); break; }
                 case T::BINARY_EXPRESSION: { auto* be = static_cast<const BinaryExpression*>(nd); if (be->get_operator() == BinaryExpression::Operator::IN) { auto* lft = be->get_left(); if (lft && lft->get_type() == T::IDENTIFIER) { const auto& nm = static_cast<const Identifier*>(lft)->get_name(); if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; } } } chk(be->get_left()); chk(be->get_right()); break; }

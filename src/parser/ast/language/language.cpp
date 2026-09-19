@@ -62,6 +62,13 @@ static bool contains_direct_eval(ASTNode* node) {
         case ASTNode::Type::CLASS_DECLARATION:
         case ASTNode::Type::CLASS_STATIC_BLOCK:
             return false;
+        // A direct eval is never encoded in a tape (the parser leaves an
+        // `eval` callee to the real parse, which the tape then embeds whole).
+        case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& embedded : static_cast<TapedExpression*>(node)->embedded()) {
+                if (contains_direct_eval(embedded.get())) return true;
+            }
+            return false;
         case ASTNode::Type::CALL_EXPRESSION: {
             auto* call = static_cast<CallExpression*>(node);
             if (call->get_callee()->get_type() == ASTNode::Type::IDENTIFIER &&
