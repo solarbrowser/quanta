@@ -350,6 +350,10 @@ private:
 
     void pump_to(size_t index);
     void release_behind();
+    // Per block, how many callers are holding it. A held block is not handed
+    // back when the parser moves past it, and goes back at once if it is
+    // released after the parser is already well beyond.
+    std::vector<uint32_t> pin_counts_;
 
     // Doubling while the blocks are small, then a fixed size. Doubling alone
     // over-allocates a large sequence to the next power of two -- megabytes of
@@ -441,6 +445,12 @@ public:
         cursor_ = index;
         if (index >= release_check_at_) release_behind();
     }
+    // Keeps the blocks holding tokens [first, last) until unpin() with the
+    // same range. For a caller that will come back to tokens it has already
+    // read, after reading on far enough past them that the window would
+    // otherwise have let them go.
+    void pin(size_t first, size_t last);
+    void unpin(size_t first, size_t last);
     void push_back(const Token& token);
     
     std::string to_string() const;

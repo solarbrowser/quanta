@@ -537,6 +537,9 @@ void collect_assigned_identifiers(const ASTNode* node,
                     out.insert(NamePool::text(tape[i + 1].name_id));
                 }
             }
+            for (const auto& fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                collect_assigned_identifiers(fn.get(), candidates, out);
+            }
             return;
         }
         case ASTNode::Type::DESTRUCTURING_ASSIGNMENT: {
@@ -937,6 +940,9 @@ bool contains_closure_by_walk(const ASTNode* node) {
         // "unknown shape" to this function) turned every local in a hot
         // loop into an Environment lookup instead of a register read.
         case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (contains_closure_by_walk(fn.get())) return true;
+            }
             return false;
 
         default:
@@ -1195,6 +1201,9 @@ bool contains_hoisted_decl_by_walk(const ASTNode* node) {
         // class declaration, provably, so this is safe to answer "no" for
         // rather than falling through to the conservative default below.
         case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (contains_hoisted_decl_by_walk(fn.get())) return true;
+            }
             return false;
 
         default:
@@ -1354,6 +1363,13 @@ bool contains_delegated_expr(const ASTNode* node) {
     if (!node) return false;
     if (node->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) return true;
     switch (node->get_type()) {
+        // A function or arrow the tape embeds is walked as it would be in a
+        // parsed tree; the tape's own entries hold none of what this looks for.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& embedded_fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (contains_delegated_expr(embedded_fn.get())) return true;
+            }
+            return false;
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::FUNCTION_DECLARATION:
             return false;
@@ -1568,6 +1584,9 @@ bool uses_arguments_by_walk(const ASTNode* node) {
                     NamePool::text(e.name_id) == "arguments") {
                     return true;
                 }
+            }
+            for (const auto& fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (uses_arguments_by_walk(fn.get())) return true;
             }
             return false;
         }
@@ -1952,12 +1971,16 @@ void collect_closure_names(const ASTNode* node, bool inside_closure,
         // elsewhere, e.g. `x = eval` or an argument, so the same check must
         // still run per-entry.
         case ASTNode::Type::TAPED_EXPRESSION: {
-            if (!inside_closure) return;
-            for (const auto& e : static_cast<const TapedExpression*>(node)->tape()) {
-                if (e.tag != TapeTag::Identifier && e.tag != TapeTag::Assign) continue;
-                const std::string& n = NamePool::text(e.name_id);
-                if (n == "eval") op.saw_eval = true;
-                add_name(n);
+            if (inside_closure) {
+                for (const auto& e : static_cast<const TapedExpression*>(node)->tape()) {
+                    if (e.tag != TapeTag::Identifier && e.tag != TapeTag::Assign) continue;
+                    const std::string& n = NamePool::text(e.name_id);
+                    if (n == "eval") op.saw_eval = true;
+                    add_name(n);
+                }
+            }
+            for (const auto& fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                collect_closure_names(fn.get(), inside_closure, out, op, suspendable, super_only);
             }
             return;
         }
@@ -2449,6 +2472,9 @@ void collect_free_names(const ASTNode* node,
                 }
                 if (!is_bound(n)) free_out.insert(n);
             }
+            for (const auto& fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                collect_free_names(fn.get(), scope_stack, in_arrow, free_out, op);
+            }
             return;
         }
         case ASTNode::Type::FUNCTION_EXPRESSION: {
@@ -2849,6 +2875,9 @@ bool references_outside(const ASTNode* node, const std::unordered_set<const ASTN
                 if ((e.tag == TapeTag::Identifier || e.tag == TapeTag::Assign) &&
                     NamePool::text(e.name_id) == name) return true;
             }
+            for (const auto& fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (references_outside(fn.get(), regions, name)) return true;
+            }
             return false;
         }
         case ASTNode::Type::FUNCTION_EXPRESSION: {
@@ -3158,6 +3187,13 @@ namespace {
 bool uses_super_or_private(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
+        // A function or arrow the tape embeds is walked as it would be in a
+        // parsed tree; the tape's own entries hold none of what this looks for.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& embedded_fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (uses_super_or_private(embedded_fn.get())) return true;
+            }
+            return false;
         case ASTNode::Type::FUNCTION_EXPRESSION:
         case ASTNode::Type::FUNCTION_DECLARATION:
             return false;
@@ -3362,6 +3398,13 @@ bool uses_super_or_private(const ASTNode* node) {
 bool contains_with_by_walk(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
+        // A function or arrow the tape embeds is walked as it would be in a
+        // parsed tree; the tape's own entries hold none of what this looks for.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& embedded_fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (contains_with_by_walk(embedded_fn.get())) return true;
+            }
+            return false;
         case ASTNode::Type::WITH_STATEMENT:
             return true;
         case ASTNode::Type::FUNCTION_EXPRESSION:
@@ -3540,6 +3583,13 @@ bool contains_with(const ASTNode* node) {
 bool contains_suspend_by_walk(const ASTNode* node) {
     if (!node) return false;
     switch (node->get_type()) {
+        // A function or arrow the tape embeds is walked as it would be in a
+        // parsed tree; the tape's own entries hold none of what this looks for.
+        case ASTNode::Type::TAPED_EXPRESSION:
+            for (const auto& embedded_fn : static_cast<const TapedExpression*>(node)->embedded()) {
+                if (contains_suspend_by_walk(embedded_fn.get())) return true;
+            }
+            return false;
         case ASTNode::Type::YIELD_EXPRESSION:
         case ASTNode::Type::AWAIT_EXPRESSION:
             return true;
@@ -4029,7 +4079,17 @@ bool member_is_private(const MemberExpression* mem) {
 // function/class name from the LHS identifier, so those assignments stay
 // on the tree-walker. (Named function expressions delegate too -- the
 // runtime empty-name check can't run here, so be conservative.)
+// The parsed node a TapeSlice stands for, when it is exactly one; the node
+// itself otherwise. The checks below ask what an operand's node type is.
+const ASTNode* see_through_slice(const ASTNode* node) {
+    if (node && node->get_type() == ASTNode::Type::TAPE_SLICE) {
+        if (const ASTNode* embedded = static_cast<const TapeSlice*>(node)->embedded_node()) return embedded;
+    }
+    return node;
+}
+
 bool is_named_evaluation_rhs(const ASTNode* node) {
+    node = see_through_slice(node);
     if (!node) return false;
     auto t = node->get_type();
     return t == ASTNode::Type::FUNCTION_EXPRESSION ||
@@ -4043,6 +4103,7 @@ bool is_named_evaluation_rhs(const ASTNode* node) {
 // initializers, which can observe it (`class { static f = this.name }`),
 // whereas the opcode only runs once the class is already built.
 bool named_evaluation_is_class(const ASTNode* node) {
+    node = see_through_slice(node);
     return node && node->get_type() == ASTNode::Type::CLASS_DECLARATION;
 }
 
@@ -4061,6 +4122,7 @@ std::string numeric_key_text(double n) {
 }
 
 void stamp_inferred_class_name(const ASTNode* init, const std::string& name) {
+    init = see_through_slice(init);
     if (!named_evaluation_is_class(init)) return;
     auto* cd = const_cast<ClassDeclaration*>(static_cast<const ClassDeclaration*>(init));
     if (cd->is_expression() && cd->get_id() && cd->get_id()->get_name().empty()) {
@@ -12108,14 +12170,23 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             if (tape_compilable(tp->tape())) {
                 const std::string* saved_source = tape_source_;
                 const Position saved_pos = tape_pos_;
+                const auto* saved_embedded = tape_embedded_;
                 tape_source_ = tp->source().get();
                 tape_pos_ = tp->get_start();
+                tape_embedded_ = &tp->embedded();
                 const size_t done = compile_tape_expr(tp->tape(), 0, discard);
                 tape_source_ = saved_source;
                 tape_pos_ = saved_pos;
+                tape_embedded_ = saved_embedded;
                 if (done != 0) return !failed_;
             }
             if (failed_) return false;
+            // A tape that embeds a function has nothing to fall back to: a
+            // reparsed tree would be freed once compiled while the closures
+            // made from its functions outlive it, and every reason the tape
+            // can give up (an `arguments` the body cannot see, an oversized
+            // argument list) fails the tree case just the same.
+            if (!tp->embedded().empty()) return false;
             // compile_tape_expr's own restricted coverage didn't cover this
             // tape after all -- most commonly a name the parser had no way
             // to know, at parse time, would end up captured by a later
@@ -12148,7 +12219,7 @@ std::unique_ptr<ASTNode> BytecodeCompiler::tape_operand_node(const ExprTape& tap
             if (e.binary_op == 2) return std::make_unique<NullLiteral>(tape_pos_, tape_pos_);
             return std::make_unique<BooleanLiteral>(e.binary_op == 0, tape_pos_, tape_pos_);
         default:
-            return std::make_unique<TapeSlice>(&tape, index, tape_pos_);
+            return std::make_unique<TapeSlice>(&tape, tape_embedded_, index, tape_pos_);
     }
 }
 
@@ -12547,8 +12618,16 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             // last branch (its `with` and outer/global branches, taken when
             // either condition fails, are the delegated path below).
             if (op == AsOp::ASSIGN && with_depth_ == 0 && is_local(name) && !lexical_out_of_scope(name)) {
+                // An anonymous function on the right takes the target's name.
+                const ASTNode* rhs_node = tape[index + 1].tag == TapeTag::Node
+                    ? (*tape_embedded_)[tape[index + 1].name_id].get() : nullptr;
+                stamp_inferred_class_name(rhs_node, name);
                 size_t after_rhs = compile_tape_expr(tape, index + 1, false);
                 if (after_rhs == 0) return 0;
+                if (is_named_evaluation_rhs(rhs_node)) {
+                    emit(Op::SetFunctionNameIfUnnamed);
+                    emit_u16(add_name(name));
+                }
                 emit_write_local(name, /*is_declaration=*/false);
                 return failed_ ? 0 : index + e.span;
             }
@@ -12579,6 +12658,12 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
                 std::string key = prop.binary_op == 0 ? NamePool::text(prop.name_id)
                                                       : tape_source_->substr(prop.name_id, prop.str_len);
                 if (compile_tape_expr(tape, child + 1, false) == 0) return 0;
+                // NamedEvaluation: an anonymous function value takes the key.
+                if (tape[child + 1].tag == TapeTag::Node &&
+                    is_named_evaluation_rhs((*tape_embedded_)[tape[child + 1].name_id].get())) {
+                    emit(Op::SetFunctionNameIfUnnamed);
+                    emit_u16(add_name(key));
+                }
                 emit_named_ic(Op::DefineOwn, Op::DefineOwnWide, static_cast<uint8_t>(obj_reg),
                               add_name(key), alloc_feedback_slot());
                 child += prop.span;
@@ -12621,6 +12706,10 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             emit(Op::Ldar);
             emit_u8(static_cast<uint8_t>(obj_reg));
             free_temp(obj_reg);
+            return failed_ ? 0 : index + e.span;
+        }
+        case TapeTag::Node: {
+            if (!compile_expression((*tape_embedded_)[e.name_id].get())) return 0;
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::Update: {

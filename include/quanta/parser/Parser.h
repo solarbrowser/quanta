@@ -14,6 +14,7 @@
 #include "quanta/lexer/Token.h"
 #include "quanta/lexer/Lexer.h"
 #include <memory>
+#include <unordered_map>
 #include <vector>
 #include <unordered_set>
 #include <string>
@@ -476,10 +477,50 @@ public:
     std::unique_ptr<ASTNode> parse_expression_maybe_tape();
     std::unique_ptr<ASTNode> parse_assignment_maybe_tape();
     Position last_consumed_token_end(const Position& fallback) const;
-    // One buffer every tape attempt builds into: a bail then costs no
+    // One buffer the outermost tape attempt builds into: a bail then costs no
     // allocation, and a successful tape is copied out at exactly its size
-    // instead of carrying a growth vector's spare capacity.
+    // instead of carrying a growth vector's spare capacity. An attempt that
+    // starts while another is running (inside a function the first one is
+    // parsing) uses a buffer of its own.
     ExprTape tape_scratch_;
+    bool tape_scratch_in_use_ = false;
+
+    // A function, arrow or class parsed while a tape attempt is running,
+    // waiting to be embedded in the tape or, if the attempt gives up, to be
+    // handed back to the real parse of the same tokens.
+    struct TapeEmbedded {
+        std::unique_ptr<ASTNode> node;
+        size_t start_token;
+        size_t end_token;
+    };
+    struct TapeAttempt {
+        std::vector<TapeEmbedded> embedded;
+        // Where the tokens read since the last embedded node (or since the
+        // attempt began) start, and the ranges already set aside: the token
+        // stream lets go of what the parser has moved far past, and a bailed
+        // attempt is re-read from its start, so everything but the embedded
+        // bodies themselves is held until the attempt is settled.
+        size_t gap_start = 0;
+        std::vector<std::pair<size_t, size_t>> pinned;
+    };
+    TapeAttempt* tape_attempt_ = nullptr;
+    // What an attempt that gave up parsed, keyed by the token the node
+    // starts at. The real parse takes a node from here instead of reading
+    // the same function twice.
+    struct CachedNode {
+        std::unique_ptr<ASTNode> node;
+        size_t end_token;
+    };
+    std::unordered_map<size_t, CachedNode> tape_node_cache_;
+    // A function costs nothing to read, so an attempt may go on for as long
+    // as the source between embedded nodes stays this short (tokens); a
+    // longer run of plain expression would have to be re-read after a bail
+    // from further back than the token stream keeps.
+    static constexpr size_t kTapeGapBudget = 4096;
+    bool tape_gap_exhausted() const;
+    bool try_tape_embed(ExprTape& tape, std::unique_ptr<ASTNode> (Parser::*parse)());
+    std::unique_ptr<ASTNode> take_cached_node();
+    std::unique_ptr<ASTNode> parse_tape_or_tree(bool sequence);
 
     std::unique_ptr<ASTNode> parse_try_statement();
     std::unique_ptr<ASTNode> parse_throw_statement();

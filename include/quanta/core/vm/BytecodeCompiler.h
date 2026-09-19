@@ -135,6 +135,10 @@ enum class TapeTag : uint8_t {
     // in binary_op and the operand (an Identifier or a Member) as the one
     // subtree. Compiled through the tree case, see compile_tape_expr.
     Update,
+    // A whole parsed subtree the tape cannot hold inline -- a function,
+    // arrow or class expression -- owned by the TapedExpression; name_id is
+    // its index there. Compiled by handing the node to compile_expression.
+    Node,
     // `{ k: v, ... }` -- name_id holds the property count, then one Prop
     // entry per property. Only plain static-key value properties (and
     // shorthand) are represented: no spread, computed or numeric keys,
@@ -324,6 +328,8 @@ private:
     std::unique_ptr<ASTNode> tape_target_node(const ExprTape& tape, size_t index) const;
     // The source a tape being compiled slices its string literals out of.
     const std::string* tape_source_ = nullptr;
+    // The embedded nodes of the tape being compiled, for Node entries.
+    const std::vector<std::unique_ptr<ASTNode>>* tape_embedded_ = nullptr;
     // Proof-of-concept tape consumer -- see ExprTape's own comment. Mirrors
     // compile_expression's own logic (same private helpers, same
     // register/env decisions) for exactly the tags ExprTape currently

@@ -453,9 +453,30 @@ void TokenSequence::release_behind() {
     size_t block, slot;
     locate(keep_from, block, slot);
     for (size_t b = released_blocks_; b < block && b < blocks_.size(); b++) {
+        if (b < pin_counts_.size() && pin_counts_[b] > 0) continue;
         blocks_[b].reset();
     }
     released_blocks_ = block;
+}
+
+void TokenSequence::pin(size_t first, size_t last) {
+    if (!lexer_ || last <= first) return;
+    size_t first_block, slot, last_block;
+    locate(first, first_block, slot);
+    locate(last - 1, last_block, slot);
+    if (pin_counts_.size() <= last_block) pin_counts_.resize(last_block + 1, 0);
+    for (size_t b = first_block; b <= last_block; b++) pin_counts_[b]++;
+}
+
+void TokenSequence::unpin(size_t first, size_t last) {
+    if (!lexer_ || last <= first) return;
+    size_t first_block, slot, last_block;
+    locate(first, first_block, slot);
+    locate(last - 1, last_block, slot);
+    for (size_t b = first_block; b <= last_block && b < pin_counts_.size(); b++) {
+        if (pin_counts_[b] == 0) continue;
+        if (--pin_counts_[b] == 0 && b < released_blocks_ && b < blocks_.size()) blocks_[b].reset();
+    }
 }
 
 const Token& TokenSequence::operator[](size_t index) const {

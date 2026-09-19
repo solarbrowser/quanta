@@ -5264,8 +5264,11 @@ bool Parser::try_tape_identifier_ref_ok(const std::string& name) const {
     return true;
 }
 bool Parser::try_tape_primary(ExprTape& tape) {
+    if (tape_gap_exhausted()) return false;
     const Token& token = current_token();
     switch (token.get_type()) {
+        case TokenType::FUNCTION:
+            return try_tape_embed(tape, &Parser::parse_function_expression);
         case TokenType::NUMBER: {
             double value = token.has_numeric_value() ? tokens_.numeric_value_of(token) : 0.0;
             tape.push_back(TapeEntry::number(value));
@@ -5442,7 +5445,15 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             // the real parser tells apart up front.
             advance();
             const size_t start_idx = tape.size();
-            if (!try_tape_expression(tape)) return false;
+            // A parenthesis starts a fresh context, as in the real parse.
+            const bool saved_in_unary = options_.in_unary_operand;
+            const bool saved_in_binary = options_.in_binary_expr;
+            options_.in_unary_operand = false;
+            options_.in_binary_expr = false;
+            const bool inner_ok = try_tape_expression(tape);
+            options_.in_unary_operand = saved_in_unary;
+            options_.in_binary_expr = saved_in_binary;
+            if (!inner_ok) return false;
             if (!match(TokenType::RIGHT_PAREN)) return false;
             advance();
             if (match(TokenType::ARROW)) return false;
@@ -5651,7 +5662,11 @@ bool Parser::try_tape_unary(ExprTape& tape) {
     }
     advance();
     size_t start_idx = tape.size();
-    if (!try_tape_unary(tape)) return false;
+    const bool saved_in_unary = options_.in_unary_operand;
+    options_.in_unary_operand = true;
+    const bool operand_ok = try_tape_unary(tape);
+    options_.in_unary_operand = saved_in_unary;
+    if (!operand_ok) return false;
     const bool is_update = op == UnaryExpression::Operator::PRE_INCREMENT ||
                            op == UnaryExpression::Operator::PRE_DECREMENT;
     if (is_update && !tape_update_target_ok(tape, start_idx)) return false;
@@ -5710,8 +5725,12 @@ bool Parser::try_tape_binary(ExprTape& tape, int min_precedence) {
         advance();
         // Left-associative: the right side may only take operators that
         // bind tighter, same as parse_binary_chain's own right-hand
-        // recursion (Parser.cpp:1075).
-        if (!try_tape_binary(tape, precedence + 1)) return false;
+        // recursion (Parser.cpp:1075), which reads it as a binary operand.
+        const bool saved_in_binary = options_.in_binary_expr;
+        options_.in_binary_expr = true;
+        const bool right_ok = try_tape_binary(tape, precedence + 1);
+        options_.in_binary_expr = saved_in_binary;
+        if (!right_ok) return false;
         uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
         tape.insert(tape.begin() + start_idx,
                     TapeEntry::with_op(TapeTag::Binary, span,
@@ -5803,16 +5822,20 @@ bool Parser::try_tape_conditional(ExprTape& tape) {
 }
 
 bool Parser::try_tape_assignment(ExprTape& tape) {
-    // Mirrors parse_assignment_expression's own very first check
-    // (Parser.cpp:727-729) -- a bare identifier immediately followed by
-    // `=>` is an arrow function's single parameter, not a plain identifier
-    // reference, and this takes priority over everything else (including
-    // the plain-assign fast path just below: `x => ...` never has `=` right
-    // after `x`, but nothing else here would otherwise notice `=>` as
-    // anything other than "nothing more" and silently stop one token short,
-    // leaving the whole arrow body unconsumed).
-    if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ARROW) {
-        return false;
+    // Mirrors parse_assignment_expression's own opening checks: an arrow
+    // function (`x => ...`, or a parenthesized list that try_parse_arrow_
+    // function_params recognizes) is an AssignmentExpression of its own, read
+    // by the real parse_arrow_function and embedded whole, and it takes
+    // priority over everything else here.
+    if (tape_gap_exhausted()) return false;
+    if (token_names_a_binding(current_token().get_type()) && peek_token(1).get_type() == TokenType::ARROW) {
+        return try_tape_embed(tape, &Parser::parse_arrow_function);
+    }
+    if (match(TokenType::LEFT_PAREN)) {
+        const size_t saved_pos = current_token_index_;
+        const bool is_arrow = try_parse_arrow_function_params();
+        current_token_index_ = saved_pos;
+        if (is_arrow) return try_tape_embed(tape, &Parser::parse_arrow_function);
     }
     AssignmentExpression::Operator ident_op;
     if (match(TokenType::IDENTIFIER) &&
@@ -5905,7 +5928,45 @@ Position Parser::last_consumed_token_end(const Position& fallback) const {
     return fallback;
 }
 
-std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
+bool Parser::tape_gap_exhausted() const {
+    return tape_attempt_ && current_token_index_ - tape_attempt_->gap_start > kTapeGapBudget;
+}
+
+// Parses a function, arrow or class the real way and embeds the result in
+// the tape. The tokens read since the last such node are set aside first, so
+// that reading the node itself, however long, does not let them go.
+bool Parser::try_tape_embed(ExprTape& tape, std::unique_ptr<ASTNode> (Parser::*parse)()) {
+    TapeAttempt& attempt = *tape_attempt_;
+    const size_t start_token = current_token_index_;
+    if (start_token > attempt.gap_start) {
+        tokens_.pin(attempt.gap_start, start_token);
+        attempt.pinned.emplace_back(attempt.gap_start, start_token);
+    }
+    auto node = (this->*parse)();
+    if (!node) return false;
+    attempt.gap_start = current_token_index_;
+    tape.push_back(TapeEntry::named(TapeTag::Node, 1, static_cast<uint32_t>(attempt.embedded.size())));
+    attempt.embedded.push_back(TapeEmbedded{std::move(node), start_token, current_token_index_});
+    return true;
+}
+
+// The real parse of a token an attempt already read as a function: takes the
+// node the attempt made and moves past it, instead of reading it again.
+std::unique_ptr<ASTNode> Parser::take_cached_node() {
+    if (tape_node_cache_.empty()) return nullptr;
+    auto it = tape_node_cache_.find(current_token_index_);
+    if (it == tape_node_cache_.end()) return nullptr;
+    auto node = std::move(it->second.node);
+    current_token_index_ = it->second.end_token;
+    tape_node_cache_.erase(it);
+    return node;
+}
+
+// The two hook points share this: try to read the expression as a tape, and
+// on any bail restore the token position and run the real, unmodified
+// parse. `sequence`: a full Expression (commas allowed) rather than one
+// AssignmentExpression.
+std::unique_ptr<ASTNode> Parser::parse_tape_or_tree(bool sequence) {
     // TapedExpression's compile-time reparse-on-failure fallback (see its
     // own comment) needs source_ -- without it there is no way to recover
     // when compile_tape_expr's restricted coverage turns out not to apply
@@ -5916,18 +5977,24 @@ std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
     // source_ is unset is the general, safe rule (covers module parsing
     // and any other future caller that skips set_source), not something
     // narrower like checking source_type_module specifically.
-    if (!source_) return parse_expression();
-    size_t saved_pos = current_token_index_;
-    Position tape_start = get_current_position();
-    ExprTape& tape = tape_scratch_;
+    auto real_parse = [&]() { return sequence ? parse_expression() : parse_assignment_expression(); };
+    if (!source_) return real_parse();
+    const size_t saved_pos = current_token_index_;
+    const Position tape_start = get_current_position();
+
+    ExprTape nested_buffer;
+    const bool use_scratch = !tape_scratch_in_use_;
+    ExprTape& tape = use_scratch ? tape_scratch_ : nested_buffer;
     tape.clear();
+    tape_scratch_in_use_ = true;
+
+    TapeAttempt attempt;
+    attempt.gap_start = saved_pos;
+    TapeAttempt* outer_attempt = tape_attempt_;
+    tape_attempt_ = &attempt;
     // try_tape_assignment mirrors parse_assignment_expression, not
-    // parse_expression -- it has no comma-awareness of its own (a comma
-    // inside a call's argument list is normal and handled by
-    // try_tape_call_or_member's own loop), so the top-level sequence-
-    // expression check parse_expression's own loop would apply
-    // (Parser.cpp:709) has to happen here instead, once, after a successful
-    // top-level attempt.
+    // parse_expression, so the sequence loop parse_expression's own has to
+    // be mirrored here (try_tape_expression).
     //
     // A tape of a single entry is rejected too, and re-parsed as a real tree:
     // one AST node is smaller than a TapedExpression plus its entry, so
@@ -5936,14 +6003,35 @@ std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
     // directive, BlockStatement::has_use_strict_directive, Parser.cpp's own
     // last_body_strict_ scan), which recognize a directive by the
     // STATEMENT's own AST node being STRING_LITERAL-shaped.
-    bool ok = try_tape_expression(tape) && tape.size() > 1;
+    const bool ok = (sequence ? try_tape_expression(tape) : try_tape_assignment(tape)) && tape.size() > 1;
+    tape_attempt_ = outer_attempt;
+
     if (ok) {
+        for (const auto& range : attempt.pinned) tokens_.unpin(range.first, range.second);
+        std::vector<std::unique_ptr<ASTNode>> embedded;
+        embedded.reserve(attempt.embedded.size());
+        for (auto& e : attempt.embedded) embedded.push_back(std::move(e.node));
         Position tape_end = last_consumed_token_end(tape_start);
-        return std::make_unique<TapedExpression>(ExprTape(tape.begin(), tape.end()), tape_start, tape_end,
-                                                  source_, options_.strict_mode);
+        auto taped = std::make_unique<TapedExpression>(ExprTape(tape.begin(), tape.end()), tape_start, tape_end,
+                                                       source_, options_.strict_mode, std::move(embedded));
+        if (use_scratch) tape_scratch_in_use_ = false;
+        return taped;
+    }
+
+    // Everything the attempt parsed waits, keyed by where it began, for the
+    // real parse to reach the same tokens.
+    for (auto& e : attempt.embedded) {
+        tape_node_cache_[e.start_token] = CachedNode{std::move(e.node), e.end_token};
     }
     current_token_index_ = saved_pos;
-    return parse_expression();
+    if (use_scratch) tape_scratch_in_use_ = false;
+    auto result = real_parse();
+    for (const auto& range : attempt.pinned) tokens_.unpin(range.first, range.second);
+    return result;
+}
+
+std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
+    return parse_tape_or_tree(/*sequence=*/true);
 }
 
 // Same idea as parse_expression_maybe_tape, but for a position that binds
@@ -5958,18 +6046,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_maybe_tape() {
 // own. No directive-prologue check either, since a declarator's init has
 // no such significance to begin with.
 std::unique_ptr<ASTNode> Parser::parse_assignment_maybe_tape() {
-    if (!source_) return parse_assignment_expression();
-    size_t saved_pos = current_token_index_;
-    Position tape_start = get_current_position();
-    ExprTape& tape = tape_scratch_;
-    tape.clear();
-    if (try_tape_assignment(tape) && tape.size() > 1) {
-        Position tape_end = last_consumed_token_end(tape_start);
-        return std::make_unique<TapedExpression>(ExprTape(tape.begin(), tape.end()), tape_start, tape_end,
-                                                  source_, options_.strict_mode);
-    }
-    current_token_index_ = saved_pos;
-    return parse_assignment_expression();
+    return parse_tape_or_tree(/*sequence=*/false);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
@@ -7946,6 +8023,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_expression() {
+    if (auto cached = take_cached_node()) return cached;
     // A nested function owns its own suspensions, its own `arguments` and its
     // own bindings, and a `with` inside it opaques only its own names.
     SubtreeScope fn_scope(*this, ~static_cast<uint32_t>(
@@ -8933,6 +9011,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
+    if (auto cached = take_cached_node()) return cached;
     // An arrow is transparent to a suspension and to `arguments`, which
     // belong to the body around it, but what it binds is its own, and it is a
     // closure like any other for what it can see.
