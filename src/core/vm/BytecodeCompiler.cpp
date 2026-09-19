@@ -10057,6 +10057,25 @@ bool BytecodeCompiler::operand_cannot_write_registers(const ASTNode* node) {
     }
 }
 
+bool BytecodeCompiler::tape_cannot_write_registers(const ExprTape& tape, size_t index) {
+    if (index >= tape.size()) return false;
+    const TapeEntry& e = tape[index];
+    switch (e.tag) {
+        case TapeTag::Number:
+        case TapeTag::String:
+        case TapeTag::Constant:
+        case TapeTag::Identifier:
+            return true;
+        case TapeTag::Binary: {
+            size_t right_idx = index + 1 + tape[index + 1].span;
+            return tape_cannot_write_registers(tape, index + 1) &&
+                   tape_cannot_write_registers(tape, right_idx);
+        }
+        default:
+            return false;
+    }
+}
+
 bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
     if (!node || failed_) return false;
 
@@ -12105,13 +12124,12 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
             return 0;
         }
         case TapeTag::Binary: {
-            // Mirrors compile_expression's own general (non-peephole) path
-            // for every op it maps this same way (BytecodeCompiler.cpp:
-            // 10320-10378) -- compile left, Star into a temp, compile
-            // right, emit vm_op against the temp. The peephole that skips
-            // the temp when the left is already a TDZ-free local register
-            // (:10347-10368) is deliberately not ported yet -- correct
-            // either way, just not yet as tight.
+            // Mirrors compile_expression's own BINARY_EXPRESSION case for
+            // every op it maps this same way: a left operand that is already
+            // a TDZ-free local register is read in place (vm_op against that
+            // register) when the right side cannot write it; otherwise
+            // compile left, Star into a temp, compile right, emit vm_op
+            // against the temp.
             //
             // NULLISH_COALESCING and EXPONENT are NOT here despite
             // compile_expression handling them as BinaryExpression/
@@ -12182,6 +12200,19 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
                 default: return 0;
             }
             size_t left_idx = index + 1;
+            const TapeEntry& left_e = tape[left_idx];
+            if (left_e.tag == TapeTag::Identifier && with_depth_ == 0) {
+                const std::string& lname = NamePool::text(left_e.name_id);
+                int left_reg = lexical_out_of_scope(lname) ? -1 : plain_local_register(lname);
+                size_t right_idx = left_idx + left_e.span;
+                if (left_reg >= 0 && tape_cannot_write_registers(tape, right_idx)) {
+                    size_t after_right = compile_tape_expr(tape, right_idx, false);
+                    if (after_right == 0) return 0;
+                    emit(vm_op);
+                    emit_u8(static_cast<uint8_t>(left_reg));
+                    return failed_ ? 0 : index + e.span;
+                }
+            }
             size_t after_left = compile_tape_expr(tape, left_idx, false);
             if (after_left == 0) return 0;
             int temp = alloc_temp();
@@ -12314,6 +12345,10 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
         case TapeTag::String: {
             emit_load_const(Value(e.string_value));
             return failed_ ? 0 : index + e.span;
+        }
+        case TapeTag::Constant: {
+            emit(e.binary_op == 0 ? Op::LdaTrue : e.binary_op == 1 ? Op::LdaFalse : Op::LdaNull);
+            return index + e.span;
         }
         case TapeTag::Unary: {
             // Mirrors compile_expression's own UNARY_EXPRESSION case for

@@ -119,6 +119,9 @@ enum class TapeTag : uint8_t {
     // to skip the alternate; and out of the consequent, to skip it when
     // the test is false) instead of one.
     Conditional,
+    // `true` / `false` / `null`, the kind in binary_op (0/1/2). `undefined`
+    // is deliberately not here: it parses as a reassignable identifier.
+    Constant,
 };
 
 // `span`: how many entries (including this one) this entry's whole subtree
@@ -133,7 +136,7 @@ struct TapeEntry {
     uint32_t span = 1;
     double number_value = 0.0;
     uint32_t name_id = 0;       // Identifier: NamePool id; Member (non-computed): property NamePool id, unused when computed
-    uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator; Unary: UnaryExpression::Operator
+    uint8_t binary_op = 0;      // Binary: BinaryExpression::Operator; Unary: UnaryExpression::Operator; Constant: 0 true, 1 false, 2 null
     uint8_t call_argc = 0;      // Call: argument count (the callee, then argc argument subtrees, follow this entry); Member: 1 if computed (obj[expr], key subtree follows the object's), 0 if not (obj.prop, name_id holds the property)
     std::string string_value;   // String: the literal's own text
 };
@@ -256,6 +259,7 @@ private:
     // recursive call inherits it -- a subexpression's value is always needed.
     bool compile_expression(const ASTNode* node, bool discard = false);  // result in accumulator
     static bool operand_cannot_write_registers(const ASTNode* node);
+    static bool tape_cannot_write_registers(const ExprTape& tape, size_t index);
     // Proof-of-concept tape consumer -- see ExprTape's own comment. Mirrors
     // compile_expression's own logic (same private helpers, same
     // register/env decisions) for exactly the tags ExprTape currently

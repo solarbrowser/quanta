@@ -5285,6 +5285,17 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             advance();
             return true;
         }
+        case TokenType::BOOLEAN: {
+            uint8_t kind = token_text(token) == "true" ? 0 : 1;
+            tape.push_back(TapeEntry{TapeTag::Constant, 1, 0.0, 0, kind, 0, ""});
+            advance();
+            return true;
+        }
+        case TokenType::NULL_LITERAL: {
+            tape.push_back(TapeEntry{TapeTag::Constant, 1, 0.0, 0, 2, 0, ""});
+            advance();
+            return true;
+        }
         case TokenType::IDENTIFIER: {
             // An escaped keyword (`f\u{61}lse`, decoding to "false") is
             // never valid as an identifier -- parse_identifier's own
