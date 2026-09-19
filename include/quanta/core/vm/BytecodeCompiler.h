@@ -128,6 +128,11 @@ enum class TapeTag : uint8_t {
     // subtree when computed, then the rhs subtree follow. Compound operators
     // are not represented.
     MemberAssign,
+    // `new C(a, b)` / `new a.b.C` -- call_argc arguments, the constructor
+    // subtree first (an Identifier root, `this` included, with plain `.name`
+    // Members only) and then the arguments, exactly like Call. No spread, no
+    // nested `new`, no `new.target`.
+    New,
 };
 
 // Set on the root entry of a subtree written in parentheses. The grammar's

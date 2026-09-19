@@ -5287,6 +5287,53 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             advance();
             return true;
         }
+        case TokenType::NEW: {
+            // A NewExpression is parsed by parse_call_expression, and the
+            // call/member suffix loop then continues on its result -- which
+            // is what try_tape_call_or_member does with this entry. The
+            // constructor is a primary followed by `.name` links only: a
+            // call in there would end the constructor and belong to the
+            // suffix loop instead. Anything else the real function handles
+            // here (new.target, a nested `new`, `import`, a computed or
+            // parenthesized constructor) is left to it.
+            advance();
+            const size_t start_idx = tape.size();
+            if (match(TokenType::DOT) || match(TokenType::NEW) || match(TokenType::IMPORT)) return false;
+            if (!try_tape_primary(tape) || tape[start_idx].tag != TapeTag::Identifier) return false;
+            while (match(TokenType::DOT)) {
+                advance();
+                if (!match(TokenType::IDENTIFIER)) return false;
+                uint32_t prop_id = NamePool::intern(token_string(current_token()));
+                advance();
+                uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+                tape.insert(tape.begin() + start_idx,
+                            TapeEntry::named(TapeTag::Member, span, prop_id));
+            }
+            if (match(TokenType::LEFT_BRACKET)) return false;
+            uint8_t argc = 0;
+            if (match(TokenType::LEFT_PAREN)) {
+                advance();
+                if (!match(TokenType::RIGHT_PAREN)) {
+                    for (;;) {
+                        if (argc >= 255) return false;
+                        if (!try_tape_assignment(tape)) return false;
+                        argc++;
+                        if (match(TokenType::COMMA)) {
+                            advance();
+                            if (match(TokenType::RIGHT_PAREN)) break;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                if (!match(TokenType::RIGHT_PAREN)) return false;
+                advance();
+            }
+            uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);
+            tape.insert(tape.begin() + start_idx,
+                        TapeEntry::with_argc(TapeTag::New, span, argc));
+            return true;
+        }
         case TokenType::LEFT_PAREN: {
             // parse_parenthesized_expression, minus what only matters where
             // the tape already bails (`(a) = 1`'s paren flag, `(-x) ** y`).

@@ -12118,6 +12118,14 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
     }
 }
 
+// The diagnostic name the tree records for a constructor: its to_string(),
+// which for the shapes a tape holds is the dotted path.
+static std::string tape_constructor_name(const ExprTape& tape, size_t index) {
+    const TapeEntry& e = tape[index];
+    if (e.tag == TapeTag::Identifier) return NamePool::text(e.name_id);
+    return tape_constructor_name(tape, index + 1) + "." + NamePool::text(e.name_id);
+}
+
 // Whether compile_tape_expr can finish this tape. It emits as it goes, and a
 // mid-tape failure leaves that partial code behind -- the tree reparse that
 // follows would then run every already-emitted effect (a getter, a call)
@@ -12139,6 +12147,7 @@ bool BytecodeCompiler::tape_compilable(const ExprTape& tape) {
                 break;
             }
             case TapeTag::Call:
+            case TapeTag::New:
                 if (e.call_argc > 200) return false;
                 break;
             default:
@@ -12512,6 +12521,36 @@ size_t BytecodeCompiler::compile_tape_expr(const ExprTape& tape, size_t index, b
         }
         case TapeTag::String: {
             emit_load_const(Value(tape_source_->substr(e.name_id, e.str_len)));
+            return failed_ ? 0 : index + e.span;
+        }
+        case TapeTag::New: {
+            // Mirrors compile_expression's NEW_EXPRESSION case: constructor
+            // into its own register, arguments into consecutive temps,
+            // Op::Construct.
+            size_t ctor_idx = index + 1;
+            size_t after_ctor = compile_tape_expr(tape, ctor_idx, false);
+            if (after_ctor == 0) return 0;
+            int callee_reg = alloc_temp();
+            if (failed_) return 0;
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(callee_reg));
+            int args_start = next_register_;
+            size_t arg_idx = after_ctor;
+            for (uint8_t i = 0; i < e.call_argc; i++) {
+                int arg_reg = alloc_temp();
+                if (failed_) return 0;
+                size_t after_arg = compile_tape_expr(tape, arg_idx, false);
+                if (after_arg == 0) return 0;
+                emit(Op::Star);
+                emit_u8(static_cast<uint8_t>(arg_reg));
+                arg_idx = after_arg;
+            }
+            emit(Op::Construct);
+            emit_u8(static_cast<uint8_t>(callee_reg));
+            emit_u8(static_cast<uint8_t>(args_start));
+            emit_u8(e.call_argc);
+            emit_u16(add_name(tape_constructor_name(tape, ctor_idx)));
+            free_temp(callee_reg);
             return failed_ ? 0 : index + e.span;
         }
         case TapeTag::MemberAssign: {
