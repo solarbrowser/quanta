@@ -6144,6 +6144,33 @@ Value h_GetNamedWide(Frame& f, uint32_t pc, Value acc) {
 // a throw would ever need. The first feedback entry is the whole fast path
 // here: a miss, a polymorphic site or anything that is not a plain object
 // tail-calls the generated handler, which rescans from scratch.
+// The prototype entry a site has learned for this receiver, when it is a data
+// property: a shape slot on the holder or a value cached against the descriptor
+// epoch. A getter or an absence has its own handling in the ordinary receiver's
+// scan and is left to the generated handler here. Only meaningful for a receiver
+// whose own names the caller has already ruled out.
+inline bool inherited_data_entry(const FeedbackBody& fb, Object* obj, Value& out) {
+    if (fb.proto_count == 0 || fb.proto_mega || obj->has_any_descriptor_override()) return false;
+    Shape* rs = obj->get_shape();
+    Object* p0 = obj->get_prototype_raw();
+    const uint64_t pep = Object::proto_epoch();
+    for (uint8_t k = 0; k < fb.proto_count; k++) {
+        const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
+        if (pe.receiver_shape != rs || pe.prototype != p0 || pe.proto_epoch != pep) continue;
+        if (pe.is_getter || pe.absent) return false;
+        if (pe.from_descriptor) {
+            if (pe.desc_epoch != Object::descriptor_epoch()) return false;
+            out = pe.cached_value;
+            return true;
+        }
+        const Value* hs = pe.holder->get_shape_slot_unchecked(pe.slot_index);
+        if (!hs) return false;
+        out = *hs;
+        return true;
+    }
+    return false;
+}
+
 template <bool Fused> Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc);
 
 // Only the read that answers from the receiver's own shape slot, which is
@@ -6236,29 +6263,16 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             // the entry, but this handler never looked one up for an Array, so
             // every array method call took the generated handler and the full
             // get_named to find an entry that was sitting here.
-            if (f.feedback_rooted && afb.proto_count != 0 && !afb.proto_mega &&
-                !obj->has_any_descriptor_override() &&
-                f.chunk.name_at(read_u16(code, pc + 2)) != "length") {
-                Shape* rs = obj->get_shape();
-                Object* p0 = obj->get_prototype_raw();
-                const uint64_t pep = Object::proto_epoch();
-                for (uint8_t k = 0; k < afb.proto_count; k++) {
-                    const FeedbackSlot::ProtoEntry& pe = afb.proto_entries[k];
-                    if (pe.receiver_shape != rs || pe.prototype != p0 || pe.proto_epoch != pep) continue;
-                    // A getter or an absence has its own handling in the ordinary
-                    // receiver's scan below; here they go to the generated handler.
-                    if (pe.is_getter || pe.absent) break;
-                    if (pe.from_descriptor) {
-                        if (pe.desc_epoch != Object::descriptor_epoch()) break;
-                        acc = pe.cached_value;
-                        FUSED_TAIL(6);
-                    }
-                    if (const Value* hs = pe.holder->get_shape_slot_unchecked(pe.slot_index)) {
-                        acc = *hs;
-                        FUSED_TAIL(6);
-                    }
-                    break;
-                }
+            if (f.feedback_rooted && f.chunk.name_at(read_u16(code, pc + 2)) != "length" &&
+                inherited_data_entry(afb, obj, acc)) {
+                FUSED_TAIL(6);
+            }
+        } else if (obj->get_type() == Object::ObjectType::Map || obj->get_type() == Object::ObjectType::Set) {
+            // The same for a Map or a Set, whose only own name besides the
+            // shape's is `size`.
+            if (f.feedback_rooted && f.chunk.name_at(read_u16(code, pc + 2)) != "size" &&
+                inherited_data_entry(f.chunk.feedback[read_u16(code, pc + 4)].read(), obj, acc)) {
+                FUSED_TAIL(6);
             }
         } else if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
             const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
