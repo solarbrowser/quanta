@@ -33,6 +33,7 @@ ClosureTemplate closure_template_for(const ASTNode* literal);
 namespace {
 
 constexpr int kMaxRegisters = 255;
+constexpr size_t kMaxRegisterArgs = 200;
 
 // Below this many eligible cases, a binary-search switch's own fixed
 // overhead (the type guard plus a comparison at each tree level) outweighs
@@ -11412,8 +11413,10 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             }
             const ASTNode* callee = call->get_callee();
             const auto& call_args = call->get_arguments();
-            if (call_args.size() > 200) return false;
-            const bool spread_args = has_spread(call_args);
+            // Arguments take a register each, and the register file is 255 wide:
+            // a call with more than this many goes through the spread machinery,
+            // which gathers them into one array instead.
+            const bool spread_args = has_spread(call_args) || call_args.size() > kMaxRegisterArgs;
             if (spread_args) {
                 // `super(...spread)`: the ceremony itself lives in
                 // perform_super_call, so this only has to gather the arguments
@@ -11834,8 +11837,7 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
         case ASTNode::Type::NEW_EXPRESSION: {
             const auto* expr = static_cast<const NewExpression*>(node);
             const auto& new_args = expr->get_arguments();
-            if (new_args.size() > 200) return false;
-            if (has_spread(new_args)) {
+            if (has_spread(new_args) || new_args.size() > kMaxRegisterArgs) {
                 if (!compile_expression(expr->get_constructor())) return false;
                 int ctor_reg = alloc_temp();
                 if (failed_) return false;
