@@ -2809,7 +2809,7 @@ Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
 // exists for a property that was writable when it was cached, and defining it
 // non-writable afterwards moves the epoch. The descriptor's own copy of the value
 // is not refreshed here -- reading the descriptor takes the value from the slot.
-inline bool store_via_object_entry(const BytecodeChunk::LookupCacheEntry& entry, const Value& acc) {
+[[gnu::always_inline]] inline bool store_via_object_entry(const BytecodeChunk::LookupCacheEntry& entry, const Value& acc) {
     Object* bo = entry.env->get_binding_object();
     if (!(bo && bo->get_shape() == entry.obj_shape &&
           entry.descriptor_epoch == Object::descriptor_epoch())) {
