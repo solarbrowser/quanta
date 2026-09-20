@@ -10923,6 +10923,77 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                 }
                 case UnOp::DELETE: {
                     const ASTNode* operand = expr->get_operand();
+                    // `delete a?.b`: a nullish base anywhere in the chain ends
+                    // the whole expression with `true`, nothing deleted; the
+                    // delete itself is the chain's last link.
+                    if ((operand->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION ||
+                         operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) &&
+                        chain_contains_optional(operand)) {
+                        const ASTNode* base;
+                        const ASTNode* prop;
+                        bool computed;
+                        bool optional_here = false;
+                        if (operand->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
+                            const auto* oc = static_cast<const OptionalChainingExpression*>(operand);
+                            base = oc->get_object();
+                            prop = oc->get_property();
+                            computed = oc->is_computed();
+                            optional_here = true;
+                        } else {
+                            const auto* mem = static_cast<const MemberExpression*>(operand);
+                            if (member_is_super(mem) || !member_is_supported(mem)) return false;
+                            base = mem->get_object();
+                            prop = mem->get_property();
+                            computed = mem->is_computed();
+                        }
+                        if (base->get_type() == ASTNode::Type::IDENTIFIER &&
+                            static_cast<const Identifier*>(base)->get_name() == "super") {
+                            return false;
+                        }
+                        if (!computed) {
+                            if (prop->get_type() != ASTNode::Type::IDENTIFIER) return false;
+                            const std::string& pname = static_cast<const Identifier*>(prop)->get_name();
+                            if (!pname.empty() && pname[0] == '#') return false;
+                        }
+                        std::vector<size_t> jumps;
+                        std::vector<size_t>* saved_jumps = chain_shortcircuit_jumps_;
+                        chain_shortcircuit_jumps_ = &jumps;
+                        auto restore = [&]() { chain_shortcircuit_jumps_ = saved_jumps; };
+                        if (!compile_expression(base)) { restore(); return false; }
+                        int obj_reg = alloc_temp();
+                        if (failed_) { restore(); return false; }
+                        emit(Op::Star);
+                        emit_u8(static_cast<uint8_t>(obj_reg));
+                        if (optional_here) {
+                            emit(Op::Ldar);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                            jumps.push_back(emit_jump(Op::JumpIfNullish));
+                        }
+                        if (!computed) {
+                            emit(Op::DeleteNamed);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                            emit_u16(add_name(static_cast<const Identifier*>(prop)->get_name()));
+                        } else {
+                            {
+                                ChainMaskScope mask(chain_shortcircuit_jumps_);
+                                ThisCacheBarrier this_cache_guard(this_cache_valid_);
+                                if (!compile_expression(prop)) { restore(); return false; }
+                            }
+                            emit(Op::DeleteKeyed);
+                            emit_u8(static_cast<uint8_t>(obj_reg));
+                        }
+                        free_temp(obj_reg);
+                        restore();
+                        if (!jumps.empty()) {
+                            size_t skip = emit_jump(Op::Jump);
+                            for (size_t pos : jumps) {
+                                if (!patch_jump(pos)) return false;
+                            }
+                            emit(Op::LdaTrue);
+                            if (!patch_jump(skip)) return false;
+                        }
+                        return !failed_;
+                    }
                     if (operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                         const auto* mem = static_cast<const MemberExpression*>(operand);
                         if (member_is_super(mem)) {
