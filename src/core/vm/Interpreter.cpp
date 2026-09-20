@@ -407,8 +407,8 @@ void learn_transition(FeedbackSlot* fb_slot, Shape* from_shape, Shape* to_shape,
             return;
         }
     }
-    if (fb.transition_count < FeedbackSlot::kMaxEntries) {
-        fb.transitions[fb.transition_count++] = {from_shape, to_shape, prototype, slot_index, epoch};
+    if (FeedbackSlot::TransitionEntry* entry = fb.next_transition()) {
+        *entry = {from_shape, to_shape, prototype, slot_index, epoch};
     } else {
         fb.transition_mega = true;
     }
@@ -448,10 +448,10 @@ void learn_proto(FeedbackSlot* fb_slot, Shape* receiver_shape, Object* prototype
             return;
         }
     }
-    if (fb.proto_count < FeedbackSlot::kMaxEntries) {
+    if (FeedbackSlot::ProtoEntry* entry = fb.next_proto()) {
         Collector::write_barrier(owner);
         mark_owner_feedback_dirty(owner);
-        fb.proto_entries[fb.proto_count++] = fresh;
+        *entry = fresh;
     } else {
         fb.proto_mega = true;
     }
@@ -1176,8 +1176,8 @@ void learn_keyed(KeyedFeedback* fb, Shape* shape, const std::string& key, uint32
     for (uint8_t i = 0; i < fb->count; i++) {
         if (fb->entries[i].shape == shape && fb->entries[i].key == key) return;
     }
-    if (fb->count < KeyedFeedback::kMaxEntries) {
-        fb->entries[fb->count++] = {shape, key, slot_index};
+    if (KeyedFeedback::Entry* entry = fb->next_entry()) {
+        *entry = {shape, key, slot_index};
     } else {
         fb->mega = true;
     }
@@ -1203,8 +1203,8 @@ void learn_keyed_transition(KeyedFeedback* fb, Shape* from_shape, const std::str
             return;
         }
     }
-    if (fb->transition_count < KeyedFeedback::kMaxEntries) {
-        fb->transitions[fb->transition_count++] = {from_shape, key, to_shape, prototype, slot_index, epoch};
+    if (KeyedFeedback::TransitionEntry* entry = fb->next_transition()) {
+        *entry = {from_shape, key, to_shape, prototype, slot_index, epoch};
     } else {
         fb->transition_mega = true;
     }
@@ -6207,7 +6207,7 @@ Value h_SetNamedFast(Frame& f, uint32_t pc, Value acc) {
             // fb.transition_count) is the guard, since an unlearned slot must never be
             // trusted even when obj->get_shape() itself happens to be null (dictionary
             // mode) and proto_epoch is still its initial 0.
-            if (LIKELY(!fb.transition_mega)) {
+            if (LIKELY(!fb.transition_mega && fb.transition_count != 0)) {
                 const FeedbackSlot::TransitionEntry& te = fb.transitions[0];
                 if (te.from_shape && te.from_shape == obj->get_shape() &&
                     te.prototype == obj->get_prototype_raw() &&
@@ -6422,13 +6422,13 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
                 // would only copy it byte-for-byte out of the cell it already
                 // sits in -- read its own backing std::string directly instead.
                 if (acc.is_string()) {
-                    acc = get_keyed(ctx, recv, acc.as_string()->str(), &chunk.ic_feedback->keyed_feedback[fb_idx]);
+                    acc = get_keyed(ctx, recv, acc.as_string()->str(), chunk.ic_feedback->keyed(fb_idx));
                     CHECK_EXC();
                     break;
                 }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
-                acc = get_keyed(ctx, recv, key, &chunk.ic_feedback->keyed_feedback[fb_idx]);
+                acc = get_keyed(ctx, recv, key, chunk.ic_feedback->keyed(fb_idx));
                 CHECK_EXC();
                 break;
             }
@@ -6481,13 +6481,13 @@ Value h_GetKeyedWide(Frame& f, uint32_t pc, Value acc) {
                 }
             }
             if (acc.is_string()) {
-                acc = get_keyed(ctx, recv, acc.as_string()->str(), &chunk.ic_feedback->keyed_feedback[fb_idx]);
+                acc = get_keyed(ctx, recv, acc.as_string()->str(), chunk.ic_feedback->keyed(fb_idx));
                 CHECK_EXC();
                 break;
             }
             std::string key = acc.to_property_key();
             CHECK_EXC();
-            acc = get_keyed(ctx, recv, key, &chunk.ic_feedback->keyed_feedback[fb_idx]);
+            acc = get_keyed(ctx, recv, key, chunk.ic_feedback->keyed(fb_idx));
             CHECK_EXC();
             break;
         }
@@ -6532,13 +6532,13 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                 }
                 // Same reasoning as the GetKeyed fast path above.
                 if (regs[key_reg].is_string()) {
-                    set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, &chunk.ic_feedback->keyed_feedback[fb_idx], f.owner);
+                    set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, chunk.ic_feedback->keyed(fb_idx), f.owner);
                     CHECK_EXC();
                     break;
                 }
                 std::string key = regs[key_reg].to_property_key();
                 CHECK_EXC();
-                set_keyed(ctx, recv, key, acc, &chunk.ic_feedback->keyed_feedback[fb_idx], f.owner);
+                set_keyed(ctx, recv, key, acc, chunk.ic_feedback->keyed(fb_idx), f.owner);
                 CHECK_EXC();
                 break;
             }
@@ -6585,13 +6585,13 @@ Value h_SetKeyedWide(Frame& f, uint32_t pc, Value acc) {
                 }
             }
             if (regs[key_reg].is_string()) {
-                set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, &chunk.ic_feedback->keyed_feedback[fb_idx], f.owner);
+                set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, chunk.ic_feedback->keyed(fb_idx), f.owner);
                 CHECK_EXC();
                 break;
             }
             std::string key = regs[key_reg].to_property_key();
             CHECK_EXC();
-            set_keyed(ctx, recv, key, acc, &chunk.ic_feedback->keyed_feedback[fb_idx], f.owner);
+            set_keyed(ctx, recv, key, acc, chunk.ic_feedback->keyed(fb_idx), f.owner);
             CHECK_EXC();
             break;
         }

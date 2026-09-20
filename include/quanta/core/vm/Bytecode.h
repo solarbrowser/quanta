@@ -513,8 +513,24 @@ struct FeedbackBody {
         uint32_t slot_index = 0;
         uint64_t proto_epoch = 0;
     };
-    std::array<TransitionEntry, kMaxEntries> transitions{};
+    // Allocated by the first transition a site learns and grown from there,
+    // like proto_entries below: only a store that adds a property ever uses
+    // it, and carrying the full table on every body was a third of its size.
+    std::unique_ptr<TransitionEntry[]> transitions;
+    uint8_t transition_capacity = 0;
     uint8_t transition_count = 0;
+    // A slot to write the next transition into, or null once the budget is spent.
+    TransitionEntry* next_transition() {
+        if (transition_count == transition_capacity) {
+            if (transition_capacity == kMaxEntries) return nullptr;
+            const uint8_t grown = transition_capacity == 0 ? 1 : static_cast<uint8_t>(transition_capacity * 2);
+            auto bigger = std::make_unique<TransitionEntry[]>(grown);
+            for (uint8_t i = 0; i < transition_count; i++) bigger[i] = transitions[i];
+            transitions = std::move(bigger);
+            transition_capacity = grown;
+        }
+        return &transitions[transition_count++];
+    }
     bool transition_mega = false;
 
     // GetNamed-only: caches reading an INHERITED (not own) data property.
@@ -572,8 +588,24 @@ struct FeedbackBody {
         uint64_t desc_epoch = 0;
         Value cached_value;
     };
-    std::array<ProtoEntry, kMaxEntries> proto_entries{};
+    // Only a read that finds its property on a prototype learns one, which is
+    // a small share of sites (a few hundred of several thousand on a real
+    // script), so the table is allocated on the first and grown from there.
+    // Every reader walks it up to proto_count, which is zero while it is null.
+    std::unique_ptr<ProtoEntry[]> proto_entries;
+    uint8_t proto_capacity = 0;
     uint8_t proto_count = 0;
+    ProtoEntry* next_proto() {
+        if (proto_count == proto_capacity) {
+            if (proto_capacity == kMaxEntries) return nullptr;
+            const uint8_t grown = proto_capacity == 0 ? 1 : static_cast<uint8_t>(proto_capacity * 2);
+            auto bigger = std::make_unique<ProtoEntry[]>(grown);
+            for (uint8_t i = 0; i < proto_count; i++) bigger[i] = proto_entries[i];
+            proto_entries = std::move(bigger);
+            proto_capacity = grown;
+        }
+        return &proto_entries[proto_count++];
+    }
     bool proto_mega = false;
 
     // GetNamed on a primitive receiver. The prototype is fixed by the
@@ -691,9 +723,15 @@ struct KeyedFeedback {
     // would otherwise have cached. 16 doubles the per-site footprint
     // (~976B -> ~1920B, KeyedFeedback is lazily allocated only for chunks
     // that actually use computed property access) in exchange for that.
+    //
+    // The budget is a ceiling, not a size: both tables start empty and grow
+    // 4, 8, 16, 32 as a site learns more, because a fixed 32-slot pair was
+    // near four kilobytes for a site that almost always sees one shape and
+    // one key, and a GetKeyed site never uses the transition table at all.
     static constexpr uint8_t kMaxEntries = 32;
-    std::array<Entry, kMaxEntries> entries{};
+    std::unique_ptr<Entry[]> entries;
     uint8_t count = 0;
+    uint8_t capacity = 0;
     bool mega = false;
 
     // SetKeyed-only: mirrors FeedbackBody::TransitionEntry (caches adding a
@@ -715,9 +753,34 @@ struct KeyedFeedback {
         uint32_t slot_index = 0;
         uint64_t proto_epoch = 0;
     };
-    std::array<TransitionEntry, kMaxEntries> transitions{};
+    std::unique_ptr<TransitionEntry[]> transitions;
     uint8_t transition_count = 0;
+    uint8_t transition_capacity = 0;
     bool transition_mega = false;
+
+    // A slot to write the next entry into, or null once the budget is spent.
+    Entry* next_entry() {
+        if (count == capacity) {
+            if (capacity == kMaxEntries) return nullptr;
+            const uint8_t grown = capacity == 0 ? 4 : static_cast<uint8_t>(capacity * 2);
+            auto bigger = std::make_unique<Entry[]>(grown);
+            for (uint8_t i = 0; i < count; i++) bigger[i] = std::move(entries[i]);
+            entries = std::move(bigger);
+            capacity = grown;
+        }
+        return &entries[count++];
+    }
+    TransitionEntry* next_transition() {
+        if (transition_count == transition_capacity) {
+            if (transition_capacity == kMaxEntries) return nullptr;
+            const uint8_t grown = transition_capacity == 0 ? 4 : static_cast<uint8_t>(transition_capacity * 2);
+            auto bigger = std::make_unique<TransitionEntry[]>(grown);
+            for (uint8_t i = 0; i < transition_count; i++) bigger[i] = std::move(transitions[i]);
+            transitions = std::move(bigger);
+            transition_capacity = grown;
+        }
+        return &transitions[transition_count++];
+    }
 };
 
 // One try region: [start_pc, end_pc) -> handler_pc.
@@ -769,7 +832,17 @@ struct BytecodeChunk {
     // readers need no `mutable` here.
     struct IcFeedback {
         std::vector<PrivateFeedback> private_feedback;
-        std::vector<KeyedFeedback> keyed_feedback;
+        // One slot per keyed site, filled in the first time the site runs. A
+        // KeyedFeedback is several kilobytes and most computed accesses in a
+        // program never execute, so paying for one per site when the
+        // function is compiled was most of what a large script's feedback
+        // came to.
+        std::vector<std::unique_ptr<KeyedFeedback>> keyed_feedback;
+        KeyedFeedback* keyed(uint32_t index) {
+            std::unique_ptr<KeyedFeedback>& slot = keyed_feedback[index];
+            if (!slot) slot = std::make_unique<KeyedFeedback>();
+            return slot.get();
+        }
     };
     std::unique_ptr<IcFeedback> ic_feedback;
     IcFeedback& ensure_ic_feedback() { if (!ic_feedback) ic_feedback = std::make_unique<IcFeedback>(); return *ic_feedback; }

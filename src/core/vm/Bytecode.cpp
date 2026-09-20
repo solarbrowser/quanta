@@ -67,8 +67,9 @@ void BytecodeChunk::trace(Visitor& v) const {
     }
     if (ic_feedback) {
         for (const auto& kfb : ic_feedback->keyed_feedback) {
-            for (uint8_t i = 0; i < kfb.transition_count; i++) {
-                v.visit_object(kfb.transitions[i].prototype);
+            if (!kfb) continue;
+            for (uint8_t i = 0; i < kfb->transition_count; i++) {
+                v.visit_object(kfb->transitions[i].prototype);
             }
         }
         for (const auto& pf : ic_feedback->private_feedback) {

@@ -7040,7 +7040,7 @@ uint32_t BytecodeCompiler::alloc_private_feedback() {
 uint32_t BytecodeCompiler::alloc_keyed_feedback() {
     auto& kf = chunk_->ensure_ic_feedback().keyed_feedback;
     if (kf.size() >= 0xFFFFFFFEu) { failed_ = true; return 0; }
-    kf.push_back(KeyedFeedback{});
+    kf.push_back(nullptr);
     return static_cast<uint32_t>(kf.size() - 1);
 }
 
