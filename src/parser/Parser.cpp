@@ -8811,6 +8811,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     if (match(TokenType::FUNCTION)) {
         advance();
     } else if (match(TokenType::LEFT_PAREN)) {
+        // `async(` starts an arrow only when the matching `)` is followed by
+        // `=>`; otherwise `async` is an ordinary name being called.
+        if (!try_parse_arrow_function_params()) {
+            note_name("async");
+            return std::make_unique<Identifier>("async", start, async_end);
+        }
         // No line terminator allowed between 'async' and '(' for async arrow
         if (current_token().get_start().line != async_end_line) {
             add_error("SyntaxError: Unexpected token: line break between 'async' and arrow parameters");
