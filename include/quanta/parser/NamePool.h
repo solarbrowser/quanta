@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace Quanta {
 
@@ -23,7 +24,7 @@ namespace Quanta {
 // read, and an identifier may be read long after the parse that made it.
 class NamePool {
 public:
-    static uint32_t intern(const std::string& text);
+    static uint32_t intern(std::string_view text);
     // Stable for the life of the thread: the storage never moves an entry.
     static const std::string& text(uint32_t id);
 };

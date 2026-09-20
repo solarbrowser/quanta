@@ -350,6 +350,12 @@ private:
 
     void pump_to(size_t index);
     void release_behind();
+    const Token& at_slow(size_t index) const;
+    // The block operator[] last resolved. Cleared whenever a block is handed
+    // back, so it never addresses one that is gone.
+    mutable const Token* window_ = nullptr;
+    mutable size_t window_first_ = 0;
+    mutable size_t window_len_ = 0;
     // Per block, how many callers are holding it. A held block is not handed
     // back when the parser moves past it, and goes back at once if it is
     // released after the parser is already well beyond.
@@ -436,7 +442,15 @@ public:
     // before it.
     const std::vector<std::string>* lex_errors() const;
     
-    const Token& operator[](size_t index) const;
+    // The parser reads a token within a few places of the last one it read, so
+    // the block that answered last time answers this time: one range compare
+    // and an index, with the block lookup left to the call that leaves it.
+    const Token& operator[](size_t index) const {
+        if (index - window_first_ < window_len_ && index < count_) {
+            return window_[index - window_first_];
+        }
+        return at_slow(index);
+    }
     // Streaming only: takes ownership of the lexer that produces the rest.
     void stream_from(std::shared_ptr<Lexer> lexer);
     // Where the parser is, so what it has passed can be handed back.

@@ -448,6 +448,7 @@ void TokenSequence::pump_to(size_t index) {
 // Hands back the blocks the parser can no longer reach.
 void TokenSequence::release_behind() {
     release_check_at_ = cursor_ + kKeepBehind;
+    window_len_ = 0;
     if (cursor_ < kKeepBehind) return;
     const size_t keep_from = cursor_ - kKeepBehind;
     size_t block, slot;
@@ -475,11 +476,14 @@ void TokenSequence::unpin(size_t first, size_t last) {
     locate(last - 1, last_block, slot);
     for (size_t b = first_block; b <= last_block && b < pin_counts_.size(); b++) {
         if (pin_counts_[b] == 0) continue;
-        if (--pin_counts_[b] == 0 && b < released_blocks_ && b < blocks_.size()) blocks_[b].reset();
+        if (--pin_counts_[b] == 0 && b < released_blocks_ && b < blocks_.size()) {
+            blocks_[b].reset();
+            window_len_ = 0;
+        }
     }
 }
 
-const Token& TokenSequence::operator[](size_t index) const {
+const Token& TokenSequence::at_slow(size_t index) const {
     if (lexer_ && index >= count_ && !eof_seen_) {
         const_cast<TokenSequence*>(this)->pump_to(index);
     }
@@ -498,6 +502,9 @@ const Token& TokenSequence::operator[](size_t index) const {
 #endif
         return EOF_TOKEN_INSTANCE;
     }
+    window_ = blocks_[block].get();
+    window_first_ = index - slot;
+    window_len_ = block_capacity(block);
     return blocks_[block][slot];
 }
 
