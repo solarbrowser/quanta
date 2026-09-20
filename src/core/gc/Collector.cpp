@@ -680,6 +680,31 @@ std::vector<Environment*>& pending_env_frees() {
     return envs;
 }
 
+// What the queue above holds, in bytes, and how much of it a major may be asked
+// to clear. An environment may only be freed once a completed major mark has
+// looked at it, and majors are paced by what the cell heap has grown: a phase
+// that makes short-lived closures in bulk piles environments up in a queue no
+// cell-based pacing sees (measured: ~75MB of them behind a 56MB live heap, all
+// freed by the next major). So the queue is its own pressure: past a share of
+// the live heap a major is requested.
+//
+// A major asked for this way may find most of the queue still reachable -- a
+// program whose closures live long -- and would then be asked for again on the
+// next safepoint. Each unproductive one doubles the threshold, up to a cap,
+// and a productive one puts it back.
+constexpr size_t kPendingEnvFloor = 16 * 1024 * 1024;
+constexpr size_t kPendingEnvLiveDivisor = 4;
+constexpr uint32_t kPendingEnvBackoffCap = 8;
+thread_local size_t g_pending_env_bytes = 0;
+thread_local uint32_t g_pending_env_backoff = 1;
+thread_local bool g_pending_env_requested = false;
+
+size_t pending_env_trigger(size_t live_bytes) {
+    size_t base = live_bytes / kPendingEnvLiveDivisor;
+    if (base < kPendingEnvFloor) base = kPendingEnvFloor;
+    return base * g_pending_env_backoff;
+}
+
 // A pending environment may only be destroyed on the authority of a COMPLETED
 // MAJOR MARK. Entry into this list is decided by is_escaped() at scope-exit
 // time, which is a static guess about whether anything captured the
@@ -696,18 +721,33 @@ std::vector<Environment*>& pending_env_frees() {
 // to filter a list that is empty by construction.
 void resolve_pending_env_frees(const MarkVisitor& v) {
     auto& pending = pending_env_frees();
-    if (pending.empty()) return;
+    if (pending.empty()) {
+        g_pending_env_requested = false;
+        return;
+    }
     std::vector<Environment*> still_reachable;
+    const size_t bytes_before = g_pending_env_bytes;
+    size_t bytes_kept = 0;
     for (Environment* e : pending) {
         // inner_count_: an environment abandoned rather than popped (see
         // Environment::inner_count_) is invisible to the mark yet still names
         // this one as its outer. Freeing on reachability alone would leave it
         // reading freed memory on the next scope-chain walk or trace.
-        if (v.environment_seen(e) || e->has_inner_environments()) still_reachable.push_back(e);
+        if (v.environment_seen(e) || e->has_inner_environments()) {
+            bytes_kept += e->footprint_bytes();
+            still_reachable.push_back(e);
+        }
         else if (env_hunt()) hunt_note_free(e);
         else delete e;
     }
     pending = std::move(still_reachable);
+    g_pending_env_bytes = bytes_kept;
+    if (g_pending_env_requested) {
+        g_pending_env_requested = false;
+        const bool productive = (bytes_before - bytes_kept) * 2 >= bytes_before;
+        if (productive) g_pending_env_backoff = 1;
+        else if (g_pending_env_backoff < kPendingEnvBackoffCap) g_pending_env_backoff *= 2;
+    }
 }
 
 
@@ -1441,6 +1481,7 @@ void Collector::release_env(Environment* env) {
     // leave this list. Its outer chain needs no marking to survive the wait:
     // this environment is an inner of the next one out, which is an inner of
     // the one after that, and inner_count_ already stops any of them going.
+    g_pending_env_bytes += env->footprint_bytes();
     pending_env_frees().push_back(env);
 }
 
@@ -1506,7 +1547,9 @@ void Collector::safepoint_slow() {
         // reach instead of firing on the same half-a-live-set forever.
         const size_t live = Heap::live_after_major();
         const size_t growth_needed = (live / 2) * (major_interval() / kMajorIntervalFloor);
-        const bool grown_enough = live > 0 && Heap::bytes_since_major() >= growth_needed;
+        const bool pending_pressure = g_pending_env_bytes >= pending_env_trigger(live);
+        if (pending_pressure) g_pending_env_requested = true;
+        const bool grown_enough = (live > 0 && Heap::bytes_since_major() >= growth_needed) || pending_pressure;
         if (!barriers_disabled() && !grown_enough && ++cycle_count % major_interval() != 0) {
             run_minor_collection();
         } else {
