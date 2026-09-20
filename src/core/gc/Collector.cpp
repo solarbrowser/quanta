@@ -791,7 +791,8 @@ size_t run_sweep(bool minor) {
     // first keeps the block bitmaps stable while destructors run.
     // Kept across sweeps for its capacity: a heap that has just filled up
     // hands over millions of cells, and growing the list from nothing again
-    // every cycle costs more than the destructors it is holding.
+    // every cycle costs more than the destructors it is holding. Only up to a
+    // point, though -- see the end of this function.
     static thread_local std::vector<Heap::DeadCell> dead;
     dead.clear();
     Heap::collect_dead_cells(dead, minor);
@@ -884,7 +885,14 @@ size_t run_sweep(bool minor) {
         }
         Heap::cell_free(d.cell);
     }
-    return dead.size();
+    const size_t swept = dead.size();
+    // One major can hand over hundreds of thousands of cells, and a list that
+    // keeps that capacity holds it for the rest of the run (4MB on a 1.4M-cell
+    // heap) although every sweep after it is small. Minors and ordinary majors
+    // fit in what is kept; the rare large one grows the list again.
+    constexpr size_t kDeadKeepEntries = 131072;
+    if (dead.capacity() > kDeadKeepEntries) std::vector<Heap::DeadCell>().swap(dead);
+    return swept;
 }
 
 void run_verify(Collector::CycleStats& stats) {
