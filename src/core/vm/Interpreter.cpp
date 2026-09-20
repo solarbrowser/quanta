@@ -2745,6 +2745,33 @@ Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// After a store that resolved by name: a binding beyond the frame's entry
+// environment keeps its address, so the next store to it can go through the
+// cache instead of walking for it. Same rule as Op::LdaLookup -- only a binding
+// beyond the entry environment is cacheable. This path resolved without
+// walking, so the reach is checked here, on the cache-miss path only. A
+// script's entry environment is persistent for the whole execution, not
+// per-call, so a binding found exactly there is beyond the frame too (unlike a
+// function's own).
+inline void cache_store_binding(Frame& f, Environment* env, const std::string& name,
+                                uint32_t name_idx) {
+    Environment* entry_env = f.entry_env;
+    if (!(env != entry_env || f.chunk.script_mode)) return;
+    bool beyond_frame = f.chunk.script_mode && env == entry_env;
+    if (!beyond_frame) {
+        for (Environment* e = entry_env->get_outer(); e; e = e->get_outer()) {
+            if (e == env) { beyond_frame = true; break; }
+        }
+    }
+    bool slot_writable = false;
+    Value* slot = beyond_frame ? env->stable_binding_slot(name, &slot_writable) : nullptr;
+    if (slot && slot_writable && !env->is_per_call_scope()) {
+        env->mark_referenced();  // see Op::LdaLookup's note
+        f.lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, true,
+                                         Environment::binding_shadow_epoch()};
+    }
+}
+
 Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = *f.ctx;
@@ -2821,28 +2848,8 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                     bool ok = env->set_binding(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                    } else if (ok && (env != entry_env || chunk.script_mode)) {
-                        // Same rule as Op::LdaLookup: only a binding beyond the
-                        // frame's entry environment keeps its address. This
-                        // path resolved without walking, so the reach is
-                        // checked here -- on the cache-miss path only. A
-                        // script's entry_env is persistent for the whole
-                        // execution, not per-call, so a binding found exactly
-                        // there is beyond_frame too (unlike a function's own).
-                        bool beyond_frame = chunk.script_mode && env == entry_env;
-                        if (!beyond_frame) {
-                            for (Environment* e = entry_env->get_outer(); e; e = e->get_outer()) {
-                                if (e == env) { beyond_frame = true; break; }
-                            }
-                        }
-                        bool slot_writable = false;
-                        Value* slot = beyond_frame ? env->stable_binding_slot(name, &slot_writable)
-                                                   : nullptr;
-                        if (slot && slot_writable && !env->is_per_call_scope()) {
-                            env->mark_referenced();  // see Op::LdaLookup's note
-                            lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true,
-                                                              Environment::binding_shadow_epoch()};
-                        }
+                    } else if (ok) {
+                        cache_store_binding(f, env, name, sta_name_idx);
                     }
                 }
                 CHECK_EXC();
@@ -2917,21 +2924,8 @@ Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
                 bool ok = env->set_binding(name, acc);
                 if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                     ctx.throw_type_error("Assignment to constant variable '" + name + "'");
-                } else if (ok && (env != entry_env || chunk.script_mode)) {
-                    bool beyond_frame = chunk.script_mode && env == entry_env;
-                    if (!beyond_frame) {
-                        for (Environment* e = entry_env->get_outer(); e; e = e->get_outer()) {
-                            if (e == env) { beyond_frame = true; break; }
-                        }
-                    }
-                    bool slot_writable = false;
-                    Value* slot = beyond_frame ? env->stable_binding_slot(name, &slot_writable)
-                                               : nullptr;
-                    if (slot && slot_writable && !env->is_per_call_scope()) {
-                        env->mark_referenced();
-                        lookup_cache_data[sta_name_idx] = {env, slot, nullptr, 0, 0, true,
-                                                          Environment::binding_shadow_epoch()};
-                    }
+                } else if (ok) {
+                    cache_store_binding(f, env, name, sta_name_idx);
                 }
             }
             CHECK_EXC();
@@ -3156,7 +3150,8 @@ Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
     do {
                 {
                 uint8_t resolved_reg = code[pc];
-                const std::string& name = chunk.name_at(read_u16(code, pc + 1));
+                const uint16_t name_idx = read_u16(code, pc + 1);
+                const std::string& name = chunk.name_at(name_idx);
                 pc += 3;
                 if (!regs[resolved_reg].to_boolean()) {
                     // Unresolvable BEFORE the RHS ran -- honor that verdict
@@ -3190,6 +3185,8 @@ Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
                     bool ok = env->set_binding(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                    } else if (ok) {
+                        cache_store_binding(f, env, name, name_idx);
                     }
                 } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
                     // Object environment record (global/with) path.
@@ -3212,6 +3209,41 @@ Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
+}
+
+// The two halves of a plain assignment to a name that is not a local -- the
+// check that it resolves, made before the right side runs, and the store after
+// it -- each walked the environment chain by name and hashed the name at every
+// step. Once a store has resolved a binding beyond the frame the chunk holds
+// its address (cache_store_binding), and then neither half has anything left to
+// find: the check is "is there a live cache entry" and the store is one write
+// through it, the same entry StaLookup's own fast path uses.
+Value h_CheckLookupResolvableFast(Frame& f, uint32_t pc, Value acc) {
+    const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
+    if (LIKELY(entry.slot && !entry.obj_shape &&
+               entry.shadow_epoch == Environment::binding_shadow_epoch())) {
+        acc = Value(true);
+        pc += 3;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_CheckLookupResolvable(f, pc, acc);
+}
+
+Value h_StaLookupCheckedFast(Frame& f, uint32_t pc, Value acc) {
+    const Value& resolved = f.regs[f.code[pc + 1]];
+    const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 2)];
+    if (LIKELY(resolved.is_boolean() && resolved.as_boolean() &&
+               entry.slot && !entry.obj_shape && entry.writable &&
+               entry.shadow_epoch == Environment::binding_shadow_epoch())) {
+        if (acc.is_object() || acc.is_function() || acc.is_string() ||
+            acc.is_symbol() || acc.is_bigint()) {
+            Collector::write_barrier_env(entry.env);
+        }
+        *entry.slot = acc;
+        pc += 4;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_StaLookupChecked(f, pc, acc);
 }
 
 Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc);
@@ -7687,8 +7719,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaLookup)] = &h_LdaLookupFast<false>;
     t[static_cast<uint8_t>(Op::LdaLookupTypeof)] = &h_gen_LdaLookupTypeof;
     t[static_cast<uint8_t>(Op::StaLookup)] = &h_StaLookupFast;
-    t[static_cast<uint8_t>(Op::CheckLookupResolvable)] = &h_gen_CheckLookupResolvable;
-    t[static_cast<uint8_t>(Op::StaLookupChecked)] = &h_gen_StaLookupChecked;
+    t[static_cast<uint8_t>(Op::CheckLookupResolvable)] = &h_CheckLookupResolvableFast;
+    t[static_cast<uint8_t>(Op::StaLookupChecked)] = &h_StaLookupCheckedFast;
     t[static_cast<uint8_t>(Op::LdaEnv)] = &h_LdaEnvFast<false>;
     t[static_cast<uint8_t>(Op::StaEnv)] = &h_gen_StaEnv;
     t[static_cast<uint8_t>(Op::StaEnvInit)] = &h_gen_StaEnvInit;

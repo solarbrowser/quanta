@@ -6929,7 +6929,8 @@ void BytecodeCompiler::fuse_store_pairs() {
 
 void BytecodeCompiler::emit(Op op) {
     if (op == Op::LdaLookup || op == Op::StaLookup ||
-        op == Op::LdaLookupWide || op == Op::StaLookupWide) chunk_->uses_lookup_cache = true;
+        op == Op::LdaLookupWide || op == Op::StaLookupWide ||
+        op == Op::CheckLookupResolvable || op == Op::StaLookupChecked) chunk_->uses_lookup_cache = true;
     if (op == Op::CreateClosure) chunk_->has_nested_closures = true;
     // super.x/super.x=/super[expr] all read `this` too, as the receiver an
     // accessor they find is called with (or, for ResolveSuperBase, as the
@@ -11145,6 +11146,25 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                         return !failed_;
                     }
                     if (!compound) {
+                        // A binding the enclosing scopes are known to declare
+                        // is resolvable by construction, and nothing the
+                        // right side can do moves it (a direct eval and a
+                        // `with` were handled above), so the reference does
+                        // not have to be resolved by name before and again
+                        // after it -- that was three hash walks up the
+                        // environment chain for what a compound assignment
+                        // to the same variable does with one slot store.
+                        int anc_hops;
+                        uint8_t anc_slot;
+                        if (ancestor_chain_ && find_ancestor_slot(name, anc_hops, anc_slot)) {
+                            if (!compile_expression(expr->get_right())) return false;
+                            if (!expr->is_lhs_paren() && is_named_evaluation_rhs(expr->get_right())) {
+                                emit(Op::SetFunctionNameIfUnnamed);
+                                emit_u16(add_name(name));
+                            }
+                            emit_ancestor_write(anc_hops, anc_slot, name);
+                            return !failed_;
+                        }
                         // Spec 13.15.2: ResolveBinding happens before the RHS
                         // evaluates, so an unresolvable reference throws (in
                         // strict mode) even if the RHS itself creates the
