@@ -1540,6 +1540,14 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             }
         }
 
+        // The callee of `new` is a MemberExpression, which has no optional
+        // links; one written here would otherwise be read as a chain on the
+        // whole `new a` that came before it.
+        if (match(TokenType::OPTIONAL_CHAINING)) {
+            add_error("SyntaxError: Invalid optional chain from new expression");
+            return nullptr;
+        }
+
         std::vector<std::unique_ptr<ASTNode>> arguments;
 
         if (current_token().get_type() == TokenType::LEFT_PAREN) {
