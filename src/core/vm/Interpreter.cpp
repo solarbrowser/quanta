@@ -1778,12 +1778,24 @@ Value h_JumpIfSlow(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// The truthiness of every value a condition is commonly tested on without a
+// call: a boolean, undefined and null, an object or function, and a finite
+// number. A string, a BigInt, a symbol, NaN or an infinity leaves it undecided.
+inline bool truthiness_inline(const Value& v, bool& truthy) {
+    if (LIKELY(v.is_boolean())) { truthy = v.as_boolean(); return true; }
+    if (v.is_undefined() || v.is_null()) { truthy = false; return true; }
+    if (v.is_object() || v.is_function()) { truthy = true; return true; }
+    if (v.is_finite_double()) { truthy = v.as_finite_double() != 0.0; return true; }
+    return false;
+}
+
 template <bool JumpWhen>
 Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
-    if (LIKELY(acc.is_boolean())) {
+    bool truthy;
+    if (LIKELY(truthiness_inline(acc, truthy))) {
         int16_t off = read_i16(f.code, pc + 1);
         pc += 3;
-        if (acc.as_boolean() == JumpWhen) {
+        if (truthy == JumpWhen) {
             pc += off;
             if (off < 0) Collector::safepoint();
         }
@@ -2062,6 +2074,19 @@ Value h_gen_LdaThis(Frame& f, uint32_t pc, Value acc) {
     FUSED_EPILOGUE(Op::LdaThisStar, 1);
     CHECK_EXC_TAIL();
     DISPATCH();
+}
+
+// `this` once the frame has it: nearly every read after the first. The general
+// handler pays its whole prologue for a derived-constructor check and a lazy
+// resolve that a plain method or function never needs, so the settled case
+// answers from the frame and everything else tail-calls it.
+template <bool Fused>
+Value h_LdaThisFast(Frame& f, uint32_t pc, Value acc) {
+    if (LIKELY(f.this_resolved && !f.ctx->this_needs_super())) {
+        acc = f.this_value;
+        FUSED_TAIL(1);
+    }
+    [[clang::musttail]] return h_gen_LdaThis(f, pc, acc);
 }
 
 Value h_gen_LdaTdz(Frame& f, uint32_t pc, Value acc) {
@@ -5951,6 +5976,29 @@ Value h_GetNamedFast(Frame& f, uint32_t pc, Value acc) {
                     FUSED_TAIL(6);
                 }
             }
+            // The other read that decides most of them: a method or a field
+            // found on the prototype, through the site's first inherited entry.
+            // It costs the slower handler a five-register prologue and a scan
+            // of the own entries to get to the same compare. Getters, absences
+            // and further entries are still that handler's.
+            if (f.feedback_rooted && fb.proto_count != 0 && !fb.proto_mega &&
+                !obj->has_any_descriptor_override()) {
+                const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[0];
+                if (pe.receiver_shape == obj->get_shape() &&
+                    pe.prototype == obj->get_prototype_raw() &&
+                    pe.proto_epoch == Object::proto_epoch() &&
+                    !pe.absent && !pe.is_getter) {
+                    if (pe.from_descriptor) {
+                        if (pe.desc_epoch == Object::descriptor_epoch()) {
+                            acc = pe.cached_value;
+                            FUSED_TAIL(6);
+                        }
+                    } else if (const Value* hs = pe.holder->get_shape_slot_unchecked(pe.slot_index)) {
+                        acc = *hs;
+                        FUSED_TAIL(6);
+                    }
+                }
+            }
         }
     }
     [[clang::musttail]] return h_GetNamedRest<Fused>(f, pc, acc);
@@ -6025,7 +6073,9 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             if (f.feedback_rooted && !fb.proto_mega && fb.proto_count > 0 &&
                 !obj->has_any_descriptor_override()) {
                 Shape* rs = obj->get_shape();
-                Object* p0 = obj->get_prototype();
+                // Not get_prototype(): a Proxy is the only type whose answer is not the
+            // stored pointer, and neither gate this sits behind lets one through.
+            Object* p0 = obj->get_prototype_raw();
                 uint64_t pep = Object::proto_epoch();
                 for (uint8_t k = 0; k < fb.proto_count; k++) {
                     const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
@@ -6106,7 +6156,9 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             !obj->has_any_descriptor_override() &&
             function_proto_read_cacheable(f.chunk.name_at(read_u16(code, pc + 2)))) {
             Shape* rs = obj->get_shape();
-            Object* p0 = obj->get_prototype();
+            // Not get_prototype(): a Proxy is the only type whose answer is not the
+            // stored pointer, and neither gate this sits behind lets one through.
+            Object* p0 = obj->get_prototype_raw();
             uint64_t pep = Object::proto_epoch();
             for (uint8_t k = 0; k < fb.proto_count; k++) {
                 const FeedbackSlot::ProtoEntry& pe = fb.proto_entries[k];
@@ -7659,7 +7711,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::SettleReturn)]  = &h_gen_SettleReturn;
     t[static_cast<uint8_t>(Op::LdaNewTarget)]  = &h_gen_LdaNewTarget;
     t[static_cast<uint8_t>(Op::LdaImportMeta)] = &h_gen_LdaImportMeta;
-    t[static_cast<uint8_t>(Op::LdaThisStar)]   = &h_gen_LdaThis;
+    t[static_cast<uint8_t>(Op::LdaThisStar)]   = &h_LdaThisFast<true>;
     t[static_cast<uint8_t>(Op::LdaEnvStar)] = &h_LdaEnvFast<true>;
     t[static_cast<uint8_t>(Op::LdaLookupStar)] = &h_LdaLookupFast<true>;
     t[static_cast<uint8_t>(Op::LdaEnvSlotStar)] = &h_LdaEnvSlotFast<true>;
@@ -7688,7 +7740,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::TestStrictNe)]  = &h_TestStrictNe;
     t[static_cast<uint8_t>(Op::Inc)]           = &h_Inc;
     t[static_cast<uint8_t>(Op::Dec)]           = &h_Dec;
-    t[static_cast<uint8_t>(Op::LdaThis)] = &h_gen_LdaThis;
+    t[static_cast<uint8_t>(Op::LdaThis)] = &h_LdaThisFast<false>;
     t[static_cast<uint8_t>(Op::LdaTdz)] = &h_gen_LdaTdz;
     t[static_cast<uint8_t>(Op::LdarChecked)] = &h_gen_LdarChecked;
     t[static_cast<uint8_t>(Op::StarChecked)] = &h_gen_StarChecked;
