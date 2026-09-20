@@ -1975,6 +1975,31 @@ Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
         [[clang::musttail]] return name##_slow(f, pc, acc);                \
     }
 
+Value h_gen_Mod(Frame& f, uint32_t pc, Value acc);
+
+// Both operands int32-valued and the divisor neither 0 nor -1 is a hardware
+// remainder, which is most of what a loop's `% n` is; the sign of a zero result
+// follows the dividend (there is no negative zero in an int). Everything else,
+// fmod's cases included, is the generated handler's.
+Value h_Mod(Frame& f, uint32_t pc, Value acc) {
+    const Value& lhs = f.regs[f.code[pc + 1]];
+    if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {
+        const double l = lhs.as_finite_double();
+        const double r = acc.as_finite_double();
+        if (LIKELY(l >= -2147483648.0 && l <= 2147483647.0 && r >= -2147483648.0 && r <= 2147483647.0)) {
+            const int32_t li = static_cast<int32_t>(l);
+            const int32_t ri = static_cast<int32_t>(r);
+            if (LIKELY(static_cast<double>(li) == l && static_cast<double>(ri) == r && ri != 0 && ri != -1)) {
+                const int32_t rem = li % ri;
+                acc = Value(rem != 0 ? static_cast<double>(rem) : (std::signbit(l) ? -0.0 : 0.0));
+                pc += 2;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_Mod(f, pc, acc);
+}
+
 NUMERIC_BINARY_HANDLER(h_Add, BinOp::ADD, Value(l + r))
 NUMERIC_BINARY_HANDLER(h_Sub, BinOp::SUBTRACT, Value(l - r))
 NUMERIC_BINARY_HANDLER(h_Mul, BinOp::MULTIPLY, Value(l * r))
@@ -1989,9 +2014,9 @@ NUMERIC_BINARY_HANDLER(h_TestStrictNe, BinOp::STRICT_NOT_EQUAL, Value(l != r))
 
 // A bitwise op is a couple of instructions of real work, so the handler stays
 // as lean as the arithmetic one and splits its fallback out the same way.
-// ToInt32 already answers for NaN and the infinities, so being a number is the
-// entire gate; a string, a BigInt or an object with valueOf takes the slow
-// half, which reaches binary_slow directly.
+// Two finite doubles is the gate, one test each; NaN, an infinity, a string, a
+// BigInt or an object with valueOf takes the slow half, which reaches
+// binary_slow directly.
 #define BITWISE_BINARY_HANDLER(name, binop, expr)                          \
     Value name##_slow(Frame& f, uint32_t pc, Value acc) {                  \
         const BytecodeChunk& chunk = f.chunk;                              \
@@ -2005,9 +2030,9 @@ NUMERIC_BINARY_HANDLER(h_TestStrictNe, BinOp::STRICT_NOT_EQUAL, Value(l != r))
     }                                                                      \
     Value name(Frame& f, uint32_t pc, Value acc) {                         \
         const Value& lhs = f.regs[f.code[pc + 1]];                         \
-        if (LIKELY(lhs.is_number() && acc.is_number())) {                  \
-            int32_t l = js_to_int32(lhs.as_number());                      \
-            int32_t r = js_to_int32(acc.as_number());                      \
+        if (LIKELY(lhs.is_finite_double() && acc.is_finite_double())) {    \
+            int32_t l = js_to_int32(lhs.as_finite_double());               \
+            int32_t r = js_to_int32(acc.as_finite_double());               \
             (void)l; (void)r;                                              \
             acc = (expr);                                                  \
             pc += 2;                                                       \
@@ -2052,8 +2077,8 @@ static Value step_numeric(Context& ctx, const Value& acc, double delta) {
         DISPATCH();                                                        \
     }                                                                      \
     Value name(Frame& f, uint32_t pc, Value acc) {                         \
-        if (LIKELY(acc.is_number())) {                                     \
-            acc = Value(acc.as_number() + (delta));                        \
+        if (LIKELY(acc.is_finite_double())) {                              \
+            acc = Value(acc.as_finite_double() + (delta));                 \
             pc += 1;                                                       \
             DISPATCH();                                                    \
         }                                                                  \
@@ -8111,7 +8136,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdarChecked)] = &h_gen_LdarChecked;
     t[static_cast<uint8_t>(Op::StarChecked)] = &h_gen_StarChecked;
     t[static_cast<uint8_t>(Op::Div)] = &h_gen_Div;
-    t[static_cast<uint8_t>(Op::Mod)] = &h_gen_Mod;
+    t[static_cast<uint8_t>(Op::Mod)] = &h_Mod;
     t[static_cast<uint8_t>(Op::Exp)] = &h_gen_Exp;
     t[static_cast<uint8_t>(Op::BitAnd)] = &h_BitAnd;
     t[static_cast<uint8_t>(Op::BitOr)] = &h_BitOr;
