@@ -13,6 +13,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/parser/ScriptUnit.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/Generator.h"
@@ -24,7 +25,12 @@ void register_function_builtins(Context& ctx) {
         [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
             std::string params = "";
-            std::string body = "";
+            // The body is read where it already is when it is a string: a body
+            // handed to this constructor can be megabytes, and converting it
+            // to a std::string first was a whole extra copy alive next to the
+            // buffer built from it below.
+            std::string body_storage;
+            std::string_view body;
 
             auto js_tostring = [&](const Value& v) -> std::string {
                 if (!v.is_object() && !v.is_function()) return v.to_string();
@@ -45,10 +51,16 @@ void register_function_builtins(Context& ctx) {
                 return "";
             };
 
+            auto text_of = [&](const Value& v) -> std::string_view {
+                if (v.is_string()) return v.as_string()->str();
+                body_storage = js_tostring(v);
+                return body_storage;
+            };
+
             if (args.size() == 0) {
                 body = "";
             } else if (args.size() == 1) {
-                body = js_tostring(args[0]);
+                body = text_of(args[0]);
                 if (ctx.has_exception()) return Value();
             } else {
                 for (size_t i = 0; i < args.size() - 1; i++) {
@@ -56,7 +68,7 @@ void register_function_builtins(Context& ctx) {
                     params += js_tostring(args[i]);
                     if (ctx.has_exception()) return Value();
                 }
-                body = js_tostring(args[args.size() - 1]);
+                body = text_of(args[args.size() - 1]);
                 if (ctx.has_exception()) return Value();
             }
 
@@ -102,8 +114,7 @@ void register_function_builtins(Context& ctx) {
             *func_code += "\n) {\n";
             *func_code += body;
             *func_code += "\n}";
-            // Nothing reads it after this, and it is the same size again.
-            std::string().swap(body);
+            std::string().swap(body_storage);
 
             try {
                 // Streamed rather than tokenized in full. This path assumed a
@@ -126,6 +137,7 @@ void register_function_builtins(Context& ctx) {
                     ScriptUnit::BuildScope scope(unit.get());
                     expr = parser.parse_expression();
                 }
+                AstArena::trim_pool();
 
                 // Check for parser errors (e.g. invalid syntax in body)
                 if (parser.has_errors()) {

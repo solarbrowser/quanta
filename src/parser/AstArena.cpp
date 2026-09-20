@@ -144,6 +144,10 @@ void release(Chunk* c) {
 
 }  // namespace
 
+void AstArena::trim_pool(size_t keep) noexcept {
+    while (g_pool_size > keep) free_chunk_bytes(g_pool[--g_pool_size]);
+}
+
 void* AstArena::take(size_t bytes) {
     if (bytes == 0 || bytes > kMaxNodeSize) return ::operator new(bytes);
     const size_t node_size = (bytes + kGranularity - 1) & ~(kGranularity - 1);

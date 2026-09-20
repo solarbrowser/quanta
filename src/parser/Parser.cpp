@@ -164,6 +164,7 @@ ExecutableRef<ScriptUnit> Parser::parse_program_unit() {
     // The literals inside recorded ranges into this text, so the unit keeps it.
     unit->set_source(source_);
     unit->set_root(std::move(program));
+    AstArena::trim_pool();
     // The token stream is NOT handed over. A deferred body is lexed back out
     // of the source above, so keeping the stream would be keeping a second,
     // far larger copy of the same text: for a three-megabyte script it runs to

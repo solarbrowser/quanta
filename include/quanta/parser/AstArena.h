@@ -39,6 +39,11 @@ public:
 
     static void* take(size_t bytes);
     static void give(void* p) noexcept;
+    // Hands the emptied chunks that are waiting for reuse back to the system,
+    // keeping `keep` of them. For the end of a large parse: the pool exists to
+    // absorb the churn of trees built and freed within one, and past that point
+    // it is memory held for a burst that is over.
+    static void trim_pool(size_t keep = 2) noexcept;
 
     struct Stats {
         size_t chunks = 0;
