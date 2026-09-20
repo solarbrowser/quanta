@@ -57,8 +57,6 @@ private:
 
     const std::string& source() const { return *source_ref_; }
 
-    static const std::unordered_map<std::string, TokenType> keywords_;
-
 public:
     explicit Lexer(const std::string& source);
     Lexer(const std::string& source, const LexerOptions& options);
@@ -180,8 +178,6 @@ private:
     std::string parse_hex_escape();
     
     void add_error(const std::string& message);
-    TokenType lookup_keyword(const std::string& identifier) const;
-    bool is_reserved_word(const std::string& word) const;
 };
 
 }

@@ -5,7 +5,10 @@
  */
 
 #include "quanta/lexer/Lexer.h"
+#include <array>
 #include <cctype>
+#include <cstring>
+#include <string_view>
 #include <cstdlib>
 #include <cstdint>
 #include <cmath>
@@ -14,52 +17,86 @@
 
 namespace Quanta {
 
-const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
-    {"break", TokenType::BREAK},
-    {"case", TokenType::CASE},
-    {"catch", TokenType::CATCH},
-    {"class", TokenType::CLASS},
-    {"const", TokenType::CONST},
-    {"continue", TokenType::CONTINUE},
-    {"debugger", TokenType::DEBUGGER},
-    {"default", TokenType::DEFAULT},
-    {"delete", TokenType::DELETE},
-    {"do", TokenType::DO},
-    {"else", TokenType::ELSE},
-    {"export", TokenType::EXPORT},
-    {"extends", TokenType::EXTENDS},
-    {"finally", TokenType::FINALLY},
-    {"for", TokenType::FOR},
-    {"function", TokenType::FUNCTION},
-    {"if", TokenType::IF},
-    {"import", TokenType::IMPORT},
-    {"in", TokenType::IN},
-    {"instanceof", TokenType::INSTANCEOF},
-    {"let", TokenType::LET},
-    {"new", TokenType::NEW},
-    {"return", TokenType::RETURN},
-    {"super", TokenType::SUPER},
-    {"switch", TokenType::SWITCH},
-    {"this", TokenType::THIS},
-    {"throw", TokenType::THROW},
-    {"try", TokenType::TRY},
-    {"typeof", TokenType::TYPEOF},
-    {"var", TokenType::VAR},
-    {"void", TokenType::VOID},
-    {"while", TokenType::WHILE},
-    {"with", TokenType::WITH},
-    {"yield", TokenType::YIELD},
-    {"async", TokenType::ASYNC},
-    {"await", TokenType::AWAIT},
-    {"from", TokenType::FROM},
-    {"of", TokenType::OF},
-    {"static", TokenType::STATIC},
-    {"true", TokenType::BOOLEAN},
-    {"false", TokenType::BOOLEAN},
-    {"null", TokenType::NULL_LITERAL},
-    {"undefined", TokenType::UNDEFINED},
-    {"enum", TokenType::ENUM}
+// Every reserved and contextual word the lexer classifies, grouped by length.
+// An identifier is looked up on every one of the millions of identifiers a
+// large script has, and almost all of them are not keywords: the length bucket
+// rejects most at once and the first-letter compare rejects most of the rest,
+// so the common miss costs a couple of byte compares instead of a hash of the
+// whole name plus a bucket walk.
+namespace {
+struct KeywordEntry { const char* text; TokenType type; };
+constexpr KeywordEntry kKeywords2[] = {
+    {"do", TokenType::DO}, {"if", TokenType::IF}, {"in", TokenType::IN}, {"of", TokenType::OF},
 };
+constexpr KeywordEntry kKeywords3[] = {
+    {"for", TokenType::FOR}, {"let", TokenType::LET}, {"new", TokenType::NEW},
+    {"try", TokenType::TRY}, {"var", TokenType::VAR},
+};
+constexpr KeywordEntry kKeywords4[] = {
+    {"case", TokenType::CASE}, {"else", TokenType::ELSE}, {"enum", TokenType::ENUM},
+    {"from", TokenType::FROM}, {"null", TokenType::NULL_LITERAL}, {"this", TokenType::THIS},
+    {"true", TokenType::BOOLEAN}, {"void", TokenType::VOID}, {"with", TokenType::WITH},
+};
+constexpr KeywordEntry kKeywords5[] = {
+    {"async", TokenType::ASYNC}, {"await", TokenType::AWAIT}, {"break", TokenType::BREAK},
+    {"catch", TokenType::CATCH}, {"class", TokenType::CLASS}, {"const", TokenType::CONST},
+    {"false", TokenType::BOOLEAN}, {"super", TokenType::SUPER}, {"throw", TokenType::THROW},
+    {"while", TokenType::WHILE}, {"yield", TokenType::YIELD},
+};
+constexpr KeywordEntry kKeywords6[] = {
+    {"delete", TokenType::DELETE}, {"export", TokenType::EXPORT}, {"import", TokenType::IMPORT},
+    {"return", TokenType::RETURN}, {"static", TokenType::STATIC}, {"switch", TokenType::SWITCH},
+    {"typeof", TokenType::TYPEOF},
+};
+constexpr KeywordEntry kKeywords7[] = {
+    {"default", TokenType::DEFAULT}, {"extends", TokenType::EXTENDS}, {"finally", TokenType::FINALLY},
+};
+constexpr KeywordEntry kKeywords8[] = {
+    {"continue", TokenType::CONTINUE}, {"debugger", TokenType::DEBUGGER},
+    {"function", TokenType::FUNCTION},
+};
+constexpr KeywordEntry kKeywords9[] = {{"undefined", TokenType::UNDEFINED}};
+constexpr KeywordEntry kKeywords10[] = {{"instanceof", TokenType::INSTANCEOF}};
+
+template <size_t N>
+TokenType find_keyword(const KeywordEntry (&bucket)[N], std::string_view word) {
+    for (const KeywordEntry& entry : bucket) {
+        if (entry.text[0] == word[0] && std::memcmp(entry.text, word.data(), word.size()) == 0) {
+            return entry.type;
+        }
+    }
+    return TokenType::IDENTIFIER;
+}
+
+TokenType keyword_type(std::string_view word) {
+    switch (word.size()) {
+        case 2: return find_keyword(kKeywords2, word);
+        case 3: return find_keyword(kKeywords3, word);
+        case 4: return find_keyword(kKeywords4, word);
+        case 5: return find_keyword(kKeywords5, word);
+        case 6: return find_keyword(kKeywords6, word);
+        case 7: return find_keyword(kKeywords7, word);
+        case 8: return find_keyword(kKeywords8, word);
+        case 9: return find_keyword(kKeywords9, word);
+        case 10: return find_keyword(kKeywords10, word);
+        default: return TokenType::IDENTIFIER;
+    }
+}
+
+// ASCII identifier characters, by table: the scan of a name is the hottest
+// loop in the lexer, and a lookup here replaces two locale-aware ctype calls
+// per byte.
+constexpr uint8_t kIdStart = 1;
+constexpr uint8_t kIdPart = 2;
+constexpr std::array<uint8_t, 256> make_ident_table() {
+    std::array<uint8_t, 256> table{};
+    for (int c = 'a'; c <= 'z'; c++) table[c] = table[c - 'a' + 'A'] = kIdStart | kIdPart;
+    for (int c = '0'; c <= '9'; c++) table[c] = kIdPart;
+    table[static_cast<unsigned char>('_')] = table[static_cast<unsigned char>('$')] = kIdStart | kIdPart;
+    return table;
+}
+constexpr std::array<uint8_t, 256> kIdentTable = make_ident_table();
+}  // namespace
 
 
 Lexer::Lexer(const std::string& source)
@@ -361,7 +398,21 @@ char Lexer::advance() {
 void Lexer::skip_whitespace() {
     while (!at_end()) {
         char ch = current_char();
-        if (ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r') {
+        if (ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f') {
+            // None of these moves the line, so a run is one column update.
+            const std::string& src = source();
+            const size_t limit = std::min(stop_offset_, src.size());
+            size_t end = position_ + 1;
+            while (end < limit && (src[end] == ' ' || src[end] == '\t' ||
+                                   src[end] == '\v' || src[end] == '\f')) {
+                end++;
+            }
+            current_position_.column += static_cast<uint32_t>(end - position_);
+            position_ = end;
+            current_position_.offset = static_cast<uint32_t>(end);
+            continue;
+        }
+        if (ch == '\r') {
             advance();
             continue;
         }
@@ -454,6 +505,35 @@ static bool is_invalid_id_continue_cp(uint32_t cp);
 
 Token Lexer::read_identifier() {
     Position start = current_position_;
+
+    // A plain ASCII name -- nearly every identifier in real code -- is scanned
+    // in place and never copied: its text is exactly its source span, so the
+    // token points at the span and the keyword lookup reads it as a view. A
+    // backslash or a non-ASCII byte right after the run may continue the name
+    // as an escape or a Unicode letter, and those are the slow path's job.
+    {
+        const std::string& src = source();
+        const char* base = src.data();
+        const size_t limit = std::min(stop_offset_, src.size());
+        size_t end = position_;
+        if (end < limit && (kIdentTable[static_cast<unsigned char>(base[end])] & kIdStart)) {
+            do {
+                end++;
+            } while (end < limit && (kIdentTable[static_cast<unsigned char>(base[end])] & kIdPart));
+            const unsigned char after = end < limit ? static_cast<unsigned char>(base[end]) : 0;
+            if (after < 0x80 && after != '\\') {
+                const size_t length = end - position_;
+                position_ = end;
+                current_position_.offset = static_cast<uint32_t>(end);
+                current_position_.column += static_cast<uint32_t>(length);
+                Token token(keyword_type(std::string_view(base + start.offset, length)),
+                            start, current_position_);
+                token.set_source_value(start.offset, static_cast<uint32_t>(length));
+                return token;
+            }
+        }
+    }
+
     std::string value;
     bool contains_unicode_escapes = false;
     
@@ -649,7 +729,7 @@ Token Lexer::read_identifier() {
         }
     }
 
-    TokenType type = lookup_keyword(value);
+    TokenType type = keyword_type(value);
 
     if (contains_unicode_escapes) {
         if (type != TokenType::IDENTIFIER) {
@@ -669,11 +749,6 @@ Token Lexer::read_identifier() {
             tok.set_escaped_keyword(true);
             return tok;
         }
-    }
-
-    if (options_.strict_mode && type == TokenType::IDENTIFIER && is_reserved_word(value)) {
-        add_error("SyntaxError: Unexpected reserved word '" + value + "' in strict mode");
-        return create_token(TokenType::INVALID, value, start);
     }
 
     // ES5 7.6.1.2's future reserved words are deliberately not refused here.
@@ -1232,10 +1307,8 @@ static bool is_invalid_id_continue_cp(uint32_t cp) {
 
 bool Lexer::is_identifier_start(char ch) const {
     unsigned char uch = static_cast<unsigned char>(ch);
-    if (std::isalpha(ch) || ch == '_' || ch == '$' || ch == '\\') {
-        return true;
-    }
-    if (uch >= 0x80) {
+    if (uch < 0x80) return (kIdentTable[uch] & kIdStart) || ch == '\\';
+    {
         if (utf8_whitespace_bytes() > 0) return false;
         if (utf8_line_terminator_bytes() > 0) return false;
         uint32_t cp = decode_utf8_at(source(), position_);
@@ -1246,15 +1319,10 @@ bool Lexer::is_identifier_start(char ch) const {
 
 bool Lexer::is_identifier_part(char ch) const {
     unsigned char uch = static_cast<unsigned char>(ch);
-    if (std::isalnum(ch) || ch == '_' || ch == '$') {
-        return true;
-    }
-    if (uch >= 0x80) {
-        if (utf8_whitespace_bytes() > 0) return false;
-        if (utf8_line_terminator_bytes() > 0) return false;
-        return true;
-    }
-    return false;
+    if (uch < 0x80) return kIdentTable[uch] & kIdPart;
+    if (utf8_whitespace_bytes() > 0) return false;
+    if (utf8_line_terminator_bytes() > 0) return false;
+    return true;
 }
 
 bool Lexer::is_digit(char ch) const {
@@ -1490,14 +1558,16 @@ bool Lexer::is_whitespace(char ch) const {
     if (ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r') {
         return true;
     }
-    if (utf8_whitespace_bytes() > 0) return true;
-    return false;
+    // The multi-byte forms all start with a byte >= 0x80, so an ASCII byte
+    // is answered without the bounds-checked probe of the following bytes.
+    if (static_cast<unsigned char>(ch) < 0x80) return false;
+    return utf8_whitespace_bytes() > 0;
 }
 
 bool Lexer::is_line_terminator(char ch) const {
     if (ch == '\n' || ch == '\r') return true;
-    if (utf8_line_terminator_bytes() > 0) return true;
-    return false;
+    if (static_cast<unsigned char>(ch) < 0x80) return false;
+    return utf8_line_terminator_bytes() > 0;
 }
 
 double Lexer::parse_decimal_literal() {
@@ -1954,15 +2024,6 @@ void Lexer::add_error(const std::string& message) {
         std::string error = "Lexer error at " + current_position_.to_string() + ": " + message;
         errors_.push_back(error);
     }
-}
-
-TokenType Lexer::lookup_keyword(const std::string& identifier) const {
-    auto it = keywords_.find(identifier);
-    return (it != keywords_.end()) ? it->second : TokenType::IDENTIFIER;
-}
-
-bool Lexer::is_reserved_word(const std::string& word) const {
-    return keywords_.find(word) != keywords_.end();
 }
 
 bool Lexer::can_be_regex_literal() const {
