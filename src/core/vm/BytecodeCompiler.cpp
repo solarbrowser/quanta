@@ -4274,8 +4274,21 @@ void collect_lexical_regions(const ASTNode* node, const ASTNode* current_region,
         case ASTNode::Type::TRY_STATEMENT: {
             const auto* n = static_cast<const TryStatement*>(node);
             collect_lexical_regions(n->get_try_block(), current_region, out);
-            if (const ASTNode* cc = n->get_catch_clause())
-                collect_lexical_regions(static_cast<const CatchClause*>(cc)->get_body(), current_region, out);
+            if (const ASTNode* cc = n->get_catch_clause()) {
+                const auto* clause = static_cast<const CatchClause*>(cc);
+                // What a catch parameter names is visible in the clause and
+                // nowhere else, so the clause is its region.
+                if (const ASTNode* pattern = clause->get_destructuring_pattern()) {
+                    std::vector<std::string> bound;
+                    static_cast<const DestructuringAssignment*>(pattern)->collect_bound_names(bound);
+                    for (const auto& name : bound) {
+                        if (!name.empty()) out.emplace(name, cc);
+                    }
+                } else if (!clause->get_parameter_name().empty()) {
+                    out.emplace(clause->get_parameter_name(), cc);
+                }
+                collect_lexical_regions(clause->get_body(), current_region, out);
+            }
             collect_lexical_regions(n->get_finally_block(), current_region, out);
             return;
         }
@@ -4882,11 +4895,10 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
 
     if (selective) {
-        // Catch params stay Environment-resident (the tree-walker's catch
-        // machinery binds them by name). A nested/loop-header lexical only
-        // needs the env when a closure can see it or the name shadows
-        // another declaration -- otherwise it gets a register with a TDZ
-        // re-arm at its block's entry (see BLOCK_STATEMENT).
+        // A nested/loop-header lexical, or a catch parameter, only needs the
+        // env when a closure can see it or the name shadows another
+        // declaration -- otherwise it gets a register (a lexical with a TDZ
+        // re-arm at its block's entry, see BLOCK_STATEMENT).
         std::vector<BytecodeChunk::LoopEnvVar> direct_vars_pre;
         bool unused_pre = false;
         collect_direct_lexical_decls(body, direct_vars_pre, unused_pre);
@@ -4912,9 +4924,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
             collect_lexical_regions_multi(body, nullptr, regions_multi, parent_multi);
         }
         for (const auto& info : declared_pre) {
-            if (info.is_catch_param) {
-                env_resident.insert(info.name);
-            } else if (info.is_lexical && direct_pre.count(info.name) &&
+            if (info.is_lexical && direct_pre.count(info.name) &&
                        decl_count[info.name] > 1 && !sibling_safe.count(info.name)) {
                 // Declared directly here AND again in a region nested inside
                 // it: two bindings, one name, both live. A register can hold
@@ -4923,7 +4933,11 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
                 // loop variable. The environment chain already keeps repeated
                 // declarations apart, so let this one live there.
                 env_resident.insert(info.name);
-            } else if (info.is_lexical && !direct_pre.count(info.name)) {
+            } else if ((info.is_lexical || info.is_catch_param) && !direct_pre.count(info.name)) {
+                // A catch parameter is a binding of its clause and nothing wider,
+                // so it is decided on the same terms as a block-scoped `let`:
+                // a register unless a closure can see it, the name is declared
+                // twice, or a reference to it sits outside its own clause.
                 if (decl_count[info.name] > 1 && !env_resident.count(info.name) &&
                     sibling_safe.count(info.name)) {
                     // Disjoint siblings, so each region may hold the register in
