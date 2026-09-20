@@ -3362,6 +3362,64 @@ Value h_StaLookupCheckedFast(Frame& f, uint32_t pc, Value acc) {
     [[clang::musttail]] return h_gen_StaLookupChecked(f, pc, acc);
 }
 
+// The read, write and hop-walking forms of an environment slot, for the case a
+// slot the compiler predicted is there, initialised, and (for a write) mutable.
+// A hole, a const, a slot that is not where it was predicted and every exception
+// go to the generated handler, which redoes the whole thing from the start. The
+// generated ones pay a prologue and the instr_pc store for a path that cannot
+// throw, which was most of what a read of a captured variable cost.
+Value h_gen_LdaEnvSlotAt(Frame& f, uint32_t pc, Value acc);
+Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc);
+Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc);
+
+Value h_LdaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    Environment* env = frame_lexical_env(f);
+    for (uint8_t h = code[pc + 1]; h > 0 && env; h--) env = env->get_outer();
+    if (LIKELY(env != nullptr)) {
+        if (auto* e = env->inline_slot_interned(code[pc + 2], f.chunk.names[read_u16(code, pc + 3)])) {
+            if (LIKELY(e->slot.initialized)) {
+                acc = e->slot.value;
+                pc += 5;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_LdaEnvSlotAt(f, pc, acc);
+}
+
+Value h_StaEnvSlotFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    if (Environment* env = frame_lexical_env(f)) {
+        if (auto* e = env->inline_slot_interned(code[pc + 1], f.chunk.names[read_u16(code, pc + 2)])) {
+            if (LIKELY(e->slot.initialized && e->slot.mutable_flag)) {
+                Collector::write_barrier_env_for(env, acc);
+                e->slot.value = acc;
+                pc += 4;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_StaEnvSlot(f, pc, acc);
+}
+
+Value h_StaEnvSlotAtFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    Environment* env = frame_lexical_env(f);
+    for (uint8_t h = code[pc + 1]; h > 0 && env; h--) env = env->get_outer();
+    if (LIKELY(env != nullptr)) {
+        if (auto* e = env->inline_slot_interned(code[pc + 2], f.chunk.names[read_u16(code, pc + 3)])) {
+            if (LIKELY(e->slot.initialized && e->slot.mutable_flag)) {
+                Collector::write_barrier_env_for(env, acc);
+                e->slot.value = acc;
+                pc += 5;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_StaEnvSlotAt(f, pc, acc);
+}
+
 Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc);
 
 // Only the read that the declarative chain answers outright. `this` is not in
@@ -7901,10 +7959,10 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::StaEnv)] = &h_gen_StaEnv;
     t[static_cast<uint8_t>(Op::StaEnvInit)] = &h_gen_StaEnvInit;
     t[static_cast<uint8_t>(Op::LdaEnvSlot)] = &h_LdaEnvSlotFast<false>;
-    t[static_cast<uint8_t>(Op::StaEnvSlot)] = &h_gen_StaEnvSlot;
+    t[static_cast<uint8_t>(Op::StaEnvSlot)] = &h_StaEnvSlotFast;
     t[static_cast<uint8_t>(Op::StaEnvSlotInit)] = &h_gen_StaEnvSlotInit;
-    t[static_cast<uint8_t>(Op::LdaEnvSlotAt)] = &h_gen_LdaEnvSlotAt;
-    t[static_cast<uint8_t>(Op::StaEnvSlotAt)] = &h_gen_StaEnvSlotAt;
+    t[static_cast<uint8_t>(Op::LdaEnvSlotAt)] = &h_LdaEnvSlotAtFast;
+    t[static_cast<uint8_t>(Op::StaEnvSlotAt)] = &h_StaEnvSlotAtFast;
     t[static_cast<uint8_t>(Op::BindEnvLocals)] = &h_gen_BindEnvLocals;
     t[static_cast<uint8_t>(Op::EnterLoopEnv)] = &h_gen_EnterLoopEnv;
     t[static_cast<uint8_t>(Op::AdvanceLoopEnv)] = &h_gen_AdvanceLoopEnv;

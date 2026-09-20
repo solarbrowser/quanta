@@ -6186,6 +6186,7 @@ void BytecodeCompiler::finalize_ancestor_chains() {
         layer->slots = slots;
         layer->ambiguous = ambiguous;
         layer->entry_hop = 1 + creation_depth;
+        layer->child_has_self_name_wrapper = closures[index].needs_self_binding;
         closures[index].outer_scope_chain = std::move(layer);
     }
     pending_ancestor_chain_sites_.clear();
@@ -6240,6 +6241,11 @@ bool BytecodeCompiler::find_ancestor_slot(const std::string& name, int& hops, ui
             // way.
             if (has_self_name_wrapper_) hop += 1;
             first_layer = false;
+        } else if (node->child_has_self_name_wrapper) {
+            // Leaving the scope of the function this layer was built for: if it
+            // is a named function expression, the wrapper around its scope is a
+            // hop the layer's entry_hop does not count.
+            hop += 1;
         }
         total += hop;
         auto it = node->slots->find(name);

@@ -521,6 +521,12 @@ struct ClosureScopeChain {
     std::shared_ptr<const std::unordered_map<std::string, ClosureSlotInfo>> slots;
     std::shared_ptr<const std::unordered_set<std::string>> ambiguous;
     int entry_hop = 0;
+    // The function this layer was built for is a named function expression, so
+    // its closure environment is a wrapper holding only its own name, one hop
+    // between its own scope and the layer outside it. A reader that is that
+    // function accounts for the wrapper itself; a reader further in has to cross
+    // it on the way to any layer past this one.
+    bool child_has_self_name_wrapper = false;
 };
 
 // Everything instantiating a function literal needs that is fixed by the
