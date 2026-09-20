@@ -497,6 +497,202 @@ Value Function::call_default(Context& ctx, const std::vector<Value>& args, Value
     return call_default_impl(ctx, args, this_value, &args);
 }
 
+// The register-mode body call_default_impl takes once its gate is open, on its
+// own so the call handlers can reach it without going through the general
+// entry's checks and frame. The caller has established the gate and holds the
+// call-stack frame.
+Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this_value) {
+    // Runs directly on the caller's own ctx instead of a freshly
+    // pool-acquired one. Native
+    // code (promise reactions, job queues) that captures ctx is still
+    // safe -- exposed_to_escape()/ContextSurvivorGuard key off the
+    // Context object itself, not off how many pool-acquire-skipping
+    // fast_gate frames sit between the capture site and whichever
+    // ancestor frame actually owns/releases it (verified against
+    // Collector.cpp's root walk and CallContextPool::release before
+    // this stage shipped).
+    Environment* outer_env = get_closure_environment();
+    if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
+    if (!outer_env) outer_env = ctx.get_lexical_environment();
+    // The chain can outlive this call for the same reason the context
+    // can -- but only if something in THIS call's own execution could
+    // hand out a reference to it that survives the call, which is
+    // exactly what creating a closure does (capture_closure_environment).
+    // A chunk that never emits Op::CreateClosure on any branch cannot do
+    // that no matter which branch runs, so the mark (and the outer-chain
+    // walk it can trigger the first time) is skipped entirely. Most
+    // closures already had this same chain marked once, at their OWN
+    // creation, via this same mechanism -- so even the common case where
+    // this executable's chunk isn't closure-free only ever repeats an
+    // already-amortized O(1) check here, never redoes real work.
+    if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
+    // CallInfo is the ONLY carrier of this call's own environment now --
+    // ctx's own lexical_environment_/variable_environment_ fields are
+    // never written here, so they still hold whatever the CALLER had,
+    // exactly as they should (this is the caller's own live object).
+    VM::CallInfo call_info;
+    call_info.lexical_environment_ = outer_env;
+    call_info.variable_environment_ = outer_env;
+
+    // ctx is the caller's own shared object now, not a throwaway --
+    // every per-call identity field this call is about to write has to
+    // be saved here and restored after VM::run returns, or it leaks
+    // into the caller. (super_called_ is the one deliberate exception,
+    // see its own restore-less write below.)
+    bool saved_arrow_ctx = ctx.is_arrow_function_context();
+    bool saved_strict = ctx.is_strict_mode();
+    Value saved_new_target = ctx.get_new_target();
+    Value saved_this_value = ctx.get_this_value();
+    // ctor_ok above already proves THIS call's own body is never a
+    // this-needing-super derived constructor -- but ctx may still be a
+    // derived constructor's own Context, mid-super-call (this is exactly
+    // that base-class constructor's fast_gate call, reached through
+    // perform_super_call sharing the derived constructor's ctx). Op::LdaThis
+    // reads ctx.this_needs_super() unconditionally on every `this` access,
+    // with no per-callee distinction -- left true here, this call's own
+    // harmless `this.x = ...` would wrongly fail the derived class's own
+    // pending-super check. Force false for this call's own duration, restore
+    // the caller's real value after (same pattern as every other per-call
+    // identity field above).
+    bool saved_this_needs_super = ctx.this_needs_super();
+    ctx.set_this_needs_super(false);
+
+    // reset_for_call used to clear this as part of its bulk field
+    // reset -- there is no reset now, so a plain function call (the
+    // overwhelming majority of fast-gate traffic) must not pay a
+    // write it doesn't need; only an actual arrow does.
+    if (is_arrow_) ctx.set_arrow_function_context(true);
+    if (is_strict_ || executable_->fast_strict) ctx.set_strict_mode(true);
+    // is_in_constructor_call_/new_target_ need no copy here any more:
+    // ctx IS the object Function::construct() already set them on
+    // before this call was ever reached (or left alone for a plain
+    // call), so they are already correct without a self-to-self copy.
+    // An arrow has no new.target of its own -- instantiate_closure stamped
+    // the enclosing one onto it at closure-creation time (see
+    // __arrow_new_target__'s write site), and reading it back here is the
+    // other half call_tree_walker does for its own per-call context. This
+    // temporarily overrides whatever new.target is currently active on
+    // ctx on purpose: an arrow's own captured value, not the caller's
+    // ambient one, is what a nested `new.target` inside it must see --
+    // restored below once the call returns.
+    // has_internal_slot/get_internal_slot rather than has_own_property/
+    // get_property: the latter pair walks the shape and (on a miss, the
+    // overwhelming common case -- most arrows never capture a
+    // constructor's new.target at all) the descriptor map too, on every
+    // single call. An internal slot is a 1-2 entry inline scan behind a
+    // lazily-allocated pointer that a plain arrow never even allocates.
+    if (is_arrow_ && has_internal_slot("__arrow_new_target__")) {
+        ctx.set_new_target(get_internal_slot("__arrow_new_target__"));
+    }
+
+    Value fast_this = this_value;
+    // Skipped entirely when the body cannot observe `this` through
+    // Op::LdaThis, which is the only reader most calls here have. A
+    // super.x/super[expr] read is the exception: super_get_on calls its
+    // accessor with ctx.get_binding("this"), which answers from this
+    // context's own this_value_ regardless of how `this` got here --
+    // unrelated to (and not covered by) Op::LdaThis's own register-frame
+    // caching. That read was never reachable from this path before a
+    // method's own super.x stopped forcing env_mode, so this context's
+    // this_value_ was never set for the primitive case: only the
+    // boxed-or-object branch below used to write it, via
+    // set_this_binding.
+    if (executable_->fast_uses_this) {
+        if (is_arrow_) {
+            // Own, not inherited: ArrowFunctionExpression::evaluate stamps
+            // these markers on the arrow itself, so asking has_property here
+            // only bought a walk up to Function.prototype and Object.prototype
+            // on every call.
+            if (has_arrow_this_) fast_this = arrow_this_;
+        } else if (!ctx.is_strict_mode()) {
+            if (this_value.is_undefined() || this_value.is_null()) {
+                Object* global = ctx.get_global_object();
+                if (global) fast_this = Value(global);
+            } else if (!this_value.is_object() && !this_value.is_function()) {
+                // box_primitive_this_sloppy's own first check is exactly this --
+                // skip the cross-TU call for the common already-object `this`
+                // (every ordinary method call), not just primitives.
+                fast_this = ObjectFactory::box_primitive_this_sloppy(ctx, this_value);
+            }
+        }
+        // Strict-mode primitive `this` (a class method's super.x read,
+        // called with a primitive receiver) reaches here unboxed by
+        // design -- set_this_value takes it as-is, the same as
+        // set_this_binding always did for the object case (it is
+        // this_value_ = Value(obj) under its own name).
+        ctx.set_this_value(fast_this);
+    }
+
+    // No ExecContextScope here: ctx is the caller's own object, and the
+    // caller -- being mid-execution, making this very call -- already
+    // has an ancestor ExecContextScope open on the stack for as long as
+    // this nested call runs (Collector.cpp's root walk traces every
+    // scope on that chain, not just the innermost).
+    Context* prev_context = Object::current_context_;
+    Object::current_context_ = &ctx;
+    Value vm_result = VM::run(*executable_->bytecode_chunk, ctx, args, &fast_this, this,
+                               nullptr, &call_info);
+    Object::current_context_ = prev_context;
+    // Only reachable at all when this call ran Op::SuperCall, which the
+    // parser accepts nowhere but a derived constructor's own body or an
+    // arrow nested inside one -- and ctor_ok above already excludes a
+    // derived constructor from this path, so is_arrow_ is the only way
+    // in. An arrow that escapes its constructor (stashed in a variable,
+    // called later, the shape this guards) needs the same propagation
+    // the general path gives it: closure_context_ is the constructor's
+    // OWN Context, the one every later standalone call of this arrow
+    // re-reads this_needs_super() from, and nothing else ever clears it.
+    // ctx.was_super_called() itself is deliberately NOT restored below --
+    // it always propagated outward to whatever the caller's own context
+    // was (the two were already the same kind of write before this
+    // stage, just onto a separate fast_ctx object read back through
+    // ctx.set_super_called(true) right here); ctx now IS that object,
+    // so leaving the write in place reproduces the exact same behavior.
+    if (ctx.was_super_called() && is_arrow_ && closure_context_) {
+        closure_context_->set_super_called(true);
+        closure_context_->set_this_needs_super(false);
+    }
+
+    ctx.set_arrow_function_context(saved_arrow_ctx);
+    ctx.set_strict_mode(saved_strict);
+    ctx.set_new_target(saved_new_target);
+    ctx.set_this_value(saved_this_value);
+    ctx.set_this_needs_super(saved_this_needs_super);
+
+    if (ctx.has_exception()) {
+        return Value();
+    }
+    return vm_result;
+}
+
+// Straight from a call handler for a callee whose gate is open: fast_callable()
+// has said it is a plain compiled function with the register-mode gate, and what
+// is left of the general entry's prologue is done here -- consuming a pending
+// construct flag, the depth and stack limits, the call-stack frame -- before the
+// shared body. An arrow whose enclosing derived constructor has not called
+// super yet is the one case the gate's own condition leaves to the general
+// entry, and nothing has been touched when it is sent there.
+Value Function::call_fast_gate(Context& ctx, std::span<const Value> args, Value this_value) {
+    if (UNLIKELY_NATIVE(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
+        return call_default_impl(ctx, args, this_value, nullptr);
+    }
+    ctx.consume_pending_construct_call();
+    CallStack& stack = CallStack::instance();
+    if (stack.depth() >= CallStack::MAX_STACK_DEPTH) {
+        ctx.throw_range_error("Maximum call stack size exceeded");
+        return Value();
+    }
+    if (const char* floor = current_stack_floor()) {
+        const char probe = 0;
+        if (&probe < floor) {
+            ctx.throw_range_error("Maximum call stack size exceeded");
+            return Value();
+        }
+    }
+    CallStackFrameGuard frame_guard(stack, &ctx.get_current_filename(), this);
+    return call_gated(ctx, args, this_value);
+}
+
 Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
                                   const std::vector<Value>* args_vec) {
     // A vector's storage is malloc'd and invisible to the stack scan, so it
@@ -583,167 +779,7 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     bool ctor_ok = !is_class_constructor_ || !is_derived_ctor();
     if (executable_ && executable_->fast_gate && ctor_ok &&
         !(is_arrow_ && closure_context_ && closure_context_->this_needs_super())) {
-        // Runs directly on the caller's own ctx instead of a freshly
-        // pool-acquired one. Native
-        // code (promise reactions, job queues) that captures ctx is still
-        // safe -- exposed_to_escape()/ContextSurvivorGuard key off the
-        // Context object itself, not off how many pool-acquire-skipping
-        // fast_gate frames sit between the capture site and whichever
-        // ancestor frame actually owns/releases it (verified against
-        // Collector.cpp's root walk and CallContextPool::release before
-        // this stage shipped).
-        Environment* outer_env = get_closure_environment();
-        if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
-        if (!outer_env) outer_env = ctx.get_lexical_environment();
-        // The chain can outlive this call for the same reason the context
-        // can -- but only if something in THIS call's own execution could
-        // hand out a reference to it that survives the call, which is
-        // exactly what creating a closure does (capture_closure_environment).
-        // A chunk that never emits Op::CreateClosure on any branch cannot do
-        // that no matter which branch runs, so the mark (and the outer-chain
-        // walk it can trigger the first time) is skipped entirely. Most
-        // closures already had this same chain marked once, at their OWN
-        // creation, via this same mechanism -- so even the common case where
-        // this executable's chunk isn't closure-free only ever repeats an
-        // already-amortized O(1) check here, never redoes real work.
-        if (outer_env && !executable_->fast_no_closures) outer_env->mark_escaped();
-        // CallInfo is the ONLY carrier of this call's own environment now --
-        // ctx's own lexical_environment_/variable_environment_ fields are
-        // never written here, so they still hold whatever the CALLER had,
-        // exactly as they should (this is the caller's own live object).
-        VM::CallInfo call_info;
-        call_info.lexical_environment_ = outer_env;
-        call_info.variable_environment_ = outer_env;
-
-        // ctx is the caller's own shared object now, not a throwaway --
-        // every per-call identity field this call is about to write has to
-        // be saved here and restored after VM::run returns, or it leaks
-        // into the caller. (super_called_ is the one deliberate exception,
-        // see its own restore-less write below.)
-        bool saved_arrow_ctx = ctx.is_arrow_function_context();
-        bool saved_strict = ctx.is_strict_mode();
-        Value saved_new_target = ctx.get_new_target();
-        Value saved_this_value = ctx.get_this_value();
-        // ctor_ok above already proves THIS call's own body is never a
-        // this-needing-super derived constructor -- but ctx may still be a
-        // derived constructor's own Context, mid-super-call (this is exactly
-        // that base-class constructor's fast_gate call, reached through
-        // perform_super_call sharing the derived constructor's ctx). Op::LdaThis
-        // reads ctx.this_needs_super() unconditionally on every `this` access,
-        // with no per-callee distinction -- left true here, this call's own
-        // harmless `this.x = ...` would wrongly fail the derived class's own
-        // pending-super check. Force false for this call's own duration, restore
-        // the caller's real value after (same pattern as every other per-call
-        // identity field above).
-        bool saved_this_needs_super = ctx.this_needs_super();
-        ctx.set_this_needs_super(false);
-
-        // reset_for_call used to clear this as part of its bulk field
-        // reset -- there is no reset now, so a plain function call (the
-        // overwhelming majority of fast-gate traffic) must not pay a
-        // write it doesn't need; only an actual arrow does.
-        if (is_arrow_) ctx.set_arrow_function_context(true);
-        if (is_strict_ || executable_->fast_strict) ctx.set_strict_mode(true);
-        // is_in_constructor_call_/new_target_ need no copy here any more:
-        // ctx IS the object Function::construct() already set them on
-        // before this call was ever reached (or left alone for a plain
-        // call), so they are already correct without a self-to-self copy.
-        // An arrow has no new.target of its own -- instantiate_closure stamped
-        // the enclosing one onto it at closure-creation time (see
-        // __arrow_new_target__'s write site), and reading it back here is the
-        // other half call_tree_walker does for its own per-call context. This
-        // temporarily overrides whatever new.target is currently active on
-        // ctx on purpose: an arrow's own captured value, not the caller's
-        // ambient one, is what a nested `new.target` inside it must see --
-        // restored below once the call returns.
-        // has_internal_slot/get_internal_slot rather than has_own_property/
-        // get_property: the latter pair walks the shape and (on a miss, the
-        // overwhelming common case -- most arrows never capture a
-        // constructor's new.target at all) the descriptor map too, on every
-        // single call. An internal slot is a 1-2 entry inline scan behind a
-        // lazily-allocated pointer that a plain arrow never even allocates.
-        if (is_arrow_ && has_internal_slot("__arrow_new_target__")) {
-            ctx.set_new_target(get_internal_slot("__arrow_new_target__"));
-        }
-
-        Value fast_this = this_value;
-        // Skipped entirely when the body cannot observe `this` through
-        // Op::LdaThis, which is the only reader most calls here have. A
-        // super.x/super[expr] read is the exception: super_get_on calls its
-        // accessor with ctx.get_binding("this"), which answers from this
-        // context's own this_value_ regardless of how `this` got here --
-        // unrelated to (and not covered by) Op::LdaThis's own register-frame
-        // caching. That read was never reachable from this path before a
-        // method's own super.x stopped forcing env_mode, so this context's
-        // this_value_ was never set for the primitive case: only the
-        // boxed-or-object branch below used to write it, via
-        // set_this_binding.
-        if (executable_->fast_uses_this) {
-            if (is_arrow_) {
-                // Own, not inherited: ArrowFunctionExpression::evaluate stamps
-                // these markers on the arrow itself, so asking has_property here
-                // only bought a walk up to Function.prototype and Object.prototype
-                // on every call.
-                if (has_arrow_this_) fast_this = arrow_this_;
-            } else if (!ctx.is_strict_mode()) {
-                if (this_value.is_undefined() || this_value.is_null()) {
-                    Object* global = ctx.get_global_object();
-                    if (global) fast_this = Value(global);
-                } else if (!this_value.is_object() && !this_value.is_function()) {
-                    // box_primitive_this_sloppy's own first check is exactly this --
-                    // skip the cross-TU call for the common already-object `this`
-                    // (every ordinary method call), not just primitives.
-                    fast_this = ObjectFactory::box_primitive_this_sloppy(ctx, this_value);
-                }
-            }
-            // Strict-mode primitive `this` (a class method's super.x read,
-            // called with a primitive receiver) reaches here unboxed by
-            // design -- set_this_value takes it as-is, the same as
-            // set_this_binding always did for the object case (it is
-            // this_value_ = Value(obj) under its own name).
-            ctx.set_this_value(fast_this);
-        }
-
-        // No ExecContextScope here: ctx is the caller's own object, and the
-        // caller -- being mid-execution, making this very call -- already
-        // has an ancestor ExecContextScope open on the stack for as long as
-        // this nested call runs (Collector.cpp's root walk traces every
-        // scope on that chain, not just the innermost).
-        Context* prev_context = Object::current_context_;
-        Object::current_context_ = &ctx;
-        Value vm_result = VM::run(*executable_->bytecode_chunk, ctx, args, &fast_this, this,
-                                   nullptr, &call_info);
-        Object::current_context_ = prev_context;
-        // Only reachable at all when this call ran Op::SuperCall, which the
-        // parser accepts nowhere but a derived constructor's own body or an
-        // arrow nested inside one -- and ctor_ok above already excludes a
-        // derived constructor from this path, so is_arrow_ is the only way
-        // in. An arrow that escapes its constructor (stashed in a variable,
-        // called later, the shape this guards) needs the same propagation
-        // the general path gives it: closure_context_ is the constructor's
-        // OWN Context, the one every later standalone call of this arrow
-        // re-reads this_needs_super() from, and nothing else ever clears it.
-        // ctx.was_super_called() itself is deliberately NOT restored below --
-        // it always propagated outward to whatever the caller's own context
-        // was (the two were already the same kind of write before this
-        // stage, just onto a separate fast_ctx object read back through
-        // ctx.set_super_called(true) right here); ctx now IS that object,
-        // so leaving the write in place reproduces the exact same behavior.
-        if (ctx.was_super_called() && is_arrow_ && closure_context_) {
-            closure_context_->set_super_called(true);
-            closure_context_->set_this_needs_super(false);
-        }
-
-        ctx.set_arrow_function_context(saved_arrow_ctx);
-        ctx.set_strict_mode(saved_strict);
-        ctx.set_new_target(saved_new_target);
-        ctx.set_this_value(saved_this_value);
-        ctx.set_this_needs_super(saved_this_needs_super);
-
-        if (ctx.has_exception()) {
-            return Value();
-        }
-        return vm_result;
+        return call_gated(ctx, args, this_value);
     }
 
     // Environment-mode functions take the general path today only because the

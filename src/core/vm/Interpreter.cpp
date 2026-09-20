@@ -4990,7 +4990,9 @@ Value h_gen_Call(Frame& f, uint32_t pc, Value acc) {
                 const Value& callee = regs[callee_reg];
                 std::span<const Value> call_args(regs + args_start, argc);
                 if (callee.is_function()) {
-                    acc = callee.as_function()->call_register_args(ctx, call_args, Value());
+                    Function* fn = callee.as_function();
+                    acc = fn->fast_callable() ? fn->call_fast_gate(ctx, call_args, Value())
+                                              : fn->call_register_args(ctx, call_args, Value());
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());
@@ -5067,7 +5069,9 @@ Value h_gen_CallResolved(Frame& f, uint32_t pc, Value acc) {
                 const Value& receiver = regs[this_reg];
                 std::span<const Value> call_args(regs + args_start, argc);
                 if (callee.is_function()) {
-                    acc = callee.as_function()->call_register_args(ctx, call_args, receiver);
+                    Function* fn = callee.as_function();
+                    acc = fn->fast_callable() ? fn->call_fast_gate(ctx, call_args, receiver)
+                                              : fn->call_register_args(ctx, call_args, receiver);
                 } else if (callee.is_object() &&
                            callee.as_object()->get_type() == Object::ObjectType::Proxy) {
                     std::vector<Value> trap_args(call_args.begin(), call_args.end());

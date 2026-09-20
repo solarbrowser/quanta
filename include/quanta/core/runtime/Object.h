@@ -1892,6 +1892,15 @@ public:
         if (is_native_) return call_native(ctx, args, this_value);
         return call_default_impl(ctx, args, this_value, nullptr);
     }
+    // Whether a call handler can go straight to call_fast_gate: a plain compiled
+    // function with the register-mode gate open. Not a class constructor, which
+    // has its own without-`new` check first, and not a suspendable kind or a
+    // native, which keep their own entries.
+    bool fast_callable() const {
+        return executable_ && executable_->fast_gate && !is_native_ && !is_class_constructor_ &&
+               get_function_kind() == FunctionKind::Plain;
+    }
+    Value call_fast_gate(Context& ctx, std::span<const Value> args, Value this_value);
     // Arguments that live in the caller's VM registers, on the same terms
     // call_register_args states: already GC roots, and valid for the whole call.
     Value construct(Context& ctx, std::span<const Value> args);
@@ -1965,6 +1974,7 @@ protected:
     // null means the args came from registers and only a native forces a
     // materialization. It also decides the GC root: a vector's storage is
     // malloc'd and invisible to the stack scan, registers are not.
+    Value call_gated(Context& ctx, std::span<const Value> args, Value this_value);
     Value call_default_impl(Context& ctx, std::span<const Value> args, Value this_value,
                             const std::vector<Value>* args_vec);
     Value call_tree_walker(Context& ctx, std::span<const Value> args, Value this_value);
