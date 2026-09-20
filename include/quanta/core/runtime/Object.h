@@ -543,6 +543,18 @@ public:
     inline Value get_element_unchecked(uint32_t index) const {
         return *element_ptr(index);
     }
+    // has_only_dense_elements()'s cached answer and nothing else: no call, no
+    // walk. False means "not known", not "not dense" -- a caller that gets it
+    // hands the question to the full check.
+    bool is_verified_dense_array() const { return get_type() == ObjectType::Array && dense_verified(); }
+    // Overwrites an element that is already there with a finite number. The
+    // caller has established is_verified_dense_array() and that index is inside
+    // element_count(). A number is no cell and holds nothing the collector could
+    // lose, so the write needs no barrier -- which is what keeps this a store
+    // rather than a call.
+    inline void overwrite_dense_number(uint32_t index, const Value& number) {
+        *element_ptr(index) = number;
+    }
 
     // Moves `count` elements from index `src` to index `dst` within the dense
     // store, overlapping ranges included. Callers must have established

@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/BigInt.h"
 #include <memory>
 #include <cstdint>
+#include <cstring>
 
 namespace Quanta {
 
@@ -44,6 +45,23 @@ protected:
     bool is_length_tracking_;
 
     uint8_t* get_data_ptr() const;
+    // Where element `index` lives, or null when this is not a plain view or the
+    // index is outside it -- see read_plain_number.
+    uint8_t* plain_element_ptr(size_t index) const {
+        ArrayBuffer* b = buffer_.get();
+        if (__builtin_expect(is_length_tracking_ || index >= length_ || !b || b->is_resizable() ||
+                             array_type_ >= ArrayType::BIGINT64, 0)) {
+            return nullptr;
+        }
+        uint8_t* data = b->data();
+        return data ? data + byte_offset_ + index * bytes_per_element_ : nullptr;
+    }
+    template <typename T> static T load_element(const uint8_t* p) {
+        T v;
+        std::memcpy(&v, p, sizeof(T));
+        return v;
+    }
+    template <typename T> static void store_element(uint8_t* p, T v) { std::memcpy(p, &v, sizeof(T)); }
     bool check_bounds(size_t index) const;
     void validate_offset_and_length(size_t buffer_byte_length, size_t byte_offset, size_t length) const;
 
@@ -101,6 +119,50 @@ public:
     // out-of-bounds/length-tracking state -- entirely.
     Value get_element_unchecked(size_t index) const;
     bool set_element_unchecked(size_t index, const Value& value);
+
+    // The two calls above still ask the buffer twice whether it is detached or
+    // resized, each behind its own out-of-line call. A view that is fixed-length
+    // over a non-resizable buffer -- nearly every one -- can lose its window only
+    // by detaching, which data() already reports as null, so one pass over the
+    // fields answers both questions. Anything else, a BigInt element type
+    // included, is refused and left to the general path.
+    [[gnu::always_inline]] bool read_plain_number(size_t index, double& out) const {
+        const uint8_t* p = plain_element_ptr(index);
+        if (!p) return false;
+        switch (array_type_) {
+            case ArrayType::INT8: out = load_element<int8_t>(p); return true;
+            case ArrayType::UINT8:
+            case ArrayType::UINT8_CLAMPED: out = load_element<uint8_t>(p); return true;
+            case ArrayType::INT16: out = load_element<int16_t>(p); return true;
+            case ArrayType::UINT16: out = load_element<uint16_t>(p); return true;
+            case ArrayType::INT32: out = load_element<int32_t>(p); return true;
+            case ArrayType::UINT32: out = load_element<uint32_t>(p); return true;
+            case ArrayType::FLOAT32: out = load_element<float>(p); return true;
+            case ArrayType::FLOAT64: out = load_element<double>(p); return true;
+            default: return false;
+        }
+    }
+    // A number stored as the element type. An integer type wraps modulo its
+    // width, which is the low bits of the truncated value while that fits an
+    // int64; a NaN, an infinity or anything larger is refused, and so is a
+    // clamped array, whose rounding is not this.
+    [[gnu::always_inline]] bool write_plain_number(size_t index, double value) {
+        uint8_t* p = plain_element_ptr(index);
+        if (!p) return false;
+        if (array_type_ == ArrayType::FLOAT64) { store_element<double>(p, value); return true; }
+        if (array_type_ == ArrayType::FLOAT32) { store_element<float>(p, static_cast<float>(value)); return true; }
+        if (!(value > -9.2e18 && value < 9.2e18)) return false;
+        const int64_t whole = static_cast<int64_t>(value);
+        switch (array_type_) {
+            case ArrayType::INT8: store_element<int8_t>(p, static_cast<int8_t>(whole)); return true;
+            case ArrayType::UINT8: store_element<uint8_t>(p, static_cast<uint8_t>(whole)); return true;
+            case ArrayType::INT16: store_element<int16_t>(p, static_cast<int16_t>(whole)); return true;
+            case ArrayType::UINT16: store_element<uint16_t>(p, static_cast<uint16_t>(whole)); return true;
+            case ArrayType::INT32: store_element<int32_t>(p, static_cast<int32_t>(whole)); return true;
+            case ArrayType::UINT32: store_element<uint32_t>(p, static_cast<uint32_t>(whole)); return true;
+            default: return false;
+        }
+    }
 
     Value subarray(size_t start, size_t end = SIZE_MAX) const;
     void set_from_array(const std::vector<Value>& source, size_t offset = 0);

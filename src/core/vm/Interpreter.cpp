@@ -1247,8 +1247,10 @@ void learn_keyed_transition(KeyedFeedback* fb, Shape* from_shape, const std::str
 // doubles, falls through to ToPropertyKey. -0 lands on 0, which is what
 // ToPropertyKey produces for it as well.
 inline bool array_index_key(const Value& v, uint32_t& out) {
-    if (!v.is_number()) return false;
-    double d = v.as_number();
+    // NaN and the infinities are never an index, and is_finite_double() is one
+    // test where is_number() is four.
+    if (!v.is_finite_double()) return false;
+    double d = v.as_finite_double();
     // Bound first: casting a double outside the uint32 range is undefined.
     if (!(d >= 0.0 && d < 4294967295.0)) return false;
     uint32_t i = static_cast<uint32_t>(d);
@@ -6583,11 +6585,43 @@ Value h_SetNamedRest(Frame& f, uint32_t pc, Value acc) {
 }
 
 Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc);
+Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc);
 
-// Indexing a dense array is a bounds check and a load. Everything else, the
+Value h_GetKeyedElement(Frame& f, uint32_t pc, Value acc);
+
+// Indexing an array whose density is already known, or a plain typed array, is
+// a bounds check and a load, and this handler is kept to exactly that: it calls
+// nothing, so the compiler gives it no frame to build and tear down around the
+// load.
+Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
+    uint32_t index;
+    if (LIKELY(array_index_key(acc, index))) {
+        const Value& recv = f.regs[f.code[pc + 1]];
+        if (LIKELY(recv.is_object())) {
+            Object* obj = recv.as_object();
+            if (LIKELY(obj->is_verified_dense_array() && index < obj->element_count())) {
+                acc = obj->get_element_unchecked(index);
+                pc += 4;
+                DISPATCH();
+            }
+            if (obj->get_type() == Object::ObjectType::TypedArray) {
+                double element;
+                if (static_cast<TypedArrayBase*>(obj)->read_plain_number(index, element)) {
+                    acc = Value(element);
+                    pc += 4;
+                    DISPATCH();
+                }
+            }
+        }
+    }
+    [[clang::musttail]] return h_GetKeyedElement(f, pc, acc);
+}
+
+// What the leaf handler above declined: an array whose density is not cached
+// yet, a typed array that is not a plain view, anything else with an index. Everything past that, the
 // null receiver included, goes to the generated handler, which does the whole
 // spec-ordered sequence from the start.
-Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
+Value h_GetKeyedElement(Frame& f, uint32_t pc, Value acc) {
     uint32_t index;
     Object* dense;
     TypedArrayBase* typed;
@@ -6598,6 +6632,14 @@ Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
             pc += 4;
             DISPATCH();
         }
+        if (Object* obj = as_object_like(recv); obj && obj->get_type() == Object::ObjectType::TypedArray) {
+            double element;
+            if (static_cast<TypedArrayBase*>(obj)->read_plain_number(index, element)) {
+                acc = Value(element);
+                pc += 4;
+                DISPATCH();
+            }
+        }
         if (typed_element_slot(recv, index, typed)) {
             acc = typed->get_element_unchecked(index);
             pc += 4;
@@ -6605,6 +6647,59 @@ Value h_GetKeyedFast(Frame& f, uint32_t pc, Value acc) {
         }
     }
     [[clang::musttail]] return h_gen_GetKeyed(f, pc, acc);
+}
+
+Value h_SetKeyedElement(Frame& f, uint32_t pc, Value acc);
+
+// Overwriting an element of an array whose density is known with a number is a
+// bounds check and a store, and like its read counterpart this handler calls
+// nothing. An append or a value that is a cell: the next handler.
+Value h_SetKeyedFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    uint32_t index;
+    if (LIKELY(acc.is_finite_double() && array_index_key(f.regs[code[pc + 2]], index))) {
+        const Value& recv = f.regs[code[pc + 1]];
+        if (LIKELY(recv.is_object())) {
+            Object* obj = recv.as_object();
+            if (LIKELY(acc.is_finite_double() && obj->is_verified_dense_array() &&
+                       index < obj->element_count())) {
+                obj->overwrite_dense_number(index, acc);
+                pc += 5;
+                DISPATCH();
+            }
+            if (obj->get_type() == Object::ObjectType::TypedArray &&
+                static_cast<TypedArrayBase*>(obj)->write_plain_number(index, acc.as_finite_double())) {
+                pc += 5;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_SetKeyedElement(f, pc, acc);
+}
+
+// The rest of SetKeyed's element cases: appends and non-number stores to a dense
+// array, and typed arrays. Anything that has to think goes to the generated
+// handler untouched.
+Value h_SetKeyedElement(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    uint32_t index;
+    if (LIKELY(array_index_key(f.regs[code[pc + 2]], index))) {
+        const Value& recv = f.regs[code[pc + 1]];
+        Object* dense;
+        if (LIKELY(dense_element_store_slot(recv, index, dense)) &&
+            dense->store_dense_element(index, acc)) {
+            pc += 5;
+            DISPATCH();
+        }
+        if (acc.is_number()) {
+            if (Object* obj = as_object_like(recv); obj && obj->get_type() == Object::ObjectType::TypedArray &&
+                static_cast<TypedArrayBase*>(obj)->write_plain_number(index, acc.as_number())) {
+                pc += 5;
+                DISPATCH();
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_SetKeyed(f, pc, acc);
 }
 
 Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
@@ -8144,7 +8239,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::GetPrivate)] = &h_gen_GetPrivate;
     t[static_cast<uint8_t>(Op::SetPrivate)] = &h_gen_SetPrivate;
     t[static_cast<uint8_t>(Op::GetKeyed)] = &h_GetKeyedFast;
-    t[static_cast<uint8_t>(Op::SetKeyed)] = &h_gen_SetKeyed;
+    t[static_cast<uint8_t>(Op::SetKeyed)] = &h_SetKeyedFast;
     t[static_cast<uint8_t>(Op::DeleteNamed)] = &h_gen_DeleteNamed;
     t[static_cast<uint8_t>(Op::DeleteKeyed)] = &h_gen_DeleteKeyed;
     t[static_cast<uint8_t>(Op::DefineOwn)] = &h_DefineOwnFast;

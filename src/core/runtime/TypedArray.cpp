@@ -483,6 +483,10 @@ Value TypedArray<T>::get_element_unchecked(size_t index) const {
 // set_element_unchecked branch around it at compile time).
 template<typename T>
 T TypedArray<T>::wrap_to_element(double num_val) {
+    // What fits an int64 wraps by keeping its low bits, which is what the
+    // modular arithmetic below computes with a pow and an fmod; a NaN fails the
+    // range test and takes that route.
+    if (num_val > -9.2e18 && num_val < 9.2e18) return static_cast<T>(static_cast<int64_t>(num_val));
     if (std::isnan(num_val) || std::isinf(num_val) || num_val == 0.0) {
         return T{0};
     }
