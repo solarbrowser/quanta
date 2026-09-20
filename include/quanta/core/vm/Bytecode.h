@@ -733,6 +733,8 @@ struct KeyedFeedback {
     uint8_t count = 0;
     uint8_t capacity = 0;
     bool mega = false;
+    // Where the last hit sat, plus one: see find_keyed_entry.
+    uint8_t hint = 0;
 
     // SetKeyed-only: mirrors FeedbackBody::TransitionEntry (caches adding a
     // brand-new own property, keyed by the shape BEFORE the add, the

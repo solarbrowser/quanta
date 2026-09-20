@@ -1180,15 +1180,34 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
     obj->set_property_descriptor(key, desc);
 }
 
+// The entry a keyed site has learned for (shape, key), if any. A site that walks
+// one object's keys in order (`for (k in o) o[k]`) learns them in that order and
+// meets them in it again, so the scan starts just past the last hit instead of at
+// the front: from the front every access compared the strings of all the keys
+// before its own, which at 32 keys was most of the access.
+KeyedFeedback::Entry* find_keyed_entry(KeyedFeedback* fb, Shape* shape, const std::string& key) {
+    const uint8_t count = fb->count;
+    if (count == 0) return nullptr;
+    // hint stays below count: it is only ever set to the slot after a hit,
+    // wrapped, and count only grows.
+    for (uint8_t i = fb->hint;;) {
+        KeyedFeedback::Entry& e = fb->entries[i];
+        if (e.shape == shape && e.key == key) {
+            fb->hint = (i + 1 == count) ? 0 : static_cast<uint8_t>(i + 1);
+            return &e;
+        }
+        if (++i == count) i = 0;
+        if (i == fb->hint) return nullptr;
+    }
+}
+
 // Dedups on (shape, key): unlike learn_feedback (FeedbackSlot, one fixed
 // name per site), the same GetKeyed/SetKeyed site can legitimately learn
 // several different keys against the same shape (e.g. `obj[k]` in a loop
 // where k varies over a small bounded set) -- each (shape, key) pair is a
 // separate slot in the fixed budget.
 void learn_keyed(KeyedFeedback* fb, Shape* shape, const std::string& key, uint32_t slot_index) {
-    for (uint8_t i = 0; i < fb->count; i++) {
-        if (fb->entries[i].shape == shape && fb->entries[i].key == key) return;
-    }
+    if (find_keyed_entry(fb, shape, key)) return;
     if (KeyedFeedback::Entry* entry = fb->next_entry()) {
         *entry = {shape, key, slot_index};
     } else {
@@ -1304,12 +1323,9 @@ Value get_keyed(Context& ctx, const Value& receiver, const std::string& key, Key
     if (obj && fb && !fb->mega && shape_fast_path_ok(obj->get_type()) &&
         !obj->has_descriptor_override(key)) {
         Shape* shape = obj->get_shape();
-        for (uint8_t i = 0; i < fb->count; i++) {
-            if (fb->entries[i].shape == shape && fb->entries[i].key == key) {
-                const Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
-                if (slot) return *slot;
-                break;
-            }
+        if (KeyedFeedback::Entry* e = find_keyed_entry(fb, shape, key)) {
+            const Value* slot = obj->get_shape_slot_unchecked(e->slot_index);
+            if (slot) return *slot;
         }
     }
     Value result = get_named(ctx, receiver, key, nullptr, nullptr, false);
@@ -1335,12 +1351,9 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
     if (obj && fb && !fb->mega && shape_fast_path_ok(obj->get_type()) &&
         !obj->has_descriptor_override(key)) {
         Shape* shape = obj->get_shape();
-        for (uint8_t i = 0; i < fb->count; i++) {
-            if (fb->entries[i].shape == shape && fb->entries[i].key == key) {
-                Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
-                if (slot) { write_barrier_for(obj, value); *slot = value; return; }
-                break;
-            }
+        if (KeyedFeedback::Entry* e = find_keyed_entry(fb, shape, key)) {
+            Value* slot = obj->get_shape_slot_unchecked(e->slot_index);
+            if (slot) { write_barrier_for(obj, value); *slot = value; return; }
         }
     }
     // New-property transition cache: mirrors SetNamed's own (see the
@@ -6721,6 +6734,11 @@ Value h_gen_GetKeyed(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
+                if (acc.is_symbol()) {
+                    acc = get_keyed(ctx, recv, acc.as_symbol()->property_key(), chunk.ic_feedback->keyed(fb_idx));
+                    CHECK_EXC();
+                    break;
+                }
                 std::string key = acc.to_property_key();
                 CHECK_EXC();
                 acc = get_keyed(ctx, recv, key, chunk.ic_feedback->keyed(fb_idx));
@@ -6780,6 +6798,11 @@ Value h_GetKeyedWide(Frame& f, uint32_t pc, Value acc) {
                 CHECK_EXC();
                 break;
             }
+            if (acc.is_symbol()) {
+                acc = get_keyed(ctx, recv, acc.as_symbol()->property_key(), chunk.ic_feedback->keyed(fb_idx));
+                CHECK_EXC();
+                break;
+            }
             std::string key = acc.to_property_key();
             CHECK_EXC();
             acc = get_keyed(ctx, recv, key, chunk.ic_feedback->keyed(fb_idx));
@@ -6828,6 +6851,11 @@ Value h_gen_SetKeyed(Frame& f, uint32_t pc, Value acc) {
                 // Same reasoning as the GetKeyed fast path above.
                 if (regs[key_reg].is_string()) {
                     set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, chunk.ic_feedback->keyed(fb_idx), f.owner);
+                    CHECK_EXC();
+                    break;
+                }
+                if (regs[key_reg].is_symbol()) {
+                    set_keyed(ctx, recv, regs[key_reg].as_symbol()->property_key(), acc, chunk.ic_feedback->keyed(fb_idx), f.owner);
                     CHECK_EXC();
                     break;
                 }
@@ -6881,6 +6909,11 @@ Value h_SetKeyedWide(Frame& f, uint32_t pc, Value acc) {
             }
             if (regs[key_reg].is_string()) {
                 set_keyed(ctx, recv, regs[key_reg].as_string()->str(), acc, chunk.ic_feedback->keyed(fb_idx), f.owner);
+                CHECK_EXC();
+                break;
+            }
+            if (regs[key_reg].is_symbol()) {
+                set_keyed(ctx, recv, regs[key_reg].as_symbol()->property_key(), acc, chunk.ic_feedback->keyed(fb_idx), f.owner);
                 CHECK_EXC();
                 break;
             }

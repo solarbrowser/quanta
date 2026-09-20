@@ -123,8 +123,12 @@ std::string Symbol::to_string() const {
 }
 
 std::string Symbol::to_property_key() const {
+    return property_key();
+}
+
+const std::string& Symbol::property_key() const {
     // Well-known symbols use their description as the key (e.g., "Symbol.iterator")
-    if (!description_.empty() && description_.find("Symbol.") == 0) {
+    if (description_.starts_with("Symbol.")) {
         return description_;
     }
     // User-created symbols use a unique key based on their ID, fixed for

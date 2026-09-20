@@ -70,6 +70,8 @@ public:
     uint64_t get_id() const { return id_; }
     std::string to_string() const;
     std::string to_property_key() const;
+    // The same key without a copy, for a caller that only reads it and does not outlive the Symbol.
+    const std::string& property_key() const;
 
     bool equals(const Symbol* other) const;
 
