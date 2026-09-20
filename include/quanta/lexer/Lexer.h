@@ -124,6 +124,7 @@ private:
     char peek_char(size_t offset = 1) const;
     char advance();
     void skip_whitespace();
+    size_t skip_plain_run(bool stop_at_star);
     void advance_position(char ch);
     
     Token create_token(TokenType type, const Position& start) const;

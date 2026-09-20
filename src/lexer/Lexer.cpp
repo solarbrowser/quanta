@@ -261,7 +261,10 @@ Token Lexer::next_token() {
         return create_token(TokenType::COMMENT, start);
     }
     
-    if (is_whitespace(ch)) {
+    // A carriage return alone is a line terminator, and the parser learns of
+    // a line break from a NEWLINE token, so only the one that leads into a
+    // line feed (whose own token stands for the pair) is whitespace here.
+    if (is_whitespace(ch) && !(ch == '\r' && peek_char() != '\n')) {
         if (options_.skip_whitespace) {
             skip_whitespace();
             return next_token();
@@ -413,6 +416,7 @@ void Lexer::skip_whitespace() {
             continue;
         }
         if (ch == '\r') {
+            if (peek_char() != '\n') break;
             advance();
             continue;
         }
@@ -999,11 +1003,40 @@ Token Lexer::read_template_literal() {
     return create_token(TokenType::TEMPLATE_LITERAL, token_value, start);
 }
 
+// Moves over a run of bytes that cannot change the line, the comment
+// terminator, or the start of a multi-byte line separator, updating the column
+// once. Returns how many bytes it moved, which is zero when the current byte
+// is one of the stops.
+size_t Lexer::skip_plain_run(bool stop_at_star) {
+    const std::string& src = source();
+    const size_t limit = std::min(stop_offset_, src.size());
+    size_t end = position_;
+    while (end < limit) {
+        const unsigned char c = static_cast<unsigned char>(src[end]);
+        if (c == '\n' || c == '\r' || c == 0xE2 || (stop_at_star && c == '*')) break;
+        end++;
+    }
+    const size_t moved = end - position_;
+    current_position_.column += static_cast<uint32_t>(moved);
+    position_ = end;
+    current_position_.offset = static_cast<uint32_t>(end);
+    return moved;
+}
+
 Token Lexer::read_single_line_comment() {
     Position start = current_position_;
     advance();
     advance();
-    
+
+    // A comment the caller is going to drop has no use for its text, and
+    // collecting it a byte at a time was a copy of every comment in the file.
+    if (options_.skip_comments) {
+        while (!at_end() && !is_line_terminator(current_char())) {
+            if (skip_plain_run(false) == 0) advance();
+        }
+        return create_token(TokenType::COMMENT, start);
+    }
+
     std::string value;
     while (!at_end() && !is_line_terminator(current_char())) {
         value += advance();
@@ -1016,6 +1049,38 @@ Token Lexer::read_multi_line_comment() {
     Position start = current_position_;
     advance();
     advance();
+
+    if (options_.skip_comments) {
+        // A block comment with a line terminator inside it counts as one for
+        // the rules that ask (ASI, `return /*\n*/ x`), and the parser learns
+        // of a line break from a NEWLINE token, so that is what stands in for
+        // the comment then.
+        bool saw_terminator = false;
+        while (!at_end()) {
+            if (current_char() == '*' && peek_char() == '/') {
+                advance();
+                advance();
+                return create_token(saw_terminator ? TokenType::NEWLINE : TokenType::COMMENT, start);
+            }
+            if ((unsigned char)current_char() == 0xE2 &&
+                position_ + 2 < source().length() &&
+                (unsigned char)source()[position_ + 1] == 0x80 &&
+                ((unsigned char)source()[position_ + 2] == 0xA8 ||
+                 (unsigned char)source()[position_ + 2] == 0xA9)) {
+                advance(); advance(); advance();
+                current_position_.line++;
+                current_position_.column = 1;
+                saw_terminator = true;
+                continue;
+            }
+            if (skip_plain_run(true) == 0) {
+                if (current_char() == '\n' || current_char() == '\r') saw_terminator = true;
+                advance();
+            }
+        }
+        add_error("SyntaxError: Unterminated block comment");
+        return create_token(TokenType::INVALID, start);
+    }
 
     std::string value;
     while (!at_end()) {
