@@ -1762,8 +1762,35 @@ Value h_Jump(Frame& f, uint32_t pc, Value acc) {
         DISPATCH();                                                        \
     }
 
-BRANCH_HANDLER(h_JumpIfFalse, !acc.to_boolean())
-BRANCH_HANDLER(h_JumpIfTrue, acc.to_boolean())
+// The accumulator is a boolean nearly every time -- a comparison just left it
+// there -- and asking Value::to_boolean out of line for it made the handler
+// save five registers and spill acc to reach a call whose answer was already
+// in the tag. A boolean is decided here; anything else tail-calls the general
+// handler, which keeps the coercion in one place.
+template <bool JumpWhen>
+Value h_JumpIfSlow(Frame& f, uint32_t pc, Value acc) {
+    int16_t off = read_i16(f.code, pc + 1);
+    pc += 3;
+    if (acc.to_boolean() == JumpWhen) {
+        pc += off;
+        if (off < 0) Collector::safepoint();
+    }
+    DISPATCH();
+}
+
+template <bool JumpWhen>
+Value h_JumpIf(Frame& f, uint32_t pc, Value acc) {
+    if (LIKELY(acc.is_boolean())) {
+        int16_t off = read_i16(f.code, pc + 1);
+        pc += 3;
+        if (acc.as_boolean() == JumpWhen) {
+            pc += off;
+            if (off < 0) Collector::safepoint();
+        }
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_JumpIfSlow<JumpWhen>(f, pc, acc);
+}
 
 // Numeric fast paths only. Anything else re-enters the switch at this same
 // opcode and runs through the shared slow path exactly as before, so a
@@ -7614,8 +7641,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::LdaConst)]      = &h_LdaConst;
     t[static_cast<uint8_t>(Op::Return)]        = &h_Return;
     t[static_cast<uint8_t>(Op::Jump)]          = &h_Jump;
-    t[static_cast<uint8_t>(Op::JumpIfFalse)]   = &h_JumpIfFalse;
-    t[static_cast<uint8_t>(Op::JumpIfTrue)]    = &h_JumpIfTrue;
+    t[static_cast<uint8_t>(Op::JumpIfFalse)]   = &h_JumpIf<false>;
+    t[static_cast<uint8_t>(Op::JumpIfTrue)]    = &h_JumpIf<true>;
     t[static_cast<uint8_t>(Op::Add)]           = &h_Add;
     t[static_cast<uint8_t>(Op::Sub)]           = &h_Sub;
     t[static_cast<uint8_t>(Op::Mul)]           = &h_Mul;
