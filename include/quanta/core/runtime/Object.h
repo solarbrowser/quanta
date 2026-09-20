@@ -1916,6 +1916,9 @@ public:
         // A native has its own entry: call_default_impl's frame is built for a
         // JS body it would only walk past.
         if (is_native_) return call_native(ctx, args, this_value);
+        // The general entry would run the same prologue and then hand a gated
+        // callee to call_gated; a comparator or map callback is that callee.
+        if (fast_callable()) return call_fast_gate(ctx, args, this_value);
         return call_default_impl(ctx, args, this_value, nullptr);
     }
     // Whether a call handler can go straight to call_fast_gate: a plain compiled
