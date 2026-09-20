@@ -9,6 +9,7 @@
 #include "quanta/core/runtime/Value.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/MapSet.h"
 #include <memory>
 #include <vector>
 #include <functional>
@@ -134,7 +135,7 @@ public:
 private:
     class Map* map_;
     Kind kind_;
-    size_t index_;
+    WalkCursor cursor_;
     bool exhausted_ = false; // once done=true is returned, stays done even if the Map grows later.
 
 public:
@@ -161,7 +162,7 @@ public:
 private:
     class Set* set_;
     Kind kind_;
-    size_t index_;
+    WalkCursor cursor_;
     bool exhausted_ = false; // once done=true is returned, stays done even if the Set grows later.
 
 public:

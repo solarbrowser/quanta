@@ -381,7 +381,7 @@ Iterator::IteratorResult StringIterator::next_impl() {
 }
 
 MapIterator::MapIterator(Map* map, Kind kind)
-    : Iterator(), map_(map), kind_(kind), index_(0) {
+    : Iterator(), map_(map), kind_(kind) {
     set_custom_kind(CustomKind::MapIterator);
     if (s_map_iterator_prototype_) {
         initialize_prototype(s_map_iterator_prototype_);
@@ -397,26 +397,23 @@ Iterator::IteratorResult MapIterator::next_impl() {
         return IteratorResult(Value(), true);
     }
 
-    auto entries = map_->entries();
-    if (index_ >= entries.size()) {
+    Value key, value;
+    if (!map_->next_entry(cursor_, key, value)) {
         exhausted_ = true;
         return IteratorResult(Value(), true);
     }
 
-    auto& entry = entries[index_];
-    index_++;
-    
     switch (kind_) {
         case Kind::Keys:
-            return IteratorResult(entry.first, false);
+            return IteratorResult(key, false);
             
         case Kind::Values:
-            return IteratorResult(entry.second, false);
+            return IteratorResult(value, false);
             
         case Kind::Entries: {
             auto entry_array = ObjectFactory::create_array(2);
-            entry_array->set_element(0, entry.first);
-            entry_array->set_element(1, entry.second);
+            entry_array->set_element(0, key);
+            entry_array->set_element(1, value);
             return IteratorResult(Value(entry_array.release()), false);
         }
     }
@@ -426,7 +423,7 @@ Iterator::IteratorResult MapIterator::next_impl() {
 
 
 SetIterator::SetIterator(Set* set, Kind kind)
-    : Iterator(), set_(set), kind_(kind), index_(0) {
+    : Iterator(), set_(set), kind_(kind) {
     set_custom_kind(CustomKind::SetIterator);
     if (s_set_iterator_prototype_) {
         initialize_prototype(s_set_iterator_prototype_);
@@ -442,14 +439,11 @@ Iterator::IteratorResult SetIterator::next_impl() {
         return IteratorResult(Value(), true);
     }
 
-    auto values = set_->values();
-    if (index_ >= values.size()) {
+    Value value;
+    if (!set_->next_value(cursor_, value)) {
         exhausted_ = true;
         return IteratorResult(Value(), true);
     }
-
-    Value value = values[index_];
-    index_++;
 
     switch (kind_) {
         case Kind::Values:

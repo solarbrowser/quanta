@@ -33,7 +33,7 @@ static_assert(sizeof(WeakSet) <= 128);
 void Map::trace(Visitor& v) {
     Object::trace_default(v);
     for (const auto& e : entries_) {
-        if (e.deleted) continue;
+        if (e.tag.deleted()) continue;
         v.visit(e.key);
         v.visit(e.value);
     }
@@ -42,7 +42,7 @@ void Map::trace(Visitor& v) {
 void Set::trace(Visitor& v) {
     Object::trace_default(v);
     for (const auto& e : values_) {
-        if (!e.deleted) v.visit(e.value);
+        if (!e.tag.deleted()) v.visit(e.value);
     }
 }
 
@@ -146,7 +146,7 @@ void Map::build_index() {
     index_.clear();
     index_.reserve(entries_.size() * 2);
     for (uint32_t i = 0; i < entries_.size(); i++) {
-        if (!entries_[i].deleted) index_.emplace(entries_[i].key, i);
+        if (!entries_[i].tag.deleted()) index_.emplace(entries_[i].key, i);
     }
     indexed_ = true;
 }
@@ -173,7 +173,7 @@ void Map::set(const Value& raw_key, const Value& value) {
         it->value = value;
         return;
     }
-    entries_.emplace_back(key, value);
+    entries_.emplace_back(key, value, next_seq_++);
     size_++;
     if (indexed_) index_.emplace(key, static_cast<uint32_t>(entries_.size() - 1));
     else if (entries_.size() > kLinearLimit) build_index();
@@ -182,11 +182,22 @@ void Map::set(const Value& raw_key, const Value& value) {
 bool Map::delete_key(const Value& key) {
     auto it = find_entry(key);
     if (it == entries_.end()) return false;
-    // Soft-delete (don't erase) so live forEach iteration (by index) keeps stable positions.
-    it->deleted = true;
+    // Soft-delete, so a walker's remembered position stays where it was; the
+    // storage is squeezed once the dead outnumber the living.
+    it->tag.mark_deleted();
     if (indexed_) index_.erase(key);
     size_--;
+    if (++tombstones_ > kCompactMin && tombstones_ > size_) compact();
     return true;
+}
+
+void Map::compact() {
+    entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
+                                  [](const MapEntry& e) { return e.tag.deleted(); }),
+                   entries_.end());
+    tombstones_ = 0;
+    epoch_++;
+    if (indexed_) build_index();
 }
 
 void Map::clear() {
@@ -194,6 +205,8 @@ void Map::clear() {
     index_.clear();
     indexed_ = false;
     size_ = 0;
+    tombstones_ = 0;
+    epoch_++;
 }
 
 Value Map::get_property(const std::string& key) const {
@@ -207,7 +220,7 @@ std::vector<Value> Map::keys() const {
     std::vector<Value> result;
     result.reserve(size_);
     for (const auto& entry : entries_) {
-        if (!entry.deleted) result.push_back(entry.key);
+        if (!entry.tag.deleted()) result.push_back(entry.key);
     }
     return result;
 }
@@ -216,7 +229,7 @@ std::vector<Value> Map::values() const {
     std::vector<Value> result;
     result.reserve(size_);
     for (const auto& entry : entries_) {
-        if (!entry.deleted) result.push_back(entry.value);
+        if (!entry.tag.deleted()) result.push_back(entry.value);
     }
     return result;
 }
@@ -225,9 +238,49 @@ std::vector<std::pair<Value, Value>> Map::entries() const {
     std::vector<std::pair<Value, Value>> result;
     result.reserve(size_);
     for (const auto& entry : entries_) {
-        if (!entry.deleted) result.emplace_back(entry.key, entry.value);
+        if (!entry.tag.deleted()) result.emplace_back(entry.key, entry.value);
     }
     return result;
+}
+
+namespace {
+// The next live entry a walker owes, or null at the end. While the storage
+// still has the layout the cursor was taken from, its position is good; after a
+// compaction or a clear the walker's own count says where it is.
+template <typename Entries>
+const typename Entries::value_type* next_live(const Entries& entries, uint32_t epoch, WalkCursor& c) {
+    size_t i = c.pos;
+    if (c.epoch != epoch) {
+        i = std::lower_bound(entries.begin(), entries.end(), c.next_seq,
+                             [](const auto& e, uint64_t seq) { return e.tag.seq() < seq; }) -
+            entries.begin();
+        c.epoch = epoch;
+    }
+    for (; i < entries.size(); i++) {
+        const auto& e = entries[i];
+        if (e.tag.deleted()) continue;
+        c.pos = static_cast<uint32_t>(i + 1);
+        c.next_seq = e.tag.seq() + 1;
+        return &e;
+    }
+    c.pos = static_cast<uint32_t>(i);
+    return nullptr;
+}
+}
+
+bool Map::next_entry(WalkCursor& cursor, Value& key, Value& value) const {
+    const MapEntry* e = next_live(entries_, epoch_, cursor);
+    if (!e) return false;
+    key = e->key;
+    value = e->value;
+    return true;
+}
+
+bool Set::next_value(WalkCursor& cursor, Value& value) const {
+    const SetEntry* e = next_live(values_, epoch_, cursor);
+    if (!e) return false;
+    value = e->value;
+    return true;
 }
 
 namespace {
@@ -238,7 +291,7 @@ template <typename It, typename Get>
 It scan_for(It begin, It end, const Value& key, Get get) {
     SameValueZeroEqual eq;
     for (It it = begin; it != end; ++it) {
-        if (it->deleted) continue;
+        if (it->tag.deleted()) continue;
         if (eq(get(*it), key)) return it;
     }
     return end;
@@ -511,10 +564,11 @@ void Map::setup_map_prototype(Context& ctx) {
             Map* map = static_cast<Map*>(obj);
             Function* callback = args[0].as_function();
             Value this_arg = args.size() > 1 ? args[1] : Value();
-            // Live index walk: soft-deleted entries keep positions stable; added entries are picked up as i reaches them.
-            for (size_t i = 0; i < map->entries_.size(); i++) {
-                if (map->entries_[i].deleted) continue;
-                const Value cb_args[] = {map->entries_[i].value, map->entries_[i].key, Value(obj)};
+            // Live walk: an entry added during the callback is visited, one deleted before its turn is not.
+            WalkCursor cursor;
+            Value key, value;
+            while (map->next_entry(cursor, key, value)) {
+                const Value cb_args[] = {value, key, Value(obj)};
                 callback->call_register_args(ctx, cb_args, this_arg);
                 if (ctx.has_exception()) return Value();
             }
@@ -736,7 +790,7 @@ void Set::build_index() {
     index_.clear();
     index_.reserve(values_.size() * 2);
     for (uint32_t i = 0; i < values_.size(); i++) {
-        if (!values_[i].deleted) index_.emplace(values_[i].value, i);
+        if (!values_[i].tag.deleted()) index_.emplace(values_[i].value, i);
     }
     indexed_ = true;
 }
@@ -746,7 +800,7 @@ void Set::add(const Value& raw_value) {
     // Same -0 normalisation as Map::set (spec Set.prototype.add step 4).
     const Value value = (raw_value.is_number() && raw_value.as_number() == 0.0) ? Value(0.0) : raw_value;
     if (find_value(value) != values_.end()) return;
-    values_.emplace_back(value);
+    values_.emplace_back(value, next_seq_++);
     size_++;
     if (indexed_) index_.emplace(value, static_cast<uint32_t>(values_.size() - 1));
     else if (values_.size() > kLinearLimit) build_index();
@@ -755,11 +809,21 @@ void Set::add(const Value& raw_value) {
 bool Set::delete_value(const Value& value) {
     auto it = find_value(value);
     if (it == values_.end()) return false;
-    // Soft-delete (don't erase) so live forEach iteration (by index) keeps stable positions.
-    it->deleted = true;
+    // Soft-delete, as in Map::delete_key.
+    it->tag.mark_deleted();
     if (indexed_) index_.erase(value);
     size_--;
+    if (++tombstones_ > kCompactMin && tombstones_ > size_) compact();
     return true;
+}
+
+void Set::compact() {
+    values_.erase(std::remove_if(values_.begin(), values_.end(),
+                                 [](const SetEntry& e) { return e.tag.deleted(); }),
+                  values_.end());
+    tombstones_ = 0;
+    epoch_++;
+    if (indexed_) build_index();
 }
 
 void Set::clear() {
@@ -767,6 +831,8 @@ void Set::clear() {
     index_.clear();
     indexed_ = false;
     size_ = 0;
+    tombstones_ = 0;
+    epoch_++;
 }
 
 Value Set::get_property(const std::string& key) const {
@@ -780,7 +846,7 @@ std::vector<Value> Set::values() const {
     std::vector<Value> result;
     result.reserve(size_);
     for (const auto& entry : values_) {
-        if (!entry.deleted) result.push_back(entry.value);
+        if (!entry.tag.deleted()) result.push_back(entry.value);
     }
     return result;
 }
@@ -789,7 +855,7 @@ std::vector<std::pair<Value, Value>> Set::entries() const {
     std::vector<std::pair<Value, Value>> result;
     result.reserve(size_);
     for (const auto& entry : values_) {
-        if (!entry.deleted) result.emplace_back(entry.value, entry.value);
+        if (!entry.tag.deleted()) result.emplace_back(entry.value, entry.value);
     }
     return result;
 }
@@ -1026,10 +1092,10 @@ void Set::setup_set_prototype(Context& ctx) {
             Set* set = static_cast<Set*>(obj);
             Function* callback = args[0].as_function();
             Value this_arg = args.size() > 1 ? args[1] : Value();
-            // Live, index-based walk -- see Map::forEach for why deletions are soft.
-            for (size_t i = 0; i < set->values_.size(); i++) {
-                if (set->values_[i].deleted) continue;
-                Value val = set->values_[i].value;
+            // Live walk, as in Map::forEach.
+            WalkCursor cursor;
+            Value val;
+            while (set->next_value(cursor, val)) {
                 const Value cb_args[] = {val, val, Value(obj)};
                 callback->call_register_args(ctx, cb_args, this_arg);
                 if (ctx.has_exception()) return Value();
@@ -1089,11 +1155,12 @@ void Set::setup_set_prototype(Context& ctx) {
         if (v.is_number() && v.as_number() == 0.0 && std::signbit(v.as_number())) return Value(0.0);
         return v;
     };
-    // iterate_self_live: walks self's backing storage live (by index, skipping deleted slots) so a has() callback that deletes a not-yet-visited element causes it to be skipped.
+    // iterate_self_live: walks self live so a has() callback that deletes a not-yet-visited element causes it to be skipped.
     auto iterate_self_live = [](Set* self, const std::function<bool(const Value&)>& fn) {
-        for (size_t i = 0; i < self->values_.size(); i++) {
-            if (self->values_[i].deleted) continue;
-            if (!fn(self->values_[i].value)) return;
+        WalkCursor cursor;
+        Value value;
+        while (self->next_value(cursor, value)) {
+            if (!fn(value)) return;
         }
     };
     // call_has(ctx, other, has_fn, v): invoke has_fn.call(other, v) and return boolean

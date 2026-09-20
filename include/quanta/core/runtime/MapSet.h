@@ -24,18 +24,51 @@ class Context;
 struct SameValueZeroHash { size_t operator()(const Value& v) const; };
 struct SameValueZeroEqual { bool operator()(const Value& a, const Value& b) const; };
 
+// Where a walker over a Map or a Set has got to, in terms that outlive every
+// change to the storage. Entries are numbered in insertion order and the
+// walker remembers the number of the next one it owes, so a deletion, a
+// compaction or a clear() cannot move it: the position is looked up again by
+// number whenever the layout it was taken from is gone. Live iteration is
+// what the language specifies -- an entry added mid-walk is visited, one
+// deleted before its turn is not, and after clear() the walk carries on with
+// whatever is added next.
+struct WalkCursor {
+    uint64_t next_seq = 0;      // every entry numbered below this has been visited
+    uint32_t epoch = ~0u;       // which storage layout `pos` was taken from
+    uint32_t pos = 0;           // valid only while `epoch` still matches the collection's
+};
+
+// An entry's insertion number and its soft-delete flag in one word, so that
+// numbering costs the entry nothing: the flag used to sit in a padded bool.
+struct EntryTag {
+    static constexpr uint64_t kDeleted = 1ull << 63;
+    uint64_t bits = 0;
+    explicit EntryTag(uint64_t seq) : bits(seq) {}
+    bool deleted() const { return bits & kDeleted; }
+    void mark_deleted() { bits |= kDeleted; }
+    uint64_t seq() const { return bits & ~kDeleted; }
+};
+
 class Map : public Object {
 private:
     struct MapEntry {
         Value key;
         Value value;
-        bool deleted = false; // soft-delete: keeps insertion-order positions stable for live forEach.
+        EntryTag tag;  // soft-delete keeps positions stable between compactions
 
-        MapEntry(const Value& k, const Value& v) : key(k), value(v) {}
+        MapEntry(const Value& k, const Value& v, uint64_t seq) : key(k), value(v), tag(seq) {}
     };
     
     std::vector<MapEntry> entries_;
     size_t size_;
+    uint64_t next_seq_ = 0;
+    // Deleted entries still in entries_. Left alone they are never reclaimed and
+    // a cache that deletes and re-adds keeps growing; past half the storage the
+    // vector is squeezed and `epoch_` moves so walkers find their place again.
+    size_t tombstones_ = 0;
+    uint32_t epoch_ = 0;
+    static constexpr size_t kCompactMin = 32;
+    void compact();
 
     // Key -> position in entries_. Insertion order and stable positions still
     // come from the vector (a live forEach walks it by index), but every
@@ -67,6 +100,8 @@ public:
     std::vector<Value> keys() const;
     std::vector<Value> values() const;
     std::vector<std::pair<Value, Value>> entries() const;
+    // Hands back the next live entry a walker has not seen and moves it past.
+    bool next_entry(WalkCursor& cursor, Value& key, Value& value) const;
     
     static Value map_constructor(Context& ctx, std::span<const Value> args, Value receiver,
                         bool is_construct, Value new_target);
@@ -99,11 +134,18 @@ class Set : public Object {
 private:
     struct SetEntry {
         Value value;
-        bool deleted = false; // soft-delete: keeps insertion-order positions stable for live forEach.
-        explicit SetEntry(const Value& v) : value(v) {}
+        EntryTag tag;  // see Map::MapEntry
+        SetEntry(const Value& v, uint64_t seq) : value(v), tag(seq) {}
     };
     std::vector<SetEntry> values_;
     size_t size_;
+    // The same bookkeeping as Map: numbering, tombstones, and the epoch that
+    // tells a walker its remembered position went stale.
+    uint64_t next_seq_ = 0;
+    size_t tombstones_ = 0;
+    uint32_t epoch_ = 0;
+    static constexpr size_t kCompactMin = 32;
+    void compact();
 
     // Same arrangement as Map: the vector keeps insertion order and stable
     // positions, the index makes lookup constant-time past a small size.
@@ -130,6 +172,7 @@ public:
     
     std::vector<Value> values() const;
     std::vector<std::pair<Value, Value>> entries() const;
+    bool next_value(WalkCursor& cursor, Value& value) const;
     
     static Value set_constructor(Context& ctx, std::span<const Value> args, Value receiver,
                         bool is_construct, Value new_target);
