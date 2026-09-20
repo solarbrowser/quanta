@@ -375,21 +375,15 @@ void Object::migrate_to_dictionary_mode() {
     shape_ = nullptr;
 }
 
-namespace {
-// Rounds up to the next power of two -- the exact tier plain push_back
-// growth would reach anyway, so reserve() and incremental growth request
-// the same small, bounded set of byte sizes from SmallMapPool instead of
-// one distinct class per exact property count a real program happens to use.
-size_t next_slot_tier(size_t n) {
-    if (n <= 1) return n;
-    size_t tier = 1;
-    while (tier < n) tier <<= 1;
-    return tier;
-}
-}
-
 void Object::reserve_property_slots(size_t count) {
-    ensure_shape_capacity(static_cast<uint32_t>(next_slot_tier(count)));
+    // Exactly the count asked for, not the next power of two: the literal or
+    // constructor that reserves knows how many properties are coming, and a
+    // five-property record is by far the commonest case past the cell's own
+    // room -- rounding it to eight put every one of them in an 80-byte block
+    // for 48 bytes of slots. Growth past the hint still doubles.
+    const uint32_t needed = static_cast<uint32_t>(count);
+    if (needed <= shape_capacity()) return;
+    realloc_butterfly(elements_capacity(), needed);
 }
 
 void Object::realloc_butterfly(uint32_t new_elements_capacity, uint32_t new_shape_capacity,

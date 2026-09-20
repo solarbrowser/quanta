@@ -173,12 +173,69 @@ private:
         // pair (see Shape's own is_accessor_added_ doc comment) rather than a
         // single plain-data slot index.
         struct Entry { const std::string* key = nullptr; uint32_t value = 0; bool in_use = false; bool is_accessor = false; };
-        using OverflowEntry = std::pair<uint32_t, bool>; // (slot index, is_accessor)
         std::array<Entry, kInlineCapacity> inline_entries;
-        using OverflowMap = std::unordered_map<std::string, OverflowEntry, std::hash<std::string>,
-                                                std::equal_to<std::string>,
-                                                SmallMapAllocator<std::pair<const std::string, OverflowEntry>>>;
-        std::unique_ptr<OverflowMap> overflow;
+        // Keys past the inline entries, in a flat open-addressed table of
+        // sixteen-byte slots. Every shape holds its parent's whole table plus
+        // its own key, so a chain of n shapes holds about n^2/2 entries, and
+        // as node-based map entries with a copy of the key string each they
+        // came to 64 bytes apiece -- 68,000 of them, five megabytes, for a
+        // bundle with 3,400 shapes. A slot is the interned key's address, the
+        // low half of its hash (which is also what a rehash reuses) and the
+        // slot index with the accessor bit.
+        struct OverflowTable {
+            struct Slot { uint32_t tag = 0; uint32_t packed = 0; const std::string* key = nullptr; };
+            std::unique_ptr<Slot[]> slots;
+            uint32_t capacity = 0;
+            uint32_t count = 0;
+
+            OverflowTable() = default;
+            OverflowTable(const OverflowTable& other)
+                : slots(other.capacity ? std::make_unique<Slot[]>(other.capacity) : nullptr),
+                  capacity(other.capacity), count(other.count) {
+                for (uint32_t i = 0; i < capacity; i++) slots[i] = other.slots[i];
+            }
+
+            static uint32_t tag_of(const std::string& key) {
+                return static_cast<uint32_t>(std::hash<std::string>{}(key));
+            }
+            const Slot* find(const std::string& key) const {
+                if (!count) return nullptr;
+                const uint32_t tag = tag_of(key);
+                const uint32_t mask = capacity - 1;
+                for (uint32_t i = tag & mask; slots[i].key; i = (i + 1) & mask) {
+                    if (slots[i].tag == tag && *slots[i].key == key) return &slots[i];
+                }
+                return nullptr;
+            }
+            // `key` is interned. Overwrites an entry already holding it.
+            void set(const std::string* key, uint32_t value, bool is_accessor) {
+                const uint32_t packed = (value << 1) | (is_accessor ? 1u : 0u);
+                if (const Slot* existing = find(*key)) {
+                    const_cast<Slot*>(existing)->packed = packed;
+                    return;
+                }
+                // Three quarters full at most, so a probe run stays short.
+                if ((count + 1) * 4 > capacity * 3) grow();
+                place(Slot{tag_of(*key), packed, key});
+                count++;
+            }
+            void place(const Slot& slot) {
+                const uint32_t mask = capacity - 1;
+                uint32_t i = slot.tag & mask;
+                while (slots[i].key) i = (i + 1) & mask;
+                slots[i] = slot;
+            }
+            void grow() {
+                std::unique_ptr<Slot[]> old = std::move(slots);
+                const uint32_t old_capacity = capacity;
+                capacity = capacity ? capacity * 2 : 8;
+                slots = std::make_unique<Slot[]>(capacity);
+                for (uint32_t i = 0; i < old_capacity; i++) {
+                    if (old[i].key) place(old[i]);
+                }
+            }
+        };
+        std::unique_ptr<OverflowTable> overflow;
         // One bit per key held, from the length and the two end bytes. Four in
         // five of the lookups this map is asked to do are for a key it does
         // not hold, and each of those scanned the inline entries and then
@@ -198,12 +255,12 @@ private:
         SlotMap() = default;
         SlotMap(const SlotMap& other)
             : inline_entries(other.inline_entries),
-              overflow(other.overflow ? std::make_unique<OverflowMap>(*other.overflow) : nullptr),
+              overflow(other.overflow ? std::make_unique<OverflowTable>(*other.overflow) : nullptr),
               key_bits_(other.key_bits_) {}
         SlotMap& operator=(const SlotMap& other) {
             if (this == &other) return *this;
             inline_entries = other.inline_entries;
-            overflow = other.overflow ? std::make_unique<OverflowMap>(*other.overflow) : nullptr;
+            overflow = other.overflow ? std::make_unique<OverflowTable>(*other.overflow) : nullptr;
             key_bits_ = other.key_bits_;
             return *this;
         }
@@ -216,8 +273,7 @@ private:
                 if (e.in_use && *e.key == key) return static_cast<int32_t>(e.value);
             }
             if (overflow) {
-                auto it = overflow->find(key);
-                if (it != overflow->end()) return static_cast<int32_t>(it->second.first);
+                if (const auto* slot = overflow->find(key)) return static_cast<int32_t>(slot->packed >> 1);
             }
             return -1;
         }
@@ -231,9 +287,8 @@ private:
                 }
             }
             if (overflow) {
-                auto it = overflow->find(key);
-                if (it != overflow->end()) {
-                    return it->second.second ? -1 : static_cast<int32_t>(it->second.first);
+                if (const auto* slot = overflow->find(key)) {
+                    return (slot->packed & 1u) ? -1 : static_cast<int32_t>(slot->packed >> 1);
                 }
             }
             return -1;
@@ -244,8 +299,7 @@ private:
                 if (e.in_use && *e.key == key) return e.is_accessor;
             }
             if (overflow) {
-                auto it = overflow->find(key);
-                if (it != overflow->end()) return it->second.second;
+                if (const auto* slot = overflow->find(key)) return (slot->packed & 1u) != 0;
             }
             return false;
         }
@@ -258,8 +312,8 @@ private:
             for (auto& e : inline_entries) {
                 if (!e.in_use) { e.key = key; e.value = value; e.in_use = true; e.is_accessor = is_accessor; return; }
             }
-            if (!overflow) overflow = std::make_unique<OverflowMap>();
-            (*overflow)[*key] = {value, is_accessor};
+            if (!overflow) overflow = std::make_unique<OverflowTable>();
+            overflow->set(key, value, is_accessor);
         }
     };
     SlotMap slots_;
