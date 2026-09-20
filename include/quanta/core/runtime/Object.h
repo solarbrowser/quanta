@@ -662,8 +662,13 @@ public:
     // for extensibility and for a prototype chain carrying no index, so none of
     // that is asked again here. Returns false without touching anything when
     // the one remaining refusal is possible -- an array whose length carries a
-    // recorded attribute -- leaving that case to the general path.
+    // recorded attribute -- leaving that case to the general path. An array
+    // literal is the one caller whose length is already ahead of its elements;
+    // the append leaves that length alone.
     bool store_dense_element(uint32_t index, const Value& value);
+    // Room for `count` elements without giving any of them a value, for a
+    // caller about to append that many one at a time.
+    void reserve_elements(uint32_t count) { ensure_elements_capacity(count); }
     // For a caller that is about to fill every one of `count` indices with a
     // real value right away (Object.keys/values/entries' own result array,
     // for instance): reserves and zero-initializes elements_ up front, so

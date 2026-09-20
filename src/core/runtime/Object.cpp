@@ -2094,16 +2094,27 @@ bool Object::set_element(uint32_t index, const Value& value) {
 }
 
 bool Object::store_dense_element(uint32_t index, const Value& value) {
-    Collector::write_barrier_value(this, value);
+    // A finite number, the commonest thing stored, needs no barrier and is one
+    // compare; anything else asks the collector.
+    if (!value.is_finite_double()) Collector::write_barrier_value(this, value);
     if (index == elements_length()) {
         if (__builtin_expect(!has_plain_array_length(), 0)) return false;
-        resize_elements(index + 1);
-        ensure_butterfly_extras().array_length = index + 1;
+        // The storage already has room: the append is the two counters and the
+        // store. Elements exist only alongside the extras that hold them.
+        const bool in_capacity = index < elements_capacity();
+        const bool was_dense = dense_verified();
+        if (!in_capacity) resize_elements(index + 1);
+        ButterflyExtras& header = in_capacity ? *butterfly_extras() : ensure_butterfly_extras();
+        if (in_capacity) header.elements_length = index + 1;
+        // An array literal announces its final length before the first element
+        // lands, so the write may fall short of it; length never shrinks here.
+        if (header.array_length < index + 1) header.array_length = index + 1;
         // resize_elements clears the flag because a length change in general
         // can leave elements the vector no longer covers; growing by exactly
-        // one and filling it cannot, and re-running the full check on the next
-        // store is the entire cost of not saying so.
-        mark_dense_verified();
+        // one and filling it cannot. That holds only for an array already known
+        // dense: a literal still building has not been asked, and an earlier
+        // hole in it would go unseen.
+        if (was_dense && header.array_length == index + 1) mark_dense_verified();
         // An index this object did not have before -- see set_element's own
         // bump for why a prototype's new index has to move the epoch.
         if (__builtin_expect(used_as_prototype(), 0)) bump_proto_epoch();

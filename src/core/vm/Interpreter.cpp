@@ -18,6 +18,7 @@
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -6189,6 +6190,36 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
                 acc = Value(static_cast<double>(obj->element_count()));
                 FUSED_TAIL(6);
             }
+            // A method read off Array.prototype -- push, pop, map, indexOf -- is
+            // an inherited property like any other. get_named admits an Array
+            // receiver for every name but `length` and the indices and learns
+            // the entry, but this handler never looked one up for an Array, so
+            // every array method call took the generated handler and the full
+            // get_named to find an entry that was sitting here.
+            if (f.feedback_rooted && afb.proto_count != 0 && !afb.proto_mega &&
+                !obj->has_any_descriptor_override() &&
+                f.chunk.name_at(read_u16(code, pc + 2)) != "length") {
+                Shape* rs = obj->get_shape();
+                Object* p0 = obj->get_prototype_raw();
+                const uint64_t pep = Object::proto_epoch();
+                for (uint8_t k = 0; k < afb.proto_count; k++) {
+                    const FeedbackSlot::ProtoEntry& pe = afb.proto_entries[k];
+                    if (pe.receiver_shape != rs || pe.prototype != p0 || pe.proto_epoch != pep) continue;
+                    // A getter or an absence has its own handling in the ordinary
+                    // receiver's scan below; here they go to the generated handler.
+                    if (pe.is_getter || pe.absent) break;
+                    if (pe.from_descriptor) {
+                        if (pe.desc_epoch != Object::descriptor_epoch()) break;
+                        acc = pe.cached_value;
+                        FUSED_TAIL(6);
+                    }
+                    if (const Value* hs = pe.holder->get_shape_slot_unchecked(pe.slot_index)) {
+                        acc = *hs;
+                        FUSED_TAIL(6);
+                    }
+                    break;
+                }
+            }
         } else if (LIKELY(shape_fast_path_ok(obj->get_type()))) {
             const FeedbackBody& fb = f.chunk.feedback[read_u16(code, pc + 4)].read();
             // Every learned entry, not just the first. The handler above tries
@@ -7082,6 +7113,28 @@ Value h_gen_DefineElement(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// An array literal's element: the write that lands one past the last element of
+// a plain array, which is every one of them. The generated handler sends it
+// through set_element, which re-asks a dozen questions a fresh array has
+// already answered and stores the element by way of a resize.
+Value h_DefineElementFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& target = f.regs[code[pc + 1]];
+    const Value& key = f.regs[code[pc + 2]];
+    if (LIKELY(target.is_object() && key.is_finite_double())) {
+        Object* obj = target.as_object();
+        const double d = key.as_finite_double();
+        if (LIKELY(obj->get_type() == Object::ObjectType::Array && d >= 0 && d < 4294967295.0 &&
+                   obj->is_extensible() && !obj->has_index_descriptor() &&
+                   d == static_cast<double>(obj->element_count()) &&
+                   obj->store_dense_element(static_cast<uint32_t>(d), acc))) {
+            pc += 3;
+            DISPATCH();
+        }
+    }
+    [[clang::musttail]] return h_gen_DefineElement(f, pc, acc);
+}
+
 Value h_gen_ToPropertyKeyStrict(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = *f.ctx;
@@ -7801,7 +7854,10 @@ Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
                 uint16_t n = read_u16(code, pc);
                 pc += 2;
                 auto arr = ObjectFactory::create_array(0);
-                if (n) arr->set_length(n);  // trailing holes count toward length
+                if (n) {
+                    arr->set_length(n);  // trailing holes count toward length
+                    arr->reserve_elements(n);
+                }
                 acc = Value(arr.release());
                 break;
             }
@@ -8059,7 +8115,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::DeleteNamed)] = &h_gen_DeleteNamed;
     t[static_cast<uint8_t>(Op::DeleteKeyed)] = &h_gen_DeleteKeyed;
     t[static_cast<uint8_t>(Op::DefineOwn)] = &h_DefineOwnFast;
-    t[static_cast<uint8_t>(Op::DefineElement)] = &h_gen_DefineElement;
+    t[static_cast<uint8_t>(Op::DefineElement)] = &h_DefineElementFast;
     t[static_cast<uint8_t>(Op::ToPropertyKeyStrict)] = &h_gen_ToPropertyKeyStrict;
     t[static_cast<uint8_t>(Op::DefineOwnKeyed)] = &h_gen_DefineOwnKeyed;
     t[static_cast<uint8_t>(Op::FinalizeStaticProperty)] = &h_gen_FinalizeStaticProperty;
