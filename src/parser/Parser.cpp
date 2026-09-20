@@ -2947,7 +2947,11 @@ std::unique_ptr<ASTNode> Parser::parse_undefined_literal() {
 
 std::unique_ptr<ASTNode> Parser::parse_identifier() {
     const Token& token = current_token();
-    std::string name = token_string(token);
+    // Interned once: the scope record and the node both want the id, and the
+    // pool's copy of the text serves every comparison below without one of
+    // our own.
+    const uint32_t name_id = NamePool::intern(token_text(token));
+    const std::string& name = NamePool::text(name_id);
     // Every reference to `arguments` is an identifier, and this is where one
     // is turned into a node with its text already in hand. Noticing it a
     // token at a time instead put a read of the token stream on every token
@@ -2960,7 +2964,7 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
         // A property name is not a reference to a binding, and the two
         // questions below are both about bindings.
         if (name.size() == 9 && name == "arguments") subtree_acc_ |= kSubtreeArguments;
-        note_name(name);
+        note_name_id(name_id);
     }
     bool escaped_kw = token.has_escaped_keyword();
     Position start = token.get_start();
@@ -3015,7 +3019,7 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
     }
 
     advance();
-    auto id = std::make_unique<Identifier>(name, start, end);
+    auto id = std::make_unique<Identifier>(name_id, start, end);
     if (escaped_kw) id->set_escaped_keyword(true);
     return id;
 }
@@ -5613,7 +5617,7 @@ bool Parser::try_tape_primary(ExprTape& tape) {
             // previous_token_is_dot() suppression needed.
             uint32_t name_id = NamePool::intern(name);
             tape.push_back(TapeEntry::named(TapeTag::Identifier, 1, name_id));
-            note_name(name);
+            note_name_id(name_id);
             if (name.size() == 9 && name == "arguments") subtree_acc_ |= kSubtreeArguments;
             advance();
             return true;
@@ -6052,7 +6056,7 @@ bool Parser::try_tape_assignment(ExprTape& tape) {
         uint32_t name_id = NamePool::intern(name);
         advance();  // past the identifier
         advance();  // past the operator
-        note_name(name);
+        note_name_id(name_id);
         if (name.size() == 9 && name == "arguments") subtree_acc_ |= kSubtreeArguments;
         if (!try_tape_assignment(tape)) return false;  // rhs, right-associative
         uint32_t span = static_cast<uint32_t>(tape.size() - start_idx + 1);

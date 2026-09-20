@@ -482,6 +482,8 @@ private:
 public:
     Identifier(const std::string& name, const Position& start, const Position& end)
         : ASTNode(Type::IDENTIFIER, start, end), name_id_(NamePool::intern(name)) {}
+    Identifier(uint32_t name_id, const Position& start, const Position& end)
+        : ASTNode(Type::IDENTIFIER, start, end), name_id_(name_id) {}
 
     const std::string& get_name() const { return NamePool::text(name_id_); }
     uint32_t get_name_id() const { return name_id_; }

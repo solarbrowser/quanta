@@ -223,6 +223,13 @@ private:
         if (name_scopes_.empty()) return;
         name_scopes_.back().all.insert(NamePool::intern(n));
     }
+    // For a caller that has already interned the name to build its node:
+    // asking the pool a second time for the same text is a second probe.
+    void note_name_id(uint32_t id) {
+        if (!recording_names_) return;
+        if (name_scopes_.empty()) return;
+        name_scopes_.back().all.insert(id);
+    }
     // For a declaration form that is unambiguously function-scoped
     // regardless of which block it is textually nested in (var, a named
     // function expression's own self-reference) -- see NameScope::
