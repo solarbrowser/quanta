@@ -7901,32 +7901,12 @@ Value run_dispatch(Frame& f) {
     return kHandlers[f.code[f.pc]](f, f.pc, f.acc);
 }
 
-Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
-          const Value* this_val, Function* owner, const Value* initial_acc,
-          const CallInfo* call_info) {
-    // Only the registers the chunk actually uses: a fixed 256 put the whole
-    // bank on the C++ stack and zeroed it on every call, when the compiler
-    // already knows the real count and it is small for most functions.
-    // Zero-initialized either way, so leftover stack garbage in an unused slot
-    // can't look like a live heap pointer to the conservative GC scan.
-    constexpr uint16_t kInlineRegs = 32;
-    Value inline_regs[kInlineRegs] = {};
-    Value* regs = inline_regs;
-    std::vector<Value> spill_regs;
-    if (chunk.register_count > kInlineRegs) {
-        // Off the C++ stack, so the conservative scan cannot see it: rooted
-        // explicitly for as long as this frame runs.
-        spill_regs.resize(chunk.register_count);
-        regs = spill_regs.data();
-    }
-    struct SpillRoot {
-        const std::vector<Value>* v;
-        ~SpillRoot() { if (v) Collector::pop_value_vector(v); }
-    } spill_root{nullptr};
-    if (!spill_regs.empty()) {
-        Collector::push_value_vector(&spill_regs);
-        spill_root.v = &spill_regs;
-    }
+// What run() does once its register bank exists, whichever kind that is. Always
+// inlined into both callers below so the hot one carries no extra call.
+[[gnu::always_inline]] inline Value run_with_regs(
+        const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
+        const Value* this_val, Function* owner, const Value* initial_acc,
+        const CallInfo* call_info, Value* regs) {
     const uint8_t param_count = chunk.parameter_count;
     for (uint8_t i = 0; i < param_count && i < args.size(); i++) {
         regs[i] = args[i];
@@ -8128,6 +8108,41 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
       // of them do; resume at the instruction that was executing.
       frame.pc = frame.instr_pc;
     }
+}
+
+// A chunk with more registers than the inline bank holds. Its own function so
+// the vector that carries them, and the root it needs, are not constructed and
+// destroyed by every call that has no use for either.
+[[gnu::noinline]] Value run_spilled(const BytecodeChunk& chunk, Context& ctx,
+                                    std::span<const Value> args, const Value* this_val,
+                                    Function* owner, const Value* initial_acc,
+                                    const CallInfo* call_info) {
+    // Off the C++ stack, so the conservative scan cannot see it: rooted
+    // explicitly for as long as this frame runs.
+    std::vector<Value> spill_regs(chunk.register_count);
+    struct SpillRoot {
+        const std::vector<Value>* v;
+        ~SpillRoot() { Collector::pop_value_vector(v); }
+    } spill_root{&spill_regs};
+    Collector::push_value_vector(&spill_regs);
+    return run_with_regs(chunk, ctx, args, this_val, owner, initial_acc, call_info,
+                         spill_regs.data());
+}
+
+Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
+          const Value* this_val, Function* owner, const Value* initial_acc,
+          const CallInfo* call_info) {
+    // Only the registers the chunk actually uses: a fixed 256 put the whole
+    // bank on the C++ stack and zeroed it on every call, when the compiler
+    // already knows the real count and it is small for most functions.
+    // Zero-initialized either way, so leftover stack garbage in an unused slot
+    // can't look like a live heap pointer to the conservative GC scan.
+    constexpr uint16_t kInlineRegs = 32;
+    if (__builtin_expect(chunk.register_count > kInlineRegs, 0)) {
+        return run_spilled(chunk, ctx, args, this_val, owner, initial_acc, call_info);
+    }
+    Value inline_regs[kInlineRegs] = {};
+    return run_with_regs(chunk, ctx, args, this_val, owner, initial_acc, call_info, inline_regs);
 }
 
 Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,
