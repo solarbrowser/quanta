@@ -28,6 +28,13 @@
 #define UNLIKELY_NATIVE(x) (__builtin_expect(!!(x), 0))
 #define LIKELY_NATIVE(x) (__builtin_expect(!!(x), 1))
 
+namespace {
+// A key longer than a string's inline capacity, so spelling it at the call site
+// built a heap string for every call of an arrow function just to look it up.
+const std::string kArrowNewTargetKey = "__arrow_new_target__";
+const std::string kBoundTargetKey = "__bound_target__";
+}
+
 #ifdef _MSC_VER
 #include <xmmintrin.h>
 #endif
@@ -581,8 +588,8 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
     // constructor's new.target at all) the descriptor map too, on every
     // single call. An internal slot is a 1-2 entry inline scan behind a
     // lazily-allocated pointer that a plain arrow never even allocates.
-    if (is_arrow_ && has_internal_slot("__arrow_new_target__")) {
-        ctx.set_new_target(get_internal_slot("__arrow_new_target__"));
+    if (is_arrow_ && has_internal_slot(kArrowNewTargetKey)) {
+        ctx.set_new_target(get_internal_slot(kArrowNewTargetKey));
     }
 
     Value fast_this = this_value;
@@ -1058,8 +1065,8 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
     }
 
     // Arrow functions capture new.target from enclosing scope
-    if (is_arrow_ && has_internal_slot("__arrow_new_target__")) {
-        function_context.set_new_target(get_internal_slot("__arrow_new_target__"));
+    if (is_arrow_ && has_internal_slot(kArrowNewTargetKey)) {
+        function_context.set_new_target(get_internal_slot(kArrowNewTargetKey));
     }
     // A freshly constructed Context already defaults this bitfield to false
     // (Context.h's in-class initializer) -- only an actual arrow needs the
@@ -1976,7 +1983,7 @@ std::string Function::to_string() const {
         // leaves the string implementation-defined, but real code compares it
         // against what every other engine prints, and ours was leaking the
         // "bound <target>" name that bind() puts on the function.
-        if (has_internal_slot("__bound_target__")) {
+        if (has_internal_slot(kBoundTargetKey)) {
             return "function () { [native code] }";
         }
         return "function " + display_name + "() { [native code] }";
