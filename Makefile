@@ -192,10 +192,6 @@ setup-deps:
 	    echo "[INFO] Initializing mimalloc submodule..."; \
 	    git submodule update --init third_party/mimalloc; \
 	fi
-	@if [ ! -f "$(PCRE2_DIR)/config.h" ]; then \
-	    cp "$(PCRE2_DIR)/config.h.generic" "$(PCRE2_DIR)/config.h"; \
-	    echo "[OK] Generated config.h"; \
-	fi
 	@if [ ! -f "$(PCRE2_DIR)/pcre2.h" ]; then \
 	    cp "$(PCRE2_DIR)/pcre2.h.generic" "$(PCRE2_DIR)/pcre2.h"; \
 	    echo "[OK] Generated pcre2.h"; \
@@ -204,6 +200,21 @@ setup-deps:
 	    cp "$(PCRE2_DIR)/pcre2_chartables.c.dist" "$(PCRE2_DIR)/pcre2_chartables.c"; \
 	    echo "[OK] Generated pcre2_chartables.c"; \
 	fi
+
+# PCRE2's config decides whether it has Unicode and JIT support, so the copy
+# kept in this repo is the one that has to be in place -- the generic template
+# next to it enables neither, and regexes then fail to compile as "invalid".
+# FORCE makes the recipe run every time; the file only changes (and the PCRE2
+# objects only rebuild) when what is there differs.
+.PHONY: FORCE
+FORCE:
+$(PCRE2_DIR)/config.h: third_party/pcre2_configs/config.h FORCE | setup-deps
+	@if ! cmp -s "third_party/pcre2_configs/config.h" "$@"; then \
+	    cp "third_party/pcre2_configs/config.h" "$@"; \
+	    echo "[OK] Installed PCRE2 config.h (Unicode and JIT support)"; \
+	fi
+
+$(PCRE2_OBJS): $(PCRE2_DIR)/config.h
 
 all: setup-deps build_header $(LIBQUANTA) $(BIN_DIR)/quanta$(EXE_EXT) build_footer
 
