@@ -792,12 +792,26 @@ public:
     // absent, only that this shortcut cannot serve it.
     bool try_read_own_data_slot(const std::string& key, Value& out) const;
     // try_read_own_data_slot's slot index, for a caller that wants to cache it.
-    bool cacheable_data_slot(const std::string& key, uint32_t& slot_index) const;
+    // `writable`, when asked for, says whether a plain data write through the
+    // slot is allowed: false for a property defined non-writable.
+    bool cacheable_data_slot(const std::string& key, uint32_t& slot_index,
+                             bool* writable = nullptr) const;
     // Single descriptors_ lookup shared by get_named's cacheable-gate and
     // accessor branch -- calling has_descriptor_override() then
     // get_property_descriptor() back to back re-scans the same map for the
     // same key with no mutation in between.
     PropertyDescriptor* find_descriptor_override(const std::string& key) const;
+    // The value a property keeps in a shape slot, or null. For a reader that took
+    // a descriptor straight from the map: when the property has a slot the slot's
+    // value is the current one, and the descriptor's copy may be behind.
+    const Value* find_slot_value(const std::string& key) const { return find_shape_slot(key); }
+    // Called by a cache that is about to hold a copy of this key's descriptor
+    // value. Marks the descriptor so later writes to the property move the
+    // descriptor epoch, and refreshes its copy from the slot first (the store
+    // paths that write only the slot leave it behind). Moves the epoch itself
+    // when it marks, so that a store cache made while the descriptor was
+    // unmarked, which skips that bump, is dropped.
+    void note_descriptor_value_cached(const std::string& key);
 
     // SetNamed's transition-cache fast path: adds `key` using an
     // already-resolved destination shape, skipping both Shape::transition(key)'s
@@ -1012,8 +1026,15 @@ private:
     bool has_writable_ : 1;
     bool has_enumerable_ : 1;
     bool has_configurable_ : 1;
+    // Set once an inline cache has copied this descriptor's value. A property
+    // with a shape slot keeps its value there and the descriptor only a copy,
+    // so a write to it needs to move the descriptor epoch only if some cache
+    // is holding the copy -- see Object::note_descriptor_value_cached.
+    mutable bool value_cached_ : 1 = false;
 
 public:
+    bool value_cached() const { return value_cached_; }
+    void mark_value_cached() const { value_cached_ = true; }
     PropertyDescriptor();
     explicit PropertyDescriptor(const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     PropertyDescriptor(Object* getter, Object* setter, PropertyAttributes attrs = PropertyAttributes::Default);

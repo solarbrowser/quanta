@@ -252,6 +252,7 @@ Value get_primitive_named(Context& ctx, const Value& prim, const std::string& na
         fb = &fb_slot->ensure();
         Collector::write_barrier(owner);
         mark_owner_feedback_dirty(owner);
+        if (!desc.is_accessor_descriptor()) proto_obj->note_descriptor_value_cached(name);
         fb->prim_proto = proto_obj;
         fb->prim_is_getter = desc.is_accessor_descriptor();
         fb->prim_value = fb->prim_is_getter ? Value(desc.get_getter()) : desc.get_value();
@@ -667,6 +668,11 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
     // shortcuts, which don't know about one installed via defineProperty.
     if (obj->get_type() != Object::ObjectType::Proxy) {
         PropertyDescriptor desc = override_desc ? *override_desc : obj->get_property_descriptor(name);
+        // A copy taken from the map is behind the slot when writes have gone
+        // through a cached store, which does not refresh it.
+        if (override_desc && desc.is_data_descriptor()) {
+            if (const Value* slot_value = obj->find_slot_value(name)) desc.set_value(*slot_value);
+        }
         if (desc.is_accessor_descriptor()) {
             // Cacheable on exactly the same terms as a data property: an own
             // accessor-kind shape slot with nothing in descriptors_ shadowing
@@ -707,9 +713,13 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                 Collector::write_barrier(owner);
                 mark_owner_feedback_dirty(owner);
                 FeedbackBody& learned = fb_slot->ensure();
+                // The copy is about to be cached, so writes to it have to be
+                // heard: this marks the descriptor (and refreshes its copy from
+                // the slot, which the store paths skip) before the value is read.
+                obj->note_descriptor_value_cached(name);
                 learned.own_desc_receiver = obj;
-                learned.own_desc_value = desc.get_value();
-                learned.own_desc_epoch = cur_epoch;
+                learned.own_desc_value = obj->find_descriptor_override(name)->get_value();
+                learned.own_desc_epoch = Object::descriptor_epoch();
             }
             return desc.get_value();
         }
@@ -791,6 +801,7 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
                             learn_proto(fb_slot, obj->get_shape(), obj->get_prototype(), proto,
                                         static_cast<uint32_t>(hidx), Object::proto_epoch(), owner);
                         } else if (!proto_desc.is_accessor_descriptor() && proto_desc.has_value()) {
+                            proto->note_descriptor_value_cached(name);
                             // The holder keeps it in its descriptor map, which is
                             // where every builtin prototype method lives. Cache
                             // the value and let the descriptor epoch invalidate.
@@ -866,9 +877,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         Collector::write_barrier(owner);
         mark_owner_feedback_dirty(owner);
         FeedbackBody& learned = fb_slot->ensure();
+        obj->note_descriptor_value_cached(name);
         learned.own_desc_receiver = obj;
         learned.own_desc_value = result;
-        learned.own_desc_epoch = cur_epoch;
+        learned.own_desc_epoch = Object::descriptor_epoch();
     }
     return result;
 }
@@ -2642,11 +2654,12 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                             env->mark_referenced();
                             lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable,
                                                           Environment::binding_shadow_epoch()};
-                        } else if (env->cacheable_object_binding(name, obj_slot)) {
+                        } else if (bool obj_writable = false;
+                                   env->cacheable_object_binding(name, obj_slot, &obj_writable)) {
                             env->mark_referenced();
                             lookup_cache_data[name_idx] = {env, nullptr,
                                 env->get_binding_object()->get_shape(),
-                                Object::descriptor_epoch(), obj_slot, false,
+                                Object::descriptor_epoch(), obj_slot, obj_writable,
                                 Environment::binding_shadow_epoch()};
                         }
                     }
@@ -2727,11 +2740,12 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
                         env->mark_referenced();
                         lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable,
                                                       Environment::binding_shadow_epoch()};
-                    } else if (env->cacheable_object_binding(name, obj_slot)) {
+                    } else if (bool obj_writable = false;
+                               env->cacheable_object_binding(name, obj_slot, &obj_writable)) {
                         env->mark_referenced();
                         lookup_cache_data[name_idx] = {env, nullptr,
                             env->get_binding_object()->get_shape(),
-                            Object::descriptor_epoch(), obj_slot, false,
+                            Object::descriptor_epoch(), obj_slot, obj_writable,
                             Environment::binding_shadow_epoch()};
                     }
                 }
@@ -2789,6 +2803,25 @@ Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// The store through a cached object-environment entry: the binding object still
+// has the shape the entry was made against, nothing has changed a property's
+// attributes since (descriptor_epoch), and the slot is there. The entry only
+// exists for a property that was writable when it was cached, and defining it
+// non-writable afterwards moves the epoch. The descriptor's own copy of the value
+// is not refreshed here -- reading the descriptor takes the value from the slot.
+inline bool store_via_object_entry(const BytecodeChunk::LookupCacheEntry& entry, const Value& acc) {
+    Object* bo = entry.env->get_binding_object();
+    if (!(bo && bo->get_shape() == entry.obj_shape &&
+          entry.descriptor_epoch == Object::descriptor_epoch())) {
+        return false;
+    }
+    Value* slot = bo->get_shape_slot_unchecked(entry.obj_slot_index);
+    if (!slot) return false;
+    write_barrier_for(bo, acc);
+    *slot = acc;
+    return true;
+}
+
 // After a store that resolved by name: a binding beyond the frame's entry
 // environment keeps its address, so the next store to it can go through the
 // cache instead of walking for it. Same rule as Op::LdaLookup -- only a binding
@@ -2812,6 +2845,19 @@ inline void cache_store_binding(Frame& f, Environment* env, const std::string& n
     if (slot && slot_writable && !env->is_per_call_scope()) {
         env->mark_referenced();  // see Op::LdaLookup's note
         f.lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, true,
+                                         Environment::binding_shadow_epoch()};
+        return;
+    }
+    // A binding on an object environment -- a global `var` or function -- is
+    // cached by the shape and slot index of its own property, the form
+    // Op::LdaLookup keeps, and only while writing through it is allowed.
+    uint32_t obj_slot = 0;
+    bool obj_writable = false;
+    if (beyond_frame && !env->is_per_call_scope() &&
+        env->cacheable_object_binding(name, obj_slot, &obj_writable) && obj_writable) {
+        env->mark_referenced();
+        f.lookup_cache_data[name_idx] = {env, nullptr, env->get_binding_object()->get_shape(),
+                                         Object::descriptor_epoch(), obj_slot, true,
                                          Environment::binding_shadow_epoch()};
     }
 }
@@ -2887,6 +2933,8 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                     bool ok = bobj->set_property(name, acc);
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                    } else if (ok) {
+                        cache_store_binding(f, env, name, sta_name_idx);
                     }
                 } else {
                     bool ok = env->set_binding(name, acc);
@@ -2963,6 +3011,8 @@ Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
                 bool ok = bobj->set_property(name, acc);
                 if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                     ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                } else if (ok) {
+                    cache_store_binding(f, env, name, sta_name_idx);
                 }
             } else {
                 bool ok = env->set_binding(name, acc);
@@ -3180,6 +3230,12 @@ Value h_StaLookupFast(Frame& f, uint32_t pc, Value acc) {
         pc += 3;
         DISPATCH();
     }
+    if (entry.obj_shape && entry.writable &&
+        entry.shadow_epoch == Environment::binding_shadow_epoch() &&
+        store_via_object_entry(entry, acc)) {
+        pc += 3;
+        DISPATCH();
+    }
     [[clang::musttail]] return h_gen_StaLookup(f, pc, acc);
 }
 
@@ -3270,6 +3326,16 @@ Value h_CheckLookupResolvableFast(Frame& f, uint32_t pc, Value acc) {
         pc += 3;
         DISPATCH();
     }
+    if (entry.obj_shape && entry.shadow_epoch == Environment::binding_shadow_epoch()) {
+        Object* bo = entry.env->get_binding_object();
+        if (bo && bo->get_shape() == entry.obj_shape &&
+            entry.descriptor_epoch == Object::descriptor_epoch() &&
+            bo->get_shape_slot_unchecked(entry.obj_slot_index)) {
+            acc = Value(true);
+            pc += 3;
+            DISPATCH();
+        }
+    }
     [[clang::musttail]] return h_gen_CheckLookupResolvable(f, pc, acc);
 }
 
@@ -3284,6 +3350,12 @@ Value h_StaLookupCheckedFast(Frame& f, uint32_t pc, Value acc) {
             Collector::write_barrier_env(entry.env);
         }
         *entry.slot = acc;
+        pc += 4;
+        DISPATCH();
+    }
+    if (resolved.is_boolean() && resolved.as_boolean() && entry.obj_shape && entry.writable &&
+        entry.shadow_epoch == Environment::binding_shadow_epoch() &&
+        store_via_object_entry(entry, acc)) {
         pc += 4;
         DISPATCH();
     }

@@ -252,16 +252,30 @@ void Object::erase_extra_property_order(const std::string& key) {
         [&](const auto& p) { return p.first == key; }), order.end());
 }
 
-bool Object::cacheable_data_slot(const std::string& key, uint32_t& slot_index) const {
+void Object::note_descriptor_value_cached(const std::string& key) {
+    PropertyDescriptor* d = find_descriptor_override(key);
+    if (!d || !d->is_data_descriptor() || d->value_cached()) return;
+    if (const Value* slot = find_shape_slot(key)) d->set_value(*slot);
+    d->mark_value_cached();
+    bump_descriptor_epoch();
+}
+
+bool Object::cacheable_data_slot(const std::string& key, uint32_t& slot_index,
+                                 bool* writable) const {
     if (get_type() != ObjectType::Ordinary || !shape_) return false;
     int32_t idx = shape_->find_data_slot(key);
     if (idx < 0) return false;
+    bool is_writable = true;
     if (HybridDescriptorMap* d = descriptors()) {
         const PropertyDescriptor* pd = d->find(key);
         if (pd && pd->is_accessor_descriptor()) return false;
+        if (pd && pd->is_data_descriptor() && !pd->is_writable()) is_writable = false;
+        // A write that goes only to the slot would leave a cached copy behind.
+        if (pd && pd->value_cached()) is_writable = false;
     }
     if (!get_shape_slot_unchecked(static_cast<uint32_t>(idx))) return false;
     slot_index = static_cast<uint32_t>(idx);
+    if (writable) *writable = is_writable;
     return true;
 }
 
@@ -1597,8 +1611,9 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
         }
 
         auto* d = descriptors();
-        if (has_shape_slot(key) || (d && d->count(key))) {
-            if (has_shape_slot(key)) {
+        const bool in_slot = has_shape_slot(key);
+        if (in_slot || (d && d->count(key))) {
+            if (in_slot) {
                 set_shape_slot(key, value);
             }
             if (d) {
@@ -1608,8 +1623,13 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
                     // descriptor-backed property has no shape slot to point at
                     // (see FeedbackSlot::ProtoEntry). This is the one write that
                     // can change it without changing any attribute, so it is the
-                    // one that has to move the epoch.
-                    bump_descriptor_epoch();
+                    // one that has to move the epoch. A property that has a slot
+                    // and whose descriptor no cache has copied moves nothing:
+                    // bumping here retired every cache keyed on the epoch each
+                    // time a script assigned a global `var`. The descriptor's
+                    // copy is still refreshed, for whatever reads the descriptor
+                    // itself.
+                    if (!in_slot || dit->value_cached()) bump_descriptor_epoch();
                     dit->set_value(value);
                 }
             }
@@ -2384,6 +2404,16 @@ PropertyDescriptor Object::get_property_descriptor_default(const std::string& ke
                     data.set_enumerable(was_enumerable);
                     data.set_configurable(was_configurable);
                     return data;
+                }
+            }
+            // The value of a data property that also has a slot is the slot's:
+            // the descriptor carries the attributes, and its own copy of the
+            // value is only refreshed by the paths that write through it.
+            if (it->is_data_descriptor()) {
+                if (const Value* slot = find_shape_slot(key)) {
+                    PropertyDescriptor current = *it;
+                    current.set_value(*slot);
+                    return current;
                 }
             }
             return *it;

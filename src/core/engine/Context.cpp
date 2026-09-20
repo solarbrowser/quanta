@@ -1120,9 +1120,10 @@ Value Environment::get_binding_direct_interned(const std::string* key, Context* 
     return Value();
 }
 
-bool Environment::cacheable_object_binding(const std::string& name, uint32_t& slot_index) const {
+bool Environment::cacheable_object_binding(const std::string& name, uint32_t& slot_index,
+                                           bool* writable) const {
     if (type_ != Type::Object || !binding_object_ || is_with_environment_) return false;
-    return binding_object_->cacheable_data_slot(name, slot_index);
+    return binding_object_->cacheable_data_slot(name, slot_index, writable);
 }
 
 void Context::create_import_binding(const std::string& name, const Value& target) {
