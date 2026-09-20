@@ -8280,12 +8280,8 @@ bool BytecodeCompiler::member_is_supported(const MemberExpression* mem) const {
 // Environment (env_mode is forced whenever uses_super_or_private matches).
 
 int BytecodeCompiler::emit_spread_array(const std::vector<std::unique_ptr<ASTNode>>& elements) {
-    // A hole contributes to `length` without creating an own element, which
-    // the non-spread path expresses by pre-sizing via CreateArray. Once a
-    // spread makes the index dynamic there is no way to say that, so refuse
-    // the combination rather than silently dropping a trailing hole.
     for (const auto& el : elements) {
-        if (!el || el->get_type() == ASTNode::Type::UNDEFINED_LITERAL) return -1;
+        if (!el) return -1;
     }
 
     emit(Op::CreateArray);
@@ -8316,7 +8312,19 @@ int BytecodeCompiler::emit_spread_array(const std::vector<std::unique_ptr<ASTNod
         emit_u8(static_cast<uint8_t>(idx_reg));
     };
 
+    // A hole takes an index and creates no element, so it only moves the write
+    // index on. What a trailing one adds to `length` is said once at the end.
+    bool has_hole = false;
     for (const auto& el : elements) {
+        if (el->get_type() == ASTNode::Type::UNDEFINED_LITERAL) {
+            has_hole = true;
+            emit(Op::Ldar);
+            emit_u8(static_cast<uint8_t>(idx_reg));
+            emit(Op::Inc);
+            emit(Op::Star);
+            emit_u8(static_cast<uint8_t>(idx_reg));
+            continue;
+        }
         if (el->get_type() != ASTNode::Type::SPREAD_ELEMENT) {
             if (!compile_expression(el.get())) return -1;
             append_acc_and_bump();
@@ -8333,6 +8341,12 @@ int BytecodeCompiler::emit_spread_array(const std::vector<std::unique_ptr<ASTNod
         emit_u8(static_cast<uint8_t>(idx_reg));
     }
 
+    if (has_hole) {
+        emit(Op::Ldar);
+        emit_u8(static_cast<uint8_t>(idx_reg));
+        emit_named_ic(Op::SetNamed, Op::SetNamedWide, static_cast<uint8_t>(arr_reg),
+                      add_name("length"), alloc_feedback_slot());
+    }
     free_temp(idx_reg);
     if (failed_) return -1;
     return arr_reg;
