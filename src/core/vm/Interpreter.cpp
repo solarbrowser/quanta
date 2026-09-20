@@ -2089,17 +2089,12 @@ Value h_LdaThisFast(Frame& f, uint32_t pc, Value acc) {
     [[clang::musttail]] return h_gen_LdaThis(f, pc, acc);
 }
 
-Value h_gen_LdaTdz(Frame& f, uint32_t pc, Value acc) {
-    const BytecodeChunk& chunk = f.chunk;
-    Context& ctx = *f.ctx;
-    uint32_t& instr_pc = f.instr_pc;
-    instr_pc = pc;
+// Writes a constant and cannot raise, so it needs none of the generated
+// handler's bookkeeping -- like the other constant loads above.
+Value h_LdaTdz(Frame& f, uint32_t pc, Value acc) {
+    (void)acc;
+    acc = Value::vm_tdz_sentinel();
     pc += 1;
-    do {
-                acc = Value::vm_tdz_sentinel();
-                break;
-    } while (0);
-    CHECK_EXC_TAIL();
     DISPATCH();
 }
 
@@ -2312,6 +2307,19 @@ Value h_gen_LogicalNot(Frame& f, uint32_t pc, Value acc) {
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
+}
+
+// A condition is nearly always one of the values truthiness_inline decides, and
+// the answer is a boolean built from it; anything else -- a string, a BigInt --
+// goes to the generated handler.
+Value h_LogicalNotFast(Frame& f, uint32_t pc, Value acc) {
+    bool truthy;
+    if (LIKELY(truthiness_inline(acc, truthy))) {
+        acc = Value(!truthy);
+        pc += 1;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_LogicalNot(f, pc, acc);
 }
 
 Value h_gen_BitNot(Frame& f, uint32_t pc, Value acc) {
@@ -2546,6 +2554,17 @@ Value h_gen_CheckObjectCoercible(Frame& f, uint32_t pc, Value acc) {
     } while (0);
     CHECK_EXC_TAIL();
     DISPATCH();
+}
+
+// Only the throw needs the generated handler's bookkeeping; the value that is
+// coercible, which is every one that reaches a destructuring pattern in a
+// working program, has nothing to do.
+Value h_CheckObjectCoercibleFast(Frame& f, uint32_t pc, Value acc) {
+    if (LIKELY(!acc.is_null() && !acc.is_undefined())) {
+        pc += 1;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_gen_CheckObjectCoercible(f, pc, acc);
 }
 
 Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
@@ -6863,6 +6882,35 @@ Value h_gen_DefineOwn(Frame& f, uint32_t pc, Value acc) {
     DISPATCH();
 }
 
+// The object-literal property that adds a key the site has already learned to
+// add: a shape compare against the first transition entry and a slot write.
+// Building a literal is nearly all of these, and each paid the generated
+// handler's prologue and define_own_cached's own checks first. Anything else --
+// a site that has not learned the transition, an object that is not plain or has
+// descriptors, a second shape at the site -- tail-calls the generated handler.
+Value h_DefineOwnFast(Frame& f, uint32_t pc, Value acc) {
+    const uint8_t* code = f.code;
+    const Value& target = f.regs[code[pc + 1]];
+    if (LIKELY(target.is_object())) {
+        Object* obj = target.as_object();
+        if (LIKELY(shape_fast_path_ok(obj->get_type()) && obj->is_extensible() &&
+                   !obj->has_any_descriptor_override())) {
+            const FeedbackBody* fb = f.chunk.feedback[read_u16(code, pc + 4)].peek();
+            if (LIKELY(fb && !fb->transition_mega && fb->transition_count != 0)) {
+                const FeedbackSlot::TransitionEntry& te = fb->transitions[0];
+                if (te.from_shape == obj->get_shape()) {
+                    write_barrier_for(obj, acc);
+                    obj->add_shape_property_cached(f.chunk.name_at(read_u16(code, pc + 2)), acc,
+                                                   te.to_shape);
+                    pc += 6;
+                    DISPATCH();
+                }
+            }
+        }
+    }
+    [[clang::musttail]] return h_gen_DefineOwn(f, pc, acc);
+}
+
 // Wide counterpart of h_gen_DefineOwn -- see h_GetNamedWide's own comment.
 Value h_DefineOwnWide(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
@@ -7745,7 +7793,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::Inc)]           = &h_Inc;
     t[static_cast<uint8_t>(Op::Dec)]           = &h_Dec;
     t[static_cast<uint8_t>(Op::LdaThis)] = &h_LdaThisFast<false>;
-    t[static_cast<uint8_t>(Op::LdaTdz)] = &h_gen_LdaTdz;
+    t[static_cast<uint8_t>(Op::LdaTdz)] = &h_LdaTdz;
     t[static_cast<uint8_t>(Op::LdarChecked)] = &h_gen_LdarChecked;
     t[static_cast<uint8_t>(Op::StarChecked)] = &h_gen_StarChecked;
     t[static_cast<uint8_t>(Op::Div)] = &h_gen_Div;
@@ -7761,7 +7809,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::TestIn)] = &h_gen_TestIn;
     t[static_cast<uint8_t>(Op::ForInKeyPresent)] = &h_gen_ForInKeyPresent;
     t[static_cast<uint8_t>(Op::Neg)] = &h_gen_Neg;
-    t[static_cast<uint8_t>(Op::LogicalNot)] = &h_gen_LogicalNot;
+    t[static_cast<uint8_t>(Op::LogicalNot)] = &h_LogicalNotFast;
     t[static_cast<uint8_t>(Op::BitNot)] = &h_gen_BitNot;
     t[static_cast<uint8_t>(Op::TypeOf)] = &h_gen_TypeOf;
     t[static_cast<uint8_t>(Op::Yield)] = &h_gen_Yield;
@@ -7771,7 +7819,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::ToTemplateString)] = &h_gen_ToTemplateString;
     t[static_cast<uint8_t>(Op::BuildTemplateString)] = &h_gen_BuildTemplateString;
     t[static_cast<uint8_t>(Op::ToPropertyKey)] = &h_gen_ToPropertyKey;
-    t[static_cast<uint8_t>(Op::CheckObjectCoercible)] = &h_gen_CheckObjectCoercible;
+    t[static_cast<uint8_t>(Op::CheckObjectCoercible)] = &h_CheckObjectCoercibleFast;
     t[static_cast<uint8_t>(Op::LdaLookup)] = &h_LdaLookupFast<false>;
     t[static_cast<uint8_t>(Op::LdaLookupTypeof)] = &h_gen_LdaLookupTypeof;
     t[static_cast<uint8_t>(Op::StaLookup)] = &h_StaLookupFast;
@@ -7880,7 +7928,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::SetKeyed)] = &h_gen_SetKeyed;
     t[static_cast<uint8_t>(Op::DeleteNamed)] = &h_gen_DeleteNamed;
     t[static_cast<uint8_t>(Op::DeleteKeyed)] = &h_gen_DeleteKeyed;
-    t[static_cast<uint8_t>(Op::DefineOwn)] = &h_gen_DefineOwn;
+    t[static_cast<uint8_t>(Op::DefineOwn)] = &h_DefineOwnFast;
     t[static_cast<uint8_t>(Op::DefineElement)] = &h_gen_DefineElement;
     t[static_cast<uint8_t>(Op::ToPropertyKeyStrict)] = &h_gen_ToPropertyKeyStrict;
     t[static_cast<uint8_t>(Op::DefineOwnKeyed)] = &h_gen_DefineOwnKeyed;
