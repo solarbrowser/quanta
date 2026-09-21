@@ -8827,12 +8827,17 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             add_error("SyntaxError: Unexpected token: line break between 'async' and arrow parameters");
             return nullptr;
         }
+        // An arrow has no `arguments` of its own: a reference in its body is the
+        // enclosing function's, and the scope above (opened before this could be
+        // told from an async function) would otherwise stop the bit at its edge.
+        fn_scope.crossing |= kSubtreeArguments;
         return parse_async_arrow_function(start);
     } else if (current_token().get_start().line == async_end_line &&
                (match(TokenType::IDENTIFIER) ||
                 // Contextual keywords (of, from, static, ...) used as async arrow single param
                 (is_keyword_token(current_token().get_type()) &&
                  peek_token().get_type() == TokenType::ARROW))) {
+        fn_scope.crossing |= kSubtreeArguments;  // see the parenthesised form above
         return parse_async_arrow_function_single_param(start);
     } else {
         // Not an async function/arrow — `async` is being used as an identifier
