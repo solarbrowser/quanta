@@ -671,7 +671,10 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
         PropertyDescriptor desc = override_desc ? *override_desc : obj->get_property_descriptor(name);
         // A copy taken from the map is behind the slot when writes have gone
         // through a cached store, which does not refresh it.
-        if (override_desc && desc.is_data_descriptor()) {
+        // An accessor-kind slot holds the getter, not a value: a data descriptor
+        // defined over an accessor still has its own value, and the slot is
+        // nothing to read it from.
+        if (override_desc && desc.is_data_descriptor() && !(obj_shape && obj_shape->is_accessor_slot(name))) {
             if (const Value* slot_value = obj->find_slot_value(name)) desc.set_value(*slot_value);
         }
         if (desc.is_accessor_descriptor()) {
