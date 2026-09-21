@@ -912,9 +912,25 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
             if (fb->entries[i].shape == shape) {
                 // See get_named's own guard: a receiver with no descriptor map
                 // cannot shadow the slot, whatever the global stamp says.
-                if (!fb->entries[i].is_accessor && !obj->has_any_descriptor_override()) {
+                if (!obj->has_any_descriptor_override()) {
                     Value* slot = obj->get_shape_slot_unchecked(fb->entries[i].slot_index);
-                    if (slot) { *slot = value; return; }
+                    if (fb->entries[i].is_accessor) {
+                        // An own accessor pair: the setter sits in the slot
+                        // after the getter. One that is not callable (a
+                        // getter-only property) is for the general path, which
+                        // knows whether the write is silent or a TypeError.
+                        Value* setter_slot = slot ? obj->get_shape_slot_unchecked(fb->entries[i].slot_index + 1)
+                                                  : nullptr;
+                        Function* setter_fn = setter_slot ? as_function(as_object_like(*setter_slot)) : nullptr;
+                        if (setter_fn) {
+                            const Value setter_args[1] = { value };
+                            setter_fn->call_register_args(ctx, std::span<const Value>(setter_args, 1), receiver);
+                            return;
+                        }
+                    } else if (slot) {
+                        *slot = value;
+                        return;
+                    }
                 }
                 break;
             }
@@ -1025,6 +1041,16 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         Shape* s = obj->get_shape();
         int32_t idx = s ? s->find_slot(name) : -1;
         if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx));
+    } else if (fb_slot && !(fb && fb->mega) && shape_fast_path_ok(obj->get_type()) &&
+               !obj->find_descriptor_override(name)) {
+        // has_descriptor_override is also true for an accessor-kind shape slot,
+        // which is what a write to an own `set x()` finds. With no descriptor of
+        // its own shadowing it, the pair is as cacheable as a data slot.
+        Shape* s = obj->get_shape();
+        if (s && s->is_accessor_slot(name)) {
+            int32_t idx = s->find_slot(name);
+            if (idx >= 0) learn_feedback(fb_slot, s, static_cast<uint32_t>(idx), /*is_accessor=*/true);
+        }
     }
     // Transition learn: has_descriptor_override re-checked post-call (not the
     // pre-call value) so a no-trap Proxy's set forward -- which can transition
@@ -1126,7 +1152,10 @@ void define_accessor_cached(Object* obj, const std::string& key, Function* fn, b
     // fast path for every future get AND set, on every instance sharing
     // this shape -- for a class declaring both `get x()` and `set x()`,
     // among the most ordinary patterns there is.
-    if (shape_fast_path_ok(obj->get_type()) && !obj->has_descriptor_override(key)) {
+    // has_descriptor_override() answers true for an accessor-kind shape slot as
+    // well, which is the very case this is looking for; only a descriptor of
+    // its own shadows the pair.
+    if (shape_fast_path_ok(obj->get_type()) && !obj->find_descriptor_override(key)) {
         Shape* shape = obj->get_shape();
         int32_t idx = shape ? shape->find_slot(key) : -1;
         if (idx >= 0 && shape->is_accessor_slot(key)) {
@@ -6155,6 +6184,33 @@ inline bool inherited_data_entry(const FeedbackBody& fb, Object* obj, Value& out
     return false;
 }
 
+// Runs an accessor's getter for a GetNamed read served from the inline cache.
+// The call can throw, and this handler has no do/while(0) wrapper for CHECK_EXC's
+// `continue` to land in, so the handler-table search CHECK_EXC does is here by
+// hand: 0 -- the value is in acc; 1 -- a catch handler took the exception, pc
+// and acc are set for the dispatch that resumes there; 2 -- nothing catches it
+// in this frame and the handler returns.
+inline int call_cached_getter(Frame& f, uint32_t& pc, Value& acc, Function* getter_fn,
+                              const Value& receiver) {
+    f.instr_pc = pc;
+    Value result = getter_fn->call_register_args(*f.ctx, {}, receiver);
+    if (!f.ctx->has_exception()) { acc = result; return 0; }
+    const BytecodeChunk& chunk = f.chunk;
+    int32_t handler_pc = -1;
+    uint32_t best_width = UINT32_MAX;
+    if (chunk.handlers) for (const auto& h : *chunk.handlers) {
+        if (pc >= h.start_pc && pc < h.end_pc) {
+            uint32_t width = h.end_pc - h.start_pc;
+            if (width < best_width) { best_width = width; handler_pc = static_cast<int32_t>(h.handler_pc); }
+        }
+    }
+    if (handler_pc < 0) return 2;
+    acc = f.ctx->get_exception();
+    f.ctx->clear_exception();
+    pc = static_cast<uint32_t>(handler_pc);
+    return 1;
+}
+
 template <bool Fused> Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc);
 
 // Only the read that answers from the receiver's own shape slot, which is
@@ -6278,11 +6334,23 @@ Value h_GetNamedRest(Frame& f, uint32_t pc, Value acc) {
             Shape* own_shape = obj->get_shape();
             for (uint8_t k = 0; k < fb.count; k++) {
                 const FeedbackSlot::Entry& cand = fb.entries[k];
-                if (cand.shape != own_shape || cand.is_accessor) continue;
+                if (cand.shape != own_shape) continue;
                 if (obj->has_any_descriptor_override()) break;
                 if (const Value* slot = obj->get_shape_slot_unchecked(cand.slot_index)) {
-                    acc = *slot;
-                    FUSED_TAIL(6);
+                    if (!cand.is_accessor) {
+                        acc = *slot;
+                        FUSED_TAIL(6);
+                    }
+                    // An own accessor pair holds its getter in the slot; a
+                    // setter-only property holds nothing callable, and reads as
+                    // undefined on the general path.
+                    if (Function* getter_fn = as_function(as_object_like(*slot))) {
+                        switch (call_cached_getter(f, pc, acc, getter_fn, receiver)) {
+                            case 0: FUSED_TAIL(6);
+                            case 1: DISPATCH();
+                            default: return Value();
+                        }
+                    }
                 }
                 break;
             }
