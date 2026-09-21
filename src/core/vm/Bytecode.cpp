@@ -179,7 +179,8 @@ const OpInfo& op_info(Op op) {
         {"ThrowSuperDelete", 0, '-'},
         {"LinkExports", 2, 'z'},
         {"LdaEnvSlotAt", 4, 'D'}, {"StaEnvSlotAt", 4, 'D'},
-        {"ForInKeyPresent", 3, 'J'}
+        {"ForInKeyPresent", 3, 'J'},
+        {"LdaArgLength", 0, '-'}, {"LdaArgAt", 0, '-'}
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(Op::kCount),
                   "op_info table out of sync with Op enum");

@@ -253,6 +253,18 @@ public:
                                                  // "nothing known," same as every field left at its default.
                                                  const EnvSlotHazards* env_slot_hazards = nullptr);
 
+    // What compile() runs, once with `arguments` reads compiled against the
+    // frame's argument list when the body allows it, and again without that if
+    // the attempt turned out to name the binding anywhere but a plain read.
+    // `attempted_elision` says whether the first kind of attempt was made.
+    static std::unique_ptr<BytecodeChunk> compile_attempt(
+        const ASTNode* body, const ParamList& params,
+        bool suspendable, bool is_arrow, bool is_strict,
+        const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
+        const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain,
+        bool needs_self_binding, const EnvSlotHazards* env_slot_hazards,
+        bool elide_arguments, bool* attempted_elision);
+
     // Script tier: compiles a Program's top-level statements. All hoisting
     // (vars on the global, the script lexical env with its TDZ bindings,
     // function declarations) has already run -- every top-level name is a
@@ -703,6 +715,12 @@ private:
     std::vector<std::string> pending_labels_;  // set by LABELED_STATEMENT, taken by the next loop/switch
     std::unordered_set<const ASTNode*> hoisted_fn_decls_;  // top-level fn decls bound by compile()'s prologue
     bool allow_arguments_ = false;
+    // This body's `arguments` reads compile to LdaArgLength/LdaArgAt and no
+    // arguments object exists. Any other mention of the name -- one that has to
+    // resolve it as a binding, whatever it does with it -- sets the refusal
+    // below, and compile() then builds the body again the ordinary way.
+    bool elide_arguments_ = false;
+    bool arguments_elision_refused_ = false;
     // A direct eval here can add a binding between an assignment's reference
     // and its store, so those resolve ahead into a parked environment.
     bool eval_in_body_ = false;

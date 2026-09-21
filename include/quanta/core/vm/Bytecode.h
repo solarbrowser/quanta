@@ -464,6 +464,14 @@ enum class Op : uint8_t {
     // remembered for the receiver's current shape, and answer from that.
     ForInKeyPresent,  // obj keys key
 
+    // A function whose only uses of `arguments` are `arguments.length` and
+    // `arguments[i]` reads never needs the object: these two answer from the
+    // frame's own argument list. LdaArgAt takes the index in the accumulator and
+    // answers a name, a symbol or an index past the end from a throwaway
+    // arguments object, so the result is always what the object would have said.
+    LdaArgLength,
+    LdaArgAt,
+
     kCount
 };
 

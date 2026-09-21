@@ -6741,6 +6741,52 @@ Value h_SetKeyedElement(Frame& f, uint32_t pc, Value acc) {
     [[clang::musttail]] return h_gen_SetKeyed(f, pc, acc);
 }
 
+// `arguments.length` and `arguments[i]` in a function the compiler found to use
+// `arguments` for nothing else: the argument list the frame already holds
+// answers them, and no object is built. Nothing can have changed the object
+// the spec would have made -- there is no way to write to it or to see it.
+Value h_LdaArgLength(Frame& f, uint32_t pc, Value acc) {
+    acc = Value(static_cast<double>(f.args.size()));
+    pc += 1;
+    DISPATCH();
+}
+
+Value h_LdaArgAtSlow(Frame& f, uint32_t pc, Value acc);
+
+Value h_LdaArgAt(Frame& f, uint32_t pc, Value acc) {
+    uint32_t index;
+    if (LIKELY(array_index_key(acc, index) && index < f.args.size())) {
+        acc = f.args[index];
+        pc += 1;
+        DISPATCH();
+    }
+    [[clang::musttail]] return h_LdaArgAtSlow(f, pc, acc);
+}
+
+// A key the direct read cannot answer: it is put to the object the call would
+// have made, once, so a name, a symbol, `callee`, an index past the end that
+// the prototype chain answers, or a key whose conversion runs script all come
+// out exactly as they would have.
+Value h_LdaArgAtSlow(Frame& f, uint32_t pc, Value acc) {
+    const BytecodeChunk& chunk = f.chunk;
+    Context& ctx = *f.ctx;
+    uint32_t& instr_pc = f.instr_pc;
+    instr_pc = pc;
+    pc += 1;
+    do {
+        {
+            std::string key = acc.to_property_key();
+            CHECK_EXC();
+            Value object(f.owner->build_arguments_object(ctx, f.args).release());
+            acc = get_keyed(ctx, object, key, nullptr);
+            CHECK_EXC();
+            break;
+        }
+    } while (0);
+    CHECK_EXC_TAIL();
+    DISPATCH();
+}
+
 Value h_gen_GetPrivate(Frame& f, uint32_t pc, Value acc) {
     const BytecodeChunk& chunk = f.chunk;
     Context& ctx = *f.ctx;
@@ -8161,6 +8207,8 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::TestInstanceOf)] = &h_gen_TestInstanceOf;
     t[static_cast<uint8_t>(Op::TestIn)] = &h_gen_TestIn;
     t[static_cast<uint8_t>(Op::ForInKeyPresent)] = &h_gen_ForInKeyPresent;
+    t[static_cast<uint8_t>(Op::LdaArgLength)] = &h_LdaArgLength;
+    t[static_cast<uint8_t>(Op::LdaArgAt)] = &h_LdaArgAt;
     t[static_cast<uint8_t>(Op::Neg)] = &h_gen_Neg;
     t[static_cast<uint8_t>(Op::LogicalNot)] = &h_LogicalNotFast;
     t[static_cast<uint8_t>(Op::BitNot)] = &h_gen_BitNot;

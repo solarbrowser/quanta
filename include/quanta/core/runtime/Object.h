@@ -1996,6 +1996,13 @@ public:
     // The %ThrowTypeError% intrinsic, shared by Function.prototype.caller/.arguments and arguments.callee.
     static constinit thread_local Object* s_throw_type_error_;
 
+    // A fresh unmapped arguments object for `args`: elements, length, callee,
+    // @@iterator. Bound to nothing. For a function whose `arguments` reads were
+    // compiled to read the argument list directly, this is what a read that the
+    // direct opcodes cannot answer (a name, a symbol, an index past the end)
+    // is put to, so the answer is the object's own.
+    std::unique_ptr<Object> build_arguments_object(Context& fn_ctx, std::span<const Value> args);
+
 protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx, class Environment* param_env = nullptr);
     // Every name this function's parameter list binds, destructuring patterns
@@ -2004,8 +2011,8 @@ protected:
     std::vector<std::string> parameter_bound_names() const;
     // ES2015 9.4.4.7: wires live getter/setter accessors so arguments[i] aliases parameter i.
     void setup_mapped_arguments(Context& fn_ctx, std::span<const Value> args, class Object* arguments_obj);
-    // Builds the full arguments object (mapped/unmapped, callee, iterator)
-    // and binds it as "arguments" in fn_ctx.
+    // build_arguments_object, mapped where the parameter list calls for it,
+    // bound as "arguments" in fn_ctx.
     void create_arguments_object(Context& fn_ctx, std::span<const Value> args);
     // Base bodies -- see trace()/call()'s own doc comments above.
     void trace_default(Visitor& v);

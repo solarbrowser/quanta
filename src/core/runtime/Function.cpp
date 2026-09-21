@@ -366,6 +366,12 @@ void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> ar
 }
 
 void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> args) {
+    auto arguments_obj = build_arguments_object(fn_ctx, args);
+    setup_mapped_arguments(fn_ctx, args, arguments_obj.get());
+    fn_ctx.create_binding("arguments", Value(arguments_obj.release()), true, false);
+}
+
+std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::span<const Value> args) {
     const FunctionExecutable* exe = executable_.get();
     static const std::vector<std::string> kNoNames;
     const std::vector<std::string>& param_names = exe ? exe->parameters : kNoNames;
@@ -456,9 +462,7 @@ void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> a
         PropertyDescriptor callee_desc(Value(this), PropertyAttributes::BuiltinFunction);
         arguments_obj->set_property_descriptor("callee", callee_desc);
     }
-
-    setup_mapped_arguments(fn_ctx, args, arguments_obj.get());
-    fn_ctx.create_binding("arguments", Value(arguments_obj.release()), true, false);
+    return arguments_obj;
 }
 
 bool Function::has_closure_props() const {

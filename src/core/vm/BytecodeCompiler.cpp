@@ -4564,6 +4564,23 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
     const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain,
     bool needs_self_binding, const EnvSlotHazards* env_slot_hazards) {
+    bool attempted_elision = false;
+    auto chunk = compile_attempt(body, params, suspendable, is_arrow, is_strict, env_bound, outer_with,
+                                 allow_arguments, scope_info, ancestor_chain, needs_self_binding,
+                                 env_slot_hazards, /*elide_arguments=*/true, &attempted_elision);
+    if (chunk || !attempted_elision) return chunk;
+    return compile_attempt(body, params, suspendable, is_arrow, is_strict, env_bound, outer_with,
+                           allow_arguments, scope_info, std::move(ancestor_chain), needs_self_binding,
+                           env_slot_hazards, /*elide_arguments=*/false, &attempted_elision);
+}
+
+std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
+    const ASTNode* body, const ParamList& params,
+    bool suspendable, bool is_arrow, bool is_strict,
+    const std::vector<std::string>* env_bound, bool outer_with, bool allow_arguments,
+    const BodyScopeInfo* scope_info, std::shared_ptr<const ClosureScopeChain> ancestor_chain,
+    bool needs_self_binding, const EnvSlotHazards* env_slot_hazards,
+    bool elide_arguments, bool* attempted_elision) {
     if (!body) return nullptr;
     // A concise arrow body is an expression, not a block: `() => e` is
     // `() => { return e; }` with the statement left implicit. Without this it
@@ -4780,6 +4797,23 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     // target is hard-wired to an env slot below); a default/pattern parameter
     // no longer does on its own -- the selective scan below now covers the
     // parameter list too, the same way it already covers the body.
+    // A body that reads `arguments` only as `arguments.length` or `arguments[i]`
+    // needs no arguments object, and without one it needs no environment either.
+    // What is checked here is what would put the object somewhere it could be
+    // written to, seen through a name, or reached from another scope: a closure,
+    // an eval, a with, anything delegated to the tree-walker, and a sloppy
+    // parameter list, whose arguments alias the parameters. Whether every
+    // mention is a plain read is not decided here -- the body is compiled and any
+    // mention that is not one refuses (see arguments_elision_refused_).
+    const bool elide_this_body =
+        elide_arguments && needs_arguments && !arguments_is_var && !is_arrow && !suspendable &&
+        !has_closures && !has_complex_params && !an_op.opaque() && !has_delegated_expr &&
+        !has_destructuring && !contains_with(body) && !outer_with &&
+        (is_strict || params.size() == 0);
+    if (elide_this_body) {
+        needs_arguments = false;
+        if (attempted_elision) *attempted_elision = true;
+    }
     bool full_env = has_rest || needs_arguments ||
                     an_op.opaque() || contains_with(body);
 
@@ -5097,6 +5131,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
     }
     if (compiler.failed_) return nullptr;
     compiler.allow_arguments_ = needs_arguments || allow_arguments;
+    compiler.elide_arguments_ = elide_this_body;
     compiler.eval_in_body_ = an_op.saw_eval;
     // A direct eval anywhere in this body can introduce a sloppy-mode `var`
     // this compiler never saw -- is_local's static answer would stay "not
@@ -5715,6 +5750,7 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile(
 #ifdef QUANTA_VALIDATE_BYTECODE
         if (compiler.chunk_) validate_chunk_registers(*compiler.chunk_, std::string());
 #endif
+    if (compiler.arguments_elision_refused_) return nullptr;
     return std::move(compiler.chunk_);
 }
 
@@ -6220,6 +6256,8 @@ ClosureTemplate BytecodeCompiler::with_ancestor_chain(ClosureTemplate tmpl) cons
 }
 
 bool BytecodeCompiler::find_ancestor_slot(const std::string& name, int& hops, uint8_t& slot) const {
+    // An enclosing function's binding of this name is not this body's `arguments`.
+    if (elide_arguments_ && name == "arguments") return false;
     // Starts from env_depth_, not 0: entry_hop measures each layer's
     // distance from a CHILD's own entry_env (the point a fresh closure
     // starts at), but the read site itself may already be env_depth_ hops
@@ -7024,6 +7062,11 @@ uint32_t BytecodeCompiler::intern_name(const std::string& name) {
 // interned past 65535 through emit_lookup_ref's wide path must still
 // fail here on a later cache hit, not silently truncate.
 uint16_t BytecodeCompiler::add_name(const std::string& name) {
+    // Every way the compiler refers to a binding by name passes through here,
+    // which is what makes this the place to notice one aimed at `arguments`. A
+    // property that happens to share the name refuses too, which only costs the
+    // body its shortcut.
+    if (elide_arguments_ && name == "arguments") arguments_elision_refused_ = true;
     uint32_t idx = intern_name(name);
     if (idx > 0xFFFFu) { failed_ = true; return 0; }
     return static_cast<uint16_t>(idx);
@@ -10474,6 +10517,27 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
             if (member_is_super(mem)) {
                 if (!super_member_emittable(mem)) return false;
                 return emit_super_load(mem);
+            }
+            // `arguments.length` and `arguments[i]` in a body compiled without an
+            // arguments object: read straight off the frame's argument list.
+            if (elide_arguments_ && !priv &&
+                mem->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+                static_cast<const Identifier*>(mem->get_object())->get_name() == "arguments") {
+                if (!mem->is_computed()) {
+                    if (mem->get_property()->get_type() != ASTNode::Type::IDENTIFIER ||
+                        static_cast<const Identifier*>(mem->get_property())->get_name() != "length") {
+                        arguments_elision_refused_ = true;
+                        return false;
+                    }
+                    emit(Op::LdaArgLength);
+                    return !failed_;
+                }
+                {
+                    ChainMaskScope mask(chain_shortcircuit_jumps_);
+                    if (!compile_expression(mem->get_property())) return false;
+                }
+                emit(Op::LdaArgAt);
+                return !failed_;
             }
             if (!priv && !member_is_supported(mem)) return false;
             // A receiver that already sits in a register is its own operand.
