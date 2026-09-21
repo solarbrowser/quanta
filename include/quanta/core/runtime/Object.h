@@ -620,6 +620,11 @@ public:
 
     PropertyDescriptor get_property_descriptor(const std::string& key) const;
     bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
+    // CreateDataPropertyOrThrow of an ordinary writable, enumerable, configurable
+    // property for the case where that is only an add: an Ordinary, extensible
+    // object that has no such key. Returns false, having changed nothing, for
+    // anything else, and the caller defines it the general way.
+    bool add_default_data_property(const std::string& key, const Value& value);
     
     bool is_extensible() const;
     void prevent_extensions();

@@ -612,17 +612,35 @@ void Function::add_field_initializer(const std::string& key, const Value& initia
 void Function::initialize_instance_fields(Context& ctx, Object* instance) const {
     Object* fields = class_slots().field_inits;
     if (!fields || !instance) return;
+    // Built by add_field_initializer one element at a time, so it is dense; the
+    // reads below skip the per-element type dispatch when that still holds.
+    const bool dense = fields->has_only_dense_elements();
+    auto element = [&](uint32_t i) { return dense ? fields->get_element_unchecked(i) : fields->get_element(i); };
     uint32_t n = static_cast<uint32_t>(fields->get_length());
+    // What qualifies a private name against the object that brands it: one per
+    // instance, not one per private field.
+    bool brand_read = false;
+    std::string brand_suffix;
     for (uint32_t i = 0; i + 2 < n; i += 3) {
-        std::string key = fields->get_element(i).to_string();
-        Value init = fields->get_element(i + 1);
-        const uint32_t flags = static_cast<uint32_t>(fields->get_element(i + 2).to_number());
+        const Value key_value = element(i);
+        std::string key_copy;
+        const std::string& key = key_value.is_string() ? key_value.as_string()->str()
+                                                       : (key_copy = key_value.to_string());
+        const Value init = element(i + 1);
+        const Value flags_value = element(i + 2);
+        const uint32_t flags = flags_value.is_number() ? static_cast<uint32_t>(flags_value.as_number())
+                                                        : static_cast<uint32_t>(flags_value.to_number());
         const bool name_result = (flags & 0x1) != 0;
         // Written with a `#`, not merely spelled with one: a computed key can
         // come to "#m" and is an ordinary property all the same.
         const bool is_private = (flags & 0x2) != 0;
+        // A field written with a literal initializer holds the value itself:
+        // there is no function to run to find out what 0 or "a" comes to.
+        const bool is_constant = (flags & 0x4) != 0;
         Value value;
-        if (init.is_function()) {
+        if (is_constant) {
+            value = init;
+        } else if (init.is_function()) {
             value = init.as_function()->call(ctx, {}, Value(instance));
             if (ctx.has_exception()) return;
             // NamedEvaluation: a function written anonymously as the
@@ -636,19 +654,22 @@ void Function::initialize_instance_fields(Context& ctx, Object* instance) const 
         if (is_private) {
             // A private field is a slot of the instance's own, under the key
             // the name resolves to against the object that brands it.
-            Value brand = get_internal_slot("__private_class_brand__");
-            Object* holder = brand.is_object() ? brand.as_object() : nullptr;
-            std::string qualified =
-                holder ? key + "@" + std::to_string(reinterpret_cast<uintptr_t>(holder)) : key;
-            instance->add_private_field(qualified, value);
+            if (!brand_read) {
+                brand_read = true;
+                Value brand = get_internal_slot("__private_class_brand__");
+                Object* holder = brand.is_object() ? brand.as_object() : nullptr;
+                if (holder) brand_suffix = "@" + std::to_string(reinterpret_cast<uintptr_t>(holder));
+            }
+            instance->add_private_field(brand_suffix.empty() ? key : key + brand_suffix, value);
             continue;
         }
-        PropertyDescriptor d(value, static_cast<PropertyAttributes>(
-            PropertyAttributes::Writable | PropertyAttributes::Enumerable |
-            PropertyAttributes::Configurable));
         // CreateDataPropertyOrThrow: an earlier field's initializer can have
         // frozen the very object being built, and a derived class's parent can
         // have handed back a Proxy, whose trap has to see each field.
+        if (instance->add_default_data_property(key, value)) continue;
+        PropertyDescriptor d(value, static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Enumerable |
+            PropertyAttributes::Configurable));
         bool ok = (instance->get_type() == Object::ObjectType::Proxy)
                       ? static_cast<Proxy*>(instance)->define_property_trap(Value(key), d)
                       : instance->set_property_descriptor(key, d);
@@ -2472,6 +2493,19 @@ PropertyDescriptor Object::get_property_descriptor_default(const std::string& ke
     }
 
     return PropertyDescriptor();
+}
+
+bool Object::add_default_data_property(const std::string& key, const Value& value) {
+    if (get_type() != ObjectType::Ordinary || !is_extensible() || is_array_index(key) ||
+        has_own_property(key)) {
+        return false;
+    }
+    note_protector_write(this, key);
+    // A brand-new plain property introduces no descriptor override, so the
+    // descriptor epoch has nothing to retire; a prototype's new name is another
+    // matter, as in set_property_descriptor_default.
+    if (used_as_prototype()) bump_proto_epoch();
+    return store_in_overflow(key, value);
 }
 
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {

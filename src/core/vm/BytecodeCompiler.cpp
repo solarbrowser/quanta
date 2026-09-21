@@ -10080,7 +10080,17 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 stamp_inferred_class_name(e.init, e.key);
                 name_result = !named_evaluation_is_class(e.init);
             }
-            if (e.init) {
+            // A literal initializer needs no function: what it comes to is the
+            // same for every instance, so the value itself is what the class
+            // records (flag 0x4) and the instances copy it.
+            const bool constant_init =
+                e.init && (e.init->get_type() == ASTNode::Type::NUMBER_LITERAL ||
+                           e.init->get_type() == ASTNode::Type::STRING_LITERAL ||
+                           e.init->get_type() == ASTNode::Type::BOOLEAN_LITERAL ||
+                           e.init->get_type() == ASTNode::Type::NULL_LITERAL);
+            if (constant_init) {
+                if (!compile_expression(e.init)) { failed_ = true; return false; }
+            } else if (e.init) {
                 // The initializer is a function of its own: it runs with `this`
                 // bound to the instance being built, which is why it cannot be
                 // emitted here alongside the class.
@@ -10109,13 +10119,14 @@ bool BytecodeCompiler::try_compile_plain_class(const ClassDeclaration* cls, bool
                 emit(Op::AddFieldInitializerKeyed);
                 emit_u8(static_cast<uint8_t>(ctor_reg));
                 emit_u8(static_cast<uint8_t>(key_reg));
-                emit_u8(0);
+                emit_u8(constant_init ? 0x4 : 0);
             } else {
                 emit(Op::AddFieldInitializer);
                 emit_u8(static_cast<uint8_t>(ctor_reg));
                 emit_u16(add_name(e.key));
                 emit_u8(static_cast<uint8_t>((name_result ? 0x1 : 0) |
-                                             (e.key[0] == '#' ? 0x2 : 0)));
+                                             (e.key[0] == '#' ? 0x2 : 0) |
+                                             (constant_init ? 0x4 : 0)));
             }
         } else {
             // Asked before the value is compiled: compiling it is what lets
