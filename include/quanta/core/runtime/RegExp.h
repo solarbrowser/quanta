@@ -67,6 +67,13 @@ public:
     ~RegExp();
     RegExp(const RegExp&) = delete;
     RegExp& operator=(const RegExp&) = delete;
+    // A regex literal evaluates to a fresh object every time, and what it
+    // matches is fixed by its source: the compiled program is shared, and this
+    // makes the per-object part -- the flags, lastIndex and the rest of the
+    // state a match moves -- a copy of an already-built one, with none of the
+    // parsing, cache-key building or compilation a construction does.
+    struct CloneTag {};
+    RegExp(const RegExp& other, CloneTag);
 
     // `cell` is the subject's string cell when the caller has one. Passing it
     // lets the decoded units be kept for that cell instead of recognised by

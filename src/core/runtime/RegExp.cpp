@@ -198,6 +198,13 @@ RegExp::RegExp(const std::string& pattern, const std::string& flags)
     do_compile();
 }
 
+RegExp::RegExp(const RegExp& o, CloneTag)
+    : pattern_(o.pattern_), code_(o.code_), code_owner_(o.code_owner_),
+      global_(o.global_), ignore_case_(o.ignore_case_), multiline_(o.multiline_),
+      unicode_(o.unicode_), sticky_(o.sticky_), dotall_(o.dotall_),
+      unicode_sets_(o.unicode_sets_), has_indices_(o.has_indices_), last_index_(0),
+      named_groups_(o.named_groups_), backtrack_engine_(o.backtrack_engine_) {}
+
 std::string RegExp::flags_string() const {
     std::string result;
     if (has_indices_) result += 'd';

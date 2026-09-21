@@ -711,6 +711,17 @@ void Context::drain_microtasks() {
     }
 }
 
+Object* Context::regexp_prototype() const {
+    if (builtins_ && builtins_->regexp_prototype) return builtins_->regexp_prototype;
+    if (builtins_root_ && builtins_root_->builtins_) return builtins_root_->builtins_->regexp_prototype;
+    return nullptr;
+}
+
+void Context::set_regexp_prototype(Object* proto) {
+    if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
+    builtins_->regexp_prototype = proto;
+}
+
 void Context::register_built_in_object(const std::string& name, Object* object) {
     if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
     builtins_->objects[name] = object;

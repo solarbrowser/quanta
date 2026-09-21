@@ -109,6 +109,10 @@ private:
     struct BuiltinMaps {
         std::unordered_map<std::string, Object*> objects;
         std::unordered_map<std::string, Function*> functions;
+        // RegExp.prototype of this realm, kept here because a regex literal
+        // reaches for it on every evaluation and the alternative is two
+        // string-keyed lookups.
+        Object* regexp_prototype = nullptr;
     };
     std::unique_ptr<BuiltinMaps> builtins_;
 
@@ -474,6 +478,8 @@ public:
     void register_built_in_object(const std::string& name, Object* object);
     void register_built_in_function(const std::string& name, Function* function);
     Object* get_built_in_object(const std::string& name) const;
+    Object* regexp_prototype() const;
+    void set_regexp_prototype(Object* proto);
     Function* get_built_in_function(const std::string& name) const;
 
     void suspend() { state_ = State::Suspended; }

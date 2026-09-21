@@ -1853,6 +1853,7 @@ void Object::remove_own_property(const std::string& key) {
 }
 
 bool Object::delete_property(const std::string& key) {
+    note_attributes_observed(key);
     // Removing the hook is a redefinition like any other: `delete
     // Array.prototype[Symbol.iterator]` has to make array iteration stop
     // taking the shortcut, or a destructuring that must raise silently
@@ -2272,6 +2273,8 @@ bool Object::for_in_own_keys_fast(std::vector<std::string>& out) const {
 }
 
 void Object::collect_named_keys_in_order(std::vector<std::string>& raw_keys) const {
+    // Whoever enumerates goes on to ask each key's attributes.
+    note_attributes_observed("lastIndex");
     // Merges shape-resident properties (Shape::properties_in_order()) with
     // extras-resident ones by logical-clock snapshot -- the two can
     // genuinely interleave chronologically, since set_property_descriptor
@@ -2439,6 +2442,7 @@ std::vector<uint32_t> Object::get_element_indices() const {
 }
 
 PropertyDescriptor Object::get_property_descriptor(const std::string& key) const {
+    note_attributes_observed(key);
     if (get_type() == ObjectType::Array && key == "length") {
         // Spec 10.4.2: writable, not enumerable, not configurable. A stored
         // descriptor only exists once defineProperty made length non-writable.
@@ -2560,7 +2564,25 @@ bool Object::add_default_data_property(const std::string& key, const Value& valu
     return store_in_overflow(key, value);
 }
 
+void Object::init_regexp_last_index(const Value& value) {
+    Collector::write_barrier(this);
+    store_in_overflow("lastIndex", value);
+}
+
+void Object::materialize_regexp_last_index() const {
+    Object* self = const_cast<Object*>(this);
+    if (self->find_descriptor_override("lastIndex")) return;
+    const Value* slot = self->find_slot_value("lastIndex");
+    if (!slot) return;
+    // A real introduction of a descriptor on an object the caches may know, so
+    // the epoch moves, as it does for any defineProperty.
+    const Value current = *slot;
+    self->note_descriptor_key("lastIndex");
+    self->ensure_descriptors()["lastIndex"] = PropertyDescriptor(current, PropertyAttributes::Writable);
+}
+
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    note_attributes_observed(key);
     note_protector_write(this, key);   // defineProperty reaches the same slots
     switch (get_type()) {
         case ObjectType::Function: return static_cast<Function*>(this)->set_property_descriptor(key, desc);

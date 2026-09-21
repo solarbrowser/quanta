@@ -205,6 +205,16 @@ static bool regexp_write_last_index(Object* r, double value, bool& ok) {
     return true;
 }
 
+// Set(rx, "lastIndex", n, true) for a number the builtins computed. A regex
+// that has never had its attributes looked at takes the write straight into the
+// slot; anything else -- a frozen one, a subclass, an exotic receiver -- goes
+// the general way, which also asks the attributes and so writes them out.
+static bool regexp_set_last_index(Object* r, double value) {
+    bool ok = false;
+    if (regexp_write_last_index(r, value, ok)) return ok;
+    return r->set_property("lastIndex", Value(value));
+}
+
 // RegExpBuiltinExec: the match itself, with lastIndex read and written around
 // it. Shared by RegExp.prototype.exec and by the abstract operation below,
 // which needs it when a user has replaced exec with something uncallable.
@@ -241,7 +251,7 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const
     if (re->get_global() || re->get_sticky()) {
         bool li_ok;
         if (!regexp_write_last_index(r, static_cast<double>(new_last), li_ok)) {
-            li_ok = r->set_property("lastIndex", Value(static_cast<double>(new_last)));
+            li_ok = regexp_set_last_index(r, static_cast<double>(new_last));
         }
         if (!li_ok || ctx.has_exception()) {
             if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
@@ -288,7 +298,7 @@ bool regexp_builtin_test(Context& ctx, Object* r, const std::string& str, bool& 
     if (re->get_global() || re->get_sticky()) {
         bool li_ok;
         if (!regexp_write_last_index(r, static_cast<double>(re->get_last_index()), li_ok)) {
-            li_ok = r->set_property("lastIndex", Value(static_cast<double>(re->get_last_index())));
+            li_ok = regexp_set_last_index(r, static_cast<double>(re->get_last_index()));
         }
         if (!li_ok || ctx.has_exception()) {
             if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
@@ -439,7 +449,7 @@ void register_regexp_builtins(Context& ctx) {
             re->compile(pattern, flags);
             // The accessors read the implementation, which compile() just
             // rewrote in place, so nothing has to be copied out.
-            this_obj->set_property("lastIndex", Value(0.0));
+            regexp_set_last_index(this_obj, 0.0);
             return Value(this_obj);
         }, 2);
     regexp_prototype->set_property("compile", Value(compile_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -548,7 +558,7 @@ void register_regexp_builtins(Context& ctx) {
                 // key; the prototype accessors read them off the impl instead,
                 // so lastIndex is the one own property an instance has.
                 auto regex_obj = std::make_unique<RegExpObject>(regexp_impl);
-                regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())), PropertyAttributes::Writable);
+                regex_obj->init_regexp_last_index(Value(static_cast<double>(regexp_impl->get_last_index())));
                 
                 Object* regex_raw = regex_obj.release();
                 if (!new_target.is_undefined()) {
@@ -856,7 +866,7 @@ void register_regexp_builtins(Context& ctx) {
             }
             // Global: Set(rx, "lastIndex", 0, true) -- strict
             {
-                bool ok = this_obj->set_property("lastIndex", Value(0.0));
+                bool ok = regexp_set_last_index(this_obj, 0.0);
                 if (ctx.has_exception()) return Value();
                 if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
             }
@@ -895,7 +905,7 @@ void register_regexp_builtins(Context& ctx) {
                         if (match_pos < s16.size() && s16[match_pos] >= 0xD800 && s16[match_pos] <= 0xDBFF)
                             nextIdx = match_pos + 2;
                     }
-                    bool ok = this_obj->set_property("lastIndex", Value(static_cast<double>(nextIdx)));
+                    bool ok = regexp_set_last_index(this_obj, static_cast<double>(nextIdx));
                     if (ctx.has_exception()) return Value();
                     if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
                 }
@@ -951,7 +961,7 @@ void register_regexp_builtins(Context& ctx) {
                 if (reo && reo->impl() && reo->impl()->get_global() && !reo->impl()->get_sticky()) {
                     // Step 12 either way: the general path's own exec writes it
                     // back to zero when it finally fails to match.
-                    bool li_ok = this_obj->set_property("lastIndex", Value(0.0));
+                    bool li_ok = regexp_set_last_index(this_obj, 0.0);
                     if (ctx.has_exception()) return Value();
                     if (!li_ok) {
                         ctx.throw_type_error("Cannot assign to read only property 'lastIndex' of regexp");
@@ -1065,7 +1075,7 @@ void register_regexp_builtins(Context& ctx) {
                              utf16_to_wtf8(str16.data() + end_pos, str16.size() - end_pos));
             }
             // Global: Set(rx, "lastIndex", 0, true)
-            bool set_ok = this_obj->set_property("lastIndex", Value(0.0));
+            bool set_ok = regexp_set_last_index(this_obj, 0.0);
             if (ctx.has_exception()) return Value();
             if (!set_ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex' of regexp"); return Value(); }
             // cap_start/cap_count index into all_values below; groups sits at
@@ -1162,7 +1172,7 @@ void register_regexp_builtins(Context& ctx) {
                         if (thisIdxSz < str16.size() && str16[thisIdxSz] >= 0xD800 && str16[thisIdxSz] <= 0xDBFF)
                             nextIdx = thisIdxSz + 2;
                     }
-                    bool adv_ok = this_obj->set_property("lastIndex", Value(static_cast<double>(nextIdx)));
+                    bool adv_ok = regexp_set_last_index(this_obj, static_cast<double>(nextIdx));
                     if (ctx.has_exception()) return Value();
                     if (!adv_ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
                 }
@@ -1261,7 +1271,7 @@ void register_regexp_builtins(Context& ctx) {
                 return d == 0.0 && !std::signbit(d);
             };
             if (!same_value_zero(prev_last_index)) {
-                bool ok = this_obj->set_property("lastIndex", Value(0.0));
+                bool ok = regexp_set_last_index(this_obj, 0.0);
                 if (ctx.has_exception()) return Value();
                 if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
             }
@@ -1412,7 +1422,7 @@ void register_regexp_builtins(Context& ctx) {
             // Steps 17-19: p = q = 0; loop while q < size
             size_t p = 0, q = 0;
             while (q < size) {
-                bool ok = splitter->set_property("lastIndex", Value(static_cast<double>(q)));
+                bool ok = regexp_set_last_index(splitter, static_cast<double>(q));
                 if (ctx.has_exception()) return Value();
                 if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
                 Value z;
@@ -1520,7 +1530,7 @@ void register_regexp_builtins(Context& ctx) {
                         std::u16string s16 = wtf8_to_utf16(s);
                         if (idx_sz < s16.size() && s16[idx_sz] >= 0xD800 && s16[idx_sz] <= 0xDBFF) next_idx = idx_sz + 2;
                     }
-                    bool ok = r_obj->set_property("lastIndex", Value(static_cast<double>(next_idx)));
+                    bool ok = regexp_set_last_index(r_obj, static_cast<double>(next_idx));
                     if (ctx.has_exception()) return Value();
                     if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
                 }
@@ -1676,6 +1686,7 @@ void register_regexp_builtins(Context& ctx) {
     }
 
     ctx.register_built_in_object("RegExp", regexp_constructor.release());
+    ctx.set_regexp_prototype(regexp_proto_ptr);
 }
 
 } // namespace Quanta

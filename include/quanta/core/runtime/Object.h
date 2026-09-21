@@ -634,7 +634,26 @@ public:
     // object that has no such key. Returns false, having changed nothing, for
     // anything else, and the caller defines it the general way.
     bool add_default_data_property(const std::string& key, const Value& value);
+    // A RegExp's lastIndex is defined {writable} only, which no shape slot can
+    // say, so it would take a descriptor map -- most of the memory of an
+    // instance -- on every regex a program creates, nearly all of which never
+    // have their lastIndex looked at as anything but a number. The instance
+    // starts with the shape slot alone, holding the value, and no descriptor.
+    // Reads and writes of the value work as they are; what a slot cannot
+    // answer is the attributes, so anything that asks for them (a descriptor
+    // query or definition, a delete, an own-keys enumeration) first has this
+    // write the descriptor out, and from then on the object is exactly what
+    // it always was.
+    void init_regexp_last_index(const Value& value);
+    void materialize_regexp_last_index() const;
     
+    // Called by everything that reads or changes attributes, before it does: see
+    // init_regexp_last_index.
+    void note_attributes_observed(const std::string& key) const {
+        if (get_type() == ObjectType::RegExp && key.size() == 9 && key == "lastIndex") {
+            materialize_regexp_last_index();
+        }
+    }
     bool is_extensible() const;
     void prevent_extensions();
     void reopen_extensible();

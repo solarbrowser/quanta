@@ -38,7 +38,45 @@ std::unique_ptr<ASTNode> ConditionalExpression::clone() const {
 
 // Backs both RegexLiteral::evaluate and Op::CreateRegExp, so a literal cannot
 // mean one thing compiled and another interpreted.
+namespace {
+// One built RegExp per distinct (pattern, flags) a literal has evaluated, each
+// literal evaluation cloning it. Bounded the same way the compiled-program
+// cache is: when full, start over.
+constexpr size_t kLiteralCacheCap = 512;
+thread_local std::unordered_map<std::string, std::shared_ptr<const RegExp>> g_literal_regexps;
+thread_local std::string g_literal_key;
+
+// The literal as a new object, or a null value when the fast path does not
+// apply (no realm prototype yet, or a source the constructor must report).
+Value make_literal_fast(Context& ctx, const std::string& pattern, const std::string& flags) {
+    Object* proto = ctx.regexp_prototype();
+    if (!proto) return Value();
+    g_literal_key.assign(pattern);
+    g_literal_key.push_back('\0');
+    g_literal_key.append(flags);
+    auto it = g_literal_regexps.find(g_literal_key);
+    if (it == g_literal_regexps.end()) {
+        std::shared_ptr<const RegExp> built;
+        try {
+            built = std::make_shared<RegExp>(pattern, flags);
+        } catch (const std::exception&) {
+            return Value();
+        }
+        if (g_literal_regexps.size() >= kLiteralCacheCap) g_literal_regexps.clear();
+        it = g_literal_regexps.emplace(g_literal_key, std::move(built)).first;
+    }
+    auto impl = std::make_shared<RegExp>(*it->second, RegExp::CloneTag{});
+    auto object = std::make_unique<RegExpObject>(std::move(impl));
+    // Same as the constructor: lastIndex is the one own property, writable and
+    // nothing else.
+    object->init_regexp_last_index(Value(0.0));
+    object->initialize_prototype(proto);
+    return Value(object.release());
+}
+}  // namespace
+
 Value create_regexp_literal(Context& ctx, const std::string& pattern, const std::string& flags) {
+    if (Value fast = make_literal_fast(ctx, pattern, flags); !fast.is_undefined()) return fast;
     // Regex literals share the RegExp constructor implementation so exec/test and
     // lastIndex semantics can never diverge between literals and new RegExp().
     Object* ctor = ctx.get_built_in_object("RegExp");
