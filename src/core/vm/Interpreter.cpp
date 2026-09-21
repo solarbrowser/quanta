@@ -1415,27 +1415,17 @@ void set_keyed(Context& ctx, const Value& receiver, const std::string& key,
 
 // Literal `.#name` access, mirroring the tree-walker's private member paths
 // (MemberExpression::evaluate / AssignmentExpression's private branch).
-// The IC caches the site's resolved qualified key: private fields live in
-// sparse overflow (not shape slots), and a present qualified slot IS the
-// brand proof, so the fast path is one map lookup with no brand walk.
-// `owner` barriers the receiver-pointer cache below on exactly the terms
-// learn_transition/learn_proto already use elsewhere in this file.
+// The IC caches the site's resolved private key: private fields live in a small
+// array of their own (not shape slots), and a present key IS the brand proof,
+// so the fast path is a hinted index into that array with no brand walk.
 Value get_private(Context& ctx, const Value& receiver, const std::string& name, PrivateFeedback* pf, Function* owner) {
     Object* obj = as_object_like(receiver);
     if (!obj) {
         ctx.throw_type_error("Cannot read private member " + name + " from an object whose class did not declare it");
         return Value();
     }
-    // See PrivateFeedback::cached_receiver's own comment: sound with no
-    // epoch, so checked before even touching pf->qualified.
-    if (pf && pf->cached_receiver == obj) return *pf->cached_slot;
-    if (pf && !pf->qualified.empty()) {
-        if (Value* slot = obj->private_field_slot(pf->qualified)) {
-            if (owner) Collector::write_barrier(owner);
-            pf->cached_receiver = obj;
-            pf->cached_slot = slot;
-            return *slot;
-        }
+    if (pf && pf->key.valid()) {
+        if (Value* slot = obj->private_field_slot(pf->key, pf->hint)) return *slot;
     }
     if (!private_brand_check(ctx, obj, name)) {
         if (!ctx.has_exception()) {
@@ -1455,11 +1445,11 @@ Value get_private(Context& ctx, const Value& receiver, const std::string& name, 
             return getter_fn ? getter_fn->call_register_args(ctx, {}, receiver) : Value();
         }
         if (pf) {
-            if (Value* slot = obj->private_field_slot(qualified)) {
-                pf->qualified = qualified;
-                if (owner) Collector::write_barrier(owner);
-                pf->cached_receiver = obj;
-                pf->cached_slot = slot;
+            const PrivateKey key = Object::private_key_from_string(qualified);
+            uint32_t hint = 0;
+            if (Value* slot = obj->private_field_slot(key, hint)) {
+                pf->key = key;
+                pf->hint = hint;
                 return *slot;
             }
         }
@@ -1510,17 +1500,8 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
         return;
     }
     write_barrier_for(obj, value);
-    // See get_private's identical check and PrivateFeedback::cached_receiver's
-    // own comment.
-    if (pf && pf->cached_receiver == obj) { *pf->cached_slot = value; return; }
-    if (pf && !pf->qualified.empty()) {
-        if (Value* slot = obj->private_field_slot(pf->qualified)) {
-            *slot = value;
-            if (owner) Collector::write_barrier(owner);
-            pf->cached_receiver = obj;
-            pf->cached_slot = slot;
-            return;
-        }
+    if (pf && pf->key.valid()) {
+        if (Value* slot = obj->private_field_slot(pf->key, pf->hint)) { *slot = value; return; }
     }
     if (!private_brand_check(ctx, obj, name, /*require_exists=*/false)) {
         if (!ctx.has_exception()) {
@@ -1548,12 +1529,12 @@ void set_private(Context& ctx, const Value& receiver, const std::string& name,
             }
         }
         if (pf) {
-            if (Value* slot = obj->private_field_slot(qualified)) {
-                pf->qualified = qualified;
+            const PrivateKey key = Object::private_key_from_string(qualified);
+            uint32_t hint = 0;
+            if (Value* slot = obj->private_field_slot(key, hint)) {
+                pf->key = key;
+                pf->hint = hint;
                 *slot = value;
-                if (owner) Collector::write_barrier(owner);
-                pf->cached_receiver = obj;
-                pf->cached_slot = slot;
                 return;
             }
         }

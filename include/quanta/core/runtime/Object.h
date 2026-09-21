@@ -479,14 +479,23 @@ public:
     bool has_private_slot(const std::string& key) const;
     std::string find_private_slot_key(const std::string& prefix) const;
     Value get_private_slot_value(const std::string& key) const;
-    // Direct storage pointer for a plain data field in sparse overflow, or
-    // nullptr (absent, or descriptor-based: accessors/statics need the full
-    // path). Backbone of the VM's private inline cache -- the pointer is only
-    // used immediately, never stored.
-    Value* private_field_slot(const std::string& key);
+    // Direct storage pointer for a plain private data field, or nullptr (absent,
+    // or descriptor-based: accessors/statics need the full path). Backbone of the
+    // VM's private inline cache. The pointer is only used immediately, never
+    // stored: adding another private field can move the storage. `hint` is
+    // where the caller last found this key and is updated to where it is now.
+    Value* private_field_slot(const PrivateKey& key, uint32_t& hint);
     bool get_private_slot_descriptor(const std::string& key, PropertyDescriptor& out) const;
     void set_private_slot_value(const std::string& key, const Value& value);
     void add_private_field(const std::string& key, const Value& value = Value());
+    void add_private_field(const PrivateKey& key, const Value& value);
+    // Room for `count` private fields, for an instance about to receive that many.
+    void reserve_private_fields(uint32_t count);
+    // "#x@<brand>" spelled out, and back: what the string-keyed entry points
+    // above and the brand machinery still speak. A string that is not of that
+    // form (a brand slot, a bare name) is an opaque name with no holder.
+    static PrivateKey private_key_from_string(const std::string& spelled);
+    static std::string private_key_to_string(const PrivateKey& key);
 
     // Non-virtual, see has_property()'s comment above for the pattern.
     Value get_property(const std::string& key) const;
@@ -1320,8 +1329,17 @@ struct InternalSlots {
 // has (shape-resident properties order via Shape::properties_in_order()
 // instead). Bundled behind one ButterflyExtras::extras pointer (see
 // Object::peek_extras/ensure_extras) instead of four separate fields.
+// One private field of an object. Kept apart from the property tables: a private
+// name is not a property, no reflective operation may see it, and an instance
+// that has some should not look "sparse" to everything that asks.
+struct PrivateEntry {
+    PrivateKey key;
+    Value value;
+};
+
 struct RareExtras {
     std::unique_ptr<std::unordered_map<std::string, Value>> sparse_overflow;
+    std::vector<PrivateEntry> private_fields;
     std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements;
     std::unique_ptr<HybridDescriptorMap> descriptors;
     // (key, logical-insertion-clock) for extras-resident properties.
@@ -1343,6 +1361,17 @@ struct RareExtras {
 // nearly every property access, and reaching a two-line body through a call
 // costs more than the body. RareExtras has to be complete first, which is why
 // they sit below it instead of in the class.
+inline Value* Object::private_field_slot(const PrivateKey& key, uint32_t& hint) {
+    RareExtras* e = peek_extras();
+    if (!e) return nullptr;
+    auto& fields = e->private_fields;
+    if (hint < fields.size() && fields[hint].key == key) return &fields[hint].value;
+    for (uint32_t i = 0; i < fields.size(); i++) {
+        if (fields[i].key == key) { hint = i; return &fields[i].value; }
+    }
+    return nullptr;
+}
+
 inline HybridDescriptorMap* Object::descriptors() const {
     RareExtras* e = peek_extras();
     return e ? e->descriptors.get() : nullptr;
@@ -1559,6 +1588,12 @@ public:
         // to make a class inside a called function rewrite that body on every
         // evaluation.
         Object* field_inits = nullptr;
+        // What each field of field_inits is stored under, worked out the first
+        // time an instance is built and thrown away when a field is added.
+        // Public fields hold an invalid key.
+        std::vector<PrivateKey> field_keys;
+        uint32_t private_field_count = 0;
+        bool field_keys_ready = false;
         std::string pm_brand_slot;
         bool is_default_ctor = false;
         bool super_is_null = false;         // `extends null`: derived, but super() cannot succeed

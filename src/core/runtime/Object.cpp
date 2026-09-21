@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <span>
 #include "quanta/core/runtime/Object.h"
+#include "quanta/parser/NamePool.h"
 #include <new>
 #include <cstring>
 #include "quanta/core/gc/Collector.h"
@@ -121,6 +122,7 @@ void Object::trace_default(Visitor& v) {
     if (auto* so = extras->sparse_overflow.get()) {
         for (const auto& entry : *so) v.visit(entry.second);
     }
+    for (const PrivateEntry& p : extras->private_fields) v.visit(p.value);
     if (auto* in = extras->internals.get()) {
         for (int i = 0; i < in->count; i++) v.visit(in->slots[i].value);
         if (auto* ov = in->overflow.get()) {
@@ -605,6 +607,7 @@ void Function::add_field_initializer(const std::string& key, const Value& initia
     // Bit 0: the value it answers takes this field's name, which only a
     // function written anonymously in place does. Bit 1: the field is private.
     slots.field_inits->set_element(n + 2, Value(static_cast<double>(flags)));
+    slots.field_keys_ready = false;
     // What the instance is about to grow, so its storage is sized once.
     set_construct_slot_hint((n + 3) / 3);
 }
@@ -617,10 +620,29 @@ void Function::initialize_instance_fields(Context& ctx, Object* instance) const 
     const bool dense = fields->has_only_dense_elements();
     auto element = [&](uint32_t i) { return dense ? fields->get_element_unchecked(i) : fields->get_element(i); };
     uint32_t n = static_cast<uint32_t>(fields->get_length());
-    // What qualifies a private name against the object that brands it: one per
-    // instance, not one per private field.
-    bool brand_read = false;
-    std::string brand_suffix;
+    // What each private field is stored under is a property of the class, not of
+    // the instance: worked out for the first instance and kept.
+    if (!class_slots().field_keys_ready) {
+        ClassSlots& mut = const_cast<Function*>(this)->mutable_class_slots();
+        mut.field_keys.assign(n / 3, PrivateKey{});
+        mut.private_field_count = 0;
+        Value brand = get_internal_slot("__private_class_brand__");
+        Object* holder = brand.is_object() ? brand.as_object() : nullptr;
+        for (uint32_t i = 0; i + 2 < n; i += 3) {
+            const Value flags_value = element(i + 2);
+            const uint32_t flags = flags_value.is_number() ? static_cast<uint32_t>(flags_value.as_number())
+                                                            : static_cast<uint32_t>(flags_value.to_number());
+            if (!(flags & 0x2)) continue;
+            const Value key_value = element(i);
+            mut.field_keys[i / 3] = PrivateKey{reinterpret_cast<uintptr_t>(holder),
+                                                NamePool::intern(key_value.is_string() ? key_value.as_string()->str()
+                                                                                       : key_value.to_string())};
+            mut.private_field_count++;
+        }
+        mut.field_keys_ready = true;
+    }
+    const ClassSlots& cached = class_slots();
+    instance->reserve_private_fields(cached.private_field_count);
     for (uint32_t i = 0; i + 2 < n; i += 3) {
         const Value key_value = element(i);
         std::string key_copy;
@@ -654,13 +676,7 @@ void Function::initialize_instance_fields(Context& ctx, Object* instance) const 
         if (is_private) {
             // A private field is a slot of the instance's own, under the key
             // the name resolves to against the object that brands it.
-            if (!brand_read) {
-                brand_read = true;
-                Value brand = get_internal_slot("__private_class_brand__");
-                Object* holder = brand.is_object() ? brand.as_object() : nullptr;
-                if (holder) brand_suffix = "@" + std::to_string(reinterpret_cast<uintptr_t>(holder));
-            }
-            instance->add_private_field(brand_suffix.empty() ? key : key + brand_suffix, value);
+            instance->add_private_field(cached.field_keys[i / 3], value);
             continue;
         }
         // CreateDataPropertyOrThrow: an earlier field's initializer can have
@@ -706,9 +722,6 @@ void Function::trace_default(Visitor& v) {
     // individually re-affirm reachability).
     if (executable_) executable_->trace_chunks_unconditional(v);
     if (NonNativeInstanceData* d = instance_data()) {
-        for (auto& pf : d->feedback.private_feedback) {
-            v.visit_object(pf.cached_receiver);
-        }
         if (d->class_slots) {
             v.visit_object(d->class_slots->home_object);
             v.visit_object(d->class_slots->super_ctor);
@@ -807,7 +820,37 @@ bool Object::has_property(const std::string& key) const {
     }
 }
 
+PrivateKey Object::private_key_from_string(const std::string& spelled) {
+    // "#name@<decimal holder>": the last '@' splits it, and only a canonical
+    // decimal after it counts, so that turning the key back into a string gives
+    // the same string.
+    const size_t at = spelled.rfind('@');
+    if (at != std::string::npos && at + 1 < spelled.size() && at > 0) {
+        const char* digits = spelled.c_str() + at + 1;
+        bool canonical = digits[0] != '0';
+        for (const char* c = digits; canonical && *c; ++c) canonical = *c >= '0' && *c <= '9';
+        if (canonical) {
+            return PrivateKey{static_cast<uintptr_t>(std::strtoull(digits, nullptr, 10)),
+                              NamePool::intern(std::string_view(spelled.data(), at))};
+        }
+    }
+    return PrivateKey{0, NamePool::intern(spelled)};
+}
+
+std::string Object::private_key_to_string(const PrivateKey& key) {
+    const std::string& name = NamePool::text(key.name);
+    return key.holder ? name + "@" + std::to_string(key.holder) : name;
+}
+
 void Object::add_private_field(const std::string& key, const Value& value) {
+    add_private_field(private_key_from_string(key), value);
+}
+
+void Object::reserve_private_fields(uint32_t count) {
+    if (count) ensure_extras().private_fields.reserve(count);
+}
+
+void Object::add_private_field(const PrivateKey& key, const Value& value) {
     Collector::write_barrier(this);
     // PrivateFieldAdd: creates the private field slot on this instance.
     // Spec: if object is not extensible, throw TypeError.
@@ -817,32 +860,27 @@ void Object::add_private_field(const std::string& key, const Value& value) {
         }
         return;
     }
-    auto& overflow = ensure_sparse_overflow();
-    if (overflow.find(key) != overflow.end()) {
-        // PrivateFieldAdd/PrivateMethodOrAccessorAdd: an existing entry is a TypeError
-        // (e.g. the same instance re-entering construction via a return-override trick).
-        if (current_context_) {
-            current_context_->throw_type_error("Cannot initialize the same private element twice on an object");
+    auto& fields = ensure_extras().private_fields;
+    for (const PrivateEntry& e : fields) {
+        if (e.key == key) {
+            // PrivateFieldAdd/PrivateMethodOrAccessorAdd: an existing entry is a TypeError
+            // (e.g. the same instance re-entering construction via a return-override trick).
+            if (current_context_) {
+                current_context_->throw_type_error("Cannot initialize the same private element twice on an object");
+            }
+            return;
         }
-        return;
     }
-    overflow[key] = value;
-    push_extra_property_order(key);
-}
-
-Value* Object::private_field_slot(const std::string& key) {
-    auto* so = sparse_overflow();
-    if (!so) return nullptr;
-    auto it = so->find(key);
-    return it != so->end() ? &it->second : nullptr;
+    fields.push_back(PrivateEntry{key, value});
 }
 
 std::string Object::find_private_slot_key(const std::string& prefix) const {
     // Raw prefix scan over private storage -- get_own_property_keys hides
     // qualified slots, so resumed-async private resolution can't use it.
-    if (auto* so = sparse_overflow()) {
-        for (const auto& p : *so) {
-            if (p.first.compare(0, prefix.size(), prefix) == 0) return p.first;
+    if (RareExtras* e = peek_extras()) {
+        for (const PrivateEntry& p : e->private_fields) {
+            std::string spelled = private_key_to_string(p.key);
+            if (spelled.compare(0, prefix.size(), prefix) == 0) return spelled;
         }
     }
     if (auto* d = descriptors()) {
@@ -869,9 +907,11 @@ bool Object::get_private_slot_descriptor(const std::string& key, PropertyDescrip
 Value Object::get_private_slot_value(const std::string& key) const {
     // Raw read of a private slot (mirrors has_private_slot's storage order);
     // never fires Proxy traps or accessors.
-    if (auto* so = sparse_overflow()) {
-        auto it = so->find(key);
-        if (it != so->end()) return it->second;
+    if (RareExtras* e = peek_extras(); e && !e->private_fields.empty()) {
+        const PrivateKey pk = private_key_from_string(key);
+        for (const PrivateEntry& p : e->private_fields) {
+            if (p.key == pk) return p.value;
+        }
     }
     if (auto* d = descriptors()) {
         auto* it = d->find(key);
@@ -883,9 +923,11 @@ Value Object::get_private_slot_value(const std::string& key) const {
 void Object::set_private_slot_value(const std::string& key, const Value& value) {
     // Raw write of an EXISTING private slot; never fires Proxy traps.
     Collector::write_barrier(this);
-    if (auto* so = sparse_overflow()) {
-        auto it = so->find(key);
-        if (it != so->end()) { it->second = value; return; }
+    if (RareExtras* e = peek_extras(); e && !e->private_fields.empty()) {
+        const PrivateKey pk = private_key_from_string(key);
+        for (PrivateEntry& p : e->private_fields) {
+            if (p.key == pk) { p.value = value; return; }
+        }
     }
     if (auto* d = descriptors()) {
         auto* it = d->find(key);
@@ -900,8 +942,11 @@ bool Object::has_private_slot(const std::string& key) const {
     if (auto* d = descriptors()) {
         if (d->find(key)) return true;
     }
-    if (auto* so = sparse_overflow()) {
-        if (so->find(key) != so->end()) return true;
+    if (RareExtras* e = peek_extras(); e && !e->private_fields.empty()) {
+        const PrivateKey pk = private_key_from_string(key);
+        for (const PrivateEntry& p : e->private_fields) {
+            if (p.key == pk) return true;
+        }
     }
     return false;
 }
@@ -3799,6 +3844,7 @@ void Object::clear_properties() {
     }
     if (RareExtras* extras = peek_extras()) {
         extras->extra_property_order.clear();
+        extras->private_fields.clear();
         extras->next_order_snapshot = 0;
     }
 

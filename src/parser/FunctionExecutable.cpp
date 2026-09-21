@@ -138,11 +138,9 @@ void FunctionExecutable::gc_trace_roots(Visitor& v) {
 // Parameter default/pattern chunks always run with owner == nullptr
 // (run_default_value/run_pattern_binder never pass one) and rooted == false
 // (their chunks never set script_mode), so none of the GC-cell-bearing
-// learn_* paths in Interpreter.cpp ever populate them -- except
-// get_private/set_private's unconditional cached_receiver write, which has
-// no barrier at all in that case. No reliable per-write dirty signal exists
-// for these two chunks, so both trace methods below always retrace them,
-// exactly as gc_trace_roots did before this change. A suspendable function's
+// learn_* paths in Interpreter.cpp populate them. They carry no per-write
+// dirty signal, so both trace methods below always retrace them, exactly as
+// gc_trace_roots did before this change. A suspendable function's
 // parameter defaults are chunks of their own, reached from nothing else.
 static void trace_parameter_chunks(const std::vector<std::unique_ptr<Parameter>>& parameter_objects, Visitor& v) {
     for (const auto& p : parameter_objects) {

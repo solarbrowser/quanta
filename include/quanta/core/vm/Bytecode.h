@@ -677,33 +677,35 @@ struct FeedbackSlot {
     }
 };
 
-// Inline cache for one GetPrivate/SetPrivate site: the resolved qualified
-// key ("#x@<brand>"). Once resolved, the per-access brand walk (CallStack
-// scan + key concatenation) is gone; presence of the qualified slot on the
-// receiver IS the brand check -- but that's only sound per class evaluation
-// (the qualified key encodes ITS declaring brand), and a chunk can now be
-// shared across many Function instances from separate evaluations of the
-// same class/function literal (see FunctionExecutable). So this struct is
-// only chunk-owned for chunks that are inherently single-instance (the
-// top-level script chunk); every other call routes through the calling
-// Function's own instance_private_feedback() instead -- see Interpreter.cpp's
-// private_feedback_data comment, the same routing as lookup_cache_data/
-// instance_lookup_cache().
+// What a private field is stored under: the class that declares it (the address
+// of the brand holder, which is what "#x@<brand>" spelled out) and the name.
+// The name is an interned id, so telling two apart is two integer compares
+// where the spelled-out form was a string hash and a string compare, and no
+// instance has to build a string to hold one.
+struct PrivateKey {
+    uintptr_t holder = 0;
+    uint32_t name = 0;  // NamePool id; 0 is never handed out for a real name
+    bool operator==(const PrivateKey& o) const { return holder == o.holder && name == o.name; }
+    bool valid() const { return name != 0; }
+};
+
+// Inline cache for one GetPrivate/SetPrivate site: the resolved key of the
+// field it names. Once resolved, the per-access brand walk (CallStack scan +
+// key concatenation) is gone; presence of the key on the receiver IS the brand
+// check -- but that's only sound per class evaluation (the key encodes ITS
+// declaring brand), and a chunk can now be shared across many Function
+// instances from separate evaluations of the same class/function literal (see
+// FunctionExecutable). So this struct is only chunk-owned for chunks that are
+// inherently single-instance (the top-level script chunk); every other call
+// routes through the calling Function's own instance_private_feedback()
+// instead -- see Interpreter.cpp's private_feedback_data comment, the same
+// routing as lookup_cache_data/instance_lookup_cache().
 struct PrivateFeedback {
-    std::string qualified;  // empty until the slow path resolves a data field
-    // Monomorphic receiver-pointer cache, one step past `qualified`: skips
-    // even the sparse_overflow_ hash lookup that a qualified-only hit still
-    // pays every time. Sound with no epoch, unlike every other pointer cache
-    // in this file: sparse_overflow_ is a std::unordered_map, whose value
-    // pointers survive rehashing and the insertion/erasure of OTHER keys --
-    // the standard guarantees a pointer to an element is invalidated only by
-    // erasing that SAME element -- and a private field has no delete syntax,
-    // so once learned for a given receiver this pointer is good for the
-    // receiver's whole lifetime. A different receiver at the same call site
-    // (a polymorphic access pattern) just falls back to the qualified-keyed
-    // path below, same cost as before this cache existed.
-    Object* cached_receiver = nullptr;
-    Value* cached_slot = nullptr;
+    PrivateKey key;  // not valid until the slow path resolves a data field
+    // Where in a receiver's private fields the last hit sat. Instances of one
+    // class lay theirs out the same way, so this is right for the next
+    // receiver too, which a pointer to one receiver's slot never was.
+    uint32_t hint = 0;
 };
 
 // Inline cache for one GetKeyed/SetKeyed site. FeedbackSlot (GetNamed/
