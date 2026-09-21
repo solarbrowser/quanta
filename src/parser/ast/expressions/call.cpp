@@ -215,6 +215,13 @@ Value perform_super_call(Context& ctx, std::span<const Value> arg_values,
                 // with parent_func's own answer -- nothing more to do here.
             } else if (this_obj) {
                 Value this_value(this_obj);
+                // Called rather than constructed, so a base class's own fields
+                // and private-method brand are put on `this` here, ahead of its
+                // body -- the step [[Construct]] would have taken.
+                if (!parent_func->is_native()) {
+                    parent_func->initialize_base_instance(ctx, this_obj);
+                    if (ctx.has_exception()) return Value();
+                }
                 result = parent_func->call(ctx, parent_args, this_value);
                 // call() has no auto-super/this-value swapping machinery of its
                 // own, so any differing result is either parent_func's own JS

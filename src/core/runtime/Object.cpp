@@ -698,6 +698,13 @@ void Function::initialize_instance_fields(Context& ctx, Object* instance) const 
     }
 }
 
+void Function::initialize_base_instance(Context& ctx, Object* instance) const {
+    if (is_derived_ctor() || !instance) return;
+    const std::string& base_pm_slot = pm_brand_slot();
+    if (!base_pm_slot.empty()) instance->add_private_field(base_pm_slot);
+    if (field_initializers()) initialize_instance_fields(ctx, instance);
+}
+
 void Function::trace_default(Visitor& v) {
     Object::trace_default(v);
     v.visit_context(closure_context_);

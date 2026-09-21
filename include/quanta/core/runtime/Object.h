@@ -1894,6 +1894,11 @@ public:
     // Runs them against a freshly built instance: spec 7.3.32 DefineField, so
     // an own property each time, never a set through the prototype.
     void initialize_instance_fields(Context& ctx, Object* instance) const;
+    // InitializeInstanceElements for a base class: its private-method brand and
+    // its fields, put on an object that already exists. [[Construct]] does this
+    // for the class it builds; a base class run as some derived class's super
+    // constructor is only called, so whoever calls it does it first.
+    void initialize_base_instance(Context& ctx, Object* instance) const;
     void set_super_is_null() { mutable_class_slots().super_is_null = true; }
     void set_default_ctor() { mutable_class_slots().is_default_ctor = true; }
     void set_static_method() { mutable_class_slots().is_static_method = true; }

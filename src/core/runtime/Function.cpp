@@ -1792,12 +1792,8 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
     // brand out of the constructor's body, which is what forced that body to be
     // rebuilt on every evaluation of the class.
     if (!is_derived_ctor()) {
-        const std::string& base_pm_slot = pm_brand_slot();
-        if (!base_pm_slot.empty()) new_object->add_private_field(base_pm_slot);
-        if (field_initializers()) {
-            initialize_instance_fields(ctx, new_object.get());
-            if (ctx.has_exception()) return Value();
-        }
+        initialize_base_instance(ctx, new_object.get());
+        if (ctx.has_exception()) return Value();
     }
 
     // These flags live on the shared Context, so a `new` evaluated inside a
@@ -1856,7 +1852,16 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
             // Known non-native here (is_native() was false above), and
             // call_register_args has no auto-super/this-value swapping
             // machinery of its own -- any differing result is this
-            // constructor's own explicit return.
+            // constructor's own explicit return. It is only called, not
+            // constructed, so a base class's own fields go on first.
+            if (this_value.is_object()) {
+                super_constructor->initialize_base_instance(ctx, this_value.as_object());
+                if (ctx.has_exception()) {
+                    ctx.set_in_constructor_call(false);
+                    ctx.set_new_target(old_new_target);
+                    return Value();
+                }
+            }
             super_result = super_constructor->call_register_args(ctx, args, this_value);
             ctx.set_last_construct_explicit_return(true);
         }
