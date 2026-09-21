@@ -353,18 +353,7 @@ Value AsyncFunction::call(Context& ctx, std::span<const Value> args, Value recei
     // needs it, mirroring Function::call.
     if (!is_arrow() && !param_named_arguments &&
         (!susp_chunk || susp_chunk->needs_arguments || params_need_arguments)) {
-        auto arguments_obj = ObjectFactory::create_array(args.size());
-        // Retype before touching length: an array's length is non-configurable
-        // and lives in the butterfly header, while Arguments needs a real,
-        // configurable own property.
-        arguments_obj->set_type(Object::ObjectType::Arguments);
-        for (size_t i = 0; i < args.size(); ++i) {
-            arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
-        }
-        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
-        arguments_obj->set_type(Object::ObjectType::Arguments);
-        setup_mapped_arguments(*exec_ctx, args, arguments_obj.get());
-        exec_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+        create_arguments_object(*exec_ctx, args);
     }
 
     if (!param_objs.empty()) {
@@ -1800,18 +1789,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, std::span<const Value> args, Va
 
     // arguments object -- skipped when nothing needs it, mirroring Function::call.
     if (!susp_chunk || susp_chunk->needs_arguments || params_need_arguments) {
-        auto arguments_obj = ObjectFactory::create_array(args.size());
-        // Retype before touching length: an array's length is non-configurable
-        // and lives in the butterfly header, while Arguments needs a real,
-        // configurable own property.
-        arguments_obj->set_type(Object::ObjectType::Arguments);
-        for (size_t i = 0; i < args.size(); ++i) {
-            arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
-        }
-        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
-        arguments_obj->set_type(Object::ObjectType::Arguments);
-        setup_mapped_arguments(*gen_ctx, args, arguments_obj.get());
-        gen_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+        create_arguments_object(*gen_ctx, args);
     }
 
     // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.
