@@ -969,6 +969,28 @@ void set_named(Context& ctx, const Value& receiver, const std::string& name,
         }
     }
 
+    // A megamorphic site (too many distinct shapes for the two loops above to
+    // have a cache entry for this one) still owns `name` as a plain own data
+    // slot on most of them. No descriptor map at all means the shape's
+    // default attributes apply -- writable among them, same as get_named's
+    // own equivalent reasons about the read side -- so the shape alone
+    // answers where the write goes: one lookup, instead of falling to
+    // ordinary_set's own has_own_property probe and then set_property's full
+    // re-derivation of the very same slot. Learned exactly as the post-call
+    // path below would for a shape this site has not cached yet, so a
+    // growing (not yet mega) site warms up here too, not just a saturated one.
+    if (ordinary_recv && !obj->has_any_descriptor_override()) {
+        Shape* shape = obj->get_shape();
+        int32_t idx = shape ? shape->find_data_slot(name) : -1;
+        if (idx >= 0) {
+            *obj->get_shape_slot_unchecked(idx) = value;
+            if (fb_slot && !(fb && fb->mega)) {
+                learn_feedback(fb_slot, shape, static_cast<uint32_t>(idx));
+            }
+            return;
+        }
+    }
+
     // Transition-cache: adding a brand-new own property. A hit skips both
     // Shape::transition(key)'s hash lookup and ordinary_set's prototype-chain
     // walk below -- safe only while proto_epoch() still matches what it was
