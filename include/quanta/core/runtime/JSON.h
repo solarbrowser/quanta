@@ -49,6 +49,8 @@ public:
     using SourceMap = std::unordered_map<Object*, std::unordered_map<std::string, std::pair<std::string, Value>>>;
 
 public:
+    // track_source (private overload's flag) is implied by which parse() overload
+    // is called: only the one that hands back a SourceMap builds one.
     static Value parse(const std::string& json_string, const ParseOptions& options = ParseOptions());
     static Value parse(const std::string& json_string, const ParseOptions& options, SourceMap& out_source_map,
         std::string& out_root_source);
@@ -70,9 +72,14 @@ private:
         ParseOptions options_;
         SourceMap source_map_;
         std::string root_source_;
+        // Whether record_source has anything to do: only the json-parse-with-source
+        // reviver path ever reads source_map_ back (the plain 2-arg parse() discards
+        // it with the Parser itself), and building it costs a substr and a map
+        // insert per primitive child -- real cost for a call that never wanted it.
+        bool track_source_;
 
     public:
-        Parser(const std::string& json, const ParseOptions& options);
+        Parser(const std::string& json, const ParseOptions& options, bool track_source = false);
 
         Value parse();
         const SourceMap& source_map() const { return source_map_; }

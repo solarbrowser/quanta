@@ -20,13 +20,13 @@ namespace Quanta {
 
 
 Value JSON::parse(const std::string& json_string, const ParseOptions& options) {
-    Parser parser(json_string, options);
+    Parser parser(json_string, options, /*track_source=*/false);
     return parser.parse();
 }
 
 Value JSON::parse(const std::string& json_string, const ParseOptions& options, SourceMap& out_source_map,
         std::string& out_root_source) {
-    Parser parser(json_string, options);
+    Parser parser(json_string, options, /*track_source=*/true);
     Value result = parser.parse();
     out_source_map = parser.source_map();
     out_root_source = parser.root_source();
@@ -323,8 +323,9 @@ std::unique_ptr<Object> JSON::create_json_object() {
 }
 
 
-JSON::Parser::Parser(const std::string& json, const ParseOptions& options) 
-    : json_(json), position_(0), line_(1), column_(1), depth_(0), options_(options) {
+JSON::Parser::Parser(const std::string& json, const ParseOptions& options, bool track_source)
+    : json_(json), position_(0), line_(1), column_(1), depth_(0), options_(options),
+      track_source_(track_source) {
 }
 
 Value JSON::Parser::parse() {
@@ -349,6 +350,7 @@ Value JSON::Parser::parse() {
 }
 
 void JSON::Parser::record_source(Object* parent, const std::string& key, size_t start, const Value& value) {
+    if (!track_source_) return;
     if (!(value.is_number() || value.is_boolean() || value.is_string() || value.is_null())) return;
     source_map_[parent][key] = {json_.substr(start, position_ - start), value};
 }
