@@ -2419,6 +2419,19 @@ std::vector<std::string> Object::get_enumerable_keys() const {
 
 std::vector<std::string> Object::get_enumerable_keys_default() const {
     std::vector<std::string> keys;
+    // A shape-resident property of a plain object with no descriptor map
+    // carries the shape's own default attributes -- enumerable among them --
+    // so asking each one's descriptor back is asking a question the shape
+    // already answered by construction. include_symbols=true to match this
+    // function's own contract: Object.assign and CopyDataProperties both read
+    // enumerable own SYMBOL properties through here too, filtered back out by
+    // the few callers (Object.keys and friends) that must exclude them.
+    if (for_each_own_enumerable_fast(
+            [&](const std::string& k, uint32_t, bool) { keys.push_back(k); },
+            /*include_symbols=*/true)) {
+        return keys;
+    }
+
     auto all_keys = get_own_property_keys();
 
     for (const auto& key : all_keys) {
