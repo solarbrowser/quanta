@@ -307,6 +307,18 @@ validate: CXXFLAGS += -DQUANTA_VALIDATE_BYTECODE
 validate: all
 
 asan: CXXFLAGS += $(ASAN_FLAGS)
+# mimalloc's global operator new/delete override and ASan's own allocator
+# interception both want to own the same symbols; linked together, some
+# allocations end up on the side the other doesn't track, which ASan then
+# reports as a heap-buffer-overflow on a "wild pointer" it has no allocation
+# record for -- an allocator collision, not a bug in anything Quanta itself
+# allocates. Found chasing what looked like a real corruption in Environment's
+# call-frame allocation (code.js under this target, 100% reproducible): the
+# same crash persisted across every candidate fix in that code, but vanished
+# for good the moment this object was left off the link line, on the same
+# binary otherwise. Left out of this target only -- the normal build still
+# gets mimalloc.
+asan: MIMALLOC_OVERRIDE_OBJ :=
 asan: all
 	@echo ""
 	@echo "  [NOTE] Run with: ASAN_OPTIONS=detect_stack_use_after_return=0 $(BIN_DIR)/quanta$(EXE_EXT) <script.js>"
