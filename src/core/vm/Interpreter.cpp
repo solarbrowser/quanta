@@ -665,6 +665,26 @@ Value get_named(Context& ctx, const Value& receiver, const std::string& name,
             }
         }
     }
+    // Own data property, nothing shadowing it: the common case for an
+    // Ordinary receiver, cacheable or not. get_property_descriptor() below
+    // answers the same question by building a whole PropertyDescriptor first
+    // -- attributes nobody asked for, on top of the very shape lookup this
+    // does directly -- which a megamorphic site (cacheable false, so it never
+    // reaches the entries loop above) paid on every single read with no cache
+    // to show for it. Checked ahead of the accessor branch below for the same
+    // reason that branch runs before get_property()'s own shortcuts: this can
+    // only be right for a receiver defineProperty has not touched, which
+    // !override_desc already established.
+    if (!override_desc) {
+        Value fast_value;
+        if (obj->try_read_own_data_slot(name, fast_value)) {
+            if (cacheable) {
+                int32_t idx = obj_shape ? obj_shape->find_slot(name) : -1;
+                if (idx >= 0) learn_feedback(fb_slot, obj_shape, static_cast<uint32_t>(idx));
+            }
+            return fast_value;
+        }
+    }
     // An own accessor must run before get_property()'s type-specific
     // shortcuts, which don't know about one installed via defineProperty.
     if (obj->get_type() != Object::ObjectType::Proxy) {
