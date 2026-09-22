@@ -38,6 +38,18 @@ private:
     std::shared_ptr<void> code_owner_;  // owns code_ (frees it via pcre2_code_free);
                                          // shared across every RegExp with the same
                                          // (pattern,flags) via the compiled-pattern cache
+    // pcre2_match_data* scratch space for a match against code_, sized to its
+    // capture count and reused call to call instead of allocated and freed
+    // around every single test()/exec()/replace. Never shared with another
+    // RegExp, even one cloned from the same compiled code: reentrant use of
+    // ONE instance is safe (the ovector is always copied out before any JS
+    // callback can run), sharing across two live instances would not be.
+    // Freed and reset to null whenever code_ changes, since a different
+    // pattern's capture count needs a differently-sized one.
+    void* match_data_ = nullptr;
+    // ensure_match_data's own lazy build, out of line: it is pcre2 API, kept
+    // out of this header the same reason code_/code_owner_ already are.
+    void* ensure_match_data();
     bool global_;
     bool ignore_case_;
     bool multiline_;
@@ -67,6 +79,8 @@ public:
     ~RegExp();
     RegExp(const RegExp&) = delete;
     RegExp& operator=(const RegExp&) = delete;
+    RegExp(RegExp&&) = delete;
+    RegExp& operator=(RegExp&&) = delete;
     // A regex literal evaluates to a fresh object every time, and what it
     // matches is fixed by its source: the compiled program is shared, and this
     // makes the per-object part -- the flags, lastIndex and the rest of the

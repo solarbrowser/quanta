@@ -23,7 +23,7 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(RegExp) == 112);
+static_assert(sizeof(RegExp) == 120);
 #else
 static_assert(sizeof(RegExp) <= 160);
 #endif
@@ -220,6 +220,14 @@ std::string RegExp::flags_string() const {
 
 RegExp::~RegExp() {
     // code_owner_'s deleter (if this was the last reference) frees code_.
+    if (match_data_) pcre2_match_data_free(static_cast<pcre2_match_data*>(match_data_));
+}
+
+void* RegExp::ensure_match_data() {
+    if (!match_data_ && code_) {
+        match_data_ = pcre2_match_data_create_from_pattern(static_cast<pcre2_code*>(code_), nullptr);
+    }
+    return match_data_;
 }
 
 void RegExp::parse_flags(const std::string& flags) {
@@ -2266,6 +2274,12 @@ static void validate_js_modifiers(const std::string& pat) {
 }
 
 void RegExp::do_compile() {
+    // Whatever code_ ends up as below, any match_data_ sized for the old one
+    // (if this is a recompile, not a fresh construction) no longer fits.
+    if (match_data_) {
+        pcre2_match_data_free(static_cast<pcre2_match_data*>(match_data_));
+        match_data_ = nullptr;
+    }
     std::string cache_key;
     if (!g_regexp_validation_only) {
         cache_key = pattern_;
@@ -2637,7 +2651,7 @@ bool RegExp::test(const std::string& str, const String* cell) {
     } else {
         if (!code_) return false;
         pcre2_code* re = static_cast<pcre2_code*>(code_);
-        pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+        pcre2_match_data* md = static_cast<pcre2_match_data*>(ensure_match_data());
         if (!md) return false;
 
         int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
@@ -2649,7 +2663,6 @@ bool RegExp::test(const std::string& str, const String* cell) {
             if (sticky_ && ov[0] != start) found = false;
             else match_end = ov[1];
         }
-        pcre2_match_data_free(md);
     }
 
     if (found && (global_ || sticky_)) {
@@ -2678,7 +2691,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     std::u16string_view subject = sanitized.empty() ? orig : std::u16string_view(sanitized);
 
     pcre2_code* re = static_cast<pcre2_code*>(code_);
-    pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+    pcre2_match_data* md = static_cast<pcre2_match_data*>(ensure_match_data());
     if (!md) return false;
 
     out.clear();
@@ -2707,7 +2720,6 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
             pos++;
         }
     }
-    pcre2_match_data_free(md);
     out += utf16_to_wtf8(orig.data() + copied, orig.size() - copied);
     // The general path leaves it here too: the exec that finally fails resets it.
     last_index_ = 0;
@@ -2778,7 +2790,7 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
     } else {
         if (!code_) return Value::null();
         pcre2_code* re = static_cast<pcre2_code*>(code_);
-        pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+        pcre2_match_data* md = static_cast<pcre2_match_data*>(ensure_match_data());
         if (!md) return Value::null();
 
         int rc = run_match(re, reinterpret_cast<PCRE2_SPTR>(subject.data()), subject.size(),
@@ -2795,7 +2807,6 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
                 reset_stale_captures(pattern_, saved, capture_count);
             }
         }
-        pcre2_match_data_free(md);
     }
 
     if (!found) {
