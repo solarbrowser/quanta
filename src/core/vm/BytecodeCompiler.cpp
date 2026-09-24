@@ -6989,7 +6989,20 @@ void BytecodeCompiler::emit(Op op) {
     if (op == Op::LdaLookup || op == Op::StaLookup ||
         op == Op::LdaLookupWide || op == Op::StaLookupWide ||
         op == Op::CheckLookupResolvable || op == Op::StaLookupChecked) chunk_->uses_lookup_cache = true;
-    if (op == Op::CreateClosure) chunk_->has_nested_closures = true;
+    // DeclareFunction is the other opcode that hands out a real, escaping
+    // closure (it calls instantiate_closure exactly like CreateClosure does
+    // -- see language.cpp's declare_function) but was never counted here:
+    // a hoisted function declaration is not what this flag's name suggests.
+    // The gap it left: fast_no_closures-gated code skips marking the OUTER
+    // environment chain escaped ("only a chunk that emits Op::CreateClosure
+    // can make it outlive the call"), which was never true for a chunk whose
+    // only escaping op was this one -- the closure it hands out correctly
+    // gets its OWN environment marked (capture_closure_environment runs
+    // regardless), but that environment's own outer_environment_ chain
+    // could still be freed out from under it the moment ITS OWN owning call
+    // returns, since nothing told it anything downstream still points in.
+    if (op == Op::CreateClosure || op == Op::DeclareFunction || op == Op::DeclareFunctionWide)
+        chunk_->has_nested_closures = true;
     // super.x/super.x=/super[expr] all read `this` too, as the receiver an
     // accessor they find is called with (or, for ResolveSuperBase, as the
     // fallback resolve_super_base(ctx, owner) reads when owner has no home

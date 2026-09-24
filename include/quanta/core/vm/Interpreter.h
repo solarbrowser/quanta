@@ -43,12 +43,21 @@ struct CallInfo {
 // when GetNamed's prototype-chain cache learns a new holder/prototype
 // reference (see FeedbackSlot::ProtoEntry). Null for run_script's ownerless
 // top-level chunk -- that cache is simply inert there (see run_script).
-// call_info: a fast_gate call's own lexical/variable environment, non-null
-// only once that path stops pool-acquiring its own Context -- null
+// call_info: this call's own lexical/variable environment when ctx is not a
+// freshly acquired Context of its own (a fast_gate call sharing the caller's
+// Context; an env-mode call doing the same once one exists) -- null
 // everywhere else, unaffected.
+// final_lexical_env: filled with whatever ended up open when the call
+// returns -- call_info's own value if the chunk never pushed a block scope,
+// deeper if it pushed one and returned/threw without popping back out (the
+// same "abandoned block scope" case Context::release_owned_env's own comment
+// describes). Only meaningful (and only ever written) when call_info is
+// non-null; a caller whose ctx owns its environment the ordinary way already
+// gets this from ctx itself and passes nullptr here.
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
           const Value* this_val = nullptr, Function* owner = nullptr,
-          const Value* initial_acc = nullptr, const CallInfo* call_info = nullptr);
+          const Value* initial_acc = nullptr, const CallInfo* call_info = nullptr,
+          Environment** final_lexical_env = nullptr);
 
 // Compiles a generator/async BODY for the suspendable calling convention
 // (bindings already live in ctx; yield/await suspend the fiber from inside

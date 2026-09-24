@@ -648,6 +648,11 @@ std::vector<const std::vector<Value>*>& value_vector_roots() {
     return roots;
 }
 
+std::vector<Environment* const*>& environment_roots() {
+    static thread_local std::vector<Environment* const*> roots;
+    return roots;
+}
+
 std::vector<const FixedArray<Value>*>& value_array_roots() {
     static thread_local std::vector<const FixedArray<Value>*> roots;
     return roots;
@@ -962,6 +967,7 @@ void run_minor_collection() {
     for (Engine* engine : Engine::all_engines())
         for (ExecContextScope* s = engine->exec_top_scope(); s; s = s->prev())
             v.visit_context(s->context());
+    for (Environment* const* env_ptr : environment_roots()) v.visit_environment(*env_ptr);
     for (const std::vector<Value>* vec : value_vector_roots())
         for (const Value& val : *vec) v.visit(val);
     for (const FixedArray<Value>* arr : value_array_roots())
@@ -1097,6 +1103,7 @@ void scan_major_roots(MarkVisitor& v) {
     for (Engine* engine : Engine::all_engines())
         for (ExecContextScope* s = engine->exec_top_scope(); s; s = s->prev())
             v.revisit_context(s->context());
+    for (Environment* const* env_ptr : environment_roots()) v.visit_environment(*env_ptr);
     for (const std::vector<Value>* vec : value_vector_roots())
         for (const Value& val : *vec) v.visit(val);
     for (const FixedArray<Value>* arr : value_array_roots())
@@ -1493,6 +1500,24 @@ void Collector::release_env(Environment* env) {
     pending_env_frees().push_back(env);
 }
 
+void Collector::release_env_deferred(Environment* env) {
+    if (!env) return;
+    // Always the pending_env_frees() path above, never provably_unreachable()'s
+    // immediate delete -- see Function.cpp's fast_no_closures release loop and
+    // frame_pop_block_scope's call_info branch, the only two callers. Both
+    // release an Environment that a sibling call may have taken as its OWN
+    // outer_env (Function::get_closure_environment() at a fresh call's entry,
+    // or Op::DeclareFunction's capture) without that reference ever
+    // constructing a real Environment(type, outer) edge to bump inner_count_
+    // by -- a Function's closure_environment_/closure_context_ is a direct
+    // pointer, not another Environment naming this one as its outer, so
+    // provably_unreachable()'s inner_count_ term cannot see it. A completed
+    // major mark can: it walks the real object graph (Function::gc_trace ->
+    // closure_environment_), not this one proxy for it.
+    g_pending_env_bytes += env->footprint_bytes();
+    pending_env_frees().push_back(env);
+}
+
 void Collector::safepoint_slow() {
     // QUANTA_GC_STRESS: "2" = minor at every safepoint (write-barrier soak,
     // full every 64th); any other truthy value = full at every safepoint.
@@ -1591,6 +1616,19 @@ void Collector::pop_value_vector(const std::vector<Value>* vec) {
     if (!roots.empty() && roots.back() == vec) { roots.pop_back(); return; }
     for (size_t i = roots.size(); i-- > 0;) {
         if (roots[i] == vec) { roots.erase(roots.begin() + i); return; }
+    }
+}
+
+void Collector::push_environment_root(Environment* const* env_ptr) {
+    environment_roots().push_back(env_ptr);
+}
+
+void Collector::pop_environment_root(Environment* const* env_ptr) {
+    auto& roots = environment_roots();
+    // Almost always LIFO (a call returns before its caller); fast-path the back.
+    if (!roots.empty() && roots.back() == env_ptr) { roots.pop_back(); return; }
+    for (size_t i = roots.size(); i-- > 0;) {
+        if (roots[i] == env_ptr) { roots.erase(roots.begin() + i); return; }
     }
 }
 

@@ -9,6 +9,7 @@
 #include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Generator.h"
@@ -21,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 
 #ifndef LIKELY
 #ifdef __GNUC__
@@ -1707,17 +1709,123 @@ struct Frame {
     // still hold the CALLER's environment) are not the source of truth.
     // Stack-resident only, built fresh per call, never escapes past it.
     const CallInfo* call_info = nullptr;
+    // The environment actually open RIGHT NOW, as opposed to call_info's own
+    // fields (the call's fixed entry/closure-capture environment -- see its
+    // own doc comment, unchanged by this). Only meaningful when call_info is
+    // non-null: seeded from call_info's own environment at frame setup, then
+    // moved by frame_push_block_scope/frame_pop_block_scope exactly the way
+    // ctx.lexical_environment_ itself moves for every other call shape. A
+    // call_info-bearing frame whose chunk never opens a block scope (every
+    // fast_gate call today) never touches these past their initial seed --
+    // this is what an env-mode-owning fast path with its own block scopes
+    // needs that fast_gate's closure-capture-only use of call_info does not.
+    Environment* current_lexical_env = nullptr;
+    Environment* current_variable_env = nullptr;
 };
 
 // The permanent form of the diagnostic's frame_lex_env_diag(f): falls back
 // to ctx's own ambient field exactly like today whenever call_info is null
 // (every call path except a migrated fast_gate), so nothing changes for
 // fast_env_gate/the general path/native calls until they opt in.
+//
+// Reads current_lexical_env/current_variable_env, not call_info's own
+// fields directly: call_info's environment is the call's fixed entry point
+// (what Op::CreateClosure/DeclareFunction close over when nothing more
+// specific is open -- see their own use of these same two functions), while
+// these track whatever block scope is open RIGHT NOW. For a chunk that never
+// opens one (every fast_gate call today) the two never diverge, since
+// current_lexical_env starts equal to call_info's own value and nothing
+// moves it -- so this is not a behavior change for fast_gate, only a second
+// reader added ahead of it for a call_info-bearing frame that does open one.
 inline Environment* frame_lexical_env(Frame& f) {
-    return f.call_info ? f.call_info->lexical_environment_ : f.ctx->get_lexical_environment();
+    return f.call_info ? f.current_lexical_env : f.ctx->get_lexical_environment();
 }
 inline Environment* frame_variable_env(Frame& f) {
-    return f.call_info ? f.call_info->variable_environment_ : f.ctx->get_variable_environment();
+    return f.call_info ? f.current_variable_env : f.ctx->get_variable_environment();
+}
+
+// Context::is_in_tdz_interned/is_in_tdz's own loop (Context.cpp), duplicated
+// rather than called: both walk from ctx's own lexical_environment_, which
+// for a call_info-bearing frame is the CALLER's field, not this call's own
+// chain (frame_lexical_env(f)/current_lexical_env is the only thing that is)
+// -- see find_binding_env_interned's identical situation just below, whose
+// own comment first established why this Context method "can't be
+// redirected without duplicating its loop with an explicit start point."
+// Reading ctx's field here for a fast_no_closures call walks an unrelated
+// scope chain (the caller's, e.g. an enclosing script's own block/loop
+// scopes) that can coincidentally hold a same-named binding genuinely in
+// TDZ right now, producing a false "before initialization" throw for the
+// wrong variable entirely.
+inline bool frame_is_in_tdz_interned(Frame& f, const std::string* key) {
+    for (Environment* env = frame_lexical_env(f); env; env = env->get_outer()) {
+        bool in_tdz = false;
+        if (env->declarative_binding_tdz_interned(key, in_tdz)) return in_tdz;
+    }
+    return false;
+}
+inline bool frame_is_in_tdz(Frame& f, const std::string& name) {
+    for (Environment* env = frame_lexical_env(f); env; env = env->get_outer()) {
+        bool in_tdz = false;
+        if (env->declarative_binding_tdz(name, in_tdz)) return in_tdz;
+    }
+    return false;
+}
+
+// Environment::push_block_scope/pop_block_scope's own logic (Context.cpp),
+// mirrored here against a tracked pointer instead of ctx's own field, for a
+// call_info-bearing call whose chunk (unlike fast_gate's) can open one. ctx's
+// own field is untouched either way -- the whole point of routing through
+// call_info at all is that ctx may be the caller's shared object. Takes
+// Context&/Environment*& rather than Frame& because run_with_regs's own
+// parameter-binding prologue (below) needs this before a Frame exists to
+// pass one -- frame_push_block_scope/frame_pop_block_scope are these two
+// closed over Frame's own fields, for every other call site, which already
+// has one.
+inline void push_block_scope_into(Context& ctx, const CallInfo* call_info, Environment*& cur_lex) {
+    if (call_info) {
+        cur_lex = new Environment(Environment::Type::Declarative, cur_lex);
+    } else {
+        ctx.push_block_scope();
+        cur_lex = ctx.get_lexical_environment();
+    }
+}
+inline void pop_block_scope_into(Context& ctx, const CallInfo* call_info, Environment*& cur_lex) {
+    if (call_info) {
+        Environment* popped = cur_lex;
+        if (popped && popped->get_outer()) {
+            cur_lex = popped->get_outer();
+            if (!popped->is_escaped()) {
+                Collector::release_env(popped);
+            } else if (Engine* e = ctx.get_engine()) {
+                e->add_survivor_environment(popped);
+            }
+        }
+    } else {
+        ctx.pop_block_scope();
+        cur_lex = ctx.get_lexical_environment();
+    }
+}
+inline void frame_push_block_scope(Frame& f) {
+    push_block_scope_into(*f.ctx, f.call_info, f.current_lexical_env);
+}
+inline void frame_pop_block_scope(Frame& f) {
+    pop_block_scope_into(*f.ctx, f.call_info, f.current_lexical_env);
+}
+inline void frame_set_variable_env(Frame& f, Environment* env) {
+    if (f.call_info) f.current_variable_env = env;
+    else f.ctx->set_variable_environment(env);
+}
+// Op::RestoreEnv's own write target: a saved environment popped off env_saves
+// (see h_gen_SaveEnv/h_gen_RestoreEnv) has to land back in whatever
+// frame_lexical_env(f) itself reads from, exactly like every block-scope
+// push/pop above -- writing straight to ctx unconditionally, as this used to,
+// corrupts the CALLER's real environment for a call_info-bearing frame (e.g.
+// fast_no_closures) whose ctx is the caller's own shared object, not a
+// throwaway: the write lands on the caller's field instead of this frame's
+// own current_lexical_env, and nothing here ever reads it back correctly.
+inline void frame_set_lexical_env(Frame& f, Environment* env) {
+    if (f.call_info) f.current_lexical_env = env;
+    else f.ctx->set_lexical_environment(env);
 }
 
 // Tail-call threaded dispatch.
@@ -2157,7 +2265,28 @@ Value h_gen_LdaThis(Frame& f, uint32_t pc, Value acc) {
                 // mirrors Identifier::evaluate's check for "this" -- must be
                 // re-checked on every read, not just once, since a `super()`
                 // call between two reads flips it mid-frame.
-                if (ctx.this_needs_super()) {
+                //
+                // f.call_info && chunk.env_mode uniquely identifies a
+                // fast_no_closures frame (fast_gate is always !env_mode), and
+                // fast_no_closures's own gate already excludes is_class_
+                // constructor_ and is_arrow_ -- so this frame's OWN `this` can
+                // never be TDZ-gated, and ctx.this_needs_super() here is not
+                // even about this frame: it is the CALLER's shared field
+                // (fast_no_closures never gets a Context of its own), read
+                // here only because nothing narrower exists to check. Reading
+                // it for this frame's own LdaThis used to force ctx.this_needs_
+                // super() false for the whole call so this check wouldn't
+                // wrongly fire -- but the SAME shared ctx is also whatever a
+                // derived constructor further up the call chain uses as its
+                // OWN this_needs_super storage, and forcing it false is
+                // visible to anything invoked from within this call that reads
+                // it through that same Context object (e.g. an arrow taken as
+                // a callback, whose closure_context_ IS that constructor's own
+                // Context) -- silently letting a real this-TDZ violation
+                // through. Skipping the read here instead removes the need to
+                // ever force it, so the value nested code reads back is always
+                // the caller's real, unmutated one.
+                if (!(f.call_info && chunk.env_mode) && ctx.this_needs_super()) {
                     ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
                     CHECK_EXC();
                     break;
@@ -2708,7 +2837,7 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                 // Mirrors Identifier::evaluate: TDZ first, then one scope-chain walk.
                 const std::string* key = chunk.names[name_idx];
                 const std::string& name = *key;
-                if (ctx.is_in_tdz_interned(key)) {
+                if (frame_is_in_tdz_interned(f, key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -2808,7 +2937,7 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
             }
             const std::string* key = chunk.names[name_idx];
             const std::string& name = *key;
-            if (ctx.is_in_tdz_interned(key)) {
+            if (frame_is_in_tdz_interned(f, key)) {
                 ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                 CHECK_EXC();
                 break;
@@ -2871,7 +3000,7 @@ Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
                 // `typeof x` suppresses only the unresolved-binding case, not TDZ.
                 const std::string& name = chunk.name_at(read_u16(code, pc));
                 pc += 2;
-                if (ctx.is_in_tdz(name)) {
+                if (frame_is_in_tdz(f, name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -2994,7 +3123,7 @@ Value h_gen_StaLookup(Frame& f, uint32_t pc, Value acc) {
                 // write time matches the tree-walker's captured-env behavior.
                 const std::string* key = chunk.names[sta_name_idx];
                 const std::string& name = *key;
-                if (ctx.is_in_tdz_interned(key)) {
+                if (frame_is_in_tdz_interned(f, key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3075,7 +3204,7 @@ Value h_StaLookupWide(Frame& f, uint32_t pc, Value acc) {
             }
             const std::string* key = chunk.names[sta_name_idx];
             const std::string& name = *key;
-            if (ctx.is_in_tdz_interned(key)) {
+            if (frame_is_in_tdz_interned(f, key)) {
                 ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                 CHECK_EXC();
                 break;
@@ -3363,7 +3492,7 @@ Value h_gen_StaLookupChecked(Frame& f, uint32_t pc, Value acc) {
                     if (global) global->set_property(name, acc);
                     break;
                 }
-                if (ctx.is_in_tdz(name)) {
+                if (frame_is_in_tdz(f, name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3581,7 +3710,7 @@ Value h_gen_LdaEnv(Frame& f, uint32_t pc, Value acc) {
                     CHECK_EXC();
                     break;
                 }
-                if (ctx.is_in_tdz(name)) {
+                if (frame_is_in_tdz(f, name)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3618,7 +3747,7 @@ Value h_gen_StaEnv(Frame& f, uint32_t pc, Value acc) {
                 const std::string* key = chunk.names[read_u16(code, pc)];
                 const std::string& name = *key;
                 pc += 2;
-                if (ctx.is_in_tdz_interned(key)) {
+                if (frame_is_in_tdz_interned(f, key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3717,7 +3846,7 @@ Value h_gen_LdaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                     acc = e->slot.value;
                     break;
                 }
-                if (ctx.is_in_tdz_interned(key)) {
+                if (frame_is_in_tdz_interned(f, key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3783,7 +3912,7 @@ Value h_gen_StaEnvSlot(Frame& f, uint32_t pc, Value acc) {
                     e->slot.value = acc;
                     break;
                 }
-                if (ctx.is_in_tdz_interned(key)) {
+                if (frame_is_in_tdz_interned(f, key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3955,7 +4084,7 @@ Value h_gen_StaEnvSlotAt(Frame& f, uint32_t pc, Value acc) {
                     }
                 }
                 // Miss: same general resolve-and-write LdaEnv/StaEnv rely on.
-                if (ctx.is_in_tdz_interned(key)) {
+                if (frame_is_in_tdz_interned(f, key)) {
                     ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
                     CHECK_EXC();
                     break;
@@ -3994,11 +4123,11 @@ Value h_gen_BindEnvLocals(Frame& f, uint32_t pc, Value acc) {
                 {
                 Environment* params_env = frame_lexical_env(f);
                 if (split_scope) {
-                    ctx.push_block_scope();
+                    frame_push_block_scope(f);
                     // The body's scope is its variable environment too, so a
                     // `var` or a hoisted function declaration lands there
                     // rather than beside the parameters.
-                    ctx.set_variable_environment(frame_lexical_env(f));
+                    frame_set_variable_env(f, frame_lexical_env(f));
                 }
                 Environment* env = frame_lexical_env(f);
                 // Interned, not name-based: chunk.env->env_local_keys is already
@@ -4060,7 +4189,7 @@ Value h_gen_EnterLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 {
                 uint16_t idx = read_u16(code, pc);
                 pc += 2;
-                ctx.push_block_scope();
+                frame_push_block_scope(f);
                 Environment* env = frame_lexical_env(f);
                 const auto& vars = chunk.env->loop_envs[idx];
                 const auto& keys = loop_env_keys_for(chunk, idx);
@@ -4097,8 +4226,8 @@ Value h_gen_AdvanceLoopEnv(Frame& f, uint32_t pc, Value acc) {
                 for (size_t i = 0; i < vars.size(); i++) {
                     if (vars[i].copy_forward) carried[i] = old_env->get_binding_direct_interned(keys[i], &ctx);
                 }
-                ctx.pop_block_scope();
-                ctx.push_block_scope();
+                frame_pop_block_scope(f);
+                frame_push_block_scope(f);
                 Environment* new_env = frame_lexical_env(f);
                 for (size_t i = 0; i < vars.size(); i++) {
                     const auto& v = vars[i];
@@ -4123,7 +4252,7 @@ Value h_gen_ExitLoopEnv(Frame& f, uint32_t pc, Value acc) {
     instr_pc = pc;
     pc += 1;
     do {
-                ctx.pop_block_scope();
+                frame_pop_block_scope(f);
                 break;
     } while (0);
     CHECK_EXC_TAIL();
@@ -4155,7 +4284,7 @@ Value h_gen_RestoreEnv(Frame& f, uint32_t pc, Value acc) {
     instr_pc = pc;
     pc += 1;
     do {
-                ctx.set_lexical_environment(env_saves[--env_save_top]);
+                frame_set_lexical_env(f, env_saves[--env_save_top]);
                 break;
     } while (0);
     CHECK_EXC_TAIL();
@@ -4657,8 +4786,21 @@ Value h_gen_CreateClosure(Frame& f, uint32_t pc, Value acc) {
                 if (f.call_info) {
                     Environment* saved_lex = ctx.get_lexical_environment();
                     Environment* saved_var = ctx.get_variable_environment();
-                    ctx.set_lexical_environment(f.call_info->lexical_environment_);
-                    ctx.set_variable_environment(f.call_info->variable_environment_);
+                    // saved_lex/saved_var can be an ANCESTOR caller's own real,
+                    // load-bearing environment (e.g. an env-mode function whose
+                    // ctx got reused for this call because this call itself
+                    // qualified for a call_info-sharing gate) -- ctx's own field
+                    // is what the GC's Context trace reads, and it points away
+                    // from saved_lex/saved_var for this whole window, so without
+                    // an explicit root here that ancestor's environment is
+                    // reachable only through this plain C++ local. Environments
+                    // are not conservatively stack-scanned (see env_saves above),
+                    // and instantiate_closure allocates, so a collection in that
+                    // window could reclaim it out from under the ancestor.
+                    EnvironmentRoot saved_lex_root(&saved_lex);
+                    EnvironmentRoot saved_var_root(&saved_var);
+                    ctx.set_lexical_environment(frame_lexical_env(f));
+                    ctx.set_variable_environment(frame_variable_env(f));
                     acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
                     ctx.set_lexical_environment(saved_lex);
                     ctx.set_variable_environment(saved_var);
@@ -4690,8 +4832,11 @@ Value h_gen_DeclareFunction(Frame& f, uint32_t pc, Value acc) {
                 if (f.call_info) {
                     Environment* saved_lex = ctx.get_lexical_environment();
                     Environment* saved_var = ctx.get_variable_environment();
-                    ctx.set_lexical_environment(f.call_info->lexical_environment_);
-                    ctx.set_variable_environment(f.call_info->variable_environment_);
+                    // See h_gen_CreateClosure's identical rationale.
+                    EnvironmentRoot saved_lex_root(&saved_lex);
+                    EnvironmentRoot saved_var_root(&saved_var);
+                    ctx.set_lexical_environment(frame_lexical_env(f));
+                    ctx.set_variable_environment(frame_variable_env(f));
                     declare_function(ctx, (*chunk.closures)[idx]);
                     ctx.set_lexical_environment(saved_lex);
                     ctx.set_variable_environment(saved_var);
@@ -4720,8 +4865,11 @@ Value h_CreateClosureWide(Frame& f, uint32_t pc, Value acc) {
     if (f.call_info) {
         Environment* saved_lex = ctx.get_lexical_environment();
         Environment* saved_var = ctx.get_variable_environment();
-        ctx.set_lexical_environment(f.call_info->lexical_environment_);
-        ctx.set_variable_environment(f.call_info->variable_environment_);
+        // See h_gen_CreateClosure's identical rationale.
+        EnvironmentRoot saved_lex_root(&saved_lex);
+        EnvironmentRoot saved_var_root(&saved_var);
+        ctx.set_lexical_environment(frame_lexical_env(f));
+        ctx.set_variable_environment(frame_variable_env(f));
         acc = instantiate_closure(ctx, (*chunk.closures)[idx]);
         ctx.set_lexical_environment(saved_lex);
         ctx.set_variable_environment(saved_var);
@@ -4745,8 +4893,11 @@ Value h_DeclareFunctionWide(Frame& f, uint32_t pc, Value acc) {
     if (f.call_info) {
         Environment* saved_lex = ctx.get_lexical_environment();
         Environment* saved_var = ctx.get_variable_environment();
-        ctx.set_lexical_environment(f.call_info->lexical_environment_);
-        ctx.set_variable_environment(f.call_info->variable_environment_);
+        // See h_gen_CreateClosure's identical rationale.
+        EnvironmentRoot saved_lex_root(&saved_lex);
+        EnvironmentRoot saved_var_root(&saved_var);
+        ctx.set_lexical_environment(frame_lexical_env(f));
+        ctx.set_variable_environment(frame_variable_env(f));
         declare_function(ctx, (*chunk.closures)[idx]);
         ctx.set_lexical_environment(saved_lex);
         ctx.set_variable_environment(saved_var);
@@ -8449,7 +8600,7 @@ Value run_dispatch(Frame& f) {
 [[gnu::always_inline]] inline Value run_with_regs(
         const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
         const Value* this_val, Function* owner, const Value* initial_acc,
-        const CallInfo* call_info, Value* regs) {
+        const CallInfo* call_info, Value* regs, Environment** final_lexical_env) {
     const uint8_t param_count = chunk.parameter_count;
     for (uint8_t i = 0; i < param_count && i < args.size(); i++) {
         regs[i] = args[i];
@@ -8461,8 +8612,16 @@ Value run_dispatch(Frame& f) {
     uint8_t env_save_top = 0;
     Environment* resolved_envs[8] = {};
 
+    // Tracks the environment this setup itself is building/opening, the same
+    // thing frame_lexical_env(f) answers once a Frame exists -- there isn't
+    // one yet, so push_block_scope_into (not frame_push_block_scope) takes
+    // this local directly. When call_info is null this always equals
+    // ctx.get_lexical_environment() at each point below (push_block_scope_into
+    // re-reads it back after calling ctx's own push_block_scope), so nothing
+    // here changes for the general/env_ctx-owning path.
+    Environment* cur_lex = call_info ? call_info->lexical_environment_ : ctx.get_lexical_environment();
     if (chunk.env_mode && chunk.env) {
-        Environment* env = ctx.get_lexical_environment();
+        Environment* env = cur_lex;
         // Intern the chunk's binding names once instead of once per call; the
         // pointers are stable for the thread's lifetime.
         env->reserve_slots(chunk.env->env_slot_total);
@@ -8501,8 +8660,8 @@ Value run_dispatch(Frame& f) {
                     if (loc.is_lexical) continue;
                     env->create_binding_interned(chunk.env->env_local_keys[li], Value(), true);
                 }
-                ctx.push_block_scope();
-                lex_env = ctx.get_lexical_environment();
+                push_block_scope_into(ctx, call_info, cur_lex);
+                lex_env = cur_lex;
             }
             for (size_t li = 0; li < chunk.env->env_locals.size(); li++) {
                 const auto& loc = chunk.env->env_locals[li];
@@ -8527,8 +8686,10 @@ Value run_dispatch(Frame& f) {
     // LdaLookup/StaLookup's own env==entry_env exclusion is lifted for
     // chunk.script_mode (see both handlers below); this pointer stays the
     // real environment either way so the beyond_frame walk still starts
-    // from the right place.
-    Environment* entry_env = call_info ? call_info->lexical_environment_ : ctx.get_lexical_environment();
+    // from the right place. cur_lex already reflects the prologue's own
+    // lex_scope_split push above, same as re-reading ctx used to.
+    Environment* entry_env = cur_lex;
+    Environment* entry_var_env = call_info ? call_info->variable_environment_ : ctx.get_variable_environment();
 
     // A chunk may be shared across several Function instances created from the
     // same declaration site (see FunctionExecutable), each with its own
@@ -8596,6 +8757,43 @@ Value run_dispatch(Frame& f) {
                 private_feedback_data, code, constants, entry_env,
                 this_value, initial_acc ? *initial_acc : Value(), 0, 0, 0, this_resolved};
     frame.call_info = call_info;
+    // Seeded even when call_info is null (frame_lexical_env/frame_variable_env
+    // never read them in that case) -- keeping them accurate regardless costs
+    // nothing here and avoids a stale pointer sitting on the frame.
+    frame.current_lexical_env = entry_env;
+    frame.current_variable_env = entry_var_env;
+    // Whatever a call_info-bearing caller needs to release/survivor-pool once
+    // this call returns -- ctx never held it, so returning it is the only way
+    // out. Fires on every exit below (both returns), RAII rather than one
+    // write per return site since the loop below has more than one.
+    struct FinalEnvWriter {
+        Frame* f; Environment** out;
+        ~FinalEnvWriter() { if (out) *out = f->current_lexical_env; }
+    } final_env_writer{&frame, final_lexical_env};
+    // call_info means ctx is the caller's own shared Context, so ctx's own
+    // gc_trace (lexical_environment_/variable_environment_) never reaches
+    // whatever this call is actually using -- these two fields are the only
+    // thing that does, and a fresh Environment (gc_seen_cycle_ == 0, never
+    // yet traced) has a no-op write barrier (Collector::write_barrier_env)
+    // until something roots it into a real trace. Null call_info skips this
+    // entirely: ctx already covers it, same as before this existed.
+    // Register-mode (!chunk.env_mode) needs none of this even with call_info
+    // set: every block-scope opcode that can replace current_lexical_env with
+    // a freshly allocated (not yet otherwise reachable) Environment is one of
+    // the Env-suffixed opcodes (EnterLoopEnv/BindEnvLocals/...), and the
+    // compiler only ever emits those into an env_mode chunk -- a register-mode
+    // chunk's current_lexical_env starts at (and stays at) call_info's own
+    // outer_env, which for fast_gate is the closure's own captured chain,
+    // already reachable through the calling Function's own closure_environment_
+    // (Function::trace_default visits it independently of this root). Gating
+    // this on chunk.env_mode too turns a per-call cost that fast_gate -- by
+    // far the larger of the two call_info-bearing buckets -- was paying for
+    // nothing into a cost only fast_no_closures (which actually needs it) pays.
+    std::optional<EnvironmentRoot> lex_root, var_root;
+    if (call_info && chunk.env_mode) {
+        lex_root.emplace(&frame.current_lexical_env);
+        var_root.emplace(&frame.current_variable_env);
+    }
 
     for (;;) {
       try {
@@ -8659,7 +8857,7 @@ Value run_dispatch(Frame& f) {
 [[gnu::noinline]] Value run_spilled(const BytecodeChunk& chunk, Context& ctx,
                                     std::span<const Value> args, const Value* this_val,
                                     Function* owner, const Value* initial_acc,
-                                    const CallInfo* call_info) {
+                                    const CallInfo* call_info, Environment** final_lexical_env) {
     // Off the C++ stack, so the conservative scan cannot see it: rooted
     // explicitly for as long as this frame runs.
     std::vector<Value> spill_regs(chunk.register_count);
@@ -8669,12 +8867,12 @@ Value run_dispatch(Frame& f) {
     } spill_root{&spill_regs};
     Collector::push_value_vector(&spill_regs);
     return run_with_regs(chunk, ctx, args, this_val, owner, initial_acc, call_info,
-                         spill_regs.data());
+                         spill_regs.data(), final_lexical_env);
 }
 
 Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
           const Value* this_val, Function* owner, const Value* initial_acc,
-          const CallInfo* call_info) {
+          const CallInfo* call_info, Environment** final_lexical_env) {
     // Only the registers the chunk actually uses: a fixed 256 put the whole
     // bank on the C++ stack and zeroed it on every call, when the compiler
     // already knows the real count and it is small for most functions.
@@ -8682,10 +8880,10 @@ Value run(const BytecodeChunk& chunk, Context& ctx, std::span<const Value> args,
     // can't look like a live heap pointer to the conservative GC scan.
     constexpr uint16_t kInlineRegs = 32;
     if (__builtin_expect(chunk.register_count > kInlineRegs, 0)) {
-        return run_spilled(chunk, ctx, args, this_val, owner, initial_acc, call_info);
+        return run_spilled(chunk, ctx, args, this_val, owner, initial_acc, call_info, final_lexical_env);
     }
     Value inline_regs[kInlineRegs] = {};
-    return run_with_regs(chunk, ctx, args, this_val, owner, initial_acc, call_info, inline_regs);
+    return run_with_regs(chunk, ctx, args, this_val, owner, initial_acc, call_info, inline_regs, final_lexical_env);
 }
 
 Value run_script(std::vector<std::unique_ptr<ASTNode>>& statements,

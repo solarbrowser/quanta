@@ -814,6 +814,128 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         // general path writes them into its own. Private brands stay out:
         // the general path only binds those for a body a direct eval can
         // reach, which is a question this gate does not ask.
+        // fast_no_closures means this chunk never emits Op::CreateClosure, so
+        // nothing it does can hand out a reference to call_env that outlives
+        // the call -- Op::DeclareFunction is the one exception (it is not
+        // gated by has_nested_closures/fast_no_closures), and it is handled
+        // correctly regardless, since capture_closure_environment calls mark_referenced/
+        // mark_escaped on whatever is actually open at the point it runs, not
+        // on a decision made here. That is exactly why ctx is never mutated
+        // below: frame_lexical_env/frame_variable_env (via call_info) are
+        // what every env-reading opcode -- including CreateClosure/
+        // DeclareFunction's own swap -- resolves the live environment
+        // through now, so this call never needs to be the one Context
+        // currently "is". No CallContextPool::acquire, no ExecContextScope:
+        // ctx is the caller's own shared object, same as call_gated.
+        if (!slots.private_brands && executable_->fast_no_closures) {
+            Environment* outer_env = get_closure_environment();
+            if (!outer_env && closure_context_) outer_env = closure_context_->get_lexical_environment();
+            if (!outer_env) outer_env = ctx.get_lexical_environment();
+            if (is_param_default()) {
+                Environment* walk = outer_env;
+                while (walk && walk->get_type() == Environment::Type::Declarative) {
+                    if (!walk->get_outer()) break;
+                    walk = walk->get_outer();
+                }
+                if (walk && walk->get_type() != Environment::Type::Declarative) outer_env = walk;
+            }
+            // fast_no_closures already proves no Op::CreateClosure can run
+            // here, so unlike the env_ctx-acquiring path below there is no
+            // mark_escaped() call to skip -- there was never a condition on
+            // it to begin with (see that path's own identical-looking line).
+            Environment* call_env = new Environment(Environment::Type::Function, outer_env);
+
+            VM::CallInfo call_info;
+            call_info.lexical_environment_ = call_env;
+            call_info.variable_environment_ = call_env;
+
+            // ctx is the caller's own shared object now, not a throwaway --
+            // save/restore exactly call_gated's own list, minus the two
+            // terms this gate's own preconditions already rule out
+            // (is_arrow_function_context_: this gate requires !is_arrow_;
+            // new_target_: this gate requires ctx not be mid-constructor-call
+            // with a defined new_target) -- same reasoning call_gated gives
+            // for skipping those same two. this_needs_super is NOT saved/
+            // forced-false/restored here, unlike call_gated's own list: ctx
+            // is shared with whatever ancestor call put a real derived
+            // constructor's pending-super state there, and forcing it false
+            // for this call's own duration is visible to anything invoked
+            // from within this call's body that reads the SAME Context object
+            // (a callback parameter that turns out to be an arrow whose own
+            // closure_context_ IS that constructor's Context -- see
+            // h_gen_LdaThis's own comment on the call_info&&env_mode skip,
+            // which is what makes leaving this field alone here safe: this
+            // frame's own `this` reads never consult it at all now).
+            bool saved_strict = ctx.is_strict_mode();
+            Value saved_this_value = ctx.get_this_value();
+            // Set unconditionally (call_gated's own list only sets true, see
+            // its identical-looking line) -- ctx is shared here, so a NON-
+            // strict callee that only ever forced true would silently
+            // inherit whatever an ancestor call still executing left set,
+            // e.g. a strict class method's own force-true still in effect
+            // while it's mid-call to a plain callback parameter. That
+            // wrongly strict reading feeds this call's own sloppy-mode
+            // `this` substitution just below, among other strict-mode
+            // checks this call's body makes.
+            ctx.set_strict_mode(is_strict_ || executable_->fast_strict);
+
+            // __home_object__ written straight into call_env -- Context::
+            // create_binding for a non-"this" name is itself only a call to
+            // variable_environment_->create_binding, so this is that same
+            // call with the middleman removed, not a different path.
+            if (slots.home_object) {
+                call_env->create_binding("__home_object__", Value(slots.home_object), false);
+            }
+
+            Value actual_this = this_value;
+            if (!ctx.is_strict_mode()) {
+                if (this_value.is_undefined() || this_value.is_null()) {
+                    if (Object* global = ctx.get_global_object()) actual_this = Value(global);
+                } else if (!this_value.is_object() && !this_value.is_function()) {
+                    actual_this = ObjectFactory::box_primitive_this_sloppy(ctx, this_value);
+                }
+            }
+            // Context::create_binding("this", ...) is itself only
+            // this_value_ = value (see its own definition) -- this is that,
+            // not a different path either.
+            ctx.set_this_value(actual_this);
+            Context* prev_context = Object::current_context_;
+            Object::current_context_ = &ctx;
+            Environment* final_env = nullptr;
+            Value vm_result = VM::run(*executable_->bytecode_chunk, ctx, args, nullptr, this,
+                                       nullptr, &call_info, &final_env);
+            Object::current_context_ = prev_context;
+
+            bool had_exception = ctx.has_exception();
+
+            ctx.set_strict_mode(saved_strict);
+            ctx.set_this_value(saved_this_value);
+
+            // Context::release_owned_env's own logic (Context.cpp), walking
+            // final_env (what VM::run handed back -- deeper than call_env
+            // only if the call returned/threw out of a still-open block
+            // scope) down to call_env instead of ctx's own fields, since ctx
+            // never pointed at either. was_super_called()/__super__ have no
+            // equivalent check here: unreachable for the same reason the
+            // env_ctx-acquiring path below gives (is_class_constructor_ and
+            // is_arrow_ are both excluded by this gate's own condition).
+            for (Environment* e = final_env; e && e != call_env; ) {
+                Environment* outer = e->get_outer();
+                if (!e->is_escaped()) Collector::release_env(e);
+                else if (Engine* eng = ctx.get_engine()) eng->add_survivor_environment(e);
+                e = outer;
+            }
+            if (!call_env->is_escaped()) {
+                Collector::release_env(call_env);
+            } else if (Engine* eng = ctx.get_engine()) {
+                eng->add_survivor_environment(call_env);
+            }
+
+            if (had_exception) {
+                return Value();
+            }
+            return vm_result;
+        }
         if (!slots.private_brands) {
             Engine* env_engine = ctx.get_engine();
             Context& env_ctx = *CallContextPool::acquire(env_engine, &ctx);

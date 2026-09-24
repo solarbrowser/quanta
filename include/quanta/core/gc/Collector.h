@@ -115,6 +115,13 @@ public:
     // the remembered set may still reference it until the cycle's cleanup;
     // a size threshold flushes even on GC-quiet workloads.
     static void release_env(Environment* env);
+    // Same, but never takes release_env's own immediate-delete fast path
+    // (provably_unreachable()) -- see its definition for why a call sharing
+    // its caller's Context needs this specifically: a Function's
+    // closure_environment_/closure_context_ can reference an Environment
+    // without ever incrementing its inner_count_, which is the one signal
+    // that fast path trusts.
+    static void release_env_deferred(Environment* env);
 
     struct CycleStats {
         size_t marked_cells = 0;
@@ -136,6 +143,22 @@ public:
     // re-read each collection, so reallocation during push_back is safe).
     static void push_value_vector(const std::vector<Value>* vec);
     static void pop_value_vector(const std::vector<Value>* vec);
+
+    // Same idea, for a single Environment* slot that itself moves (block-scope
+    // push/pop reassigning it) rather than a container of Values -- the
+    // pointer-to-the-slot is what lets each collection re-read its CURRENT
+    // target instead of rooting a stale one. Needed only by a call sharing its
+    // caller's Context rather than owning a freshly acquired one of its own
+    // (see Function.cpp's fast_no_closures path): everywhere else, whatever
+    // Environment a call is using hangs off a Context that's already rooted
+    // (ExecContextScope, an owning Context's own lexical_environment_/
+    // variable_environment_), and env_saves/resolved_envs' own comment is why
+    // that has always been enough before now -- "Environment objects are
+    // already un-GC-managed, leaked with the Context" assumed a Context was
+    // always the thing doing the rooting. A slot whose Context never points
+    // at it needs this instead, for exactly as long as it's live.
+    static void push_environment_root(Environment* const* env_ptr);
+    static void pop_environment_root(Environment* const* env_ptr);
 
     // Same idea, for a frozen BytecodeChunk::constants -- used where the
     // chunk itself isn't reachable via any owning GC object graph node at
@@ -163,6 +186,21 @@ public:
 
 private:
     const std::vector<Value>* vec_;
+};
+
+// RAII form of push_environment_root/pop_environment_root -- see its own
+// comment for why this exists at all.
+class EnvironmentRoot {
+public:
+    explicit EnvironmentRoot(Environment* const* env_ptr) : env_ptr_(env_ptr) {
+        Collector::push_environment_root(env_ptr_);
+    }
+    ~EnvironmentRoot() { Collector::pop_environment_root(env_ptr_); }
+    EnvironmentRoot(const EnvironmentRoot&) = delete;
+    EnvironmentRoot& operator=(const EnvironmentRoot&) = delete;
+
+private:
+    Environment* const* env_ptr_;
 };
 
 // A chunk whose inline caches hold real cells -- a prototype, a holder, a
