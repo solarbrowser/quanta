@@ -263,6 +263,16 @@ void Object::note_descriptor_value_cached(const std::string& key) {
     bump_descriptor_epoch();
 }
 
+const PropertyDescriptor* Object::cacheable_dictionary_data(const std::string& key, bool* writable) const {
+    if (get_type() != ObjectType::Ordinary || shape_) return nullptr;
+    HybridDescriptorMap* d = descriptors();
+    if (!d) return nullptr;
+    const PropertyDescriptor* pd = d->find_stable(key);
+    if (!pd || !pd->is_data_descriptor()) return nullptr;
+    if (writable) *writable = pd->is_writable() && !pd->value_cached();
+    return pd;
+}
+
 bool Object::cacheable_data_slot(const std::string& key, uint32_t& slot_index,
                                  bool* writable) const {
     if (get_type() != ObjectType::Ordinary || !shape_) return false;
@@ -1693,17 +1703,17 @@ bool Object::set_property_default(const std::string& key, const Value& value, Pr
             if (d) {
                 auto* dit = d->find(key);
                 if (dit && dit->is_data_descriptor()) {
-                    // A cached inherited read holds this value directly, since a
-                    // descriptor-backed property has no shape slot to point at
-                    // (see FeedbackSlot::ProtoEntry). This is the one write that
-                    // can change it without changing any attribute, so it is the
-                    // one that has to move the epoch. A property that has a slot
-                    // and whose descriptor no cache has copied moves nothing:
-                    // bumping here retired every cache keyed on the epoch each
-                    // time a script assigned a global `var`. The descriptor's
-                    // copy is still refreshed, for whatever reads the descriptor
-                    // itself.
-                    if (!in_slot || dit->value_cached()) bump_descriptor_epoch();
+                    // A cached read holds this value directly when the property
+                    // has no shape slot to point at (see FeedbackSlot::ProtoEntry),
+                    // and every such cache marks the descriptor value_cached
+                    // first. This is the one write that can change it without
+                    // changing any attribute, so it is the one that has to move
+                    // the epoch -- but only for a marked descriptor: bumping on
+                    // every write retired every cache keyed on the epoch each
+                    // time a script assigned a global `var`. A dictionary-mode
+                    // global's own read cache reads the descriptor in place, so it
+                    // needs no bump.
+                    if (dit->value_cached()) bump_descriptor_epoch();
                     dit->set_value(value);
                 }
             }
@@ -1833,7 +1843,7 @@ void Object::remove_own_property(const std::string& key) {
     // See proto_epoch()'s doc comment; bumped up front like
     // set_property_descriptor, not at each return point below.
     if (used_as_prototype()) bump_proto_epoch();
-    if (auto* d = descriptors()) d->erase(key);
+    if (auto* d = descriptors()) { if (d->find(key)) bump_descriptor_epoch(); d->erase(key); }
 
     uint32_t index;
     if (is_array_index(key, &index)) {
@@ -1848,6 +1858,7 @@ void Object::remove_own_property(const std::string& key) {
         // A shape's slot layout is shared across every object with that shape --
         // a single object can't drop one slot without migrating to its own dictionary.
         migrate_to_dictionary_mode();
+        bump_descriptor_epoch();
         ensure_descriptors().erase(key);
     }
     erase_extra_property_order(key);
@@ -1900,6 +1911,7 @@ bool Object::delete_property_default(const std::string& key) {
         // A shape's slot layout is shared across every object with that shape --
         // a single object can't drop one slot without migrating to its own dictionary.
         migrate_to_dictionary_mode();
+        bump_descriptor_epoch();
         ensure_descriptors().erase(key);
 
         // Mirrors the push in store_in_overflow -- without this, a set/delete/set
@@ -3883,6 +3895,7 @@ void Object::clear_properties() {
     shape_ = Shape::root();
     // shape butterfly region cleared implicitly by clear_properties' shape_ reset below
     if (auto* d = descriptors()) {
+        bump_descriptor_epoch();
         d->clear();
     }
     if (RareExtras* extras = peek_extras()) {

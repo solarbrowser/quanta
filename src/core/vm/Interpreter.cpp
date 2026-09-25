@@ -2823,6 +2823,13 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                     const auto& entry = lookup_cache_data[name_idx];
                     if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
                         // a closer binding may have appeared since
+                    } else if (entry.dict_desc) {
+                        Object* bo = entry.env->get_binding_object();
+                        if (bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
+                            entry.dict_desc->is_data_descriptor()) {
+                            acc = entry.dict_desc->get_value();
+                            break;
+                        }
                     } else if (entry.obj_shape) {
                         Object* bo = entry.env->get_binding_object();
                         if (bo && bo->get_shape() == entry.obj_shape &&
@@ -2874,6 +2881,7 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                         !env->is_per_call_scope()) {
                         uint32_t obj_slot = 0;
                         bool slot_writable = false;
+                        bool dict_writable = false;
                         // See the identical block in the main dispatch loop.
                         if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
                             env->mark_referenced();
@@ -2886,6 +2894,10 @@ Value h_gen_LdaLookup(Frame& f, uint32_t pc, Value acc) {
                                 env->get_binding_object()->get_shape(),
                                 Object::descriptor_epoch(), obj_slot, obj_writable,
                                 Environment::binding_shadow_epoch()};
+                        } else if (const PropertyDescriptor* dd = env->cacheable_object_dictionary_binding(name, &dict_writable)) {
+                            env->mark_referenced();
+                            lookup_cache_data[name_idx] = {env, nullptr, nullptr,
+                                Object::descriptor_epoch(), 0, dict_writable, Environment::binding_shadow_epoch(), dd};
                         }
                     }
                 } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
@@ -2924,7 +2936,14 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
             {
                 const auto& entry = lookup_cache_data[name_idx];
                 if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
-                } else if (entry.obj_shape) {
+                } else if (entry.dict_desc) {
+                        Object* bo = entry.env->get_binding_object();
+                        if (bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
+                            entry.dict_desc->is_data_descriptor()) {
+                            acc = entry.dict_desc->get_value();
+                            break;
+                        }
+                    } else if (entry.obj_shape) {
                     Object* bo = entry.env->get_binding_object();
                     if (bo && bo->get_shape() == entry.obj_shape &&
                         entry.descriptor_epoch == Object::descriptor_epoch()) {
@@ -2961,6 +2980,7 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
                     !env->is_per_call_scope()) {
                     uint32_t obj_slot = 0;
                     bool slot_writable = false;
+                    bool dict_writable = false;
                     if (Value* slot = env->stable_binding_slot(name, &slot_writable)) {
                         env->mark_referenced();
                         lookup_cache_data[name_idx] = {env, slot, nullptr, 0, 0, slot_writable,
@@ -2972,6 +2992,10 @@ Value h_LdaLookupWide(Frame& f, uint32_t pc, Value acc) {
                             env->get_binding_object()->get_shape(),
                             Object::descriptor_epoch(), obj_slot, obj_writable,
                             Environment::binding_shadow_epoch()};
+                    } else if (const PropertyDescriptor* dd = env->cacheable_object_dictionary_binding(name, &dict_writable)) {
+                        env->mark_referenced();
+                        lookup_cache_data[name_idx] = {env, nullptr, nullptr,
+                            Object::descriptor_epoch(), 0, dict_writable, Environment::binding_shadow_epoch(), dd};
                     }
                 }
             } else if (Environment* lex = frame_lexical_env(f); lex && lex->has_binding(name)) {
@@ -3036,6 +3060,18 @@ Value h_gen_LdaLookupTypeof(Frame& f, uint32_t pc, Value acc) {
 // is not refreshed here -- reading the descriptor takes the value from the slot.
 [[gnu::always_inline]] inline bool store_via_object_entry(const BytecodeChunk::LookupCacheEntry& entry, const Value& acc) {
     Object* bo = entry.env->get_binding_object();
+    if (entry.dict_desc) {
+        // Dictionary-mode global: the value lives in the descriptor itself.
+        // Checked per store rather than trusted from when the entry was made.
+        auto* pd = const_cast<PropertyDescriptor*>(entry.dict_desc);
+        if (!(bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
+              pd->is_data_descriptor() && pd->is_writable() && !pd->value_cached())) {
+            return false;
+        }
+        write_barrier_for(bo, acc);
+        pd->set_value(acc);
+        return true;
+    }
     if (!(bo && bo->get_shape() == entry.obj_shape &&
           entry.descriptor_epoch == Object::descriptor_epoch())) {
         return false;
@@ -3084,6 +3120,13 @@ inline void cache_store_binding(Frame& f, Environment* env, const std::string& n
         f.lookup_cache_data[name_idx] = {env, nullptr, env->get_binding_object()->get_shape(),
                                          Object::descriptor_epoch(), obj_slot, true,
                                          Environment::binding_shadow_epoch()};
+    } else if (bool dict_writable = false; beyond_frame && !env->is_per_call_scope()) {
+        if (const PropertyDescriptor* dd = env->cacheable_object_dictionary_binding(name, &dict_writable);
+            dd && dict_writable) {
+            env->mark_referenced();
+            f.lookup_cache_data[name_idx] = {env, nullptr, nullptr, Object::descriptor_epoch(), 0, true,
+                                             Environment::binding_shadow_epoch(), dd};
+        }
     }
 }
 
@@ -3424,6 +3467,13 @@ Value h_LdaLookupFast(Frame& f, uint32_t pc, Value acc) {
     const auto& entry = f.lookup_cache_data[read_u16(f.code, pc + 1)];
     if (entry.shadow_epoch != Environment::binding_shadow_epoch()) {
         // fall through to the general path, which re-resolves and re-caches
+    } else if (entry.dict_desc) {
+        Object* bo = entry.env->get_binding_object();
+        if (LIKELY(bo && !bo->get_shape() && entry.descriptor_epoch == Object::descriptor_epoch() &&
+                   entry.dict_desc->is_data_descriptor())) {
+            acc = entry.dict_desc->get_value();
+            FUSED_TAIL(3);
+        }
     } else if (LIKELY(entry.obj_shape)) {
         // A name bound on the global object, which is where a script's `var`
         // and its function declarations live -- so calling a top-level
@@ -3455,7 +3505,7 @@ Value h_StaLookupFast(Frame& f, uint32_t pc, Value acc) {
         pc += 3;
         DISPATCH();
     }
-    if (entry.obj_shape && entry.writable &&
+    if ((entry.obj_shape || entry.dict_desc) && entry.writable &&
         entry.shadow_epoch == Environment::binding_shadow_epoch() &&
         store_via_object_entry(entry, acc)) {
         pc += 3;
@@ -3578,7 +3628,7 @@ Value h_StaLookupCheckedFast(Frame& f, uint32_t pc, Value acc) {
         pc += 4;
         DISPATCH();
     }
-    if (resolved.is_boolean() && resolved.as_boolean() && entry.obj_shape && entry.writable &&
+    if (resolved.is_boolean() && resolved.as_boolean() && (entry.obj_shape || entry.dict_desc) && entry.writable &&
         entry.shadow_epoch == Environment::binding_shadow_epoch() &&
         store_via_object_entry(entry, acc)) {
         pc += 4;

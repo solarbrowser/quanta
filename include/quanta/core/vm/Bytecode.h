@@ -21,6 +21,7 @@ class Visitor;
 class Shape;
 class ASTNode;
 class Environment;
+class PropertyDescriptor;
 class Object;
 struct ClosureTemplate;
 
@@ -900,6 +901,12 @@ struct BytecodeChunk {
         // epoch shows it, so the entry carries the binding-shadow epoch and
         // is refused once it moves. Sits in the padding after `writable`.
         uint32_t shadow_epoch = 0;
+        // Dictionary-mode global: an object past Shape::kMaxSlots has no shape
+        // and keeps every value in a node of its descriptor map, which stays
+        // put until that key is erased (every erase moves descriptor_epoch).
+        // Selects this form (obj_shape stays null); read through the
+        // descriptor so an in-place turn into an accessor is still seen.
+        const PropertyDescriptor* dict_desc = nullptr;
     };
     // Same frozen-length/mutable-contents profile as feedback above -- only
     // ever `= FixedArray<...>::filled(names.size(), ...)` once at compile

@@ -1146,6 +1146,11 @@ Value Environment::get_binding_direct_interned(const std::string* key, Context* 
     return Value();
 }
 
+const PropertyDescriptor* Environment::cacheable_object_dictionary_binding(const std::string& name, bool* writable) const {
+    if (type_ != Type::Object || !binding_object_ || is_with_environment_) return nullptr;
+    return binding_object_->cacheable_dictionary_data(name, writable);
+}
+
 bool Environment::cacheable_object_binding(const std::string& name, uint32_t& slot_index,
                                            bool* writable) const {
     if (type_ != Type::Object || !binding_object_ || is_with_environment_) return false;

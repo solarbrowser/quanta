@@ -859,6 +859,7 @@ public:
     // try_read_own_data_slot's slot index, for a caller that wants to cache it.
     // `writable`, when asked for, says whether a plain data write through the
     // slot is allowed: false for a property defined non-writable.
+    const PropertyDescriptor* cacheable_dictionary_data(const std::string& key, bool* writable = nullptr) const;
     bool cacheable_data_slot(const std::string& key, uint32_t& slot_index,
                              bool* writable = nullptr) const;
     // Single descriptors_ lookup shared by get_named's cacheable-gate and
@@ -1290,6 +1291,13 @@ public:
     const std::string& inline_key(size_t i) const { return *inline_[i].key; }
     const PropertyDescriptor& inline_value(size_t i) const { return inline_[i].desc; }
     const OverflowMap* overflow() const { return overflow_.get(); }
+    // Only an overflow node has an address that survives other keys coming and
+    // going; an inline entry is relocated by a neighbour's erase.
+    const PropertyDescriptor* find_stable(const std::string& key) const {
+        if (!overflow_) return nullptr;
+        auto it = overflow_->find(key);
+        return it == overflow_->end() ? nullptr : &it->second;
+    }
 
 private:
     // The key is interned (Shape::intern, the pool Shape/Context/Environment

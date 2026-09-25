@@ -1010,6 +1010,7 @@ public:
     // The object-environment counterpart: the shape slot index a plain own data
     // property of this environment's binding object lives at, for LdaLookup's
     // cache. False for anything the general path has to serve.
+    const PropertyDescriptor* cacheable_object_dictionary_binding(const std::string& name, bool* writable = nullptr) const;
     bool cacheable_object_binding(const std::string& name, uint32_t& slot_index,
                                   bool* writable = nullptr) const;
     // Guarded direct-index access to slots_'s inline array, backing
