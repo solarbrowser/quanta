@@ -324,6 +324,8 @@ void Function::setup_mapped_arguments(Context& fn_ctx, std::span<const Value> ar
     }
     if (fn_ctx.is_strict_mode() || param_names.empty() || !is_simple_params) return;
 
+    // The arguments object is still being built (see build_arguments_object).
+    Object::DescriptorEpochHold no_epoch_bump;
     size_t map_count = std::min(args.size(), param_names.size());
     // fn_ctx itself does NOT outlive the accessors once the arguments object
     // escapes this call (e.g. `args = arguments;` then read later): fn_ctx is
@@ -372,6 +374,25 @@ void Function::create_arguments_object(Context& fn_ctx, std::span<const Value> a
 }
 
 std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::span<const Value> args) {
+    // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] must be %ArrayPrototype%.values.
+    // Found before anything is defined: the first lookup can run script.
+    Value arr_iter_fn;
+    if (Object* cached = fn_ctx.arguments_iterator()) {
+        arr_iter_fn = cached->is_function() ? Value(static_cast<Function*>(cached)) : Value(cached);
+    } else {
+        Object* global = fn_ctx.get_global_object();
+        if (global) {
+            Value arr_val = global->get_property("Array");
+            if (arr_val.is_function()) {
+                Value arr_proto = arr_val.as_function()->get_property("prototype");
+                if (arr_proto.is_object()) {
+                    arr_iter_fn = arr_proto.as_object()->get_property("Symbol.iterator");
+                }
+            }
+        }
+        if (arr_iter_fn.is_function()) fn_ctx.set_arguments_iterator(arr_iter_fn.as_function());
+    }
+    Object::DescriptorEpochHold no_epoch_bump;
     const FunctionExecutable* exe = executable_.get();
     static const std::vector<std::string> kNoNames;
     const std::vector<std::string>& param_names = exe ? exe->parameters : kNoNames;
@@ -409,20 +430,7 @@ std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::s
         arguments_obj->initialize_prototype(obj_proto);
     }
 
-    // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] must be %ArrayPrototype%.values.
-    // get_element now routes through descriptors_ for Arguments so the aliasing works.
     {
-        Value arr_iter_fn;
-        Object* global = fn_ctx.get_global_object();
-        if (global) {
-            Value arr_val = global->get_property("Array");
-            if (arr_val.is_function()) {
-                Value arr_proto = arr_val.as_function()->get_property("prototype");
-                if (arr_proto.is_object()) {
-                    arr_iter_fn = arr_proto.as_object()->get_property("Symbol.iterator");
-                }
-            }
-        }
         PropertyDescriptor iter_desc(arr_iter_fn,
             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
         iter_desc.set_enumerable(false);

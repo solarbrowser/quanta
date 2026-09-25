@@ -84,6 +84,7 @@ void Context::gc_trace(Visitor& v) const {
     if (builtins_) {
         for (const auto& e : builtins_->objects) v.visit_object(e.second);
         for (const auto& e : builtins_->functions) v.visit_object(e.second);
+        v.visit_object(builtins_->arguments_iterator);
     }
     v.visit(current_exception_);
     v.visit(return_value_);
@@ -720,6 +721,20 @@ Object* Context::regexp_prototype() const {
 void Context::set_regexp_prototype(Object* proto) {
     if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
     builtins_->regexp_prototype = proto;
+}
+
+Object* Context::arguments_iterator() const {
+    if (builtins_ && builtins_->arguments_iterator) return builtins_->arguments_iterator;
+    if (builtins_root_ && builtins_root_->builtins_) return builtins_root_->builtins_->arguments_iterator;
+    return nullptr;
+}
+
+void Context::set_arguments_iterator(Object* fn) {
+    // The realm's root owns it, like every other builtin: a function context
+    // is gone long before the realm is.
+    Context* owner = builtins_root_ ? builtins_root_ : this;
+    if (!owner->builtins_) owner->builtins_ = std::make_unique<BuiltinMaps>();
+    owner->builtins_->arguments_iterator = fn;
 }
 
 void Context::register_built_in_object(const std::string& name, Object* object) {

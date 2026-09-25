@@ -113,6 +113,11 @@ private:
         // reaches for it on every evaluation and the alternative is two
         // string-keyed lookups.
         Object* regexp_prototype = nullptr;
+        // The function every arguments object carries as @@iterator, found
+        // once on the first arguments object of this realm and kept here:
+        // finding it costs a lookup of `Array` on the global object and two
+        // more behind it, per arguments object created.
+        Object* arguments_iterator = nullptr;
     };
     std::unique_ptr<BuiltinMaps> builtins_;
 
@@ -480,6 +485,8 @@ public:
     Object* get_built_in_object(const std::string& name) const;
     Object* regexp_prototype() const;
     void set_regexp_prototype(Object* proto);
+    Object* arguments_iterator() const;
+    void set_arguments_iterator(Object* fn);
     Function* get_built_in_function(const std::string& name) const;
 
     void suspend() { state_ = State::Suspended; }

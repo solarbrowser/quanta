@@ -177,8 +177,23 @@ public:
     // shape+descriptor sync) must still move this or a cached descriptor-side
     // read (own_desc_value/own_desc_epoch in h_GetNamedRest) can keep
     // answering the pre-write value.
-    static void bump_descriptor_epoch() { ++descriptor_epoch_; }
+    static void bump_descriptor_epoch() { if (!descriptor_epoch_holds_) ++descriptor_epoch_; }
+    // While one of these is alive, defining descriptors does not move the
+    // epoch. Only for an object nothing else can have seen yet -- a cache
+    // entry can only have gone stale for something it could already reach, and
+    // an object still being built is reachable from no cache. An arguments
+    // object is defined three descriptors deep on every call that makes one,
+    // and each of those used to invalidate every global-variable cache in the
+    // program. Nothing that runs script may be inside the scope.
+    class DescriptorEpochHold {
+    public:
+        DescriptorEpochHold() { ++descriptor_epoch_holds_; }
+        ~DescriptorEpochHold() { --descriptor_epoch_holds_; }
+        DescriptorEpochHold(const DescriptorEpochHold&) = delete;
+        DescriptorEpochHold& operator=(const DescriptorEpochHold&) = delete;
+    };
 private:
+    static constinit thread_local uint32_t descriptor_epoch_holds_;
 
     // [[Prototype]] + 2 status bits (extensibility, "ever used as a
     // prototype"), tagged into the pointer's own low bits. GC heap cells are

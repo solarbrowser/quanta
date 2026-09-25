@@ -52,6 +52,7 @@ constinit thread_local Context* Object::current_context_ = nullptr;
 
 constinit thread_local uint64_t Object::proto_epoch_ = 0;
 constinit thread_local uint64_t Object::descriptor_epoch_ = 0;
+constinit thread_local uint32_t Object::descriptor_epoch_holds_ = 0;
 
 thread_local std::unordered_map<std::string, std::string> Object::interned_keys_;
 
