@@ -316,7 +316,10 @@ String* String::make_concat(String* a, String* b) {
     // Put a small append in the last link rather than growing the rope by one.
     // `a` is untouched -- it is immutable and may be shared, so this builds a
     // second rope over the same left subtree, spelling the same bytes.
-    if (a->is_cons_ && !b->is_cons_) {
+    // A slice is a cons-flagged node too, but its union holds a parent and a
+    // range, not two children -- reading cons_.right off one dereferences its
+    // offset/length as a pointer.
+    if (a->is_cons_ && !a->is_slice_ && !b->is_cons_) {
         TailBuf merged;
         if (a->is_tail_) {
             if (merged_tail(a->inline_tail(), b->data_, merged))
