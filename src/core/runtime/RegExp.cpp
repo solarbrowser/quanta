@@ -5,6 +5,9 @@
  */
 
 #define PCRE2_CODE_UNIT_WIDTH 16
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/RegExpBacktrack.h"
@@ -54,6 +57,25 @@ thread_local std::unordered_map<std::string, CompiledRegexEntry> g_regex_cache;
 // PCRE2 runs in 16-bit mode: match offsets ARE JS string indices, and
 // non-unicode patterns get real UTF-16 code-unit semantics.
 
+// Widens the ASCII bytes at src[i..) into out (16 at a time) and returns the
+// index of the first byte it did not take; `written` advances by the count.
+static size_t widen_ascii_run(const unsigned char* src, size_t i, size_t size, char16_t* out,
+                              size_t& written) {
+    size_t taken = 0;
+#if defined(__SSE2__)
+    const __m128i zero = _mm_setzero_si128();
+    while (i + taken + 16 <= size) {
+        __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i + taken));
+        if (_mm_movemask_epi8(v)) break;
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + taken), _mm_unpacklo_epi8(v, zero));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + taken + 8), _mm_unpackhi_epi8(v, zero));
+        taken += 16;
+    }
+#endif
+    written += taken;
+    return i + taken;
+}
+
 // Decode WTF-8 (UTF-8 plus 3-byte-encoded lone surrogates) to UTF-16 code units.
 std::u16string wtf8_to_utf16(const std::string& s) {
     // Written into a buffer sized up front: no encoding produces more units
@@ -63,7 +85,12 @@ std::u16string wtf8_to_utf16(const std::string& s) {
     out.resize(s.size());
     char16_t* w = out.data();
     size_t n = 0, i = 0;
+    const unsigned char* src = reinterpret_cast<const unsigned char*>(s.data());
     while (i < s.size()) {
+        // A long ASCII run is most of what a large subject holds; widen it 16
+        // bytes at a time, stopping at the first byte with a high bit.
+        i = widen_ascii_run(src, i, s.size(), w + n, n);
+        if (i >= s.size()) break;
         unsigned char c = (unsigned char)s[i];
         if (c < 0x80) { w[n++] = (char16_t)c; i++; continue; }
         size_t len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
@@ -87,8 +114,26 @@ std::u16string wtf8_to_utf16(const std::string& s) {
 // Encode UTF-16 back to WTF-8; unpaired surrogates get the 3-byte WTF-8 form.
 std::string utf16_to_wtf8(const char16_t* p, size_t len) {
     std::string out;
-    out.reserve(len * 3);
-    for (size_t i = 0; i < len; i++) {
+    out.resize(len);
+    size_t i0 = 0;
+    // The ASCII prefix is narrowed 16 units at a time.
+#if defined(__SSE2__)
+    {
+        const __m128i high = _mm_set1_epi16(static_cast<short>(0xFF80));
+        while (i0 + 16 <= len) {
+            __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i0));
+            __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i0 + 8));
+            if (_mm_movemask_epi8(_mm_cmpeq_epi16(_mm_and_si128(_mm_or_si128(a, b), high), _mm_setzero_si128())) != 0xFFFF)
+                break;
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(&out[i0]), _mm_packus_epi16(a, b));
+            i0 += 16;
+        }
+    }
+#endif
+    out.resize(i0);
+    if (i0 == len) return out;
+    out.reserve(i0 + (len - i0) * 3);
+    for (size_t i = i0; i < len; i++) {
         uint32_t cp = p[i];
         if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < len &&
             p[i+1] >= 0xDC00 && p[i+1] <= 0xDFFF) {
