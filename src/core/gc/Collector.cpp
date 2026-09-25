@@ -625,7 +625,17 @@ constexpr uint32_t kMajorIntervalCap = 64;
 
 void note_major_yield(size_t marked, size_t swept) {
     uint32_t& interval = major_interval_ref();
+    // A major that freed little while the live set was still growing is not
+    // evidence that majors are pointless: the program is building its data
+    // (a tree, a parsed bundle), and the next major will find garbage as soon
+    // as the building stops. Backing off there let the growth trigger reach
+    // several times the live set before anything could be reclaimed. Only a
+    // live set that has stopped growing counts as an unproductive major.
+    static thread_local size_t previous_marked = 0;
+    const bool still_growing = marked > previous_marked + previous_marked / 4;
+    previous_marked = marked;
     if (swept * kMajorYieldDivisor >= marked) interval = kMajorIntervalFloor;
+    else if (still_growing) return;
     else if (interval < kMajorIntervalCap) interval *= 2;
 }
 
