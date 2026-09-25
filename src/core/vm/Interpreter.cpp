@@ -5649,6 +5649,7 @@ Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
                 pc += 4;
                 const Value& target = regs[obj_reg];
                 FeedbackSlot& fb_slot = chunk.feedback[fb_idx];
+                bool frame_args = regs[args_start + 1].is_vm_tdz_sentinel();
                 bool handled = false;
                 if (target.is_function()) {
                     Object* obj = target.as_object();
@@ -5663,6 +5664,14 @@ Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
                                 if (pe.from_descriptor && pe.desc_epoch == Object::descriptor_epoch() &&
                                     pe.cached_value.is_function() &&
                                     pe.cached_value.as_function() == ObjectFactory::get_pristine_function_apply()) {
+                                    if (frame_args) {
+                                        // X.apply(t, arguments) with `arguments` elided: the frame's own
+                                        // argument list is exactly what CreateListFromArrayLike would
+                                        // have read off the object, so no object is built.
+                                        acc = target.as_function()->call_register_args(ctx, f.args, regs[args_start]);
+                                        handled = true;
+                                        break;
+                                    }
                                     const Value& this_arg = regs[args_start];
                                     const Value& args_array = regs[args_start + 1];
                                     // Most .apply() calls pass a handful of
@@ -5718,6 +5727,11 @@ Value h_gen_CallViaFunctionApply(Frame& f, uint32_t pc, Value acc) {
                         }
                     }
                 }
+                if (!handled && frame_args && owner) {
+                    // Anything other than the pristine apply gets to see a real
+                    // arguments object, as it would have without the elision.
+                    regs[args_start + 1] = Value(owner->build_arguments_object(ctx, f.args).release());
+                }
                 if (!handled) {
                     Value method = get_named(ctx, target, "apply", &fb_slot, owner, f.feedback_rooted);
                     CHECK_EXC();
@@ -5758,6 +5772,7 @@ Value h_CallViaFunctionApplyWide(Frame& f, uint32_t pc, Value acc) {
     pc += 7;
     const Value& target = regs[obj_reg];
     FeedbackSlot& fb_slot = chunk.feedback[fb_idx];
+    bool frame_args = regs[args_start + 1].is_vm_tdz_sentinel();
     bool handled = false;
     if (target.is_function()) {
         Object* obj = target.as_object();
@@ -5772,6 +5787,14 @@ Value h_CallViaFunctionApplyWide(Frame& f, uint32_t pc, Value acc) {
                     if (pe.from_descriptor && pe.desc_epoch == Object::descriptor_epoch() &&
                         pe.cached_value.is_function() &&
                         pe.cached_value.as_function() == ObjectFactory::get_pristine_function_apply()) {
+                        if (frame_args) {
+                            // X.apply(t, arguments) with `arguments` elided: the frame's own
+                            // argument list is exactly what CreateListFromArrayLike would
+                            // have read off the object, so no object is built.
+                            acc = target.as_function()->call_register_args(ctx, f.args, regs[args_start]);
+                            handled = true;
+                            break;
+                        }
                         const Value& this_arg = regs[args_start];
                         const Value& args_array = regs[args_start + 1];
                         constexpr uint32_t kInlineApplyArgs = 8;
@@ -5818,6 +5841,11 @@ Value h_CallViaFunctionApplyWide(Frame& f, uint32_t pc, Value acc) {
                 }
             }
         }
+    }
+    if (!handled && frame_args && owner) {
+        // Anything other than the pristine apply gets to see a real
+        // arguments object, as it would have without the elision.
+        regs[args_start + 1] = Value(owner->build_arguments_object(ctx, f.args).release());
     }
     if (!handled) {
         Value method = get_named(ctx, target, "apply", &fb_slot, owner, f.feedback_rooted);
@@ -6992,6 +7020,13 @@ Value h_SetKeyedElement(Frame& f, uint32_t pc, Value acc) {
 // the spec would have made -- there is no way to write to it or to see it.
 Value h_LdaArgLength(Frame& f, uint32_t pc, Value acc) {
     acc = Value(static_cast<double>(f.args.size()));
+    pc += 1;
+    DISPATCH();
+}
+
+// See Op::LdaFrameArgsMarker: consumed by the very next CallViaFunctionApply.
+Value h_LdaFrameArgsMarker(Frame& f, uint32_t pc, Value acc) {
+    acc = Value::vm_tdz_sentinel();
     pc += 1;
     DISPATCH();
 }
@@ -8453,6 +8488,7 @@ constexpr std::array<Handler, 256> make_handler_table() {
     t[static_cast<uint8_t>(Op::TestIn)] = &h_gen_TestIn;
     t[static_cast<uint8_t>(Op::ForInKeyPresent)] = &h_gen_ForInKeyPresent;
     t[static_cast<uint8_t>(Op::LdaArgLength)] = &h_LdaArgLength;
+    t[static_cast<uint8_t>(Op::LdaFrameArgsMarker)] = &h_LdaFrameArgsMarker;
     t[static_cast<uint8_t>(Op::LdaArgAt)] = &h_LdaArgAt;
     t[static_cast<uint8_t>(Op::Neg)] = &h_gen_Neg;
     t[static_cast<uint8_t>(Op::LogicalNot)] = &h_LogicalNotFast;

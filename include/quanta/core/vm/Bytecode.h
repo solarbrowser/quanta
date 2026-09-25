@@ -471,6 +471,12 @@ enum class Op : uint8_t {
     // arguments object, so the result is always what the object would have said.
     LdaArgLength,
     LdaArgAt,
+    // Only ever emitted as the second argument of `X.apply(thisArg, arguments)`
+    // in a body whose `arguments` was elided: loads a sentinel that
+    // CallViaFunctionApply reads as "pass the frame's own argument list", so
+    // the object is never built on the path that can skip it. It never reaches
+    // any other consumer.
+    LdaFrameArgsMarker,
 
     kCount
 };

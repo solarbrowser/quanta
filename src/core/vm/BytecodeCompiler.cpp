@@ -11806,10 +11806,21 @@ bool BytecodeCompiler::compile_expression(const ASTNode* node, bool discard) {
                     int args_start = next_register_;
                     {
                         ChainMaskScope mask(chain_shortcircuit_jumps_);
-                        for (const auto& arg : call_args) {
+                        for (size_t arg_no = 0; arg_no < call_args.size(); arg_no++) {
+                            const auto& arg = call_args[arg_no];
                             int arg_reg = alloc_temp();
                             if (failed_) return false;
-                            if (!compile_expression(arg.get())) return false;
+                            // `f.apply(t, arguments)`, the forwarding idiom, in a body whose
+                            // `arguments` is elided: no object is needed for it either. The
+                            // handler passes the frame's own argument list when apply is the
+                            // real one and builds the object only for anything else.
+                            if (elide_arguments_ && arg_no == 1 &&
+                                arg->get_type() == ASTNode::Type::IDENTIFIER &&
+                                static_cast<const Identifier*>(arg.get())->get_name() == "arguments") {
+                                emit(Op::LdaFrameArgsMarker);
+                            } else if (!compile_expression(arg.get())) {
+                                return false;
+                            }
                             emit(Op::Star);
                             emit_u8(static_cast<uint8_t>(arg_reg));
                         }
