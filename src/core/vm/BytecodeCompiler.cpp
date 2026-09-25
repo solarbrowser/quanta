@@ -4805,11 +4805,26 @@ std::unique_ptr<BytecodeChunk> BytecodeCompiler::compile_attempt(
     // parameter list, whose arguments alias the parameters. Whether every
     // mention is a plain read is not decided here -- the body is compiled and any
     // mention that is not one refuses (see arguments_elision_refused_).
+    // A sloppy parameter list aliases the arguments object to its parameters,
+    // and that alias is only observable through a write to one of them: with
+    // none written anywhere in the body (no store, update, loop target or
+    // redeclaring `var`), `arguments[i]` is always exactly what the parameter
+    // holds, so reading the frame's argument list says the same thing.
+    bool params_never_written = false;
+    if (elide_arguments && needs_arguments && !is_strict && params.size() > 0 && !has_complex_params) {
+        std::unordered_set<std::string> candidates(param_names.begin(), param_names.end());
+        std::unordered_set<std::string> written;
+        collect_assigned_identifiers(body, candidates, written);
+        params_never_written = written.empty();
+        for (const auto& info : declared) {
+            if (!info.is_lexical && candidates.count(info.name)) params_never_written = false;
+        }
+    }
     const bool elide_this_body =
         elide_arguments && needs_arguments && !arguments_is_var && !is_arrow && !suspendable &&
         !has_closures && !has_complex_params && !an_op.opaque() && !has_delegated_expr &&
         !has_destructuring && !contains_with(body) && !outer_with &&
-        (is_strict || params.size() == 0);
+        (is_strict || params.size() == 0 || params_never_written);
     if (elide_this_body) {
         needs_arguments = false;
         if (attempted_elision) *attempted_elision = true;
