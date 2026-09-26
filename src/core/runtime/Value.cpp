@@ -1004,7 +1004,10 @@ bool Value::instanceof_check(const Value& constructor) const {
         if (ctor_name == "Function") return true;
         if (ctor_name == "Object") return true;
         Function* fn = as_function();
-        Value prototype_prop = ctor->get_property("prototype");
+        // constructor_prototype() answers from the cached prototype_ slot
+        // directly; get_property("prototype") would compare the key against
+        // "arguments"/"caller"/"name"/"length" first on every instanceof check.
+        Value prototype_prop = ctor->constructor_prototype();
         if (prototype_prop.is_object()) {
             Object* ctor_prototype = prototype_prop.as_object();
             Object* current = fn->get_prototype();
@@ -1019,7 +1022,7 @@ bool Value::instanceof_check(const Value& constructor) const {
 
     Object* obj = as_object();
 
-    Value prototype_prop = ctor->get_property("prototype");
+    Value prototype_prop = ctor->constructor_prototype();
     if (!prototype_prop.is_object()) {
         return false;
     }
