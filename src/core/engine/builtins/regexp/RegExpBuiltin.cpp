@@ -6,6 +6,7 @@
 #include "quanta/core/engine/builtins/RegExpBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
@@ -238,7 +239,11 @@ Value regexp_builtin_exec(Context& ctx, Object* r, const std::string& str, const
     re->set_last_index(li > static_cast<double>(std::numeric_limits<int>::max())
                            ? std::numeric_limits<int>::max() : static_cast<int>(li));
 
-    Value result = re->exec(str, cell, precomputed_units);
+    // The match result (and its .groups/.indices) must be created in the
+    // RegExp instance's OWN realm (RegExpBuiltinExec's own "current realm"),
+    // not the ambient caller's -- see RegExp::exec's own doc comment.
+    Context* realm_hint = Engine::find_realm_owning_object(r, "RegExp");
+    Value result = re->exec(str, cell, precomputed_units, realm_hint);
     // A match that ran out of its budget has no answer, and null would read as
     // one. Every engine has some ceiling here and the spec names none, so the
     // choice is only between a wrong answer and an error.
@@ -876,6 +881,7 @@ void register_regexp_builtins(Context& ctx) {
                 if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
             }
             auto result_array = ObjectFactory::create_array();
+            Engine::fixup_new_array_realm(result_array.get(), Engine::find_realm_owning_object(this_obj, "RegExp"));
             size_t match_count = 0;
             while (true) {
                 Value match;
@@ -1394,6 +1400,7 @@ void register_regexp_builtins(Context& ctx) {
                 }
             }
             auto result = ObjectFactory::create_array();
+            Engine::fixup_new_array_realm(result.get(), Engine::find_realm_owning_object(this_obj, "RegExp"));
             uint32_t length_a = 0;
             if (lim == 0) { result->set_length(0); return Value(result.release()); }
 
@@ -1491,8 +1498,12 @@ void register_regexp_builtins(Context& ctx) {
                     ctx.throw_type_error("%RegExpStringIteratorPrototype%.next called on incompatible receiver");
                     return Value();
                 }
-                auto make_result = [](const Value& value, bool done) {
+                auto make_result = [self](const Value& value, bool done) {
                     auto result = ObjectFactory::create_object();
+                    Value stored_re = self->get_own_property("[[RegExpStringIteratorRegExp]]");
+                    Object* stored_re_obj = stored_re.is_function()
+                        ? static_cast<Object*>(stored_re.as_function()) : stored_re.as_object_or_null();
+                    Engine::fixup_new_object_realm(result.get(), Engine::find_realm_owning_object(stored_re_obj, "RegExp"));
                     result->set_property("value", value);
                     result->set_property("done", Value(done));
                     return Value(result.release());

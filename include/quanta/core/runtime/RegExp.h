@@ -22,6 +22,7 @@ std::u16string wtf8_to_utf16(const std::string& s);
 std::string utf16_to_wtf8(const char16_t* p, size_t len);
 
 class RegexBacktrackEngine;
+class Context;
 
 class RegExp {
 private:
@@ -106,8 +107,14 @@ public:
     // help from it and redecodes every call. Only ever the whole (str, cell)
     // pair's own units; a mismatched one there is a caller bug, not
     // something this can detect.
+    // `realm_hint`: the realm the result array/groups/indices objects must be
+    // created in (the RegExp instance's own realm, resolved by the caller via
+    // Engine::find_realm_owning_object -- this class has no Context of its
+    // own). Null falls back to the create-time default, correct in the
+    // single/no-realm case.
     Value exec(const std::string& str, const class String* cell = nullptr,
-               const std::u16string* precomputed_units = nullptr);
+               const std::u16string* precomputed_units = nullptr,
+               Context* realm_hint = nullptr);
     // A global replace whose replacement is a literal, done without building
     // anything JS-visible. exec's own matching half is all this needs, and the
     // result array it goes on to build -- one object per match, with index,

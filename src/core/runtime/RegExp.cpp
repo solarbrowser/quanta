@@ -12,6 +12,7 @@
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/RegExpBacktrack.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/engine/Engine.h"
 #include "utf8proc.h"
 #include <pcre2.h>
 #include <vector>
@@ -2771,7 +2772,7 @@ bool RegExp::replace_all_literal(const std::string& str, const std::string& repl
     return true;
 }
 
-Value RegExp::exec(const std::string& str, const String* cell, const std::u16string* precomputed_units) {
+Value RegExp::exec(const std::string& str, const String* cell, const std::u16string* precomputed_units, Context* realm_hint) {
     resource_exhausted_ = false;
     // orig holds the unsanitized units so capture text preserves lone surrogates.
     std::u16string decode_scratch;
@@ -2866,6 +2867,7 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
 
     // ArrayCreate(n): the match result is a genuine Array (RegExpBuiltinExec step 24), not a plain object.
     auto result_owner = ObjectFactory::create_array(capture_count + 1);
+    Engine::fixup_new_array_realm(result_owner.get(), realm_hint);
     Object* result = result_owner.get();
     result->set_element(0, Value(slice(match_start, match_end)));
     // RegExpBuiltinExec steps 25-26 are CreateDataProperty, not Set: an own data
@@ -2948,8 +2950,10 @@ Value RegExp::exec(const std::string& str, const String* cell, const std::u16str
     if (has_indices_) {
         // MakeMatchIndicesIndexPairArray: per-capture [start, end] in JS indices.
         auto indices_owner = ObjectFactory::create_array(capture_count + 1);
+        Engine::fixup_new_array_realm(indices_owner.get(), realm_hint);
         auto make_pair = [&](size_t from, size_t to) -> Value {
             auto pair = ObjectFactory::create_array(2);
+            Engine::fixup_new_array_realm(pair.get(), realm_hint);
             pair->set_element(0, Value(static_cast<double>(from)));
             pair->set_element(1, Value(static_cast<double>(to)));
             return Value(pair.release());
