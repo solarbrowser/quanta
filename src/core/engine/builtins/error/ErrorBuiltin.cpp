@@ -571,6 +571,10 @@ void register_error_builtins(Context& ctx) {
             }
 
             auto errors_array = ObjectFactory::create_array(static_cast<uint32_t>(errors_list.size()));
+            // error_obj's own prototype above is already realm-correct (via
+            // resolve_error_prototype) -- reuse its identity to find the same
+            // realm for .errors, rather than the thread_local default.
+            Engine::fixup_new_array_realm(errors_array.get(), Engine::find_realm_owning_object(error_obj.get(), "AggregateError"));
             for (size_t i = 0; i < errors_list.size(); i++) errors_array->set_element(static_cast<uint32_t>(i), errors_list[i]);
             error_obj->set_property_descriptor("errors",
                 PropertyDescriptor(Value(errors_array.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
