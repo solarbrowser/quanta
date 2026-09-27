@@ -134,6 +134,73 @@ void hoist_lexical_declarations(Environment* env,
 ClosureTemplate closure_template_for(const ASTNode* literal);
 Value declare_function(Context& ctx, const ClosureTemplate& tpl);
 
+// GlobalDeclarationInstantiation's CanDeclareGlobalFunction/CanDeclareGlobalVar
+// pre-flight -- see this function's own declaration comment in AST.h. Function
+// names first (reverse order, deduped: "the last declaration is used" per
+// spec), then plain `var` names, so a function name never gets re-checked as
+// a var. Nothing below may create a binding before this returns cleanly.
+void Program::check_global_declaration_conflicts(Context& ctx) {
+    if (ctx.get_type() != Context::Type::Global) return;
+    Environment* var_env = ctx.get_variable_environment();
+    if (!var_env || var_env->get_type() != Environment::Type::Object) return;
+    Object* global_obj = var_env->get_binding_object();
+    if (!global_obj) return;
+
+    std::unordered_set<std::string> declared_function_names;
+    for (auto it = statements_.rbegin(); it != statements_.rend(); ++it) {
+        const ASTNode* nd = it->get();
+        if (nd->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+            const auto* ex = static_cast<const ExportStatement*>(nd);
+            nd = ex->is_declaration_export() ? ex->get_declaration() : nullptr;
+        }
+        if (!nd || nd->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+        const auto* fd = static_cast<const FunctionDeclaration*>(nd);
+        if (!fd->get_id()) continue;
+        const std::string& fn = fd->get_id()->get_name();
+        if (declared_function_names.count(fn)) continue;
+        declared_function_names.insert(fn);
+
+        if (global_obj->has_own_property(fn)) {
+            PropertyDescriptor existing = global_obj->get_property_descriptor(fn);
+            if (!existing.is_configurable() && (!existing.is_writable() || !existing.is_enumerable())) {
+                ctx.throw_type_error("Cannot declare function '" + fn + "'");
+                return;
+            }
+        } else if (!global_obj->is_extensible()) {
+            ctx.throw_type_error("Cannot declare function '" + fn + "'");
+            return;
+        }
+    }
+
+    std::unordered_set<std::string> checked_var_names;
+    for (const auto& statement : statements_) {
+        const ASTNode* node = statement.get();
+        if (node->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+            const auto* ex = static_cast<const ExportStatement*>(node);
+            node = ex->is_declaration_export() ? ex->get_declaration() : nullptr;
+        }
+        if (!node || node->get_type() != ASTNode::Type::VARIABLE_DECLARATION) continue;
+        const auto* vd = static_cast<const VariableDeclaration*>(node);
+        if (vd->get_kind() != VariableDeclarator::Kind::VAR) continue;
+        for (const auto& decl : vd->get_declarations()) {
+            std::vector<std::string> names;
+            if (decl->get_init() && decl->get_init()->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                static_cast<const DestructuringAssignment*>(decl->get_init())->collect_bound_names(names);
+            } else if (decl->get_id()) {
+                names.push_back(decl->get_id()->get_name());
+            }
+            for (const auto& name : names) {
+                if (name.empty() || declared_function_names.count(name) || checked_var_names.count(name)) continue;
+                checked_var_names.insert(name);
+                if (!global_obj->has_own_property(name) && !global_obj->is_extensible()) {
+                    ctx.throw_type_error("Cannot declare global variable '" + name + "'");
+                    return;
+                }
+            }
+        }
+    }
+}
+
 void Program::hoist_declarations(Context& ctx) {
     if (hoisted_) return;
     hoisted_ = true;
@@ -142,6 +209,8 @@ void Program::hoist_declarations(Context& ctx) {
         ctx.set_strict_mode(true);
     }
     check_use_strict_directive(ctx);
+    check_global_declaration_conflicts(ctx);
+    if (ctx.has_exception()) return;
 
     hoist_var_declarations(ctx);
     // A script gets a lexical environment of its own for let/const; an eval

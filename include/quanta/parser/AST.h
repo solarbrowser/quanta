@@ -2336,6 +2336,13 @@ private:
     void hoist_var_declarations(Context& ctx);
     void scan_for_var_declarations(ASTNode* node, Context& ctx);
     void hoist_lexical_declarations(Context& ctx);
+    // GlobalDeclarationInstantiation's CanDeclareGlobalFunction/CanDeclareGlobalVar
+    // pre-flight, for a real top-level script against the global object -- the
+    // script-execution counterpart to what the eval builtin already does for
+    // EvalDeclarationInstantiation (GlobalsBuiltin.cpp). Must run, and throw,
+    // before any binding below is created (spec order), which is why it is its
+    // own pass rather than folded into hoist_var_declarations.
+    void check_global_declaration_conflicts(Context& ctx);
 
 public:
     Value evaluate(Context& ctx) override;
