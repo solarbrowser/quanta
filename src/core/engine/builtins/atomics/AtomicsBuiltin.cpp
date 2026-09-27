@@ -6,6 +6,7 @@
 #include "quanta/core/engine/builtins/AtomicsBuiltin.h"
 #include <span>
 #include "quanta/core/gc/Visitor.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
@@ -480,6 +481,7 @@ Value atomics_wait_async(Context& ctx, std::span<const Value> args, Value receiv
                  operand_bits(expected, ta->get_array_type());
 
     auto result = ObjectFactory::create_object();
+    Engine::fixup_new_object_realm(result.get(), &ctx);
     if (!equal) {
         result->set_property("async", Value(false));
         result->set_property("value", Value(std::string("not-equal")));
