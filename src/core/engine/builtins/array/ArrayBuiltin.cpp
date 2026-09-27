@@ -411,25 +411,21 @@ static std::unordered_set<Function*>& all_array_intrinsics() {
 }
 
 // ArrayCreate's own length check: a plain (non-species) array can't exceed 2^32-1.
-static Value array_create_or_range_error(Context& ctx, double length) {
+// `realm_ctx` is the CURRENT realm per spec (9.4.2.3/23.1.1.3 ArrayCreate) --
+// the calling array method's OWN defining realm (home_ctx), not necessarily
+// the ambient caller's ctx: `arr.slice()` on a cross-realm array invokes
+// THAT realm's own slice, inherited through arr's own prototype chain.
+static Value array_create_or_range_error(Context& ctx, double length, Context* realm_ctx) {
     if (length > 4294967295.0) {
         ctx.throw_range_error("Invalid array length");
         return Value();
     }
     auto arr = ObjectFactory::create_array(static_cast<uint32_t>(length));
-    // ObjectFactory::create_array used the thread_local "last realm set up"
-    // Array.prototype, which is wrong once 2+ realms exist -- ArrayCreate
-    // must use the CURRENT realm's own %Array.prototype%. Free in the
-    // (overwhelmingly common) single/no-realm case: one vector-size check.
-    if (Engine::all_engines().size() > 1) {
-        if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(&ctx, "Array")) {
-            arr->initialize_prototype_of_new(realm_proto);
-        }
-    }
+    Engine::fixup_new_array_realm(arr.get(), realm_ctx);
     return Value(arr.release());
 }
 
-static Value array_species_create(Context& ctx, Object* original_array, double length) {
+static Value array_species_create(Context& ctx, Object* original_array, double length, Context* home_ctx) {
     if (length == 0) length = 0; // normalize -0 to +0
     bool is_actual_array = original_array->is_array();
     if (!is_actual_array && original_array->get_type() == Object::ObjectType::Proxy) {
@@ -440,25 +436,27 @@ static Value array_species_create(Context& ctx, Object* original_array, double l
         is_actual_array = target && target->is_array();
     }
     if (!is_actual_array) {
-        return array_create_or_range_error(ctx, length);
+        return array_create_or_range_error(ctx, length, home_ctx);
     }
     Value ctor_val = original_array->get_property("constructor");
     if (ctx.has_exception()) return Value();
     if (ctor_val.is_undefined()) {
-        return array_create_or_range_error(ctx, length);
+        return array_create_or_range_error(ctx, length, home_ctx);
     }
     if (ctor_val.is_function() || ctor_val.is_object()) {
         Object* ctor = ctor_val.is_function()
             ? static_cast<Object*>(ctor_val.as_function())
             : ctor_val.as_object();
-        // A foreign-realm %Array% is treated as if C were undefined.
+        // A foreign-realm %Array% is treated as if C were undefined. "thisRealm"
+        // (9.4.2.3 step 6a) is the array method's OWN realm (home_ctx), not the
+        // ambient caller's -- see array_create_or_range_error's own comment.
         if (ctor_val.is_function() && static_cast<Function*>(ctor_val.as_function())->is_constructor()) {
             Function* ctor_fn = ctor_val.as_function();
-            Value this_realm_array = ctx.get_binding("Array");
+            Value this_realm_array = home_ctx ? home_ctx->get_binding("Array") : ctx.get_binding("Array");
             bool is_foreign_array_intrinsic = all_array_intrinsics().count(ctor_fn) > 0 &&
                 !(this_realm_array.is_function() && this_realm_array.as_function() == ctor_fn);
             if (is_foreign_array_intrinsic) {
-                return array_create_or_range_error(ctx, length);
+                return array_create_or_range_error(ctx, length, home_ctx);
             }
         }
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
@@ -466,7 +464,7 @@ static Value array_species_create(Context& ctx, Object* original_array, double l
             Value species_val = ctor->get_property(species_sym->to_property_key());
             if (ctx.has_exception()) return Value();
             if (species_val.is_null() || species_val.is_undefined()) {
-                return array_create_or_range_error(ctx, length);
+                return array_create_or_range_error(ctx, length, home_ctx);
             } else if (species_val.is_function() &&
                        static_cast<Function*>(species_val.as_function())->is_constructor()) {
                 Function* species_fn = species_val.as_function();
@@ -478,7 +476,7 @@ static Value array_species_create(Context& ctx, Object* original_array, double l
                 return Value();
             }
         }
-        return array_create_or_range_error(ctx, length);
+        return array_create_or_range_error(ctx, length, home_ctx);
     }
     // Non-undefined, non-object constructor (null/number/string/boolean): never
     // a constructor, so step 9 of ArraySpeciesCreate throws unconditionally.
@@ -543,8 +541,15 @@ static double flatten_into_array(Context& ctx, Object* target, Object* source, d
 }
 
 void register_array_builtins(Context& ctx, Object* function_prototype) {
+    // This native function's own realm (the realm register_array_builtins is
+    // setting up), captured once at registration time -- every plain-Object/
+    // plain-Array result this file hands back to script must use THIS realm's
+    // own intrinsic prototype, not whichever realm's thread_local cache
+    // happens to be live (see Engine::fixup_new_object_realm/_array_realm's
+    // own doc comment). Free in the single/no-realm case.
+    Context* home_ctx = &ctx;
     auto array_constructor = ObjectFactory::create_native_constructor_with_new_target("Array",
-        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
             std::unique_ptr<Object> array;
             if (args.empty()) {
@@ -564,6 +569,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 }
                 array->set_property("length", Value(static_cast<double>(args.size())));
             }
+            Engine::fixup_new_array_realm(array.get(), home_ctx);
             // ES6: subclassing - use new.target.prototype if different from Array.prototype
             if (new_target.is_function() || new_target.is_object()) {
                 Object* nt_obj = new_target.is_function()
@@ -610,7 +616,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_constructor->set_property("isArray", Value(isArray_ptr), isArray_attrs);
 
     auto from_fn = ObjectFactory::create_native_function("from",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value items = args.empty() ? Value() : args[0];
             Value thisArg = (args.size() > 2) ? args[2] : Value();
 
@@ -636,7 +642,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                     if (v.is_object()) return v.as_object();
                     if (v.is_function()) return static_cast<Object*>(v.as_function());
                 }
-                return ObjectFactory::create_array(length).release();
+                auto arr = ObjectFactory::create_array(length);
+                Engine::fixup_new_array_realm(arr.get(), home_ctx);
+                return arr.release();
             };
 
             // null/undefined → TypeError
@@ -665,6 +673,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (plain_ctor && dense_fast(src)) {
                     const uint32_t n = static_cast<uint32_t>(src->element_count());
                     auto out = ObjectFactory::create_array(n);
+                    Engine::fixup_new_array_realm(out.get(), home_ctx);
                     out->copy_elements_from(*src, 0, 0, n);
                     out->set_length(n);
                     return Value(out.release());
@@ -733,7 +742,11 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                             res = rv.is_object() ? rv.as_object()
                                 : rv.is_function() ? static_cast<Object*>(rv.as_function()) : nullptr;
                         }
-                        if (!res) res = ObjectFactory::create_array(0).release();
+                        if (!res) {
+                            auto fallback = ObjectFactory::create_array(0);
+                            Engine::fixup_new_array_realm(fallback.get(), home_ctx);
+                            res = fallback.release();
+                        }
 
                         Value iterator_obj = iter_method.as_function()->call(ctx, {}, items_boxed);
                         if (ctx.has_exception()) return Value();
@@ -800,7 +813,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_constructor->set_property("from", Value(from_ptr), from_attrs);
 
     auto of_fn = ObjectFactory::create_native_function("of",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* this_binding = array_to_object(ctx, receiver);
             Function* constructor = nullptr;
             if (this_binding && this_binding->is_function() &&
@@ -815,10 +828,14 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (constructed.is_object()) {
                     result = constructed.as_object();
                 } else {
-                    result = ObjectFactory::create_array().release();
+                    auto arr = ObjectFactory::create_array();
+                    Engine::fixup_new_array_realm(arr.get(), home_ctx);
+                    result = arr.release();
                 }
             } else {
-                result = ObjectFactory::create_array().release();
+                auto arr = ObjectFactory::create_array();
+                Engine::fixup_new_array_realm(arr.get(), home_ctx);
+                result = arr.release();
             }
 
             for (size_t i = 0; i < args.size(); i++) {
@@ -935,13 +952,18 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* this_ctor = (this_obj2 && this_obj2->is_function())
                 ? static_cast<Function*>(this_obj2) : nullptr;
 
+            auto make_plain_result_array = [&]() -> Object* {
+                auto arr = ObjectFactory::create_array(0);
+                Engine::fixup_new_array_realm(arr.get(), &ctx);
+                return arr.release();
+            };
             auto construct_result = [&](const std::vector<Value>& ctor_args) -> Object* {
-                if (!this_ctor) return ObjectFactory::create_array(0).release();
+                if (!this_ctor) return make_plain_result_array();
                 Value arr_val = this_ctor->construct(ctx, ctor_args);
                 if (ctx.has_exception()) return nullptr;
                 return (arr_val.is_object() || arr_val.is_function())
                     ? (arr_val.is_function() ? static_cast<Object*>(arr_val.as_function()) : arr_val.as_object())
-                    : ObjectFactory::create_array(0).release();
+                    : make_plain_result_array();
             };
 
             if (next_fn_val.is_function()) {
@@ -1154,7 +1176,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("findLastIndex", findLastIndex_desc);
 
     auto with_fn = ObjectFactory::create_native_function("with",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
 
@@ -1174,6 +1196,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value new_value = args.size() > 1 ? args[1] : Value();
 
             auto result = ObjectFactory::create_array(static_cast<uint32_t>(length));
+            Engine::fixup_new_array_realm(result.get(), home_ctx);
             Object* result_obj = result.get();
             const bool with_fast = dense_fast(this_obj) &&
                                    length == static_cast<double>(this_obj->element_count());
@@ -1310,7 +1333,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("includes", array_includes_desc);
 
     auto flat_fn = ObjectFactory::create_native_function("flat",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
 
@@ -1324,7 +1347,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (depth < 0) depth = 0.0;
             }
 
-            Value result_val = array_species_create(ctx, this_obj, 0);
+            Value result_val = array_species_create(ctx, this_obj, 0, home_ctx);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
@@ -1348,7 +1371,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("flat", flat_desc);
 
     auto flatMap_fn = ObjectFactory::create_native_function("flatMap",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
 
@@ -1362,7 +1385,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
-            Value result_val = array_species_create(ctx, this_obj, 0);
+            Value result_val = array_species_create(ctx, this_obj, 0, home_ctx);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
@@ -1847,11 +1870,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toLocaleString", array_toLocaleString_desc);
 
     auto toReversed_fn = ObjectFactory::create_native_function("toReversed",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
+            if (!this_obj) {
+                auto empty = ObjectFactory::create_array();
+                Engine::fixup_new_array_realm(empty.get(), home_ctx);
+                return Value(empty.release());
+            }
 
             double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -1859,6 +1886,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (len_d > 4294967295.0) { ctx.throw_range_error("Invalid array length"); return Value(); }
             uint32_t length = static_cast<uint32_t>(len_d);
             auto result = ObjectFactory::create_array(length);
+            Engine::fixup_new_array_realm(result.get(), home_ctx);
 
             const bool rev_fast = dense_fast(this_obj) &&
                                   len_d == static_cast<double>(this_obj->element_count());
@@ -1879,7 +1907,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toReversed", toReversed_desc);
 
     auto toSorted_fn = ObjectFactory::create_native_function("toSorted",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
 
             Function* compareFn = nullptr;
@@ -1898,6 +1926,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (length > 4294967295.0) { ctx.throw_range_error("Invalid array length"); return Value(); }
 
             auto result = ObjectFactory::create_array(static_cast<uint32_t>(length));
+            Engine::fixup_new_array_realm(result.get(), home_ctx);
 
             // read-through-holes: Get for every index, no HasProperty check.
             // Rooted: the compare callback below runs user code that can trigger GC.
@@ -1950,7 +1979,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toSorted", toSorted_desc);
 
     auto toSpliced_fn = ObjectFactory::create_native_function("toSpliced",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
 
@@ -1981,6 +2010,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (new_len > 4294967295.0) { ctx.throw_range_error("Invalid array length"); return Value(); }
 
             auto result = ObjectFactory::create_array(static_cast<uint32_t>(new_len));
+            Engine::fixup_new_array_realm(result.get(), home_ctx);
             Object* result_obj = result.get();
 
             const bool spliced_fast = dense_fast(this_obj) &&
@@ -2033,12 +2063,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("toSpliced", toSpliced_desc);
 
     auto array_concat_fn = ObjectFactory::create_native_function("concat",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array.prototype.concat called on null or undefined"); return Value(); }
             Object* this_array = array_to_object(ctx, receiver);
 
             // ES6: use @@species constructor for result
-            Value result_val = array_species_create(ctx, this_array, 0);
+            Value result_val = array_species_create(ctx, this_array, 0, home_ctx);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
@@ -2178,7 +2208,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("every", every_desc);
 
     auto filter_fn = ObjectFactory::create_native_function("filter",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
 
@@ -2193,7 +2223,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             // ES6: use @@species constructor for result
-            Value result_val = array_species_create(ctx, this_obj, 0);
+            Value result_val = array_species_create(ctx, this_obj, 0, home_ctx);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
@@ -2314,7 +2344,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("indexOf", array_indexOf_desc);
 
     auto map_fn = ObjectFactory::create_native_function("map",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
 
@@ -2329,7 +2359,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             // ES6: use @@species constructor for result
-            Value result_val = array_species_create(ctx, this_obj, length);
+            Value result_val = array_species_create(ctx, this_obj, length, home_ctx);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
@@ -2738,13 +2768,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("shift", shift_desc);
 
     auto slice_fn = ObjectFactory::create_native_function("slice",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)ctx;
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
             if (!this_obj) {
                 auto empty = ObjectFactory::create_array();
+                Engine::fixup_new_array_realm(empty.get(), home_ctx);
                 return Value(empty.release());
             }
 
@@ -2767,7 +2797,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             double count = end > start ? end - start : 0;
             // ES6: use @@species constructor for result
-            Value result_val = array_species_create(ctx, this_obj, count);
+            Value result_val = array_species_create(ctx, this_obj, count, home_ctx);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
@@ -2917,10 +2947,14 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     array_prototype->set_property_descriptor("sort", sort_desc);
 
     auto splice_fn = ObjectFactory::create_native_function("splice",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (receiver.is_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx, receiver);
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
+            if (!this_obj) {
+                auto empty = ObjectFactory::create_array();
+                Engine::fixup_new_array_realm(empty.get(), home_ctx);
+                return Value(empty.release());
+            }
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
@@ -2949,7 +2983,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
-            Value result_val = array_species_create(ctx, this_obj, delete_count);
+            Value result_val = array_species_create(ctx, this_obj, delete_count, home_ctx);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
