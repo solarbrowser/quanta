@@ -47,6 +47,44 @@ const std::vector<Engine*>& Engine::all_engines() {
     return engine_registry();
 }
 
+Context* Engine::find_realm_owning_function(Object* fn) {
+    if (!fn) return nullptr;
+    Object* target_proto = fn->get_prototype();
+    if (!target_proto) return nullptr;
+    for (Engine* e : engine_registry()) {
+        Context* gctx = e->get_global_context();
+        if (!gctx || !gctx->get_global_object()) continue;
+        Value func_ctor = gctx->get_global_object()->get_property("Function");
+        Function* func_fn = func_ctor.is_function() ? func_ctor.as_function() : nullptr;
+        if (!func_fn) continue;
+        Value func_proto_val = func_fn->get_property("prototype");
+        // %Function.prototype% is itself callable (typeof === "function"),
+        // so it carries Value's TAG_FUNCTION, not TAG_OBJECT.
+        Object* func_proto_obj = func_proto_val.is_function()
+            ? static_cast<Object*>(func_proto_val.as_function())
+            : func_proto_val.is_object() ? func_proto_val.as_object() : nullptr;
+        if (func_proto_obj == target_proto) {
+            return gctx;
+        }
+    }
+    return nullptr;
+}
+
+Object* Engine::get_realm_intrinsic_prototype(Context* realm, const std::string& ctor_name) {
+    if (!realm || !realm->get_global_object()) return nullptr;
+    Value ctor = realm->get_global_object()->get_property(ctor_name);
+    if (!ctor.is_function()) return nullptr;
+    Value proto = ctor.as_function()->get_property("prototype");
+    // %Function.prototype% is itself callable (typeof === "function"); every
+    // other builtin's own .prototype is a plain, non-callable object.
+    if (proto.is_function()) return static_cast<Object*>(proto.as_function());
+    return proto.is_object() ? proto.as_object() : nullptr;
+}
+
+Object* Engine::realm_intrinsic_prototype_for(Object* new_target_like, const std::string& ctor_name) {
+    return get_realm_intrinsic_prototype(find_realm_owning_function(new_target_like), ctor_name);
+}
+
 
 
 Engine::Engine() : initialized_(false), execution_count_(0),

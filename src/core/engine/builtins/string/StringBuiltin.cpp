@@ -6,6 +6,7 @@
 #include "quanta/core/engine/builtins/StringBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -292,7 +293,6 @@ static const std::string& borrow_to_string_this(Context& ctx, const Value& this_
 void register_string_builtins(Context& ctx) {
     auto string_constructor = ObjectFactory::create_native_constructor_with_new_target("String",
         [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
-            (void)new_target;
             std::string str_value;
             if (args.empty()) {
                 str_value = "";
@@ -319,7 +319,19 @@ void register_string_builtins(Context& ctx) {
             Object* old_this = receiver.as_object_or_null();
             if (old_this) {
                 auto this_obj = std::make_unique<Object>(Object::ObjectType::String);
-                this_obj->initialize_prototype(old_this->get_prototype());
+                // See Boolean's identical constructor comment: old_this's own
+                // prototype isn't right when Reflect.construct gave a
+                // cross-realm, native newTarget.
+                Object* proto = old_this->get_prototype();
+                Object* nt_obj = new_target.is_function() ? static_cast<Object*>(new_target.as_function())
+                                : new_target.is_object() ? new_target.as_object() : nullptr;
+                if (nt_obj) {
+                    Value nt_proto = nt_obj->get_property("prototype");
+                    if (nt_proto.is_object()) proto = nt_proto.as_object();
+                    else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "String"))
+                        proto = realm_default;
+                }
+                this_obj->initialize_prototype(proto);
                 this_obj->set_property("[[PrimitiveValue]]", Value(str_value), PropertyAttributes::Writable);
                 size_t str_utf16_len = utf16_length(str_value);
                 PropertyDescriptor length_desc(Value(static_cast<double>(str_utf16_len)),

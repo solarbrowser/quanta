@@ -7,6 +7,7 @@
 #include "quanta/core/engine/builtins/DateBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Date.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -34,6 +35,8 @@ void register_date_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (p.is_object()) proto = p.as_object();
                 else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
+                else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "Date"))
+                    proto = realm_default;
             }
             // result is fresh from Date::date_constructor above and has not
             // been handed back to the caller yet, let alone read by any IC --

@@ -8,6 +8,7 @@
 #include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/BigInt.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/parser/AST.h"
 #include <algorithm>
 #include <cmath>
@@ -82,7 +83,20 @@ void register_number_builtins(Context& ctx) {
             Object* this_obj = receiver.as_object_or_null();
             if (this_obj) {
                 auto number_obj = std::make_unique<Object>(Object::ObjectType::Number);
-                number_obj->initialize_prototype(this_obj->get_prototype());
+                // See Boolean's identical constructor comment: this_obj's own
+                // prototype isn't right when Reflect.construct gave a
+                // cross-realm, native newTarget.
+                Object* proto = this_obj->get_prototype();
+                Value new_target = ctx.get_new_target();
+                Object* nt_obj = new_target.is_function() ? static_cast<Object*>(new_target.as_function())
+                                : new_target.is_object() ? new_target.as_object() : nullptr;
+                if (nt_obj) {
+                    Value nt_proto = nt_obj->get_property("prototype");
+                    if (nt_proto.is_object()) proto = nt_proto.as_object();
+                    else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "Number"))
+                        proto = realm_default;
+                }
+                number_obj->initialize_prototype(proto);
                 number_obj->set_property("[[PrimitiveValue]]", Value(num_value), PropertyAttributes::Writable);
                 return Value(number_obj.release());
             }

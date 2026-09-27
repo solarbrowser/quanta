@@ -1880,7 +1880,20 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
                         : existing_new_target.is_object() ? existing_new_target.as_object() : nullptr;
         if (nt_obj && nt_obj != static_cast<Object*>(this)) {
             Value nt_proto = nt_obj->get_property("prototype");
-            if (nt_proto.is_object() || nt_proto.is_function()) initial_proto = nt_proto;
+            if (nt_proto.is_object() || nt_proto.is_function()) {
+                initial_proto = nt_proto;
+            } else if (Object* realm_default =
+                           Engine::realm_intrinsic_prototype_for(nt_obj, get_name())) {
+                // GetPrototypeFromConstructor's own fallback: new.target's
+                // "prototype" isn't an object, so the default comes from
+                // new.target's OWN realm (GetFunctionRealm), not this
+                // constructor's -- they can differ under Reflect.construct
+                // with a cross-realm newTarget. Falls through to this
+                // constructor's own default below if new.target's realm
+                // can't be found (e.g. new.target isn't a real constructor
+                // from any live realm at all).
+                initial_proto = Value(realm_default);
+            }
         }
     }
     Object* pending_proto = nullptr;
@@ -2080,8 +2093,15 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
             ret_obj->get_type() != Object::ObjectType::Proxy) {
             ret_obj->set_prototype(constructor_prototype.as_object());
         }
-        if (!ret_obj->get_prototype_raw() && constructor_prototype.is_object()) {
-            ret_obj->set_prototype(constructor_prototype.as_object());
+        if (!ret_obj->get_prototype_raw() && pending_proto) {
+            // pending_proto, not constructor_prototype: a native that builds
+            // its own object and ignores `this`/new.target entirely (most
+            // TypedArray constructors) still needs new.target's own realm's
+            // prototype here, same reasoning as this function's own
+            // initial_proto resolution above -- constructor_prototype is
+            // always *this* function's realm, which is wrong whenever
+            // new.target is a different, cross-realm constructor.
+            ret_obj->set_prototype(pending_proto);
         }
         // Report this invocation's own nature to whichever caller (call.cpp's
         // super() handling, or the auto-super block above, in a nested

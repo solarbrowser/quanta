@@ -6,6 +6,7 @@
 #include "quanta/core/engine/builtins/IteratorBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Iterator.h"
@@ -581,12 +582,20 @@ void register_iterator_constructor(Context& ctx) {
                 return Value();
             }
 
-            Object* constructor = receiver.as_object_or_null();
+            // GetPrototypeFromConstructor(newTarget, "%Iterator.prototype%"):
+            // newTarget's own "prototype", else newTarget's own realm's
+            // intrinsic default -- reading receiver's own "prototype"
+            // property (there is no such property; receiver is the plain
+            // object being constructed, not a constructor) never did either.
             auto iterator_obj = ObjectFactory::create_object();
-            if (constructor && constructor->is_function()) {
-                Value prototype_val = constructor->get_property("prototype");
+            Object* nt_obj = new_target.is_function() ? static_cast<Object*>(new_target.as_function())
+                            : new_target.is_object() ? new_target.as_object() : nullptr;
+            if (nt_obj) {
+                Value prototype_val = nt_obj->get_property("prototype");
                 if (prototype_val.is_object()) {
                     iterator_obj->initialize_prototype(prototype_val.as_object());
+                } else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "Iterator")) {
+                    iterator_obj->initialize_prototype(realm_default);
                 }
             }
 

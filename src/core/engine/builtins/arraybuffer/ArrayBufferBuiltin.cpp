@@ -9,6 +9,7 @@
 #include "quanta/core/engine/builtins/AtomicsBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include <limits>
 #include "quanta/core/runtime/TypedArray.h"
@@ -50,14 +51,18 @@ static double to_index_checked(Context& ctx, const Value& v) {
 // Reject before actually attempting posix_memalign/memset on a multi-petabyte request.
 static constexpr double kMaxAllocatableBytes = 4294967296.0; // 4 GiB
 
-// GetPrototypeFromConstructor: new.target's own "prototype", falling back to default_proto.
-static Object* resolve_new_target_prototype(Context& ctx, Value nt, Object* default_proto) {
+// GetPrototypeFromConstructor: new.target's own "prototype", falling back to
+// new.target's own realm's intrinsic (GetFunctionRealm) and only then to
+// default_proto -- see Engine::realm_intrinsic_prototype_for's own comment.
+static Object* resolve_new_target_prototype(Context& ctx, Value nt, Object* default_proto,
+                                             const char* ctor_name) {
     if (!nt.is_object() && !nt.is_function()) return default_proto;
     Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
     Value p = nt_obj->get_property("prototype");
     if (ctx.has_exception()) return nullptr;
     if (p.is_object()) return p.as_object();
     if (p.is_function()) return static_cast<Object*>(p.as_function());
+    if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, ctor_name)) return realm_default;
     return default_proto;
 }
 
@@ -173,7 +178,7 @@ void register_arraybuffer_builtins(Context& ctx) {
 
             // Prototype resolves before allocation: a throwing prototype getter
             // must preempt a RangeError from an oversized request.
-            Object* proto = resolve_new_target_prototype(ctx, new_target, arraybuffer_proto_ptr);
+            Object* proto = resolve_new_target_prototype(ctx, new_target, arraybuffer_proto_ptr, "ArrayBuffer");
             if (ctx.has_exception()) return Value();
 
             if ((has_max ? max_byte_length_d : byte_length_d) > kMaxAllocatableBytes) {
@@ -465,7 +470,7 @@ void register_arraybuffer_builtins(Context& ctx) {
                     return Value();
                 }
 
-                Object* proto = resolve_new_target_prototype(ctx, new_target, sab_proto_ptr);
+                Object* proto = resolve_new_target_prototype(ctx, new_target, sab_proto_ptr, "SharedArrayBuffer");
                 if (ctx.has_exception()) return Value();
 
                 if ((has_max ? max_byte_length_d : byte_length_d) > kMaxAllocatableBytes) {

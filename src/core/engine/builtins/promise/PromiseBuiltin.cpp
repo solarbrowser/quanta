@@ -7,6 +7,7 @@
 #include <span>
 #include "quanta/core/engine/builtins/ObjectBuiltin.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/parser/AST.h"
@@ -253,6 +254,12 @@ void register_promise_builtins(Context& ctx) {
                 Value proto;
                 if (nt_obj) proto = nt_obj->get_property("prototype");
                 if (ctx.has_exception()) return Value();
+                if (!proto.is_object() && nt_obj) {
+                    // new.target's own realm's %PromisePrototype%, not this
+                    // realm's -- they can differ under a cross-realm subclass.
+                    if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "Promise"))
+                        proto = Value(realm_default);
+                }
                 if (!proto.is_object()) {
                     Value promise_ctor = ctx.get_binding("Promise");
                     if (promise_ctor.is_function())

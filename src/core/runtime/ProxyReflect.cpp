@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/parser/AST.h"
 #include <iostream>
 #include <algorithm>
@@ -1480,9 +1481,15 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
     if (!target->is_native()) {
         nt_proto = new_target_obj->get_property("prototype");
         if (ctx.has_exception()) return Value();
-        // Spec fallback: if newTarget.prototype isn't an object, use target's own
-        // intrinsic default prototype rather than leaving the bare Object.prototype.
-        if (!nt_proto.is_object()) nt_proto = target->get_property("prototype");
+        // Spec fallback: if newTarget.prototype isn't an object, the default
+        // comes from newTarget's OWN realm (GetFunctionRealm) -- see
+        // Function::construct's identical fix for why target's own default
+        // isn't right when newTarget is a cross-realm constructor.
+        if (!nt_proto.is_object()) {
+            Object* realm_default =
+                Engine::realm_intrinsic_prototype_for(new_target_obj, target->get_name());
+            nt_proto = realm_default ? Value(realm_default) : target->get_property("prototype");
+        }
         if (nt_proto.is_object()) new_object->initialize_prototype(nt_proto.as_object());
     }
 
@@ -1505,7 +1512,14 @@ Value Reflect::reflect_construct(Context& ctx, std::span<const Value> args, Valu
             if (target->is_native()) {
                 nt_proto = new_target_obj->get_property("prototype");
                 if (ctx.has_exception()) return Value();
-                if (!nt_proto.is_object()) nt_proto = target->get_property("prototype");
+                if (!nt_proto.is_object()) {
+                    // GetPrototypeFromConstructor's fallback belongs to
+                    // newTarget's OWN realm (GetFunctionRealm), not target's --
+                    // see Function::construct's identical fix for why.
+                    Object* realm_default =
+                        Engine::realm_intrinsic_prototype_for(new_target_obj, target->get_name());
+                    nt_proto = realm_default ? Value(realm_default) : target->get_property("prototype");
+                }
             }
             if (nt_proto.is_object()) result_obj->initialize_prototype(nt_proto.as_object());
         }

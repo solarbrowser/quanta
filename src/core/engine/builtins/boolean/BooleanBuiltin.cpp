@@ -7,6 +7,7 @@
 #include "quanta/core/engine/builtins/BooleanBuiltin.h"
 #include <span>
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
 #include <cstdio>
@@ -26,7 +27,25 @@ void register_boolean_builtins(Context& ctx) {
             Object* this_obj = receiver.as_object_or_null();
             if (this_obj) {
                 auto bool_obj = ObjectFactory::create_boolean(value);
-                bool_obj->initialize_prototype(this_obj->get_prototype());
+                // this_obj's own prototype is already right for a same-realm
+                // `new`/Reflect.construct (Function::construct resolved it up
+                // front) -- but Reflect.construct with a cross-realm, native
+                // newTarget skips that pre-resolution (to avoid firing a
+                // newTarget.prototype getter before this constructor's own
+                // argument handling), so this_obj's prototype can still be
+                // some unrelated default here. Re-resolve properly: newTarget's
+                // own "prototype", else newTarget's realm's own %BooleanPrototype%.
+                Object* proto = this_obj->get_prototype();
+                Value new_target = ctx.get_new_target();
+                Object* nt_obj = new_target.is_function() ? static_cast<Object*>(new_target.as_function())
+                                : new_target.is_object() ? new_target.as_object() : nullptr;
+                if (nt_obj) {
+                    Value nt_proto = nt_obj->get_property("prototype");
+                    if (nt_proto.is_object()) proto = nt_proto.as_object();
+                    else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "Boolean"))
+                        proto = realm_default;
+                }
+                bool_obj->initialize_prototype(proto);
                 return Value(bool_obj.release());
             }
 

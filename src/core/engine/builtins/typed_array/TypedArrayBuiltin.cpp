@@ -6,6 +6,7 @@
 #include "quanta/core/engine/builtins/TypedArrayBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/String.h"
@@ -2000,6 +2001,8 @@ void register_typed_array_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (p.is_object()) proto = p.as_object();
                 else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
+                else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "DataView"))
+                    proto = realm_default;
             }
 
             // The prototype getter may have detached or shrunk the buffer;

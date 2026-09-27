@@ -134,6 +134,27 @@ public:
     static const std::vector<Engine*>& all_engines();
     Context* get_current_context() const;
 
+    // GetFunctionRealm(fn), spec 27.2.4 -- which realm `fn` belongs to, for
+    // GetPrototypeFromConstructor's fallback when new.target's own
+    // "prototype" isn't an object: the spec says use *that realm's* intrinsic
+    // default, not whichever realm happens to be running right now. A native
+    // constructor's closure_context_ is always null (see Function's own
+    // constructors), so realm identity has to be found another way: each
+    // realm's own %Function.prototype% is a distinct object (createRealm
+    // never shares one), so whichever live engine's %Function.prototype%
+    // equals fn's own [[Prototype]] is the one that made fn. Walks
+    // all_engines() -- a linear scan, but only reached on this already-rare
+    // fallback path, never on an ordinary construction where new.target's own
+    // "prototype" is already an object.
+    static Context* find_realm_owning_function(Object* fn);
+    // realm's own named global constructor's "prototype" (e.g. "Boolean" ->
+    // that realm's %BooleanPrototype%) -- nullptr if realm is null or the
+    // name isn't bound to a constructor there.
+    static Object* get_realm_intrinsic_prototype(Context* realm, const std::string& ctor_name);
+    // The two combined: nullptr on any failure, so a caller's existing
+    // default_proto fallback still applies unchanged.
+    static Object* realm_intrinsic_prototype_for(Object* new_target_like, const std::string& ctor_name);
+
     // Survivor pool for function contexts (Promise async support). Pruned
     // only by the collector's own reachability-based pass (Collector.cpp) --
     // a context not currently in EventLoop use may still be reachable
