@@ -35,6 +35,12 @@ public:
         size_t max_stack_size = 8 * 1024 * 1024;
         bool enable_debugger = false;
         bool enable_profiler = false;
+        // $262 (createRealm/detachArrayBuffer/evalScript/gc) is a test-harness
+        // interface, not something arbitrary script should ever see -- a real
+        // embedder (Solar Browser) must not expose realm creation or forced
+        // GC to web content. Off by default; only a test262-running host
+        // (console.cpp's --test262) turns it on.
+        bool expose_test262_globals = false;
     };
 
     struct Result {

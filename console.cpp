@@ -94,13 +94,27 @@ public:
 private:
     
 public:
-    QuantaConsole() {
-        engine_ = std::make_unique<Engine>();
+    explicit QuantaConsole(bool expose_test262 = false) {
+        Engine::Config config;
+        config.expose_test262_globals = expose_test262;
+        engine_ = std::make_unique<Engine>(config);
         bool init_result = engine_->initialize();
-        
+
         if (!init_result) {
             std::cout << "Engine initialization failed!" << std::endl;
         }
+
+        // print(): a CLI/shell convenience, not part of any spec -- the engine
+        // itself has no opinion on what "print" means (a future browser host
+        // would bind window.print() to something else entirely, not stdout).
+        engine_->register_function("print", [](const std::vector<Value>& args) -> Value {
+            for (size_t i = 0; i < args.size(); i++) {
+                if (i > 0) std::cout << " ";
+                std::cout << args[i].to_string();
+            }
+            std::cout << std::endl;
+            return Value();
+        });
     }
     
     bool execute_as_module(const std::string& filename, bool silent = false) {
@@ -348,6 +362,7 @@ int main(int argc, char* argv[]) {
     try {
         bool execute_code = false;
         bool force_module = false;
+        bool expose_test262 = false;
         std::string code_to_execute;
         std::string filename;
         std::vector<std::string> preloads;
@@ -362,6 +377,9 @@ int main(int argc, char* argv[]) {
                 continue;
             } else if (arg == "--module") {
                 force_module = true;
+                continue;
+            } else if (arg == "--test262") {
+                expose_test262 = true;
                 continue;
             } else if (arg == "--preload" && i + 1 < argc) {
                 preloads.push_back(argv[i + 1]);
@@ -379,6 +397,7 @@ int main(int argc, char* argv[]) {
                           << "Options:\n"
                           << "  -c <code>      Execute the given code and exit\n"
                           << "  --module       Force-load the file as an ES module\n"
+                          << "  --test262      Expose the $262 test-harness API (createRealm, evalScript, gc, ...)\n"
                           << "  --preload <f>  Run <f> as a script in the same realm first (repeatable)\n"
                           << "  -v, --version  Print the engine version and exit\n"
                           << "  -h, --help     Show this help message and exit\n\n"
@@ -391,7 +410,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        QuantaConsole console;
+        QuantaConsole console(expose_test262);
 
         // Preloads share the realm with whatever runs next, which is the only
         // way a module can see names a script defined: its own imports are

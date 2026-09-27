@@ -787,9 +787,36 @@ void register_global_builtins(Context& ctx) {
         ctx.get_global_object()->set_property_descriptor("window", global_ref_desc);
     }
 
-    // test262 host API ($262)
-    {
+    // test262 host API ($262) -- a test-harness interface, never exposed to
+    // ordinary script (an embedder like Solar Browser must not let arbitrary
+    // web content spawn realms or force a GC). Off unless the host explicitly
+    // asked for it (console.cpp's --test262).
+    if (ctx.get_engine() && ctx.get_engine()->get_config().expose_test262_globals) {
         auto test262_host = ObjectFactory::create_object();
+
+        if (ctx.get_global_object()) {
+            test262_host->set_property("global", Value(ctx.get_global_object()));
+        }
+
+        auto eval_script_fn = ObjectFactory::create_native_function("evalScript",
+            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                if (args.empty() || !ctx.get_engine()) return Value();
+                auto result = ctx.get_engine()->evaluate(args[0].to_string());
+                if (!result.success) {
+                    ctx.throw_exception(result.exception_value.is_undefined()
+                        ? Value(result.error_message) : result.exception_value);
+                    return Value();
+                }
+                return result.value;
+            }, 1);
+        test262_host->set_property("evalScript", Value(eval_script_fn.release()), PropertyAttributes::BuiltinFunction);
+
+        auto gc_fn = ObjectFactory::create_native_function("gc",
+            [](Context&, std::span<const Value>, Value receiver) -> Value {
+                Collector::collect();
+                return Value();
+            }, 0);
+        test262_host->set_property("gc", Value(gc_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto detach_fn = ObjectFactory::create_native_function("detachArrayBuffer",
             [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
@@ -1789,18 +1816,6 @@ void register_global_builtins(Context& ctx) {
             return Value();
         }, 3);
     ctx.get_global_object()->set_internal_slot("__deffield__", Value(deffield_fn.release()));
-
-    // print()
-    auto print_fn = ObjectFactory::create_native_function("print",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            for (size_t i = 0; i < args.size(); i++) {
-                if (i > 0) std::cout << " ";
-                std::cout << args[i].to_string();
-            }
-            std::cout << std::endl;
-            return Value();
-        }, 1);
-    ctx.get_lexical_environment()->create_binding("print", Value(print_fn.release()), false);
 
     // GC object with stats(), collect(), heapSize() methods
     auto gc_obj = ObjectFactory::create_object();
