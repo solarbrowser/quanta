@@ -399,14 +399,15 @@ std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::s
     auto arguments_obj = ObjectFactory::create_array(args.size());
     // Elements for non-mapped indices; mapped ones get accessor descriptors below.
     // Only skip elements for simple param lists (no defaults/rest/destructuring).
-    bool pre_simple = !fn_ctx.is_strict_mode() && !param_names.empty();
-    if (pre_simple) {
+    bool has_non_simple_params = false;
+    if (exe) {
         for (size_t i = 0; i < exe->param_count(); i++) {
             if (exe->param_has_default(i) || exe->param_is_rest(i) || exe->param_has_pattern(i)) {
-                pre_simple = false; break;
+                has_non_simple_params = true; break;
             }
         }
     }
+    bool pre_simple = !fn_ctx.is_strict_mode() && !param_names.empty() && !has_non_simple_params;
     size_t map_count_pre = pre_simple ? std::min(args.size(), param_names.size()) : 0;
     for (size_t i = 0; i < args.size(); i++) {
         if (i < map_count_pre && param_gets_mapped_accessor(param_names, i)) continue; // will be set via accessor
@@ -437,30 +438,45 @@ std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::s
         arguments_obj->set_property_descriptor("Symbol.iterator", iter_desc);
     }
 
-    // In strict mode, arguments has no 'caller' own property (ES2017+).
-    // 'callee' is a poison-pill accessor using the shared %ThrowTypeError% intrinsic.
-    if (fn_ctx.is_strict_mode()) {
-        if (!Function::s_throw_type_error_) {
-            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                [](Context& ctx, std::span<const Value> args, Value this_value) -> Value {
-                    (void)args;
-                    ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
-                    return Value();
-                });
-            // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
-            PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
-            len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
-            thrower->set_property_descriptor("length", len_desc);
-            PropertyDescriptor name_desc(Value(std::string("")), PropertyAttributes::None);
-            name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
-            thrower->set_property_descriptor("name", name_desc);
-            thrower->prevent_extensions();
-            Function::s_throw_type_error_ = thrower.release();
+    // 10.4.4.7 CreateUnmappedArgumentsObject: 'callee' is the poison-pill
+    // %ThrowTypeError% accessor whenever the arguments object is UNMAPPED --
+    // strict mode code, OR (regardless of strictness) a non-simple parameter
+    // list, since CreateMappedArgumentsObject is spec'd to never run for one.
+    if (fn_ctx.is_strict_mode() || has_non_simple_params) {
+        // %ThrowTypeError% is defined ONCE PER REALM (not a single shared
+        // intrinsic) -- fn_ctx's own realm has one bound at registration time
+        // (FunctionBuiltin.cpp), which is what 2+ realms must actually use;
+        // Function::s_throw_type_error_'s thread_local is only ever exactly
+        // right in the (overwhelmingly common) single/no-realm case.
+        Function* realm_thrower = nullptr;
+        if (Engine::all_engines().size() > 1 && fn_ctx.has_binding("@@ThrowTypeError")) {
+            Value v = fn_ctx.get_binding("@@ThrowTypeError");
+            if (v.is_function()) realm_thrower = v.as_function();
+        }
+        if (!realm_thrower) {
+            if (!Function::s_throw_type_error_) {
+                auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+                    [](Context& ctx, std::span<const Value> args, Value this_value) -> Value {
+                        (void)args;
+                        ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
+                        return Value();
+                    });
+                // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
+                PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
+                len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
+                thrower->set_property_descriptor("length", len_desc);
+                PropertyDescriptor name_desc(Value(std::string("")), PropertyAttributes::None);
+                name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
+                thrower->set_property_descriptor("name", name_desc);
+                thrower->prevent_extensions();
+                Function::s_throw_type_error_ = thrower.release();
+            }
+            realm_thrower = static_cast<Function*>(Function::s_throw_type_error_);
         }
 
         PropertyDescriptor callee_desc;
-        callee_desc.set_getter(Function::s_throw_type_error_);
-        callee_desc.set_setter(Function::s_throw_type_error_);
+        callee_desc.set_getter(realm_thrower);
+        callee_desc.set_setter(realm_thrower);
         callee_desc.set_configurable(false);
         callee_desc.set_enumerable(false);
         arguments_obj->set_property_descriptor("callee", callee_desc);
@@ -625,13 +641,27 @@ Value Function::call_gated(Context& ctx, std::span<const Value> args, Value this
             if (has_arrow_this_) fast_this = arrow_this_;
         } else if (!ctx.is_strict_mode()) {
             if (this_value.is_undefined() || this_value.is_null()) {
-                Object* global = ctx.get_global_object();
+                // OrdinaryCallBindThis's global-this substitution needs THIS
+                // function's own realm -- ctx is the caller's shared object
+                // here (this register-mode gate's whole point is skipping a
+                // fresh Context), so a cross-realm call must ask
+                // closure_context_ directly. Same fix as call_default_impl's
+                // fast_no_closures path.
+                Object* global = nullptr;
+                if (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx) {
+                    global = closure_context_->get_global_object();
+                }
+                if (!global) global = ctx.get_global_object();
                 if (global) fast_this = Value(global);
             } else if (!this_value.is_object() && !this_value.is_function()) {
                 // box_primitive_this_sloppy's own first check is exactly this --
                 // skip the cross-TU call for the common already-object `this`
-                // (every ordinary method call), not just primitives.
-                fast_this = ObjectFactory::box_primitive_this_sloppy(ctx, this_value);
+                // (every ordinary method call), not just primitives. ToObject
+                // must produce a wrapper from THIS function's own realm (see
+                // the global-this substitution above for why ctx isn't it).
+                Context& box_ctx = (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx)
+                    ? *closure_context_ : ctx;
+                fast_this = ObjectFactory::box_primitive_this_sloppy(box_ctx, this_value);
             }
         }
         // Strict-mode primitive `this` (a class method's super.x read,
@@ -748,7 +778,13 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
     // Only a class declaration's constructor carries this, and that is always
     // compiled function code, so the native entry has no reason to ask.
     if (is_class_constructor_ && !ctx.is_in_constructor_call()) {
-        ctx.throw_exception(Value("TypeError: Class constructor " + get_name() + " cannot be invoked without 'new'"));
+        // 10.2.1 [[Call]] throws using the CLASS'S OWN realm (calleeContext.Realm
+        // = F.[[Realm]]), not the caller's -- closure_context_ is the class's own
+        // defining context, always available for compiled class code, so this is
+        // free (same cost as throwing on ctx) and correct whether or not the
+        // caller is cross-realm.
+        ctx.throw_type_error_as(closure_context_ ? *closure_context_ : ctx,
+            "Class constructor " + get_name() + " cannot be invoked without 'new'");
         return Value();
     }
 
@@ -898,9 +934,23 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
             Value actual_this = this_value;
             if (!ctx.is_strict_mode()) {
                 if (this_value.is_undefined() || this_value.is_null()) {
-                    if (Object* global = ctx.get_global_object()) actual_this = Value(global);
+                    // OrdinaryCallBindThis's global-this substitution needs THIS
+                    // function's own realm, not the caller's -- ctx is reused
+                    // here (this gate's whole point is skipping a fresh Context),
+                    // so a cross-realm call must ask closure_context_ directly
+                    // rather than the shared ctx it would otherwise read.
+                    Object* global = nullptr;
+                    if (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx) {
+                        global = closure_context_->get_global_object();
+                    }
+                    if (!global) global = ctx.get_global_object();
+                    if (global) actual_this = Value(global);
                 } else if (!this_value.is_object() && !this_value.is_function()) {
-                    actual_this = ObjectFactory::box_primitive_this_sloppy(ctx, this_value);
+                    // ToObject must produce a wrapper from THIS function's own
+                    // realm -- same reasoning as the global-this substitution above.
+                    Context& box_ctx = (Engine::all_engines().size() > 1 && closure_context_ && closure_context_ != &ctx)
+                        ? *closure_context_ : ctx;
+                    actual_this = ObjectFactory::box_primitive_this_sloppy(box_ctx, this_value);
                 }
             }
             // Context::create_binding("this", ...) is itself only
@@ -946,7 +996,10 @@ Value Function::call_default_impl(Context& ctx, std::span<const Value> args, Val
         }
         if (!slots.private_brands) {
             Engine* env_engine = ctx.get_engine();
-            Context& env_ctx = *CallContextPool::acquire(env_engine, &ctx);
+            // global_object_/builtins_root_ (see reset_for_call) must come from
+            // THIS function's own realm, not the caller's -- same reasoning as
+            // create_function_context's identical fix.
+            Context& env_ctx = *CallContextPool::acquire(env_engine, closure_context_ ? closure_context_ : &ctx);
             struct PoolRelease {
                 Context* c; Engine* e;
                 ~PoolRelease() { CallContextPool::release(c, e); }
@@ -1717,6 +1770,16 @@ Object* Function::ensure_prototype() const {
     prototype_pending_ = false;
     Function* self = const_cast<Function*>(this);
     auto proto = ObjectFactory::create_object();
+    // MakeConstructor's own default (OrdinaryObjectCreate(%Object.prototype%))
+    // uses THIS function's own realm, not whichever realm the thread_local
+    // cache in create_object() happens to hold once 2+ realms exist.
+    // closure_context_ is null for native functions, so this only fires for
+    // JS-source functions/classes -- free in the single/no-realm case.
+    if (closure_context_ && Engine::all_engines().size() > 1) {
+        if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(closure_context_, "Object")) {
+            proto->initialize_prototype_of_new(realm_proto);
+        }
+    }
     Collector::write_barrier(self);
     self->prototype_ = proto.release();
     // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}

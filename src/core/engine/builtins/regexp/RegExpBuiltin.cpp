@@ -428,6 +428,11 @@ static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str
 }
 
 void register_regexp_builtins(Context& ctx) {
+    // A native accessor throws using ITS OWN realm (10.2.1 [[Call]]: calleeContext.Realm
+    // = F.[[Realm]]), which can differ from both the caller's and the receiver's realm --
+    // see e.g. RegExp/prototype/dotAll/cross-realm.js. Captured once here, at registration
+    // time, and threaded into the flag getters below via Context::throw_type_error_as.
+    Context* home_ctx = &ctx;
     auto regexp_prototype = ObjectFactory::create_object();
 
     // Annex B compile - delegates to [[compile]] (mirrors exec/[[exec]]) so it actually recompiles.
@@ -608,14 +613,14 @@ void register_regexp_builtins(Context& ctx) {
     // ES2015+: flag properties are ACCESSOR getters on RegExp.prototype (not own data on instances). Each getter throws TypeError for non-RegExp this (including RegExp.prototype itself), else reads flag from [[name]] internal slot on the instance.
     {
         using FlagReader = bool (*)(const RegExp&);
-        auto make_flag_getter = [regexp_proto_ptr](const char* getter_name, FlagReader read) {
+        auto make_flag_getter = [regexp_proto_ptr, home_ctx](const char* getter_name, FlagReader read) {
             return ObjectFactory::create_native_function(getter_name,
-                [regexp_proto_ptr, read](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                [regexp_proto_ptr, home_ctx, read](Context& ctx, std::span<const Value>, Value receiver) -> Value {
                     Object* self = receiver.as_object_or_null();
-                    if (!self) { ctx.throw_type_error("RegExp flag getter requires a RegExp"); return Value(); }
+                    if (!self) { ctx.throw_type_error_as(*home_ctx, "RegExp flag getter requires a RegExp"); return Value(); }
                     if (self == regexp_proto_ptr) return Value(); // spec: return undefined for RegExp.prototype
                     RegExpObject* re = RegExpObject::from(self);
-                    if (!re || !re->impl()) { ctx.throw_type_error("RegExp flag getter requires a RegExp"); return Value(); }
+                    if (!re || !re->impl()) { ctx.throw_type_error_as(*home_ctx, "RegExp flag getter requires a RegExp"); return Value(); }
                     return Value(read(*re->impl()));
                 }, 0);
         };
@@ -636,12 +641,12 @@ void register_regexp_builtins(Context& ctx) {
         // source accessor: empty pattern renders as "(?:)" and slashes in pattern are escaped.
         regexp_prototype->set_property_descriptor("source", make_flag_desc(
             ObjectFactory::create_native_function("get source",
-                [regexp_proto_ptr](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+                [regexp_proto_ptr, home_ctx](Context& ctx, std::span<const Value>, Value receiver) -> Value {
                     Object* self = receiver.as_object_or_null();
-                    if (!self) { ctx.throw_type_error("get source requires a RegExp"); return Value(); }
+                    if (!self) { ctx.throw_type_error_as(*home_ctx, "get source requires a RegExp"); return Value(); }
                     if (self == regexp_proto_ptr) return Value(std::string("(?:)")); // spec: return "(?:)" for RegExp.prototype
                     RegExpObject* sre = RegExpObject::from(self);
-                    if (!sre || !sre->impl()) { ctx.throw_type_error("get source requires a RegExp"); return Value(); }
+                    if (!sre || !sre->impl()) { ctx.throw_type_error_as(*home_ctx, "get source requires a RegExp"); return Value(); }
                     std::string s = sre->impl()->get_source();
                     if (s.empty()) return Value(std::string("(?:)"));
                     // EscapeRegExpPattern: escape '/' and line terminators so the result
@@ -707,17 +712,17 @@ void register_regexp_builtins(Context& ctx) {
     // ES2024: RegExp.prototype.unicodeSets accessor (regexp-v-flag)
     {
         auto unicode_sets_getter_fn = ObjectFactory::create_native_function("get unicodeSets",
-            [regexp_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            [regexp_proto_ptr, home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 (void)args;
                 Object* this_obj = receiver.as_object_or_null();
                 if (!this_obj) {
-                    ctx.throw_type_error("RegExp.prototype.unicodeSets getter called on incompatible receiver");
+                    ctx.throw_type_error_as(*home_ctx, "RegExp.prototype.unicodeSets getter called on incompatible receiver");
                     return Value();
                 }
                 if (this_obj == regexp_proto_ptr) return Value();
                 RegExpObject* ure = RegExpObject::from(this_obj);
                 if (!ure || !ure->impl()) {
-                    ctx.throw_type_error("RegExp.prototype.unicodeSets getter called on incompatible receiver");
+                    ctx.throw_type_error_as(*home_ctx, "RegExp.prototype.unicodeSets getter called on incompatible receiver");
                     return Value();
                 }
                 return Value(ure->impl()->get_unicode_sets());

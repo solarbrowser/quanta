@@ -399,15 +399,22 @@ void register_global_builtins(Context& ctx) {
         }, 1);
     ctx.get_lexical_environment()->create_binding("isFinite", Value(isFinite_global_fn.release()), true, true, false);
 
+    // PerformEval's "current Realm Record" is eval's OWN realm (the realm this
+    // binding was registered into), not whichever realm happens to be calling
+    // it -- captured once here, at registration time, rather than re-derived
+    // from the call-time ctx (which is the caller's realm under indirect eval,
+    // e.g. `other.eval(...)`). Direct eval always calls from its own realm
+    // anyway, so this is a no-op there; same cost as the old ctx.get_engine().
+    Engine* home_engine = ctx.get_engine();
     auto eval_fn = ObjectFactory::create_native_function("eval",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_engine](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.empty()) return Value();
             if (!args[0].is_string()) return args[0];
 
             std::string code = args[0].to_string();
             if (code.empty()) return Value();
 
-            Engine* engine = ctx.get_engine();
+            Engine* engine = home_engine;
             if (!engine) return Value();
 
             bool strict = ctx.is_strict_mode();
@@ -549,7 +556,17 @@ void register_global_builtins(Context& ctx) {
                     // eval returns (stack-allocated context would be a dangling pointer).
                     auto var_names = collect_var_names(program.get());
 
-                    auto eval_ctx_ptr = std::make_unique<Context>(engine, &ctx, Context::Type::Eval);
+                    // Context's `parent` drives builtins_root_/global_object_ (see
+                    // Context::Context) -- indirect eval must inherit these from its
+                    // OWN home realm's global context, not the caller's, or every
+                    // exception constructed while running the eval'd code (and
+                    // every get_built_in_object/get_global_object call) would
+                    // silently resolve against the wrong realm. Direct eval keeps
+                    // the immediate caller as parent (same realm either way, and
+                    // current_filename_ should reflect the real call site).
+                    Context* eval_parent = ctx.is_direct_eval_call() ? &ctx : engine->get_global_context();
+                    if (!eval_parent) eval_parent = &ctx;
+                    auto eval_ctx_ptr = std::make_unique<Context>(engine, eval_parent, Context::Type::Eval);
                     Context& eval_ctx = *eval_ctx_ptr;
                     eval_ctx.set_strict_mode(true);
                     // The eval env outlives this block via the survivor context -- pin its outer chain.
@@ -710,8 +727,13 @@ void register_global_builtins(Context& ctx) {
                         return names;
                     };
 
-                    // Heap-allocate so functions created inside keep valid closure_context_
-                    auto eval_ctx_ptr2 = std::make_unique<Context>(engine, &ctx, Context::Type::Eval);
+                    // Heap-allocate so functions created inside keep valid closure_context_.
+                    // See the strict branch's identical comment on eval_parent: indirect
+                    // eval must inherit builtins_root_/global_object_ from its OWN home
+                    // realm's global context, not the caller's.
+                    Context* eval_parent = is_direct ? &ctx : engine->get_global_context();
+                    if (!eval_parent) eval_parent = &ctx;
+                    auto eval_ctx_ptr2 = std::make_unique<Context>(engine, eval_parent, Context::Type::Eval);
                     Context& eval_ctx = *eval_ctx_ptr2;
 
                     // Indirect eval runs in the global scope; direct eval runs in calling scope.

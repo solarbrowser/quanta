@@ -619,6 +619,17 @@ void Context::throw_type_error(const std::string& message) {
     throw_exception(Value(error.release()));
 }
 
+void Context::throw_type_error_as(Context& realm, const std::string& message) {
+    if (&realm == this) {
+        throw_type_error(message);
+        return;
+    }
+    realm.throw_type_error(message);
+    Value exc = realm.get_exception();
+    realm.clear_exception();
+    throw_exception(exc, true);
+}
+
 void Context::throw_reference_error(const std::string& message) {
     auto error = Error::create_reference_error(message);
     error->generate_stack_trace();
@@ -1458,7 +1469,16 @@ std::unique_ptr<Context> create_global_context(Engine* engine) {
 }
 
 std::unique_ptr<Context> create_function_context(Engine* engine, Context* parent, Function* function) {
-    auto context = std::make_unique<Context>(engine, parent, Context::Type::Function);
+    // The context's own inherited fields (global_object_, builtins_root_ --
+    // see Context::Context) must come from the function's OWN defining realm
+    // (closure_context_), not the caller's: OrdinaryCallBindThis's global-this
+    // substitution and every builtin lookup during this call must see F's own
+    // realm, which can differ from the caller's under Reflect.construct or
+    // other.fn.call(...) on a cross-realm function. Falls back to `parent`
+    // when the function has no closure_context_ of its own, matching
+    // outer_env's own fallback below.
+    Context* realm_parent = (function && function->get_closure_context()) ? function->get_closure_context() : parent;
+    auto context = std::make_unique<Context>(engine, realm_parent, Context::Type::Function);
 
     Environment* outer_env;
     if (function && function->get_closure_environment()) {

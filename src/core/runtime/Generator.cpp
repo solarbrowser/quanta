@@ -450,8 +450,36 @@ void Generator::setup_generator_prototype(Context& ctx) {
     ctx.create_binding("@@GeneratorFunctionPrototype", Value(gen_fn_proto.release()));
 
     // GeneratorFunction constructor
-    auto generator_function_constructor = ObjectFactory::create_native_constructor("GeneratorFunction",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+    // CreateDynamicFunction's created function F has [[Environment]] =
+    // realmF.[[GlobalEnv]] (realmF = the realm of the "GeneratorFunction"
+    // constructor actually invoked) -- captured once here, at registration
+    // time, rather than re-derived from the call-time ctx (the caller's
+    // realm under e.g. Reflect.construct(other.GeneratorFunction, ...)).
+    // Mirrors the same fix applied to "eval"/"Function"/"AsyncFunction".
+    Context* gen_home_ctx = &ctx;
+    auto generator_function_constructor = ObjectFactory::create_native_constructor_with_new_target("GeneratorFunction",
+        [gen_home_ctx](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+            (void)is_construct;
+            // GetPrototypeFromConstructor(newTarget, "%GeneratorFunction.prototype%"):
+            // newTarget's own "prototype" if it's an object; otherwise the default
+            // comes from newTarget's OWN realm (GetFunctionRealm), falling back to
+            // this constructor's home realm when newTarget is undefined/unowned.
+            Object* nt_obj = new_target.is_function() ? static_cast<Object*>(new_target.as_function())
+                            : new_target.is_object() ? new_target.as_object() : nullptr;
+            Value nt_proto = nt_obj ? nt_obj->get_property("prototype") : Value();
+            Object* resolved_proto = nullptr;
+            if (nt_proto.is_function()) {
+                resolved_proto = static_cast<Object*>(nt_proto.as_function());
+            } else if (nt_proto.is_object()) {
+                resolved_proto = nt_proto.as_object();
+            } else {
+                Context* realm_ctx = nt_obj ? Engine::find_realm_owning_function(nt_obj) : nullptr;
+                if (!realm_ctx) realm_ctx = gen_home_ctx;
+                if (realm_ctx->has_binding("@@GeneratorFunctionPrototype")) {
+                    Value v = realm_ctx->get_binding("@@GeneratorFunctionPrototype");
+                    if (v.is_object()) resolved_proto = v.as_object();
+                }
+            }
             std::vector<std::string> param_names;
             std::string body_str = "";
 
@@ -497,24 +525,27 @@ void Generator::setup_generator_prototype(Context& ctx) {
                         FunctionExpression* fe = static_cast<FunctionExpression*>(expr.get());
                         if (fe->is_generator()) {
                             auto body_clone = fe->get_body() ? fe->get_body()->clone() : nullptr;
-                            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", clone_params(fe->get_params()), std::move(body_clone), &ctx);
+                            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", clone_params(fe->get_params()), std::move(body_clone), gen_home_ctx);
                             gen_fn->set_source_text(toString_src);
+                            if (resolved_proto) gen_fn->initialize_prototype(resolved_proto);
                             return Value(gen_fn.release());
                         }
                     } else if (expr->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
                         FunctionDeclaration* fd = static_cast<FunctionDeclaration*>(expr.get());
                         if (fd->is_generator()) {
                             auto body_clone = fd->get_body() ? fd->get_body()->clone() : nullptr;
-                            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", clone_params(fd->get_params()), std::move(body_clone), &ctx);
+                            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", clone_params(fd->get_params()), std::move(body_clone), gen_home_ctx);
                             gen_fn->set_source_text(toString_src);
+                            if (resolved_proto) gen_fn->initialize_prototype(resolved_proto);
                             return Value(gen_fn.release());
                         }
                     }
                 }
             } catch (...) {}
 
-            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", param_names, nullptr, &ctx);
+            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", param_names, nullptr, gen_home_ctx);
             gen_fn->set_source_text(toString_src);
+            if (resolved_proto) gen_fn->initialize_prototype(resolved_proto);
             return Value(gen_fn.release());
         });
 
@@ -549,6 +580,26 @@ void Generator::reset_yield_counter() {
 }
 
 
+// Realm-scoped %GeneratorPrototype%/%GeneratorFunction.prototype% for closure_context's
+// own realm, falling back to the (thread_local, single-realm-correct) shared default.
+// Free in the overwhelmingly common single/no-realm case: one vector-size check.
+static Object* realm_generator_prototype(Context* closure_context) {
+    if (closure_context && Engine::all_engines().size() > 1 &&
+        closure_context->has_binding("@@GeneratorPrototype")) {
+        Value v = closure_context->get_binding("@@GeneratorPrototype");
+        if (v.is_object()) return v.as_object();
+    }
+    return Generator::s_generator_prototype_;
+}
+static Object* realm_generator_function_prototype(Context* closure_context) {
+    if (closure_context && Engine::all_engines().size() > 1 &&
+        closure_context->has_binding("@@GeneratorFunctionPrototype")) {
+        Value v = closure_context->get_binding("@@GeneratorFunctionPrototype");
+        if (v.is_object()) return v.as_object();
+    }
+    return Generator::s_generator_function_prototype_;
+}
+
 GeneratorFunction::GeneratorFunction(const std::string& name,
                                    std::vector<std::unique_ptr<Parameter>> params,
                                    std::unique_ptr<ASTNode> body,
@@ -557,13 +608,14 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     set_function_kind(FunctionKind::Generator);
     set_is_constructor(false);
     if (Generator::s_generator_prototype_) {
+        Object* gen_proto = realm_generator_prototype(closure_context);
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->initialize_prototype(Generator::s_generator_prototype_);
+        fn_proto->initialize_prototype(gen_proto);
         // Spec 25.2.4.2: no own properties; 25.2.4.3: writable, non-enumerable, non-configurable
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
         if (Generator::s_generator_function_prototype_) {
-            this->initialize_prototype(Generator::s_generator_function_prototype_);
+            this->initialize_prototype(realm_generator_function_prototype(closure_context));
         }
     }
 }
@@ -577,14 +629,15 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     set_is_constructor(false);
     // Each generator function gets a unique 'prototype' object inheriting from %GeneratorPrototype%
     if (Generator::s_generator_prototype_) {
+        Object* gen_proto = realm_generator_prototype(closure_context);
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->initialize_prototype(Generator::s_generator_prototype_);
+        fn_proto->initialize_prototype(gen_proto);
         // Spec 25.2.4.2: no own properties; 25.2.4.3: writable, non-enumerable, non-configurable
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
 
         if (Generator::s_generator_function_prototype_) {
-            this->initialize_prototype(Generator::s_generator_function_prototype_);
+            this->initialize_prototype(realm_generator_function_prototype(closure_context));
         }
     }
 }
@@ -600,12 +653,13 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     set_function_kind(FunctionKind::Generator);
     set_is_constructor(false);
     if (Generator::s_generator_prototype_) {
+        Object* gen_proto = realm_generator_prototype(closure_context);
         auto fn_proto = ObjectFactory::create_object();
-        fn_proto->initialize_prototype(Generator::s_generator_prototype_);
+        fn_proto->initialize_prototype(gen_proto);
         PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
         this->set_property_descriptor("prototype", proto_desc);
         if (Generator::s_generator_function_prototype_) {
-            this->initialize_prototype(Generator::s_generator_function_prototype_);
+            this->initialize_prototype(realm_generator_function_prototype(closure_context));
         }
     }
 }

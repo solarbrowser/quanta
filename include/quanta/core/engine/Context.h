@@ -386,6 +386,13 @@ public:
     void throw_error(const std::string& message);
     Value intrinsic_error_constructor(const std::string& name);
     void throw_type_error(const std::string& message);
+    // Builds the TypeError using `realm`'s own %TypeError% (10.2.1 [[Call]]:
+    // a function throws using its OWN realm, which can differ from the
+    // caller's under Reflect.construct/cross-realm getters), then delivers
+    // it on `this` (the exception state callers actually check afterward).
+    // `realm` is typically a native function's home context, captured at
+    // registration time -- see e.g. RegExpBuiltin.cpp's flag getters.
+    void throw_type_error_as(Context& realm, const std::string& message);
     void throw_reference_error(const std::string& message);
     void throw_syntax_error(const std::string& message);
     void throw_range_error(const std::string& message);

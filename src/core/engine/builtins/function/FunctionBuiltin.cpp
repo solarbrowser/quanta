@@ -22,8 +22,15 @@
 namespace Quanta {
 
 void register_function_builtins(Context& ctx) {
+    // CreateDynamicFunction's created function F has [[Environment]] =
+    // realmF.[[GlobalEnv]], where realmF is the realm of the "Function"
+    // constructor actually invoked -- captured once here, at registration
+    // time, rather than re-derived from the call-time ctx (the caller's
+    // realm under e.g. Reflect.construct(other.Function, ...)). Mirrors the
+    // same fix already applied to the global "eval" binding.
+    Context* home_ctx = &ctx;
     auto function_constructor = ObjectFactory::create_native_constructor_with_new_target("Function",
-        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
             std::string params = "";
             // The body is read where it already is when it is a string: a body
@@ -160,7 +167,7 @@ void register_function_builtins(Context& ctx) {
                         "anonymous", // ES6: new Function creates "anonymous" named function
                         std::move(cloned_params),
                         nullptr,
-                        &ctx
+                        home_ctx
                     );
                     if (!func) {
                         ctx.throw_syntax_error("Failed to create function object");
@@ -307,20 +314,20 @@ void register_function_builtins(Context& ctx) {
     function_prototype->set_property("call", Value(call_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto apply_fn = ObjectFactory::create_native_function("apply",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* function_obj = receiver.as_object_or_null();
             bool is_proxy = function_obj && function_obj->get_type() == Object::ObjectType::Proxy;
             Function* func = (function_obj && function_obj->is_function()) ? static_cast<Function*>(function_obj) : nullptr;
             if (!func && !is_proxy) {
-                ctx.throw_type_error("Function.prototype.apply called on non-function");
+                ctx.throw_type_error_as(*home_ctx, "Function.prototype.apply called on non-function");
                 return Value();
             }
             Value this_arg = args.size() > 0 ? args[0] : Value();
-            
+
             std::vector<Value> call_args;
             if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
                 if (!args[1].is_object() && !args[1].is_function()) {
-                    ctx.throw_type_error("CreateListFromArrayLike: argArray must be an object");
+                    ctx.throw_type_error_as(*home_ctx, "CreateListFromArrayLike: argArray must be an object");
                     return Value();
                 }
                 if (args[1].is_object()) {
@@ -536,18 +543,18 @@ void register_function_builtins(Context& ctx) {
             return nullptr;
         };
         auto thrower_fn = ObjectFactory::create_native_function("ThrowTypeError",
-            [get_this_fn, function_proto_ptr](Context& ctx, std::span<const Value>, Value receiver) -> Value {
+            [get_this_fn, function_proto_ptr, home_ctx](Context& ctx, std::span<const Value>, Value receiver) -> Value {
                 Function* fn = get_this_fn(ctx, receiver);
                 // Function.prototype always throws (no legacy non-strict caller/arguments shadowing for it).
                 if (fn && fn != function_proto_ptr) {
                     bool is_bound = !fn->get_internal_slot("__bound_target__").is_undefined();
                     bool is_generator_fn = fn->get_prototype() == Generator::s_generator_function_prototype_;
                     if (is_bound || is_generator_fn || fn->is_strict() || fn->is_class_constructor() || fn->is_arrow()) {
-                        ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                        ctx.throw_type_error_as(*home_ctx, "'caller' and 'arguments' are restricted function properties");
                         return Value();
                     }
                 } else {
-                    ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                    ctx.throw_type_error_as(*home_ctx, "'caller' and 'arguments' are restricted function properties");
                 }
                 return Value();
             }, 0);
@@ -564,6 +571,12 @@ void register_function_builtins(Context& ctx) {
             thrower->prevent_extensions();
         }
         Function::s_throw_type_error_ = thrower;
+        // %ThrowTypeError% is defined ONCE PER REALM (not a single shared
+        // intrinsic across every live realm) -- bind THIS realm's own instance
+        // by name so 2+-realm code (arguments.callee's poison pill, see
+        // Function::build_arguments_object) can find it instead of whichever
+        // thread_local Function::s_throw_type_error_ happens to hold.
+        ctx.create_binding("@@ThrowTypeError", Value(thrower));
 
         PropertyDescriptor caller_desc;
         caller_desc.set_getter(thrower);
