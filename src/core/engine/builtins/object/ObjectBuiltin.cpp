@@ -241,7 +241,9 @@ static Value box_primitive(Context& ctx, const Value& value) {
         bigint_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
         return Value(bigint_obj.release());
     }
-    return Value(ObjectFactory::create_object().release());
+    auto obj = ObjectFactory::create_object();
+    Engine::fixup_new_object_realm(obj.get(), &ctx);
+    return Value(obj.release());
 }
 
 Object* to_object_or_throw(Context& ctx, const Value& this_val) {
@@ -256,8 +258,12 @@ Object* to_object_or_throw(Context& ctx, const Value& this_val) {
 }
 
 void register_object_builtins(Context& ctx) {
+    // This native function's own realm, captured once at registration time --
+    // see Engine::fixup_new_object_realm/_array_realm's own doc comment, and
+    // ArrayBuiltin.cpp's identical home_ctx (same reasoning, same pattern).
+    Context* home_ctx = &ctx;
     auto object_constructor = ObjectFactory::create_native_constructor_with_new_target("Object",
-        [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)is_construct;
             // Spec: if NewTarget is neither undefined nor the active function, return OrdinaryCreateFromConstructor.
             Object* active_object_ctor = ctx.get_built_in_object("Object");
@@ -278,25 +284,29 @@ void register_object_builtins(Context& ctx) {
             }
 
             if (args.size() == 0) {
-                return Value(ObjectFactory::create_object().release());
+                auto obj = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(obj.get(), home_ctx);
+                return Value(obj.release());
             }
             Value value = args[0];
             if (value.is_null() || value.is_undefined()) {
-                return Value(ObjectFactory::create_object().release());
+                auto obj = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(obj.get(), home_ctx);
+                return Value(obj.release());
             }
             if (value.is_object() || value.is_function()) {
                 return value;
             }
             return box_primitive(ctx, value);
         });
-    
-    auto keys_fn = ObjectFactory::create_native_function("keys", 
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+
+    auto keys_fn = ObjectFactory::create_native_function("keys",
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.size() == 0) {
                 ctx.throw_type_error("Object.keys requires at least 1 argument");
                 return Value();
             }
-            
+
             if (args[0].is_null()) {
                 ctx.throw_type_error("Cannot convert undefined or null to object");
                 return Value();
@@ -305,11 +315,12 @@ void register_object_builtins(Context& ctx) {
                 ctx.throw_type_error("Cannot convert undefined or null to object");
                 return Value();
             }
-            
+
             // ES6: Accept primitives — wrap strings to String objects
             if (args[0].is_string()) {
                 std::string str = args[0].to_string();
                 auto result = ObjectFactory::create_array();
+                Engine::fixup_new_array_realm(result.get(), home_ctx);
                 for (uint32_t i = 0; i < str.length(); i++) {
                     result->set_element(i, Value(std::to_string(i)));
                 }
@@ -317,7 +328,9 @@ void register_object_builtins(Context& ctx) {
                 return Value(result.release());
             }
             if (!args[0].is_object() && !args[0].is_function()) {
-                return Value(ObjectFactory::create_array().release());
+                auto arr = ObjectFactory::create_array();
+                Engine::fixup_new_array_realm(arr.get(), home_ctx);
+                return Value(arr.release());
             }
 
             Object* obj = args[0].is_function() ?
@@ -338,6 +351,7 @@ void register_object_builtins(Context& ctx) {
                             else overflow = true;
                         }) && !overflow) {
                     auto fast_array = ObjectFactory::create_array(fast_n);
+                    Engine::fixup_new_array_realm(fast_array.get(), home_ctx);
                     fast_array->reserve_dense_elements(fast_n);
                     for (uint32_t i = 0; i < fast_n; i++) {
                         fast_array->set_element(i, Value(*fast_names[i]));
@@ -381,6 +395,7 @@ void register_object_builtins(Context& ctx) {
             if (!result_array) {
                 result_array = ObjectFactory::create_array(0);
             }
+            Engine::fixup_new_array_realm(result_array.get(), home_ctx);
             result_array->reserve_dense_elements(static_cast<uint32_t>(filtered.size()));
 
             for (size_t i = 0; i < filtered.size(); i++) {
@@ -392,7 +407,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("keys", Value(keys_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto values_fn = ObjectFactory::create_native_function("values",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
 
@@ -412,6 +427,7 @@ void register_object_builtins(Context& ctx) {
                             fast_vals[fast_n++] = *v;
                         }) && !bail) {
                     auto fast_array = ObjectFactory::create_array(fast_n);
+                    Engine::fixup_new_array_realm(fast_array.get(), home_ctx);
                     fast_array->reserve_dense_elements(fast_n);
                     for (uint32_t i = 0; i < fast_n; i++) fast_array->set_element(i, fast_vals[i]);
                     return Value(fast_array.release());
@@ -428,6 +444,7 @@ void register_object_builtins(Context& ctx) {
             if (ctx.has_exception()) return Value();
 
             auto result_array = ObjectFactory::create_array();
+            Engine::fixup_new_array_realm(result_array.get(), home_ctx);
             uint32_t out_i = 0;
             for (const auto& key : own_keys) {
                 // Symbol keys are never included in values()/entries().
@@ -460,7 +477,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("values", Value(values_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto entries_fn = ObjectFactory::create_native_function("entries",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
 
@@ -481,9 +498,11 @@ void register_object_builtins(Context& ctx) {
                             fast_vals[fast_n++] = *v;
                         }) && !bail) {
                     auto fast_array = ObjectFactory::create_array(fast_n);
+                    Engine::fixup_new_array_realm(fast_array.get(), home_ctx);
                     fast_array->reserve_dense_elements(fast_n);
                     for (uint32_t i = 0; i < fast_n; i++) {
                         auto pair = ObjectFactory::create_array(2);
+                        Engine::fixup_new_array_realm(pair.get(), home_ctx);
                         pair->reserve_dense_elements(2);
                         pair->set_element(0, Value(*fast_names[i]));
                         pair->set_element(1, fast_vals[i]);
@@ -503,6 +522,7 @@ void register_object_builtins(Context& ctx) {
             if (ctx.has_exception()) return Value();
 
             auto result_array = ObjectFactory::create_array();
+            Engine::fixup_new_array_realm(result_array.get(), home_ctx);
             uint32_t out_i = 0;
             for (const auto& key : own_keys) {
                 if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
@@ -523,6 +543,7 @@ void register_object_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
 
                 auto pair_array = ObjectFactory::create_array(2);
+                Engine::fixup_new_array_realm(pair_array.get(), home_ctx);
                 pair_array->set_element(0, Value(key));
                 pair_array->set_element(1, value);
                 result_array->set_element(out_i++, Value(pair_array.release()));
@@ -549,13 +570,14 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("is", Value(is_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto fromEntries_fn = ObjectFactory::create_native_function("fromEntries",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.empty() || args[0].is_null() || args[0].is_undefined()) {
                 ctx.throw_type_error("Object.fromEntries requires an iterable argument");
                 return Value();
             }
 
             auto result_obj = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(result_obj.get(), home_ctx);
 
             // Per spec: closes the iterator if the entry itself (not the next()/done step) is malformed.
             auto close_on_entry_failure = [&](Object* iterator) {
@@ -982,7 +1004,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("setPrototypeOf", Value(setPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyDescriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.size() < 2) {
                 ctx.throw_type_error("Object.getOwnPropertyDescriptor requires 2 arguments");
                 return Value();
@@ -1011,6 +1033,7 @@ void register_object_builtins(Context& ctx) {
                 }
 
                 auto descriptor = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(descriptor.get(), home_ctx);
                 Value prop_value = obj->get_property(prop_name);
                 descriptor->set_property("value", prop_value);
                 descriptor->set_property("writable", Value(true));
@@ -1020,6 +1043,7 @@ void register_object_builtins(Context& ctx) {
             }
 
             auto descriptor = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(descriptor.get(), home_ctx);
 
             if (desc.is_data_descriptor()) {
                 descriptor->set_property("value", desc.get_value());
@@ -1229,10 +1253,11 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("defineProperty", Value(defineProperty_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyNames_fn = ObjectFactory::create_native_function("getOwnPropertyNames",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
             auto result = ObjectFactory::create_array();
+            Engine::fixup_new_array_realm(result.get(), home_ctx);
 
             std::vector<std::string> props;
             if (obj->get_type() == Object::ObjectType::Proxy) {
@@ -1260,10 +1285,11 @@ void register_object_builtins(Context& ctx) {
 
     // ES6: Object.getOwnPropertySymbols
     auto getOwnPropertySymbols_fn = ObjectFactory::create_native_function("getOwnPropertySymbols",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
             auto result = ObjectFactory::create_array();
+            Engine::fixup_new_array_realm(result.get(), home_ctx);
             std::vector<std::string> props;
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 props = static_cast<Proxy*>(obj)->own_keys_trap();
@@ -1403,10 +1429,11 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("defineProperties", Value(defineProperties_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyDescriptors_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptors",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
             if (!obj) return Value();
             auto result = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(result.get(), home_ctx);
 
             bool is_proxy = obj->get_type() == Object::ObjectType::Proxy;
             std::vector<std::string> prop_names;
@@ -1433,6 +1460,7 @@ void register_object_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
                 auto descriptor = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(descriptor.get(), home_ctx);
 
                 if (desc.is_data_descriptor()) {
                     descriptor->set_property("value", desc.get_value());
@@ -1665,7 +1693,7 @@ void register_object_builtins(Context& ctx) {
     object_constructor->set_property("hasOwn", Value(hasOwn_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto groupBy_fn = ObjectFactory::create_native_function("groupBy",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.size() < 2 || !args[1].is_function()) {
                 ctx.throw_type_error("Object.groupBy requires a callback function");
                 return Value();
@@ -1693,6 +1721,7 @@ void register_object_builtins(Context& ctx) {
                     group_array = group.as_object();
                 } else {
                     auto arr = ObjectFactory::create_array(0);
+                    Engine::fixup_new_array_realm(arr.get(), home_ctx);
                     group_array = arr.get();
                     result->set_property(key, Value(arr.release()));
                 }
