@@ -233,6 +233,10 @@ static void iterator_close(Context& ctx, IteratorRecord& rec) {
 }
 
 void register_promise_builtins(Context& ctx) {
+    // This native function's own realm, captured once at registration time --
+    // see Engine::fixup_new_object_realm/_array_realm's own doc comment, and
+    // ArrayBuiltin.cpp/ObjectBuiltin.cpp's identical home_ctx (same pattern).
+    Context* home_ctx = &ctx;
     auto promise_constructor = ObjectFactory::create_native_constructor_with_new_target("Promise",
         [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             if (!is_construct) {
@@ -351,7 +355,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("try", Value(promise_try.release()), PropertyAttributes::BuiltinFunction);
     
     auto promise_withResolvers = ObjectFactory::create_native_function("withResolvers",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             Value c_val = receiver;
             if (!c_val.is_object() && !c_val.is_function()) {
@@ -362,6 +366,7 @@ void register_promise_builtins(Context& ctx) {
             if (!new_promise_capability(ctx, c_val, cap)) return Value();
 
             auto result_obj = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(result_obj.get(), home_ctx);
             result_obj->set_property("promise", cap.promise);
             result_obj->set_property("resolve", Value(cap.resolve));
             result_obj->set_property("reject", Value(cap.reject));
@@ -701,7 +706,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("reject", Value(promise_reject_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_all_static = ObjectFactory::create_native_function("all",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value raw_this = receiver;
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.all called on non-object"); return Value(); }
 
@@ -744,6 +749,7 @@ void register_promise_builtins(Context& ctx) {
                 if (step == IterStepStatus::DONE) {
                     if (--state->remaining == 0) {
                         auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
+                        Engine::fixup_new_array_realm(arr.get(), home_ctx);
                         for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
                         const Value ra[] = { Value(arr.release()) };
                         cap_resolve->call_register_args(ctx, ra, Value());
@@ -767,7 +773,7 @@ void register_promise_builtins(Context& ctx) {
                 uint32_t this_idx = idx;
                 auto already_called = std::make_shared<bool>(false);
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called, home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
@@ -775,6 +781,7 @@ void register_promise_builtins(Context& ctx) {
                         cap_resolve->set_property("[[Res" + std::to_string(this_idx) + "]]", val);
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
+                            Engine::fixup_new_array_realm(arr.get(), home_ctx);
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
                             const Value ra[] = { Value(arr.release()) };
                             cap_resolve->call_register_args(ctx, ra, Value());
@@ -874,7 +881,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("race", Value(promise_race_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_allSettled_static = ObjectFactory::create_native_function("allSettled",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value raw_this = receiver;
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.allSettled called on non-object"); return Value(); }
 
@@ -916,6 +923,7 @@ void register_promise_builtins(Context& ctx) {
                 if (step == IterStepStatus::DONE) {
                     if (--state->remaining == 0) {
                         auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
+                        Engine::fixup_new_array_realm(arr.get(), home_ctx);
                         for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
                         const Value ra[] = { Value(arr.release()) };
                         cap_resolve->call_register_args(ctx, ra, Value());
@@ -941,17 +949,19 @@ void register_promise_builtins(Context& ctx) {
                 auto already_called = std::make_shared<bool>(false);
 
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called, home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
                         auto settled = ObjectFactory::create_object();
+                        Engine::fixup_new_object_realm(settled.get(), home_ctx);
                         settled->set_property("status", Value(std::string("fulfilled")));
                         settled->set_property("value", val);
                         state->results[this_idx] = Value(settled.release());
                         cap_resolve->set_property("[[Res" + std::to_string(this_idx) + "]]", state->results[this_idx]);
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
+                            Engine::fixup_new_array_realm(arr.get(), home_ctx);
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
                             const Value ra[] = { Value(arr.release()) };
                             cap_resolve->call_register_args(ctx, ra, Value());
@@ -967,17 +977,19 @@ void register_promise_builtins(Context& ctx) {
                 on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 auto on_rej = ObjectFactory::create_native_function("",
-                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called, home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value reason = args.empty() ? Value() : args[0];
                         auto settled = ObjectFactory::create_object();
+                        Engine::fixup_new_object_realm(settled.get(), home_ctx);
                         settled->set_property("status", Value(std::string("rejected")));
                         settled->set_property("reason", reason);
                         state->results[this_idx] = Value(settled.release());
                         cap_resolve->set_property("[[Res" + std::to_string(this_idx) + "]]", state->results[this_idx]);
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
+                            Engine::fixup_new_array_realm(arr.get(), home_ctx);
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
                             const Value ra[] = { Value(arr.release()) };
                             cap_resolve->call_register_args(ctx, ra, Value());
@@ -1014,7 +1026,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("allSettled", Value(promise_allSettled_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_allKeyed_static = ObjectFactory::create_native_function("allKeyed",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value raw_this = receiver;
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.allKeyed called on non-object"); return Value(); }
 
@@ -1049,6 +1061,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             auto results_obj = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(results_obj.get(), home_ctx);
             results_obj->initialize_prototype(nullptr);
             // Pre-populate every key (in dict's own enumeration order) before any element
             // settles asynchronously, so the result's key order matches the source object's
@@ -1128,7 +1141,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("allKeyed", Value(promise_allKeyed_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_allSettledKeyed_static = ObjectFactory::create_native_function("allSettledKeyed",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value raw_this = receiver;
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.allSettledKeyed called on non-object"); return Value(); }
 
@@ -1163,6 +1176,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             auto results_obj = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(results_obj.get(), home_ctx);
             results_obj->initialize_prototype(nullptr);
             for (const auto& k : keys) results_obj->set_property(k, Value());
             Object* results_raw = results_obj.release();
@@ -1202,11 +1216,12 @@ void register_promise_builtins(Context& ctx) {
                 // Spec: resolveElement and rejectElement for the same index share one AlreadyCalled flag.
                 auto already_called = std::make_shared<bool>(false);
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                    [key, state, cap_resolve, cap_reject, already_called, home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
                         auto settled = ObjectFactory::create_object();
+                        Engine::fixup_new_object_realm(settled.get(), home_ctx);
                         settled->set_property("status", Value(std::string("fulfilled")));
                         settled->set_property("value", val);
                         state->results->set_property(key, Value(settled.release()));
@@ -1225,11 +1240,12 @@ void register_promise_builtins(Context& ctx) {
                 on_ful->set_property("[[CapReject]]", Value(cap_reject));
 
                 auto on_rej = ObjectFactory::create_native_function("",
-                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+                    [key, state, cap_resolve, cap_reject, already_called, home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value reason = args.empty() ? Value() : args[0];
                         auto settled = ObjectFactory::create_object();
+                        Engine::fixup_new_object_realm(settled.get(), home_ctx);
                         settled->set_property("status", Value(std::string("rejected")));
                         settled->set_property("reason", reason);
                         state->results->set_property(key, Value(settled.release()));
@@ -1268,7 +1284,7 @@ void register_promise_builtins(Context& ctx) {
     promise_constructor->set_property("allSettledKeyed", Value(promise_allSettledKeyed_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_any_static = ObjectFactory::create_native_function("any",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Value raw_this = receiver;
             if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.any called on non-object"); return Value(); }
 
@@ -1303,8 +1319,9 @@ void register_promise_builtins(Context& ctx) {
             Object* pin_target = as_object_or_function(cap.promise);
             if (!pin_target) pin_target = ctx.get_global_object();
 
-            auto finalize_aggregate_reject = [](Context& c, AnyState* st) {
+            auto finalize_aggregate_reject = [home_ctx](Context& c, AnyState* st) {
                 auto errors_arr = ObjectFactory::create_array();
+                Engine::fixup_new_array_realm(errors_arr.get(), home_ctx);
                 for (size_t j = 0; j < st->errors.size(); j++) errors_arr->set_element(static_cast<uint32_t>(j), st->errors[j]);
                 Value errors_val(errors_arr.release());
                 Object* agg_ctor = c.get_built_in_object("AggregateError");
