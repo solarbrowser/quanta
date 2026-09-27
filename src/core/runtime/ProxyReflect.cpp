@@ -843,6 +843,11 @@ Value Proxy::construct_trap(std::span<const Value> args, Object* new_target) {
         // GetFunctionRealm(constructor): a revoked proxy has no [[ProxyHandler]] to find a realm through.
         ctx->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         return Value();
+    } else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt, "Object")) {
+        // GetPrototypeFromConstructor's fallback: newTarget's own "prototype"
+        // isn't an object, so the default comes from newTarget's OWN realm --
+        // same reasoning as Function::construct's identical fallback.
+        new_object->initialize_prototype(realm_default);
     }
 
     Value this_value(new_object.get());
@@ -988,6 +993,7 @@ Value Proxy::proxy_revocable(Context& ctx, std::span<const Value> args, Value re
         }, 0);
 
     auto result_obj = ObjectFactory::create_object();
+    fixup_object_realm(result_obj.get(), &ctx);
     result_obj->set_property("proxy", Value(proxy.release()));
     result_obj->set_property("revoke", Value(revoke_fn.release()));
 
@@ -1571,7 +1577,7 @@ Value Reflect::reflect_get_own_property_descriptor(Context& ctx, std::span<const
         : target->get_property_descriptor(key);
     if (ctx.has_exception()) return Value();
 
-    return from_property_descriptor(desc);
+    return from_property_descriptor(desc, &ctx);
 }
 
 Value Reflect::reflect_define_property(Context& ctx, std::span<const Value> args, Value receiver) {
@@ -1682,7 +1688,7 @@ PropertyDescriptor Reflect::to_property_descriptor(const Value& value) {
     return PropertyDescriptor(value);
 }
 
-Value Reflect::from_property_descriptor(const PropertyDescriptor& desc) {
+Value Reflect::from_property_descriptor(const PropertyDescriptor& desc, Context* realm_hint) {
     // get_property_descriptor()/get_own_property_descriptor_trap() only return a Generic-typed
     // descriptor for a property that doesn't exist at all (existing data/accessor properties are
     // always typed Data/Accessor) -- so Generic here means "undefined" per spec.
@@ -1690,6 +1696,7 @@ Value Reflect::from_property_descriptor(const PropertyDescriptor& desc) {
         return Value();
     }
     auto desc_obj = ObjectFactory::create_object();
+    fixup_object_realm(desc_obj.get(), realm_hint);
     if (desc.is_accessor_descriptor()) {
         Object* getter = desc.has_getter() ? desc.get_getter() : nullptr;
         Object* setter = desc.has_setter() ? desc.get_setter() : nullptr;
