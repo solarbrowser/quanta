@@ -34,9 +34,7 @@ See [building.md](https://github.com/solarbrowser/quanta/blob/main/docs/contribu
 
 ## Contributing
 
-Please ignore the `CONTRIBUTING.md` file for now. I kept it because I don’t want to recreate it when the initial release is ready.
-
-At this stage, I want to fully shape Quanta’s architecture on my own, without external changes. The engine is evolving rapidly, and even small additions can unintentionally break other parts of the system. For that reason, I prefer to develop it solo until the initial release. Thanks for your understanding and for considering contributing!
+We welcome contributions through pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for more details. For information about the governance of Quanta, see [GOVERNANCE.md](GOVERNANCE.md).
 
 ---
 

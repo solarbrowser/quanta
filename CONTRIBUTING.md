@@ -17,9 +17,9 @@ Thank you for your interest in contributing to Quanta! We welcome contributions 
 ### 3. Submitting Code
 
 - Fork the repository and create your branch from `main`.  
-- Follow the coding style used in the project (C++ 17 conventions).  
+- Follow the coding style used in the project.  
 - Write clear, concise commit messages.  
-- Test your changes thoroughly.  
+- Test your changes thoroughly. (see docs/contributing/testing.md)  
 - Submit a pull request (PR) describing what your changes do and why.
 
 ### 4. Documentation
