@@ -102,6 +102,7 @@ static void adopt_foreign_exception(Context& ctx) {
 Value build_rest_object(Context& ctx, const Value& source_value, Object* source_obj,
                         const std::vector<std::string>& assigned_keys) {
 auto rest_obj = ObjectFactory::create_object();
+Engine::fixup_new_object_realm(rest_obj.get(), &ctx);
 if (source_value.is_string()) {
     // For strings, create indexed char properties (spec 12.15.5.2).
     const std::string& raw = source_value.as_string()->str();

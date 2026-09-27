@@ -8377,6 +8377,7 @@ Value h_gen_CreateObject(Frame& f, uint32_t pc, Value acc) {
                     obj = ObjectFactory::create_object().release();
                     obj->reserve_property_slots(slot_hint);
                 }
+                Engine::fixup_new_object_realm(obj, &ctx);
                 acc = Value(obj);
                 break;
             }
@@ -8401,6 +8402,7 @@ Value h_gen_CreateArray(Frame& f, uint32_t pc, Value acc) {
                     arr->set_length(n);  // trailing holes count toward length
                     arr->reserve_elements(n);
                 }
+                Engine::fixup_new_array_realm(arr.get(), &ctx);
                 acc = Value(arr.release());
                 break;
             }
@@ -8425,6 +8427,7 @@ Value h_gen_CreateRestArray(Frame& f, uint32_t pc, Value acc) {
                 for (size_t j = start_index; j < args.size(); j++) {
                     rest_array->push(args[j]);
                 }
+                Engine::fixup_new_array_realm(rest_array.get(), &ctx);
                 acc = Value(rest_array.release());
                 break;
             }

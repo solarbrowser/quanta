@@ -155,6 +155,27 @@ public:
     // default_proto fallback still applies unchanged.
     static Object* realm_intrinsic_prototype_for(Object* new_target_like, const std::string& ctor_name);
 
+    // A just-created, not-yet-escaped object/array literal (ObjectFactory::
+    // create_object()/create_array()) was stamped with a thread_local "last
+    // realm set up" default prototype -- correct for the single/no-realm
+    // case (the overwhelming majority) but wrong once 2+ realms exist, since
+    // ObjectCreate/ArrayCreate must use the CURRENT realm's own %Object.
+    // prototype%/%Array.prototype%. Repoints it in place when needed; a
+    // no-op single vector-size check otherwise. `ctx` is the running
+    // context at the literal's creation site (e.g. VM::run's own Frame::ctx).
+    static void fixup_new_object_realm(Object* obj, Context* ctx) {
+        if (!obj || !ctx || all_engines().size() <= 1) return;
+        if (Object* realm_proto = get_realm_intrinsic_prototype(ctx, "Object")) {
+            obj->initialize_prototype_of_new(realm_proto);
+        }
+    }
+    static void fixup_new_array_realm(Object* obj, Context* ctx) {
+        if (!obj || !ctx || all_engines().size() <= 1) return;
+        if (Object* realm_proto = get_realm_intrinsic_prototype(ctx, "Array")) {
+            obj->initialize_prototype_of_new(realm_proto);
+        }
+    }
+
     // Survivor pool for function contexts (Promise async support). Pruned
     // only by the collector's own reachability-based pass (Collector.cpp) --
     // a context not currently in EventLoop use may still be reachable
