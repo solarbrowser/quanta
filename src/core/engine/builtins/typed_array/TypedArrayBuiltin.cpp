@@ -249,6 +249,19 @@ static const char* default_typed_array_ctor_name(TypedArrayBase::ArrayType t) {
     }
 }
 
+// A TypedArray method's own result must use ITS instance's realm, not the
+// ambient calling ctx (a native has no closure_context_ of its own, so ctx
+// is always the caller's -- wrong the moment the typed array itself is
+// cross-realm, e.g. `other.Uint8Array(...).entries().next()` called
+// directly from this realm's top-level code). Identity-matches ta_obj's own
+// [[Prototype]] against each live engine's own %<TheSpecificType>.prototype%,
+// same trick as Iterator.cpp's find_realm_owning_object use for Array/Map/Set.
+static Context* typed_array_realm(Object* ta_obj) {
+    if (!ta_obj || !ta_obj->is_typed_array()) return nullptr;
+    return Engine::find_realm_owning_object(ta_obj,
+        default_typed_array_ctor_name(static_cast<TypedArrayBase*>(ta_obj)->get_array_type()));
+}
+
 // SpeciesConstructor(exemplar, default ctor associated with exemplar's array type).
 static Function* get_typed_array_species_constructor(Context& ctx, TypedArrayBase* exemplar) {
     const char* default_name = default_typed_array_ctor_name(exemplar->get_array_type());
@@ -1472,13 +1485,14 @@ void register_typed_array_builtins(Context& ctx) {
                 (void)a; Object* it = receiver.as_object_or_null();
                 Value arr_val = it->get_property("__arr");
                 auto res = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(res.get(), typed_array_realm(arr_val.as_object_or_null()));
                 // An exhausted iterator stays done regardless of later buffer resizes.
                 if (!arr_val.is_object()) { res->set_property("done", Value(true)); res->set_property("value", Value()); return Value(res.release()); }
                 TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
                 size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
                 if (idx >= len) { it->set_internal_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
-                else { auto pair = ObjectFactory::create_array(2); pair->set_element(0, Value((double)idx)); pair->set_element(1, live->get_element(idx));
+                else { auto pair = ObjectFactory::create_array(2); Engine::fixup_new_array_realm(pair.get(), typed_array_realm(live)); pair->set_element(0, Value((double)idx)); pair->set_element(1, live->get_element(idx));
                     res->set_property("done", Value(false)); res->set_property("value", Value(pair.release())); it->set_internal_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
             iter->set_property("next", Value(next.release()));
@@ -1499,6 +1513,7 @@ void register_typed_array_builtins(Context& ctx) {
                 (void)a; Object* it = receiver.as_object_or_null();
                 Value arr_val = it->get_property("__arr");
                 auto res = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(res.get(), typed_array_realm(arr_val.as_object_or_null()));
                 if (!arr_val.is_object()) { res->set_property("done", Value(true)); res->set_property("value", Value()); return Value(res.release()); }
                 TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
@@ -1524,6 +1539,7 @@ void register_typed_array_builtins(Context& ctx) {
                 (void)a; Object* it = receiver.as_object_or_null();
                 Value arr_val = it->get_property("__arr");
                 auto res = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(res.get(), typed_array_realm(arr_val.as_object_or_null()));
                 if (!arr_val.is_object()) { res->set_property("done", Value(true)); res->set_property("value", Value()); return Value(res.release()); }
                 TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
@@ -2258,6 +2274,7 @@ static void register_uint8array_base64_hex(Context& ctx) {
             for (size_t i = 0; i < result.bytes.size(); i++) ta->set_element(i, Value(static_cast<double>(result.bytes[i])));
             if (result.error) { ctx.throw_syntax_error("setFromHex: invalid hex string"); return Value(); }
             auto res = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(res.get(), typed_array_realm(ta));
             res->set_property("read", Value(static_cast<double>(result.read)));
             res->set_property("written", Value(static_cast<double>(result.bytes.size())));
             return Value(res.release());
@@ -2291,6 +2308,7 @@ static void register_uint8array_base64_hex(Context& ctx) {
             for (size_t i = 0; i < result.bytes.size(); i++) ta->set_element(i, Value(static_cast<double>(result.bytes[i])));
             if (result.error) { ctx.throw_syntax_error("setFromBase64: invalid base64 string"); return Value(); }
             auto res = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(res.get(), typed_array_realm(ta));
             res->set_property("read", Value(static_cast<double>(result.read)));
             res->set_property("written", Value(static_cast<double>(result.bytes.size())));
             return Value(res.release());
