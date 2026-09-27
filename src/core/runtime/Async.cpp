@@ -657,6 +657,7 @@ void AsyncGenerator::handle_suspension() {
         case SuspendReason::Yield: {
             state_ = State::SuspendedYield;
             auto result_obj = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(result_obj.get(), get_generator_context());
             result_obj->set_property("value", yield_value_);
             result_obj->set_property("done", Value(false));
             Promise* fulfilled = pending_promise_;
@@ -678,6 +679,7 @@ void AsyncGenerator::handle_suspension() {
                 settled->reject(exception_value_);
             } else {
                 auto result_obj = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(result_obj.get(), get_generator_context());
                 result_obj->set_property("value", return_value_);
                 result_obj->set_property("done", Value(true));
                 settled->fulfill(Value(result_obj.release()));
@@ -739,6 +741,7 @@ void AsyncGenerator::process_next_request() {
                             Promise* settled = gen->pending_promise_;
                             if (settled) {
                                 auto result_obj = ObjectFactory::create_object();
+                                Engine::fixup_new_object_realm(result_obj.get(), gen->get_generator_context());
                                 result_obj->set_property("value", a.empty() ? Value() : a[0]);
                                 result_obj->set_property("done", Value(true));
                                 settled->fulfill(Value(result_obj.release()));
@@ -762,6 +765,7 @@ void AsyncGenerator::process_next_request() {
                     return;
                 }
                 auto result_obj = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(result_obj.get(), get_generator_context());
                 result_obj->set_property("value", front.value);
                 result_obj->set_property("done", Value(true));
                 p->fulfill(Value(result_obj.release()));
@@ -769,6 +773,7 @@ void AsyncGenerator::process_next_request() {
             }
             case Request::Type::Next: {
                 auto result_obj = ObjectFactory::create_object();
+                Engine::fixup_new_object_realm(result_obj.get(), get_generator_context());
                 result_obj->set_property("value", Value());
                 result_obj->set_property("done", Value(true));
                 p->fulfill(Value(result_obj.release()));
@@ -1043,27 +1048,29 @@ AsyncIterator::AsyncIterator(AsyncNextFunction next_fn)
     set_custom_kind(CustomKind::AsyncIterator);
 }
 
-std::unique_ptr<Promise> AsyncIterator::next() {
+std::unique_ptr<Promise> AsyncIterator::next(Context* ctx) {
     if (done_) {
         auto promise = std::make_unique<Promise>(nullptr);
-        
+
         auto result_obj = ObjectFactory::create_object();
+        Engine::fixup_new_object_realm(result_obj.get(), ctx);
         result_obj->set_property("value", Value());
         result_obj->set_property("done", Value(true));
-        
+
         promise->fulfill(Value(result_obj.release()));
         return promise;
     }
-    
+
     return next_fn_();
 }
 
-std::unique_ptr<Promise> AsyncIterator::return_value(const Value& value) {
+std::unique_ptr<Promise> AsyncIterator::return_value(const Value& value, Context* ctx) {
     done_ = true;
-    
+
     auto promise = std::make_unique<Promise>(nullptr);
-    
+
     auto result_obj = ObjectFactory::create_object();
+    Engine::fixup_new_object_realm(result_obj.get(), ctx);
     result_obj->set_property("value", value);
     result_obj->set_property("done", Value(true));
     
@@ -1181,8 +1188,8 @@ Value AsyncIterator::async_iterator_next(Context& ctx, std::span<const Value> /*
         return Value();
     }
     
-    auto promise = async_iter->next();
-    
+    auto promise = async_iter->next(&ctx);
+
     return Value(promise.release());
 }
 
@@ -1200,7 +1207,7 @@ Value AsyncIterator::async_iterator_return(Context& ctx, std::span<const Value> 
     }
     
     Value value = args.empty() ? Value() : args[0];
-    auto promise = async_iter->return_value(value);
+    auto promise = async_iter->return_value(value, &ctx);
     
     return Value(promise.release());
 }

@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
 #include <span>
 #include "quanta/core/gc/Visitor.h"
@@ -68,21 +69,41 @@ Iterator::IteratorResult Iterator::next_default() {
     return result;
 }
 
+// CreateIterResultObject's %Object.prototype% must come from the ITERABLE's
+// own realm (the array/Map/Set the iterator walks), not the calling ctx's --
+// the iterator's own kind-specific prototype (s_array_iterator_prototype_ &
+// co.) is a thread_local "last realm set up" cache, so the underlying
+// collection's own (already realm-correct) [[Prototype]] is the only
+// reliable signal here. Strings carry no such signal (a primitive has no
+// realm of its own), so a StringIterator falls back to the caller's ctx.
+static Context* iterator_realm_hint(Iterator* iterator) {
+    switch (iterator->get_custom_kind()) {
+        case CustomObjectBase::CustomKind::ArrayIterator:
+            return Engine::find_realm_owning_object(static_cast<ArrayIterator*>(iterator)->get_array(), "Array");
+        case CustomObjectBase::CustomKind::MapIterator:
+            return Engine::find_realm_owning_object(static_cast<MapIterator*>(iterator)->get_map(), "Map");
+        case CustomObjectBase::CustomKind::SetIterator:
+            return Engine::find_realm_owning_object(static_cast<SetIterator*>(iterator)->get_set(), "Set");
+        default:
+            return nullptr;
+    }
+}
+
 Value Iterator::iterator_next(Context& ctx, std::span<const Value> args, Value receiver) {
     (void)args;
-    
+
     Value this_value = receiver;
     if (!this_value.is_object()) {
         ctx.throw_type_error("Iterator.prototype.next called on non-object");
         return Value();
     }
-    
+
     Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Custom) {
         ctx.throw_type_error("Iterator.prototype.next called on non-iterator");
         return Value();
     }
-    
+
     Iterator* iterator = static_cast<Iterator*>(obj);
     // %ArrayIteratorPrototype%.next revalidates a typed-array target: a buffer
     // resize can take it out of bounds between calls.
@@ -94,9 +115,11 @@ Value Iterator::iterator_next(Context& ctx, std::span<const Value> args, Value r
             return Value();
         }
     }
+    Context* realm_hint = iterator_realm_hint(iterator);
+    if (!realm_hint) realm_hint = &ctx;
     auto result = iterator->next();
 
-    return create_iterator_result(result.value, result.done);
+    return create_iterator_result(result.value, result.done, realm_hint);
 }
 
 Value Iterator::iterator_return(Context& ctx, std::span<const Value> args, Value receiver) {
@@ -116,8 +139,9 @@ Value Iterator::iterator_return(Context& ctx, std::span<const Value> args, Value
     
     Iterator* iterator = static_cast<Iterator*>(obj);
     iterator->done_ = true;
-    
-    return create_iterator_result(return_value, true);
+    Context* realm_hint = iterator_realm_hint(iterator);
+
+    return create_iterator_result(return_value, true, realm_hint ? realm_hint : &ctx);
 }
 
 Value Iterator::iterator_throw(Context& ctx, std::span<const Value> args, Value receiver) {
@@ -260,8 +284,9 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     ctx.create_binding("@@SetIteratorPrototype", Value(set_iter_proto.release()));
 }
 
-Value Iterator::create_iterator_result(const Value& value, bool done) {
+Value Iterator::create_iterator_result(const Value& value, bool done, Context* realm_hint) {
     auto result_obj = ObjectFactory::create_object();
+    Engine::fixup_new_object_realm(result_obj.get(), realm_hint);
     Object* obj = result_obj.get();
     // Every one of these is the same two properties in the same order on a
     // fresh object, so it passes through the same two shapes every time and

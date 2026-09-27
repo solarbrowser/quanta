@@ -288,8 +288,12 @@ public:
     // Non-virtual: no further subclass, and the GC sweep destructs directly.
     ~AsyncIterator() = default;
     
-    std::unique_ptr<Promise> next();
-    std::unique_ptr<Promise> return_value(const Value& value);
+    // `ctx`: best-effort realm for the {value,done} result object when this
+    // iterator is already exhausted (done_ already true) -- this class keeps
+    // no source object/context of its own, so the calling native's own ctx
+    // is the only signal available (null is fine: single/no-realm no-ops).
+    std::unique_ptr<Promise> next(Context* ctx = nullptr);
+    std::unique_ptr<Promise> return_value(const Value& value, Context* ctx = nullptr);
     std::unique_ptr<Promise> throw_exception(const Value& exception);
     
     static Value async_iterator_next(Context& ctx, std::span<const Value> args, Value receiver);

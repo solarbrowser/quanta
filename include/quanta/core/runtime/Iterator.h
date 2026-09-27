@@ -57,7 +57,11 @@ public:
 
     static void setup_iterator_prototype(Context& ctx);
 
-    static Value create_iterator_result(const Value& value, bool done);
+    // `realm_hint`: the realm CreateIterResultObject's %Object.prototype% must
+    // come from (the iterable's own realm, not necessarily the calling ctx's
+    // -- see Iterator::iterator_next's own callers). Null falls back to the
+    // create-time default (correct for the single/no-realm case).
+    static Value create_iterator_result(const Value& value, bool done, Context* realm_hint = nullptr);
 
     // Well-known prototype objects (set during setup_iterator_prototype).
     // Thread-local: each agent builds and owns its own intrinsics.
@@ -143,6 +147,7 @@ public:
     void trace(Visitor& v);
 
     IteratorResult next();
+    class Map* get_map() const { return map_; }
 
 private:
     IteratorResult next_impl();
@@ -170,6 +175,7 @@ public:
     void trace(Visitor& v);
 
     IteratorResult next();
+    class Set* get_set() const { return set_; }
 
 private:
     IteratorResult next_impl();

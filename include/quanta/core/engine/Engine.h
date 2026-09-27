@@ -155,6 +155,23 @@ public:
     // default_proto fallback still applies unchanged.
     static Object* realm_intrinsic_prototype_for(Object* new_target_like, const std::string& ctor_name);
 
+    // Same idea as find_realm_owning_function, generalized to any object
+    // whose OWN [[Prototype]] (not necessarily itself callable) should
+    // identity-match some realm's named intrinsic's own "prototype" -- e.g.
+    // an Array instance against every live engine's own %Array.prototype%.
+    // Used to recover "which realm made this" for a plain object with no
+    // closure_context_ of its own (a collection instance, not a function).
+    static Context* find_realm_owning_object(Object* obj, const std::string& ctor_name) {
+        if (!obj) return nullptr;
+        Object* proto = obj->get_prototype();
+        if (!proto) return nullptr;
+        for (Engine* e : all_engines()) {
+            Context* gctx = e->get_global_context();
+            if (get_realm_intrinsic_prototype(gctx, ctor_name) == proto) return gctx;
+        }
+        return nullptr;
+    }
+
     // A just-created, not-yet-escaped object/array literal (ObjectFactory::
     // create_object()/create_array()) was stamped with a thread_local "last
     // realm set up" default prototype -- correct for the single/no-realm
