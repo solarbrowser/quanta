@@ -519,6 +519,10 @@ Value Map::map_iterator_method(Context& ctx, std::span<const Value> args, Value 
 }
 
 void Map::setup_map_prototype(Context& ctx) {
+    // This realm, captured once at registration time -- see Engine::fixup_
+    // new_object_realm/_array_realm's own doc comment (same pattern used
+    // throughout the builtins/ tree).
+    Context* home_ctx = &ctx;
     auto map_constructor_fn = ObjectFactory::create_native_constructor_with_new_target("Map", map_constructor, 0);
     
     auto map_prototype = ObjectFactory::create_object();
@@ -660,7 +664,7 @@ void Map::setup_map_prototype(Context& ctx) {
     Map::prototype_object = map_prototype.get();
 
     auto map_groupBy_fn = ObjectFactory::create_native_function("groupBy",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             if (args.size() < 2 || !args[1].is_function()) {
                 ctx.throw_type_error("Map.groupBy requires a callback function");
                 return Value();
@@ -673,7 +677,14 @@ void Map::setup_map_prototype(Context& ctx) {
             Function* callback = args[1].as_function();
 
             auto result_map = std::make_unique<Map>();
-            if (Map::prototype_object) result_map->initialize_prototype(Map::prototype_object);
+            // Map::prototype_object is the thread_local "last realm set up"
+            // cache -- Map.groupBy's own realm (home_ctx) is what its result
+            // must actually use once 2+ realms exist.
+            Object* map_proto = Map::prototype_object;
+            if (Engine::all_engines().size() > 1) {
+                if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(home_ctx, "Map")) map_proto = realm_proto;
+            }
+            if (map_proto) result_map->initialize_prototype(map_proto);
             Map* result = result_map.get();
 
             // Map keys preserve SameValueZero identity -- no property-key stringification.
@@ -686,6 +697,7 @@ void Map::setup_map_prototype(Context& ctx) {
                     group_array = group.as_object();
                 } else {
                     auto arr = ObjectFactory::create_array(0);
+                    Engine::fixup_new_array_realm(arr.get(), home_ctx);
                     group_array = arr.get();
                     result->set(key, Value(arr.release()));
                 }
