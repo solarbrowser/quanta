@@ -291,6 +291,10 @@ static const std::string& borrow_to_string_this(Context& ctx, const Value& this_
 }
 
 void register_string_builtins(Context& ctx) {
+    // This realm, captured once at registration time -- see Engine::fixup_
+    // new_object_realm/_array_realm's own doc comment (same pattern used
+    // throughout the builtins/ tree).
+    Context* home_ctx = &ctx;
     auto string_constructor = ObjectFactory::create_native_constructor_with_new_target("String",
         [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             std::string str_value;
@@ -1255,7 +1259,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("indexOf", string_indexOf_desc);
 
     auto str_split_fn = ObjectFactory::create_native_function("split",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             // Spec: GetMethod(separator, @@split) before ToString(this); call with (O, limit).
             if (receiver.is_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             Value this_value = receiver;
@@ -1293,6 +1297,7 @@ void register_string_builtins(Context& ctx) {
             }
 
             auto result_array = ObjectFactory::create_array(0);
+            Engine::fixup_new_array_realm(result_array.get(), home_ctx);
 
             if (separator.is_undefined()) {
                 if (lim != 0) result_array->set_element(0, Value(str));
@@ -2125,8 +2130,13 @@ void register_string_builtins(Context& ctx) {
             auto state = std::make_shared<StringIterState>(StringIterState{str, 0});
             auto next_fn = ObjectFactory::create_native_function("next",
                 [state](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                    (void)ctx; (void)args;
+                    (void)args;
                     auto result = ObjectFactory::create_object();
+                    // A primitive string has no realm of its own to ask; ctx
+                    // (the calling native's ambient context) is the best
+                    // available signal, same tradeoff as StringIterator's
+                    // identical case in Iterator.cpp.
+                    Engine::fixup_new_object_realm(result.get(), &ctx);
                     if (state->index >= state->str.length()) {
                         result->set_property("done", Value(true));
                         result->set_property("value", Value());
