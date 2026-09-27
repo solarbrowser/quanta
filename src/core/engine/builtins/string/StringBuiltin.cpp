@@ -2115,6 +2115,10 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("normalize", normalize_desc);
 
     // ES6: String.prototype[Symbol.iterator] - iterates by Unicode codepoints
+    // Dead code: setup_string_iterator_methods (Iterator.cpp, run later during
+    // bootstrap) overwrites this property with the real implementation before
+    // any script runs, exactly like ArrayBuiltin.cpp's own keys/values/entries/
+    // [Symbol.iterator] stubs -- left alone, not realm-audited, for the same reason.
     auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
         [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
@@ -2130,13 +2134,8 @@ void register_string_builtins(Context& ctx) {
             auto state = std::make_shared<StringIterState>(StringIterState{str, 0});
             auto next_fn = ObjectFactory::create_native_function("next",
                 [state](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-                    (void)args;
+                    (void)ctx; (void)args;
                     auto result = ObjectFactory::create_object();
-                    // A primitive string has no realm of its own to ask; ctx
-                    // (the calling native's ambient context) is the best
-                    // available signal, same tradeoff as StringIterator's
-                    // identical case in Iterator.cpp.
-                    Engine::fixup_new_object_realm(result.get(), &ctx);
                     if (state->index >= state->str.length()) {
                         result->set_property("done", Value(true));
                         result->set_property("value", Value());

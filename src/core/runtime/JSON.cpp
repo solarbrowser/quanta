@@ -8,6 +8,7 @@
 #include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include <sstream>
@@ -40,7 +41,7 @@ std::string JSON::stringify(const Value& value, const StringifyOptions& options)
 
 // ES6 24.3.1.1 InternalizeJSONProperty, extended with the json-parse-with-source "context" arg.
 static Value internalize_json_property(Context& ctx, Object* holder, const std::string& name, Function* reviver,
-        const JSON::SourceMap& source_map) {
+        const JSON::SourceMap& source_map, Context* realm_hint) {
     Value val = holder->get_property(name);
 
     if (val.is_object_like() && val.as_object()) {
@@ -58,7 +59,7 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
             uint32_t len = static_cast<uint32_t>(len_val.to_number());
             for (uint32_t i = 0; i < len; i++) {
                 std::string idx = std::to_string(i);
-                Value new_element = internalize_json_property(ctx, obj, idx, reviver, source_map);
+                Value new_element = internalize_json_property(ctx, obj, idx, reviver, source_map, realm_hint);
                 if (ctx.has_exception()) return Value();
                 if (new_element.is_undefined()) {
                     obj->delete_property(idx);
@@ -86,7 +87,7 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
                 keys = obj->get_own_property_keys();
             }
             for (const auto& key : keys) {
-                Value new_element = internalize_json_property(ctx, obj, key, reviver, source_map);
+                Value new_element = internalize_json_property(ctx, obj, key, reviver, source_map, realm_hint);
                 if (ctx.has_exception()) return Value();
                 if (new_element.is_undefined()) {
                     obj->delete_property(key);
@@ -103,6 +104,7 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
 
     // context = { source } only if `val` is still the exact primitive originally parsed here.
     auto context = ObjectFactory::create_object();
+    Engine::fixup_new_object_realm(context.get(), realm_hint);
     auto parent_it = source_map.find(holder);
     if (parent_it != source_map.end()) {
         auto key_it = parent_it->second.find(name);
@@ -120,7 +122,7 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
     return reviver->call(ctx, reviver_args, Value(holder));
 }
 
-Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver) {
+Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver, Context* realm_hint) {
     if (args.empty()) {
         ctx.throw_syntax_error("JSON.parse requires at least 1 argument");
         return Value();
@@ -162,6 +164,7 @@ Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver) 
     }
 
     ParseOptions options;
+    options.context = realm_hint ? realm_hint : &ctx;
 
     Function* reviver = nullptr;
     // Process reviver parameter (args[1])
@@ -180,6 +183,7 @@ Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver) 
         if (reviver) {
             // Wrapper must have Object.prototype and use CreateDataPropertyOrThrow (not [[Set]])
             auto wrapper = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(wrapper.get(), options.context);
             PropertyDescriptor root_desc(result, static_cast<PropertyAttributes>(
                 PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
             wrapper->set_property_descriptor("", root_desc);
@@ -187,7 +191,7 @@ Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver) 
                 source_map[wrapper.get()][""] = {root_source, result};
             }
 
-            result = internalize_json_property(ctx, wrapper.get(), "", reviver, source_map);
+            result = internalize_json_property(ctx, wrapper.get(), "", reviver, source_map, options.context);
             wrapper.release();
 
             if (ctx.has_exception()) {
@@ -205,7 +209,7 @@ Value JSON::js_parse(Context& ctx, std::span<const Value> args, Value receiver) 
     }
 }
 
-Value JSON::js_stringify(Context& ctx, std::span<const Value> args, Value receiver) {
+Value JSON::js_stringify(Context& ctx, std::span<const Value> args, Value receiver, Context* realm_hint) {
     if (args.empty()) {
         return Value();
     }
@@ -302,7 +306,7 @@ Value JSON::js_stringify(Context& ctx, std::span<const Value> args, Value receiv
     }
 
     try {
-        Stringifier stringifier(options, &ctx);
+        Stringifier stringifier(options, &ctx, realm_hint);
         std::string result = stringifier.stringify(args[0]);
         if (ctx.has_exception()) return Value();
         if (result.empty() || result == "undefined_sentinel") return Value();
@@ -395,6 +399,7 @@ Value JSON::Parser::parse_object() {
     
     // Use create_object so parsed objects inherit from Object.prototype.
     auto obj = ObjectFactory::create_object();
+    Engine::fixup_new_object_realm(obj.get(), options_.context);
 
     if (current_char() == '}') {
         advance();
@@ -468,6 +473,7 @@ Value JSON::Parser::parse_array() {
     skip_whitespace();
     
     auto arr = ObjectFactory::create_array(0);
+    Engine::fixup_new_array_realm(arr.get(), options_.context);
     uint32_t index = 0;
     
     if (current_char() == ']') {
@@ -735,8 +741,8 @@ bool JSON::Parser::is_hex_digit(char ch) const {
 }
 
 
-JSON::Stringifier::Stringifier(const StringifyOptions& options, Context* ctx)
-    : options_(options), depth_(0), context_(ctx), current_key_("") {
+JSON::Stringifier::Stringifier(const StringifyOptions& options, Context* ctx, Context* realm_hint)
+    : options_(options), depth_(0), context_(ctx), realm_hint_(realm_hint ? realm_hint : ctx), current_key_("") {
 }
 
 // GetV(v, "toJSON") semantics: returns the toJSON function preserving primitive receiver for accessors.
@@ -780,6 +786,7 @@ std::string JSON::Stringifier::stringify(const Value& value) {
         std::vector<Value> args = { Value(std::string("")), root };
 
         auto wrapper = ObjectFactory::create_object();
+        Engine::fixup_new_object_realm(wrapper.get(), realm_hint_);
         PropertyDescriptor wrap_desc(value, static_cast<PropertyAttributes>(
             PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
         wrapper->set_property_descriptor("", wrap_desc);

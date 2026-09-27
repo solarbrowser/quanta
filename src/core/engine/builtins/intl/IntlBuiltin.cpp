@@ -7,18 +7,24 @@
 #include "quanta/core/engine/builtins/IntlBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/parser/AST.h"
 
 namespace Quanta {
 
 void register_intl_builtins(Context& ctx) {
+    // This realm, captured once at registration time -- see Engine::fixup_
+    // new_object_realm's own doc comment (same pattern used throughout the
+    // builtins/ tree).
+    Context* home_ctx = &ctx;
     auto intl_object = ObjectFactory::create_object();
 
     auto intl_datetimeformat = ObjectFactory::create_native_constructor("DateTimeFormat",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)ctx; (void)args;
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            (void)args;
             auto formatter = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(formatter.get(), home_ctx);
 
             auto format_fn = ObjectFactory::create_native_function("format",
                 [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
@@ -35,9 +41,10 @@ void register_intl_builtins(Context& ctx) {
     intl_object->set_property("DateTimeFormat", Value(intl_datetimeformat.release()));
 
     auto intl_numberformat = ObjectFactory::create_native_constructor("NumberFormat",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)ctx; (void)args;
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            (void)args;
             auto formatter = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(formatter.get(), home_ctx);
 
             auto format_fn = ObjectFactory::create_native_function("format",
                 [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
@@ -54,9 +61,10 @@ void register_intl_builtins(Context& ctx) {
     intl_object->set_property("NumberFormat", Value(intl_numberformat.release()));
 
     auto intl_collator = ObjectFactory::create_native_constructor("Collator",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)ctx; (void)args;
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            (void)args;
             auto collator = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(collator.get(), home_ctx);
 
             auto compare_fn = ObjectFactory::create_native_function("compare",
                 [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {

@@ -56,8 +56,13 @@ public:
         std::string& out_root_source);
     static std::string stringify(const Value& value, const StringifyOptions& options = StringifyOptions());
     
-    static Value js_parse(Context& ctx, std::span<const Value> args, Value receiver);
-    static Value js_stringify(Context& ctx, std::span<const Value> args, Value receiver);
+    // `realm_hint`: JSON's OWN realm (register_json_builtins's home_ctx),
+    // for the result objects/arrays this call creates -- distinct from `ctx`
+    // (the ambient calling context, used for exceptions/argument coercion),
+    // which is the wrong source once this JSON is called cross-realm. Null
+    // falls back to `&ctx`, matching every call site outside JsonBuiltin.cpp.
+    static Value js_parse(Context& ctx, std::span<const Value> args, Value receiver, Context* realm_hint = nullptr);
+    static Value js_stringify(Context& ctx, std::span<const Value> args, Value receiver, Context* realm_hint = nullptr);
     
     static std::unique_ptr<Object> create_json_object();
 
@@ -120,11 +125,19 @@ private:
         size_t depth_;
         std::set<const Object*> visited_;
         Context* context_;
+        // The realm the replacer-function wrapper object's own [[Prototype]]
+        // must come from (register_json_builtins's home_ctx) -- distinct from
+        // context_, which every throw_type_error/has_exception/function call
+        // in this class runs through and which MUST stay the real ambient
+        // caller context: using realm_hint there instead once misrouted a
+        // BigInt-serialization TypeError onto the wrong (registration-time)
+        // Context object, so the actual caller never saw it thrown at all.
+        Context* realm_hint_;
         std::string current_key_;
         bool skip_bigint_toJSON_ = false;
 
     public:
-        Stringifier(const StringifyOptions& options, Context* ctx = nullptr);
+        Stringifier(const StringifyOptions& options, Context* ctx = nullptr, Context* realm_hint = nullptr);
         
         std::string stringify(const Value& value);
         

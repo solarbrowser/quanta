@@ -14,18 +14,24 @@
 namespace Quanta {
 
 void register_json_builtins(Context& ctx) {
+    // JSON.parse/stringify's own realm, captured once at registration time --
+    // see Engine::fixup_new_object_realm/_array_realm's own doc comment
+    // (same pattern used throughout the builtins/ tree). js_parse/js_stringify
+    // take it as a separate realm_hint from the ambient per-call ctx, which
+    // is the caller's realm, not JSON's own, once 2+ realms exist.
+    Context* home_ctx = &ctx;
     auto json_object = ObjectFactory::create_object();
 
     auto json_parse = ObjectFactory::create_native_function("parse",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            return JSON::js_parse(ctx, args, receiver);
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return JSON::js_parse(ctx, args, receiver, home_ctx);
         }, 2);
     json_object->set_property("parse", Value(json_parse.release()),
         PropertyAttributes::BuiltinFunction);
 
     auto json_stringify = ObjectFactory::create_native_function("stringify",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            return JSON::js_stringify(ctx, args, receiver);
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            return JSON::js_stringify(ctx, args, receiver, home_ctx);
         }, 3);
     json_object->set_property("stringify", Value(json_stringify.release()),
         PropertyAttributes::BuiltinFunction);
