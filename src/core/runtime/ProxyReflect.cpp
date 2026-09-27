@@ -26,6 +26,26 @@ void Proxy::trace(Visitor& v) {
 }
 
 
+// CreateArrayFromList's array is created in the CURRENT realm -- ObjectFactory::create_array
+// stamped it with the thread_local "last realm set up" Array.prototype, which is wrong once
+// 2+ realms exist. Free in the (overwhelmingly common) single/no-realm case.
+static void fixup_array_realm(Object* array, Context* ctx) {
+    if (!ctx || Engine::all_engines().size() <= 1) return;
+    if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(ctx, "Array")) {
+        array->initialize_prototype_of_new(realm_proto);
+    }
+}
+
+// Same as fixup_array_realm, for ObjectCreate(%ObjectPrototype%) call sites
+// (e.g. FromPropertyDescriptor) that must use the CURRENT realm's own
+// %Object.prototype%, not whichever realm's thread_local cache is live.
+static void fixup_object_realm(Object* obj, Context* ctx) {
+    if (!ctx || Engine::all_engines().size() <= 1) return;
+    if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(ctx, "Object")) {
+        obj->initialize_prototype_of_new(realm_proto);
+    }
+}
+
 // Helper: convert a Value key (possibly Symbol) to a property key string
 static std::string to_prop_key(const Value& key) {
     if (key.is_symbol()) return key.as_symbol()->to_property_key();
@@ -632,6 +652,7 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
         } else {
             // FromPropertyDescriptor: only include keys actually present on this (possibly partial) descriptor.
             auto desc_obj = ObjectFactory::create_object();
+            fixup_object_realm(desc_obj.get(), ctx);
             if (desc.has_value()) desc_obj->set_property("value", desc.get_value());
             if (desc.has_writable()) desc_obj->set_property("writable", Value(desc.is_writable()));
             if (desc.has_enumerable()) desc_obj->set_property("enumerable", Value(desc.is_enumerable()));
@@ -734,6 +755,7 @@ Value Proxy::apply_trap(std::span<const Value> args, const Value& this_value) {
         auto args_array = ObjectFactory::create_array(static_cast<uint32_t>(args.size()));
         for (size_t i = 0; i < args.size(); ++i)
             args_array->set_element(static_cast<uint32_t>(i), args[i]);
+        fixup_array_realm(args_array.get(), ctx);
         std::vector<Value> call_args = {Value(target_), this_value, Value(args_array.release())};
         return trap_fn->call(*ctx, call_args, Value(handler_));
     }
@@ -787,6 +809,7 @@ Value Proxy::construct_trap(std::span<const Value> args, Object* new_target) {
             auto args_array = ObjectFactory::create_array(static_cast<uint32_t>(args.size()));
             for (size_t i = 0; i < args.size(); ++i)
                 args_array->set_element(static_cast<uint32_t>(i), args[i]);
+            fixup_array_realm(args_array.get(), trap_ctx);
             std::vector<Value> call_args = {Value(target_), Value(args_array.release()), nt_value};
             result = trap_fn->call(*trap_ctx, call_args, Value(handler_));
         }
@@ -1234,6 +1257,7 @@ Value Reflect::reflect_own_keys(Context& ctx, std::span<const Value> args, Value
     }
 
     auto result_array = ObjectFactory::create_array(static_cast<uint32_t>(keys.size()));
+    fixup_array_realm(result_array.get(), &ctx);
 
     if (from_proxy_trap) {
         // Proxy trap result order is spec-defined by the trap; preserve it as-is.

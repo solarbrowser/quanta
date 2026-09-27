@@ -7,6 +7,7 @@
 #include <span>
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -270,6 +271,8 @@ void register_object_builtins(Context& ctx) {
                     Value proto = nt_obj->get_property("prototype");
                     if (proto.is_object()) new_obj->initialize_prototype(proto.as_object());
                     else if (proto.is_function()) new_obj->initialize_prototype(static_cast<Object*>(proto.as_function()));
+                    else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "Object"))
+                        new_obj->initialize_prototype(realm_default);
                 }
                 return Value(new_obj.release());
             }

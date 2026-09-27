@@ -8,6 +8,7 @@
 #include "quanta/core/engine/builtins/ArrayBuiltin.h"
 #include "quanta/core/engine/builtins/StringBuiltin.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/lexer/Lexer.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/parser/AST.h"
@@ -182,7 +183,17 @@ void register_function_builtins(Context& ctx) {
                             : new_target.is_object() ? new_target.as_object() : nullptr;
                         if (nt_obj) {
                             Value nt_proto = nt_obj->get_property("prototype");
-                            if (nt_proto.is_object()) raw_func->initialize_prototype(nt_proto.as_object());
+                            // %Function.prototype% is itself callable (is_function(),
+                            // not is_object()) -- the common no-subclass case
+                            // (new_target IS the realm's own Function constructor)
+                            // was silently falling through to the wrong-realm cache.
+                            if (nt_proto.is_function()) {
+                                raw_func->initialize_prototype(static_cast<Object*>(nt_proto.as_function()));
+                            } else if (nt_proto.is_object()) {
+                                raw_func->initialize_prototype(nt_proto.as_object());
+                            } else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "Function")) {
+                                raw_func->initialize_prototype(realm_default);
+                            }
                         }
                     }
                     return Value{raw_func};

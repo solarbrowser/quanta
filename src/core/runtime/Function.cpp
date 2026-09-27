@@ -1883,7 +1883,7 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
             if (nt_proto.is_object() || nt_proto.is_function()) {
                 initial_proto = nt_proto;
             } else if (Object* realm_default =
-                           Engine::realm_intrinsic_prototype_for(nt_obj, get_name())) {
+                           Engine::realm_intrinsic_prototype_for(nt_obj, "Object")) {
                 // GetPrototypeFromConstructor's own fallback: new.target's
                 // "prototype" isn't an object, so the default comes from
                 // new.target's OWN realm (GetFunctionRealm), not this
@@ -1891,7 +1891,11 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
                 // with a cross-realm newTarget. Falls through to this
                 // constructor's own default below if new.target's realm
                 // can't be found (e.g. new.target isn't a real constructor
-                // from any live realm at all).
+                // from any live realm at all). Ordinary functions' [[Construct]]
+                // (10.2.2) always uses %Object.prototype% as intrinsicDefaultProto,
+                // regardless of this constructor's own name -- unlike the
+                // per-builtin construct paths (Date/Error/...), which pass
+                // their own class name and are not this generic path.
                 initial_proto = Value(realm_default);
             }
         }

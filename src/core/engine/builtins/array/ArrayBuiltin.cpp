@@ -6,6 +6,7 @@
 #include "quanta/core/engine/builtins/ArrayBuiltin.h"
 #include <span>
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/gc/Collector.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
@@ -415,7 +416,17 @@ static Value array_create_or_range_error(Context& ctx, double length) {
         ctx.throw_range_error("Invalid array length");
         return Value();
     }
-    return Value(ObjectFactory::create_array(static_cast<uint32_t>(length)).release());
+    auto arr = ObjectFactory::create_array(static_cast<uint32_t>(length));
+    // ObjectFactory::create_array used the thread_local "last realm set up"
+    // Array.prototype, which is wrong once 2+ realms exist -- ArrayCreate
+    // must use the CURRENT realm's own %Array.prototype%. Free in the
+    // (overwhelmingly common) single/no-realm case: one vector-size check.
+    if (Engine::all_engines().size() > 1) {
+        if (Object* realm_proto = Engine::get_realm_intrinsic_prototype(&ctx, "Array")) {
+            arr->initialize_prototype_of_new(realm_proto);
+        }
+    }
+    return Value(arr.release());
 }
 
 static Value array_species_create(Context& ctx, Object* original_array, double length) {
@@ -554,15 +565,19 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 array->set_property("length", Value(static_cast<double>(args.size())));
             }
             // ES6: subclassing - use new.target.prototype if different from Array.prototype
-            if (new_target.is_function()) {
-                Value nt_proto = new_target.as_function()->get_property("prototype");
-                if (nt_proto.is_object()) {
+            if (new_target.is_function() || new_target.is_object()) {
+                Object* nt_obj = new_target.is_function()
+                    ? static_cast<Object*>(new_target.as_function()) : new_target.as_object();
+                Value nt_proto = nt_obj->get_property("prototype");
+                if (nt_proto.is_function()) {
+                    array->initialize_prototype(static_cast<Object*>(nt_proto.as_function()));
+                } else if (nt_proto.is_object()) {
                     array->initialize_prototype(nt_proto.as_object());
-                }
-            } else if (new_target.is_object()) {
-                Value nt_proto = new_target.as_object()->get_property("prototype");
-                if (nt_proto.is_object()) {
-                    array->initialize_prototype(nt_proto.as_object());
+                } else if (Object* realm_default = Engine::realm_intrinsic_prototype_for(nt_obj, "Array")) {
+                    // GetPrototypeFromConstructor's fallback: new.target's own
+                    // "prototype" isn't an object, so the default comes from
+                    // new.target's OWN realm (GetFunctionRealm), not this realm's.
+                    array->initialize_prototype(realm_default);
                 }
             }
             return Value(array.release());
