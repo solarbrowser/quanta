@@ -218,6 +218,20 @@ public:
             obj->initialize_prototype_of_new(realm_proto);
         }
     }
+    // Same idea, for ObjectFactory::create_native_function's own %Function.
+    // prototype% stamping (get_function_prototype(), Function.cpp), which
+    // has the identical thread_local-"last realm set up" default -- not
+    // covered by the create_object()/create_array() audit this comment's
+    // siblings were written for, since a native FUNCTION is a different
+    // factory path. Needed wherever a native function is built explicitly
+    // for a specific OTHER realm than whichever one last ran its own setup
+    // (e.g. ShadowRealm's WrappedFunctionCreate).
+    static void fixup_new_function_realm(Object* fn, Context* ctx) {
+        if (!fn || !ctx || all_engines().size() <= 1) return;
+        if (Object* realm_proto = get_realm_intrinsic_prototype(ctx, "Function")) {
+            fn->initialize_prototype_of_new(realm_proto);
+        }
+    }
 
     // Survivor pool for function contexts (Promise async support). Pruned
     // only by the collector's own reachability-based pass (Collector.cpp) --

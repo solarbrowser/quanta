@@ -391,6 +391,10 @@ public:
     // `realm` is typically a native function's home context, captured at
     // registration time -- see e.g. RegExpBuiltin.cpp's flag getters.
     void throw_type_error_as(Context& realm, const std::string& message);
+    // Same as throw_type_error_as, for %SyntaxError% -- see ShadowRealm.
+    // prototype.evaluate, whose own thrown errors must come from the
+    // ShadowRealm object's OWN creation realm, not the calling context.
+    void throw_syntax_error_as(Context& realm, const std::string& message);
     void throw_reference_error(const std::string& message);
     void throw_syntax_error(const std::string& message);
     void throw_range_error(const std::string& message);

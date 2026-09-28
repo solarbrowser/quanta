@@ -795,8 +795,17 @@ void register_global_builtins(Context& ctx) {
     ctx.get_lexical_environment()->create_binding("eval", Value(eval_fn.release()), true, true, false);
 
     ctx.get_lexical_environment()->create_binding("undefined", Value(), false, false, false);
-    ctx.get_lexical_environment()->create_binding("null", Value::null(), false, false);
-    
+    // null/true/false are NOT bound here (unlike undefined, which spec does
+    // require as a real global property): the lexer already tokenizes them
+    // as NULL_LITERAL/BOOLEAN, dedicated token types the parser turns
+    // straight into literal AST nodes, never an identifier lookup that would
+    // reach this environment -- so a binding here is never read by normal
+    // script code. It used to exist anyway, which leaked as a real,
+    // non-configurable globalThis property under introspection
+    // (Object.getOwnPropertyDescriptors(globalThis), "null" in globalThis,
+    // etc.), which spec forbids (test262 ShadowRealm globalthis-config-
+    // only-properties.js).
+
     if (ctx.get_global_object()) {
         ctx.get_lexical_environment()->create_binding("globalThis", Value(ctx.get_global_object()), true, true, false);
         ctx.get_lexical_environment()->create_binding("global", Value(ctx.get_global_object()), true);
@@ -924,9 +933,8 @@ void register_global_builtins(Context& ctx) {
 
         ctx.get_lexical_environment()->create_binding("$262", Value(test262_host.release()), true);
     }
-    ctx.get_lexical_environment()->create_binding("true", Value(true), false, false);
-    ctx.get_lexical_environment()->create_binding("false", Value(false), false, false);
-    
+    // true/false: see the comment at the "undefined" binding above.
+
     ctx.get_lexical_environment()->create_binding("NaN", Value::nan(), false, false, false);
     ctx.get_lexical_environment()->create_binding("Infinity", Value::positive_infinity(), false, false, false);
 

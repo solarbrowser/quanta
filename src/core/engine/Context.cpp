@@ -624,6 +624,17 @@ void Context::throw_type_error_as(Context& realm, const std::string& message) {
     throw_exception(exc, true);
 }
 
+void Context::throw_syntax_error_as(Context& realm, const std::string& message) {
+    if (&realm == this) {
+        throw_syntax_error(message);
+        return;
+    }
+    realm.throw_syntax_error(message);
+    Value exc = realm.get_exception();
+    realm.clear_exception();
+    throw_exception(exc, true);
+}
+
 void Context::throw_reference_error(const std::string& message) {
     auto error = Error::create_reference_error(message);
     error->generate_stack_trace();
