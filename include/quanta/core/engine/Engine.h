@@ -172,6 +172,32 @@ public:
         return nullptr;
     }
 
+    // Iterator Helper result objects' own [[Prototype]] is NOT %Iterator.prototype%
+    // (what find_realm_owning_object(obj, "Iterator") would check, via "Iterator"'s
+    // own exposed .prototype property) -- it's Iterator::s_iterator_prototype_,
+    // a separate object that register_iterator_helpers installs map/filter/take/
+    // drop/etc. directly onto, which array/string/map/set iterators (and every
+    // Iterator Helper's own next()-result) reach before ever reaching %Iterator.
+    // prototype%. Confirmed empirically: [].values().drop(0)'s own [[Prototype]]
+    // is NOT Iterator.prototype (a distinct, one-level-further-up object).
+    // Each realm's own instance is retrievable via its "@@IteratorPrototype"
+    // context binding (Iterator::setup_iterator_prototype's own doc comment).
+    static Object* get_realm_iterator_helper_prototype(Context* realm) {
+        if (!realm) return nullptr;
+        Value v = realm->get_binding("@@IteratorPrototype");
+        return v.is_object() ? v.as_object() : nullptr;
+    }
+    static Context* find_realm_owning_iterator_helper(Object* obj) {
+        if (!obj) return nullptr;
+        Object* proto = obj->get_prototype();
+        if (!proto) return nullptr;
+        for (Engine* e : all_engines()) {
+            Context* gctx = e->get_global_context();
+            if (get_realm_iterator_helper_prototype(gctx) == proto) return gctx;
+        }
+        return nullptr;
+    }
+
     // A just-created, not-yet-escaped object/array literal (ObjectFactory::
     // create_object()/create_array()) was stamped with a thread_local "last
     // realm set up" default prototype -- correct for the single/no-realm

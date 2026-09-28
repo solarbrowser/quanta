@@ -77,8 +77,9 @@ static void iterator_helper_close(Context& ctx, const Value& iter_val) {
     }
 }
 
-static Object* make_iter_result(const Value& value, bool done) {
+static Object* make_iter_result(const Value& value, bool done, Context* realm_hint = nullptr) {
     auto result = ObjectFactory::create_object();
+    Engine::fixup_new_object_realm(result.get(), realm_hint);
     result->set_property("value", done ? Value() : value);
     result->set_property("done", Value(done));
     return result.release();
@@ -111,7 +112,11 @@ static Object* create_iterator_helper_base(Object* iterator_proto, const Value& 
                     self->set_internal_slot("__ih_iter__", Value());
                 }
             }
-            return Value(make_iter_result(Value(), true));
+            // self's own [[Prototype]] is this realm's %IteratorHelperPrototype%
+            // (create_iterator_helper_base's own iterator_proto argument), which
+            // find_realm_owning_iterator_helper identity-matches back to the
+            // owning realm -- see its own doc comment in Engine.h.
+            return Value(make_iter_result(Value(), true, self ? Engine::find_realm_owning_iterator_helper(self) : nullptr));
         }, 0);
     helper->set_property("return", Value(return_fn.release()));
 
@@ -130,7 +135,7 @@ static void set_guarded_next(Object* helper, std::unique_ptr<Object> actual_next
             // If __ih_iter__ was cleared (exhausted or closed), report done immediately.
             Value ih_iter = self->get_internal_slot("__ih_iter__");
             if (!ih_iter.is_object() && !ih_iter.is_function())
-                return Value(make_iter_result(Value(), true));
+                return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
             if (self->get_internal_slot("__ih_running__").to_boolean()) {
                 ctx.throw_type_error("Iterator helper is already running");
                 return Value();
@@ -158,13 +163,20 @@ static void iterator_zip_close_all(Context& ctx, Object* iters_arr, Object* aliv
 static Value iterator_zip_step(Context& ctx, std::span<const Value>, Value receiver) {
     Object* self = receiver.as_object_or_null();
     if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+    // This is a plain function pointer shared across every realm's own zip
+    // helpers (no per-realm closure to capture a home_ctx in), so the realm
+    // is recovered from the helper object itself: its own [[Prototype]] is
+    // helper_proto_ptr, this registration's own %IteratorHelperPrototype% (see
+    // where it's set, below), which find_realm_owning_iterator_helper
+    // identity-matches back to the right realm.
+    Context* realm_hint = Engine::find_realm_owning_iterator_helper(self);
     // GeneratorValidate runs before the completed-state check: a reentrant call
     // while executing is a TypeError even if the generator was just completed.
     if (self->get_internal_slot("__iz_running__").to_boolean()) {
         ctx.throw_type_error("Iterator.zip helper is already running");
         return Value();
     }
-    if (self->get_internal_slot("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true));
+    if (self->get_internal_slot("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true, realm_hint));
     self->set_internal_slot("__iz_running__", Value(true));
     self->set_internal_slot("__iz_started__", Value(true));
 
@@ -188,13 +200,14 @@ static Value iterator_zip_step(Context& ctx, std::span<const Value>, Value recei
     auto finish_done = [&]() -> Value {
         self->set_internal_slot("__iz_done__", Value(true));
         self->set_internal_slot("__iz_running__", Value(false));
-        return Value(make_iter_result(Value(), true));
+        return Value(make_iter_result(Value(), true, realm_hint));
     };
 
     if (count == 0) return finish_done();
 
     auto results = keyed ? ObjectFactory::create_object() : ObjectFactory::create_array();
     if (keyed) results->initialize_prototype(nullptr);
+    else Engine::fixup_new_array_realm(results.get(), realm_hint);
 
     for (uint32_t i = 0; i < count; i++) {
         std::string out_key = keyed ? keys_arr->get_property(std::to_string(i)).to_string() : std::to_string(i);
@@ -216,7 +229,7 @@ static Value iterator_zip_step(Context& ctx, std::span<const Value>, Value recei
                 self->set_internal_slot("__iz_done__", Value(true));
                 iterator_zip_close_all(ctx, iters_arr, alive_arr, count);
                 self->set_internal_slot("__iz_running__", Value(false));
-                return Value(make_iter_result(Value(), true));
+                return Value(make_iter_result(Value(), true, realm_hint));
             } else if (mode == "strict") {
                 if (i != 0) {
                     ctx.throw_type_error("Iterator.zip: iterables are not the same length (strict mode)");
@@ -256,12 +269,13 @@ static Value iterator_zip_step(Context& ctx, std::span<const Value>, Value recei
 
     if (!keyed) results->set_length(count);
     self->set_internal_slot("__iz_running__", Value(false));
-    return Value(make_iter_result(Value(results.release()), false));
+    return Value(make_iter_result(Value(results.release()), false, realm_hint));
 }
 
 static Value iterator_zip_return(Context& ctx, std::span<const Value>, Value receiver) {
     Object* self = receiver.as_object_or_null();
-    if (!self) return Value(make_iter_result(Value(), true));
+    if (!self) return Value(make_iter_result(Value(), true, nullptr));
+    Context* realm_hint = Engine::find_realm_owning_iterator_helper(self);
     // A reentrant return() while the helper is mid-call (e.g. from an inner
     // iterator's own return) sees the generator in the executing state.
     if (self->get_internal_slot("__iz_running__").to_boolean()) {
@@ -282,10 +296,17 @@ static Value iterator_zip_return(Context& ctx, std::span<const Value>, Value rec
         if (started) self->set_internal_slot("__iz_running__", Value(false));
         if (ctx.has_exception()) return Value();
     }
-    return Value(make_iter_result(Value(), true));
+    return Value(make_iter_result(Value(), true, realm_hint));
 }
 
 void register_iterator_helpers(Context& ctx) {
+    // This realm, captured once at registration time -- see Engine::fixup_
+    // new_object_realm's own doc comment. Threaded through every iterator
+    // helper's own closures below (not the ambient per-call ctx, which is
+    // the CALLING realm, not necessarily this method's own -- an iterator
+    // helper method is reached via inheritance from whatever realm made the
+    // iterable, and called from wherever script holds a reference to it).
+    Context* home_ctx = &ctx;
     // Add ES2025 Iterator Helpers to %IteratorPrototype%
     if (Iterator::s_iterator_prototype_) {
         Object* iter_proto_obj = Iterator::s_iterator_prototype_;
@@ -320,11 +341,11 @@ void register_iterator_helpers(Context& ctx) {
 
         (void)call_iter_next;
         auto iter_toArray = ObjectFactory::create_native_function("toArray",
-            [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
                 (void)args; Object* it = receiver.as_object_or_null(); if (!it) return Value();
                 Value next_method = it->get_property("next");
                 if (ctx.has_exception()) return Value();
-                auto a = ObjectFactory::create_array(); uint32_t i=0;
+                auto a = ObjectFactory::create_array(); Engine::fixup_new_array_realm(a.get(), home_ctx); uint32_t i=0;
                 while(true){auto[v,d]=iterator_helper_step(ctx,Value(it),next_method); if(ctx.has_exception())return Value(); if(d)break; a->set_property(std::to_string(i++),v);}
                 a->set_length(i); return Value(a.release());
             },0);
@@ -443,12 +464,12 @@ void register_iterator_helpers(Context& ctx) {
 
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
 
                         Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
                         self->set_internal_slot("__ih_counter__", Value(counter + 1));
                         if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
-                        return Value(make_iter_result(mapped, false));
+                        return Value(make_iter_result(mapped, false, Engine::find_realm_owning_iterator_helper(self)));
                     }, 0);
                 set_guarded_next(helper, std::move(next_fn));
                 return Value(helper);
@@ -482,12 +503,12 @@ void register_iterator_helpers(Context& ctx) {
                         while (true) {
                             auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                             if (ctx.has_exception()) return Value();
-                            if (done) return Value(make_iter_result(Value(), true));
+                            if (done) return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                             Value keep = pred_val.as_function()->call(ctx, {val, Value(counter)}, Value());
                             counter += 1;
                             self->set_internal_slot("__ih_counter__", Value(counter));
                             if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
-                            if (keep.to_boolean()) return Value(make_iter_result(val, false));
+                            if (keep.to_boolean()) return Value(make_iter_result(val, false, Engine::find_realm_owning_iterator_helper(self)));
                         }
                     }, 0);
                 set_guarded_next(helper, std::move(next_fn));
@@ -515,13 +536,13 @@ void register_iterator_helpers(Context& ctx) {
                         Object* self = receiver.as_object_or_null();
                         Value iter_val = self->get_internal_slot("__ih_iter__");
                         double remaining = self->get_internal_slot("__ih_remaining__").to_number();
-                        if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
                         self->set_internal_slot("__ih_remaining__", Value(remaining - 1));
                         Value next_method = self->get_internal_slot("__ih_next__");
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
-                        return Value(make_iter_result(val, false));
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
+                        return Value(make_iter_result(val, false, Engine::find_realm_owning_iterator_helper(self)));
                     }, 0);
                 set_guarded_next(helper, std::move(next_fn));
                 return Value(helper);
@@ -555,12 +576,12 @@ void register_iterator_helpers(Context& ctx) {
                             remaining -= 1;
                             self->set_internal_slot("__ih_remaining__", Value(remaining));
                             if (ctx.has_exception()) return Value();
-                            if (done) return Value(make_iter_result(Value(), true));
+                            if (done) return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                         }
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
-                        return Value(make_iter_result(val, false));
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
+                        return Value(make_iter_result(val, false, Engine::find_realm_owning_iterator_helper(self)));
                     }, 0);
                 set_guarded_next(helper, std::move(next_fn));
                 return Value(helper);
@@ -571,6 +592,18 @@ void register_iterator_helpers(Context& ctx) {
 }
 
 void register_iterator_constructor(Context& ctx) {
+    // Same reasoning as register_iterator_helpers's own home_ctx.
+    Context* home_ctx = &ctx;
+    // This realm's own %IteratorHelperPrototype% (Iterator::s_iterator_prototype_,
+    // already set up by Iterator::setup_iterator_prototype + register_iterator_helpers
+    // earlier in this same realm's sequential bootstrap), captured now rather than
+    // read live from the thread_local at call time -- reading it live would pick up
+    // whichever realm ran its own setup_iterator_prototype most recently, the same
+    // last-realm-wins hazard fixed everywhere else this session. Used by Iterator.zip/
+    // zipKeyed/concat below, which build their own helper object directly instead of
+    // going through create_iterator_helper_base (which already takes an explicit
+    // iterator_proto argument from its caller).
+    Object* helper_proto_ptr = Iterator::s_iterator_prototype_;
     auto iterator_constructor = ObjectFactory::create_native_constructor_with_new_target("Iterator",
         [](Context& ctx, std::span<const Value> args, Value receiver, bool is_construct, Value new_target) -> Value {
             (void)args;
@@ -605,9 +638,10 @@ void register_iterator_constructor(Context& ctx) {
     auto iterator_prototype = ObjectFactory::create_object();
 
     auto iterator_next = ObjectFactory::create_native_function("next",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
-            (void)ctx; (void)args;
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+            (void)args;
             auto result = ObjectFactory::create_object();
+            Engine::fixup_new_object_realm(result.get(), home_ctx);
             result->set_property("done", Value(true));
             result->set_property("value", Value());
             return Value(result.release());
@@ -616,13 +650,14 @@ void register_iterator_constructor(Context& ctx) {
 
     // toArray
     auto iter_toArray_fn = ObjectFactory::create_native_function("toArray",
-        [](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [home_ctx](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             (void)args;
             Object* iter = receiver.as_object_or_null();
             if (!iter) { ctx.throw_type_error("toArray on non-object"); return Value(); }
             Value next_method = iter->get_property("next");
             if (ctx.has_exception()) return Value();
             auto arr = ObjectFactory::create_array();
+            Engine::fixup_new_array_realm(arr.get(), home_ctx);
             uint32_t idx = 0;
             while (true) {
                 auto [val, done] = iterator_helper_step(ctx, Value(iter), next_method);
@@ -806,12 +841,12 @@ void register_iterator_constructor(Context& ctx) {
 
                     auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                     if (ctx.has_exception()) return Value();
-                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
 
                     Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
                     self->set_internal_slot("__ih_counter__", Value(counter + 1));
                     if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
-                    return Value(make_iter_result(mapped, false));
+                    return Value(make_iter_result(mapped, false, Engine::find_realm_owning_iterator_helper(self)));
                 }, 0);
             set_guarded_next(helper, std::move(next_fn));
             return Value(helper);
@@ -850,12 +885,12 @@ void register_iterator_constructor(Context& ctx) {
                     while (true) {
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
                         Value keep = pred_val.as_function()->call(ctx, {val, Value(counter)}, Value());
                         counter += 1;
                         self->set_internal_slot("__ih_counter__", Value(counter));
                         if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
-                        if (keep.to_boolean()) return Value(make_iter_result(val, false));
+                        if (keep.to_boolean()) return Value(make_iter_result(val, false, Engine::find_realm_owning_iterator_helper(self)));
                     }
                 }, 0);
             set_guarded_next(helper, std::move(next_fn));
@@ -896,13 +931,13 @@ void register_iterator_constructor(Context& ctx) {
                     Object* self = receiver.as_object_or_null();
                     Value iter_val = self->get_internal_slot("__ih_iter__");
                     double remaining = self->get_internal_slot("__ih_remaining__").to_number();
-                    if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                    if (remaining <= 0) { iterator_helper_close(ctx, iter_val); self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
                     self->set_internal_slot("__ih_remaining__", Value(remaining - 1));
                     Value next_method = self->get_internal_slot("__ih_next__");
                     auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                     if (ctx.has_exception()) return Value();
-                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
-                    return Value(make_iter_result(val, false));
+                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
+                    return Value(make_iter_result(val, false, Engine::find_realm_owning_iterator_helper(self)));
                 }, 0);
             set_guarded_next(helper, std::move(next_fn));
             return Value(helper);
@@ -949,12 +984,12 @@ void register_iterator_constructor(Context& ctx) {
                         remaining -= 1;
                         self->set_internal_slot("__ih_remaining__", Value(remaining));
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
                     }
                     auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
                     if (ctx.has_exception()) return Value();
-                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
-                    return Value(make_iter_result(val, false));
+                    if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
+                    return Value(make_iter_result(val, false, Engine::find_realm_owning_iterator_helper(self)));
                 }, 0);
             set_guarded_next(helper, std::move(next_fn));
             return Value(helper);
@@ -997,7 +1032,7 @@ void register_iterator_constructor(Context& ctx) {
                             Value inner_next = self->get_internal_slot("__ih_inner_next__");
                             auto [ival, idone] = iterator_helper_step(ctx, inner_val, inner_next);
                             if (ctx.has_exception()) return Value();
-                            if (!idone) return Value(make_iter_result(ival, false));
+                            if (!idone) return Value(make_iter_result(ival, false, Engine::find_realm_owning_iterator_helper(self)));
                             self->set_internal_slot("__ih_inner__", Value());
                             self->set_internal_slot("__ih_inner_next__", Value());
                         }
@@ -1005,7 +1040,7 @@ void register_iterator_constructor(Context& ctx) {
                         double counter = self->get_internal_slot("__ih_counter__").to_number();
                         auto [val, done] = iterator_helper_step(ctx, iter_val, outer_next);
                         if (ctx.has_exception()) return Value();
-                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true)); }
+                        if (done) { self->set_internal_slot("__ih_iter__", Value()); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
 
                         Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
                         self->set_internal_slot("__ih_counter__", Value(counter + 1));
@@ -1110,11 +1145,12 @@ void register_iterator_constructor(Context& ctx) {
                 [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
                     Object* self = receiver.as_object_or_null();
                     Value iter_val = self->get_internal_slot("__ih_iter__");
-                    if (!iter_val.is_object()) return Value(make_iter_result(Value(), true));
+                    if (!iter_val.is_object()) return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                     size_t size = static_cast<size_t>(
                         self->get_internal_slot("__ih_size__").to_number());
                     Value next_method = self->get_internal_slot("__ih_next__");
                     auto chunk = ObjectFactory::create_array(0);
+                    Engine::fixup_new_array_realm(chunk.get(), Engine::find_realm_owning_iterator_helper(self));
                     uint32_t count = 0;
                     for (size_t i = 0; i < size; ++i) {
                         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
@@ -1123,13 +1159,13 @@ void register_iterator_constructor(Context& ctx) {
                             self->set_internal_slot("__ih_iter__", Value());
                             // A partial chunk is still a chunk; only an
                             // empty one means the iterator is spent.
-                            if (count == 0) return Value(make_iter_result(Value(), true));
+                            if (count == 0) return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                             break;
                         }
                         chunk->set_element(count++, val);
                     }
                     chunk->set_property("length", Value(static_cast<double>(count)));
-                    return Value(make_iter_result(Value(chunk.release()), false));
+                    return Value(make_iter_result(Value(chunk.release()), false, Engine::find_realm_owning_iterator_helper(self)));
                 }, 0);
             set_guarded_next(helper, std::move(next_fn));
             return Value(helper);
@@ -1171,12 +1207,12 @@ void register_iterator_constructor(Context& ctx) {
                 [](Context& ctx, std::span<const Value>, Value receiver) -> Value {
                     Object* self = receiver.as_object_or_null();
                     Value iter_val = self->get_internal_slot("__ih_iter__");
-                    if (!iter_val.is_object()) return Value(make_iter_result(Value(), true));
+                    if (!iter_val.is_object()) return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                     uint32_t size = static_cast<uint32_t>(
                         self->get_internal_slot("__ih_size__").to_number());
                     Value next_method = self->get_internal_slot("__ih_next__");
                     Object* buffer = self->get_internal_slot("__ih_window__").as_object_or_null();
-                    if (!buffer) return Value(make_iter_result(Value(), true));
+                    if (!buffer) return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
 
                     uint32_t held = static_cast<uint32_t>(
                         buffer->get_property("length").to_number());
@@ -1194,7 +1230,7 @@ void register_iterator_constructor(Context& ctx) {
                         if (done) {
                             self->set_internal_slot("__ih_iter__", Value());
                             if (!allow_partial || held == 0) {
-                                return Value(make_iter_result(Value(), true));
+                                return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                             }
                             break;
                         }
@@ -1203,9 +1239,10 @@ void register_iterator_constructor(Context& ctx) {
                     }
 
                     auto window = ObjectFactory::create_array(0);
+                    Engine::fixup_new_array_realm(window.get(), Engine::find_realm_owning_iterator_helper(self));
                     for (uint32_t i = 0; i < held; ++i) window->set_element(i, buffer->get_element(i));
                     window->set_property("length", Value(static_cast<double>(held)));
-                    return Value(make_iter_result(Value(window.release()), false));
+                    return Value(make_iter_result(Value(window.release()), false, Engine::find_realm_owning_iterator_helper(self)));
                 }, 0);
             set_guarded_next(helper, std::move(next_fn));
             return Value(helper);
@@ -1426,12 +1463,12 @@ void register_iterator_constructor(Context& ctx) {
                     return Value();
                 }
                 Value iter = self->get_internal_slot("__wfvi_iter__");
-                if (!iter.is_object() && !iter.is_function()) return Value(make_iter_result(Value(), true));
+                if (!iter.is_object() && !iter.is_function()) return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                 Object* iter_obj = iter.is_function() ? static_cast<Object*>(iter.as_function()) : iter.as_object();
                 Value ret_method = iter_obj->get_property("return");
                 if (ctx.has_exception()) return Value();
                 if (ret_method.is_undefined() || ret_method.is_null())
-                    return Value(make_iter_result(Value(), true));
+                    return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                 if (!ret_method.is_function()) { ctx.throw_type_error("return is not a function"); return Value(); }
                 return ret_method.as_function()->call(ctx, {}, iter);
             }, 0);
@@ -1556,7 +1593,7 @@ void register_iterator_constructor(Context& ctx) {
     // Static Iterator.concat(...items): lazily exhausts each item in turn; [Symbol.iterator] is
     // resolved eagerly per item but only called once that item is reached.
     auto iterator_concat = ObjectFactory::create_native_function("concat",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value { (void)iterator_proto_ptr;
+        [helper_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
             auto items = ObjectFactory::create_array();
             auto methods = ObjectFactory::create_array();
@@ -1576,7 +1613,14 @@ void register_iterator_constructor(Context& ctx) {
             methods->set_property("length", Value((double)n));
 
             auto helper = ObjectFactory::create_object();
-            helper->initialize_prototype(Iterator::s_iterator_prototype_);
+            // helper_proto_ptr -- the real, live %IteratorHelperPrototype% (register_
+            // iterator_helpers installs map/filter/take/drop/etc. directly on this
+            // realm's own Iterator::s_iterator_prototype_, and array/string/map/set
+            // iterators reach it before ever reaching iterator_proto_ptr,
+            // register_iterator_constructor's own separate, largely shadowed copy of
+            // the same methods -- confirmed empirically: [].values().drop(0)'s own
+            // [[Prototype]] is s_iterator_prototype_, not iterator_proto_ptr).
+            helper->initialize_prototype(helper_proto_ptr);
             helper->set_internal_slot("__ic_items__", Value(items.release()));
             helper->set_internal_slot("__ic_methods__", Value(methods.release()));
             helper->set_internal_slot("__ic_index__", Value(0.0));
@@ -1599,14 +1643,14 @@ void register_iterator_constructor(Context& ctx) {
                             Value inner_next = self->get_internal_slot("__ic_inner_next__");
                             auto [val, done] = iterator_helper_step(ctx, inner_val, inner_next);
                             if (ctx.has_exception()) { self->set_internal_slot("__ic_running__", Value(false)); return Value(); }
-                            if (!done) { self->set_internal_slot("__ic_running__", Value(false)); return Value(make_iter_result(val, false)); }
+                            if (!done) { self->set_internal_slot("__ic_running__", Value(false)); return Value(make_iter_result(val, false, Engine::find_realm_owning_iterator_helper(self))); }
                             self->set_internal_slot("__ic_inner__", Value());
                             self->set_internal_slot("__ic_inner_next__", Value());
                         }
                         double index = self->get_internal_slot("__ic_index__").to_number();
                         Object* items_obj = self->get_internal_slot("__ic_items__").as_object();
                         double total = items_obj->get_property("length").to_number();
-                        if (index >= total) { self->set_internal_slot("__ic_running__", Value(false)); return Value(make_iter_result(Value(), true)); }
+                        if (index >= total) { self->set_internal_slot("__ic_running__", Value(false)); return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self))); }
                         Value item = items_obj->get_property(std::to_string((uint32_t)index));
                         Object* methods_obj = self->get_internal_slot("__ic_methods__").as_object();
                         Value method = methods_obj->get_property(std::to_string((uint32_t)index));
@@ -1650,7 +1694,7 @@ void register_iterator_constructor(Context& ctx) {
                         self->set_internal_slot("__ic_index__", Value(total));
                         if (ctx.has_exception()) return Value();
                     }
-                    return Value(make_iter_result(Value(), true));
+                    return Value(make_iter_result(Value(), true, Engine::find_realm_owning_iterator_helper(self)));
                 }, 0);
             helper->set_property("return", Value(return_fn.release()));
 
@@ -1662,7 +1706,7 @@ void register_iterator_constructor(Context& ctx) {
     // stepping is lazy. "padding" (mode "longest") is read once into a fixed per-column array,
     // not re-read per row.
     auto iterator_zip = ObjectFactory::create_native_function("zip",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [helper_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
             Value iterables_val = args.empty() ? Value() : args[0];
             if (!iterables_val.is_object() && !iterables_val.is_function()) { ctx.throw_type_error("Iterator.zip: iterables must be an object"); return Value(); }
@@ -1788,7 +1832,8 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             auto helper = ObjectFactory::create_object();
-            helper->initialize_prototype(Iterator::s_iterator_prototype_);
+            // helper_proto_ptr -- see Iterator.concat's identical comment above.
+            helper->initialize_prototype(helper_proto_ptr);
             auto iters_arr = ObjectFactory::create_array();
             auto nexts_arr = ObjectFactory::create_array();
             auto padding_arr = ObjectFactory::create_array();
@@ -1825,7 +1870,7 @@ void register_iterator_constructor(Context& ctx) {
     // Static Iterator.zipKeyed: like zip, but columns come from iterables' own enumerable keys
     // and each row is a null-prototype object keyed the same way.
     auto iterator_zipKeyed = ObjectFactory::create_native_function("zipKeyed",
-        [iterator_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
+        [helper_proto_ptr](Context& ctx, std::span<const Value> args, Value receiver) -> Value {
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
             Value iterables_val = args.empty() ? Value() : args[0];
             if (!iterables_val.is_object() && !iterables_val.is_function()) { ctx.throw_type_error("Iterator.zipKeyed: iterables must be an object"); return Value(); }
@@ -1932,7 +1977,8 @@ void register_iterator_constructor(Context& ctx) {
             }
 
             auto helper = ObjectFactory::create_object();
-            helper->initialize_prototype(Iterator::s_iterator_prototype_);
+            // helper_proto_ptr -- see Iterator.concat's identical comment above.
+            helper->initialize_prototype(helper_proto_ptr);
             auto iters_arr = ObjectFactory::create_array();
             auto nexts_arr = ObjectFactory::create_array();
             auto padding_arr = ObjectFactory::create_array();
