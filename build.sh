@@ -302,7 +302,7 @@ CXXFLAGS=(
     -O3
     -march=native
     -mtune=native
-    -DQUANTA_VERSION=\"0.9.3\"
+    -DQUANTA_VERSION=\"1.0.0\"
     -DPROMISE_STABILITY_FIXED
     -DNATIVE_BUILD
     -DUTF8PROC_STATIC

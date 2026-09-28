@@ -1820,7 +1820,7 @@ void Context::register_typed_array_constructors() {
 }
 
 void Context::load_bootstrap() {
-    // Harness injection removed - kangax-es6 tests are self-contained
+    // legacy
 }
 
 }

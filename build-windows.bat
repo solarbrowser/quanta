@@ -56,7 +56,7 @@ REM The stack canary is a mitigation for overflowing a stack buffer, and the
 REM interpreter and runtime have none to overflow. It is kept where bytes the
 REM engine did not produce are first handled: the lexer and parser, which get
 REM it back per-file below. Same split the Makefile and build.sh make.
-set "CXXFLAGS=-fno-stack-protector -std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.9.3\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+set "CXXFLAGS=-fno-stack-protector -std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"1.0.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -DNDEBUG -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
 set "HARDEN=-fstack-protector-strong"
 set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc -Ithird_party/minicoro -Ithird_party/mimalloc/include"
 REM advapi32/bcrypt/psapi/user32 are mimalloc's, and are the list its own
