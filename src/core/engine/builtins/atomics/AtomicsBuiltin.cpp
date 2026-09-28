@@ -23,6 +23,7 @@
 #include <limits>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 namespace Quanta {
 
@@ -171,6 +172,30 @@ struct PendingWaiter {
 std::vector<PendingWaiter>& pending_waiters() {
     static thread_local std::vector<PendingWaiter> registry;
     return registry;
+}
+
+// The process-wide counterpart pending_waiters() itself can't be: a notify()
+// running on a DIFFERENT agent than the one a waitAsync promise belongs to
+// can never touch that promise directly (GC cell, owned by its own agent's
+// heap), so it has no way to know synchronously whether there's really
+// anyone to wake, or to hand off a wake once it decides there is. counts
+// tracks "how many pending waitAsync waiters exist at this address, in any
+// agent" (kept in sync with pending_waiters() by every agent that adds or
+// removes an entry there) so notify() can compute its return value
+// correctly without owning the entries; budget is "how many wakes have been
+// promised at this address but not yet claimed", incremented by notify()
+// once it decides more waiters exist elsewhere than it could satisfy
+// locally, and decremented by whichever agent's own polling (see
+// atomics_wait_async's own poll_fn) claims one.
+struct SharedWaiterState {
+    std::mutex mu;
+    std::unordered_map<const void*, int> counts;
+    std::unordered_map<const void*, int> budget;
+};
+
+SharedWaiterState& shared_waiter_state() {
+    static SharedWaiterState s;
+    return s;
 }
 
 // Blocked Atomics.wait calls, process-wide: a notify in any agent must wake
@@ -448,8 +473,25 @@ Value atomics_notify(Context& ctx, std::span<const Value> args, Value receiver) 
             it->promise->fulfill(Value(std::string("ok")));
             it = reg.erase(it);
             woken += 1.0;
+            std::lock_guard<std::mutex> lock(shared_waiter_state().mu);
+            auto c = shared_waiter_state().counts.find(addr);
+            if (c != shared_waiter_state().counts.end() && c->second > 0) c->second--;
         } else {
             ++it;
+        }
+    }
+    // Same-agent waitAsync waiters are gone (just above); any still left at
+    // this address belong to other agents, whose own Promise this thread
+    // may never touch directly (see shared_waiter_state()'s own doc
+    // comment) -- leave a claim for their own polling to find instead.
+    if (woken < count) {
+        std::lock_guard<std::mutex> lock(shared_waiter_state().mu);
+        auto c = shared_waiter_state().counts.find(addr);
+        int available = (c != shared_waiter_state().counts.end()) ? c->second : 0;
+        double extra = std::min(count - woken, static_cast<double>(available));
+        if (extra > 0) {
+            shared_waiter_state().budget[addr] += static_cast<int>(extra);
+            woken += extra;
         }
     }
     return Value(woken);
@@ -497,30 +539,67 @@ Value atomics_wait_async(Context& ctx, std::span<const Value> args, Value receiv
     auto promise_obj = ObjectFactory::create_promise(&ctx);
     Promise* promise = static_cast<Promise*>(promise_obj.release());
     pending_waiters().push_back({addr, promise});
+    {
+        std::lock_guard<std::mutex> lock(shared_waiter_state().mu);
+        shared_waiter_state().counts[addr]++;
+    }
     result->set_property("async", Value(true));
     result->set_property("value", Value(promise));
 
-    // A finite timeout needs its own real timer: nothing else ever resolves
-    // this promise except a same-agent notify() (pending_waiters() is
-    // thread_local -- see its own doc comment), so without this a waiter
-    // that's never notified sits pending forever instead of settling to
-    // "timed-out" once the deadline passes.
-    if (!std::isinf(timeout_ms)) {
-        auto timeout_fn = ObjectFactory::create_native_function("",
-            [promise](Context& ctx, std::span<const Value>, Value) -> Value {
-                auto& reg = pending_waiters();
-                for (auto it = reg.begin(); it != reg.end(); ++it) {
-                    if (it->promise == promise) {
-                        reg.erase(it);
-                        promise->fulfill(Value(std::string("timed-out")));
-                        break;
-                    }
+    // Nothing else ever resolves this promise except notify(): a same-agent
+    // one settles it directly (see atomics_notify's own pending_waiters
+    // loop); a cross-agent one can only leave a claim in shared_waiter_
+    // state().budget (a different agent's Promise is a GC cell this thread
+    // may never touch -- see that struct's own doc comment), so this
+    // agent's own thread has to notice it. A repeating short poll does that
+    // -- and also handles the timeout, since without ever being notified
+    // this waiter would otherwise sit pending forever. Scheduled
+    // unconditionally, even for an infinite timeout: with no timer at all,
+    // run_event_loop_to_completion's own loop (has_pending_timers() ||
+    // has_pending_microtasks()) would see neither, return immediately, and
+    // let this agent's underlying OS thread exit out from under a promise
+    // that's still supposedly pending.
+    auto real_deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double, std::milli>(timeout_ms));
+    bool finite = !std::isinf(timeout_ms);
+    auto timer_id = std::make_shared<int64_t>(-1);
+    auto poll_fn = ObjectFactory::create_native_function("",
+        [addr, promise, real_deadline, finite, timer_id](Context& ctx, std::span<const Value>, Value) -> Value {
+            auto& reg = pending_waiters();
+            auto it = std::find_if(reg.begin(), reg.end(),
+                [&](const PendingWaiter& w) { return w.promise == promise; });
+            // Already resolved by a same-agent notify() between polls.
+            if (it == reg.end()) { EventLoop::instance().clear_timer(*timer_id); return Value(); }
+
+            bool woken = false;
+            {
+                std::lock_guard<std::mutex> lock(shared_waiter_state().mu);
+                auto b = shared_waiter_state().budget.find(addr);
+                if (b != shared_waiter_state().budget.end() && b->second > 0) {
+                    b->second--;
+                    woken = true;
                 }
-                (void)ctx;
-                return Value();
-            }, 0);
-        EventLoop::instance().schedule_timer(ctx, timeout_fn.release(), {}, timeout_ms, false);
-    }
+                if (woken || (finite && std::chrono::steady_clock::now() >= real_deadline)) {
+                    auto c = shared_waiter_state().counts.find(addr);
+                    if (c != shared_waiter_state().counts.end() && c->second > 0) c->second--;
+                }
+            }
+            if (woken) {
+                reg.erase(it);
+                EventLoop::instance().clear_timer(*timer_id);
+                promise->fulfill(Value(std::string("ok")));
+            } else if (finite && std::chrono::steady_clock::now() >= real_deadline) {
+                reg.erase(it);
+                EventLoop::instance().clear_timer(*timer_id);
+                promise->fulfill(Value(std::string("timed-out")));
+            }
+            // Otherwise: not yet due, not yet claimed -- the repeating timer
+            // itself schedules the next poll, nothing further to do here.
+            (void)ctx;
+            return Value();
+        }, 0);
+    *timer_id = EventLoop::instance().schedule_timer(ctx, poll_fn.release(), {}, 5.0, true);
     return Value(result.release());
 }
 
