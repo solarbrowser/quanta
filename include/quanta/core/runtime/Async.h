@@ -363,6 +363,23 @@ private:
     std::unordered_set<int64_t> cancelled_ids_;
     int64_t next_timer_id_;
 
+    // The job queue is per-AGENT (thread), not per-realm (ECMA-262
+    // HostEnqueuePromiseJob) -- lives here, the one thing already shared
+    // across every realm on this thread, rather than on Context (which
+    // used to hold one queue per realm: a promise created in realm A had
+    // its reaction job queued on A's own Context, but only the actually-
+    // running script's own Context ever got drained, so a promise from a
+    // realm created via $262.createRealm() and chained from the driving
+    // realm's script silently never settled). keep_alive lists every cell
+    // a task's lambda captures: closure storage is invisible to the
+    // collector, the queue entry is its GC anchor (see gc_trace).
+    struct MicrotaskEntry {
+        std::function<void()> task;
+        std::vector<Value> keep_alive;
+    };
+    std::vector<MicrotaskEntry> microtask_queue_;
+    std::vector<MicrotaskEntry> draining_queue_;  // batch in flight (traced too)
+
     // Refcounts Context* held by pending timers/Promises so the collector's
     // reachability-based survivor prune (Collector.cpp) force-keeps one
     // still in use even if nothing else reaches it.
@@ -386,6 +403,12 @@ public:
 
     // Drives timers to exhaustion in real time. Returns false if the safety cap (wall-clock or iteration count) tripped first.
     bool run_pending_timers(Context& ctx);
+
+    // The single, shared job queue -- see microtask_queue_'s own doc comment.
+    void queue_microtask(std::function<void()> task, std::vector<Value> keep_alive);
+    void drain_microtasks();
+    bool has_pending_microtasks() const { return !microtask_queue_.empty(); }
+    void gc_trace(class Visitor& v) const;
 
     static EventLoop& instance();
 };

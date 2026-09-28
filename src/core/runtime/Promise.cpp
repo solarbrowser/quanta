@@ -278,9 +278,12 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
     Collector::write_barrier(this);
     mark_handled();
     Context* exec_ctx = get_exec_ctx(engine_, context_);
-    // Invoke handlers on the promise's creation context (closures need the right
-    // defining scope) but always schedule on the global queue -- the only one
-    // drain_microtasks() drains; queuing elsewhere silently drops the job.
+    // Invoke handlers on the promise's creation context (closures need the
+    // right defining scope). queue_microtask() forwards to EventLoop::
+    // instance(), a single queue shared by every realm on this thread, so
+    // which Context it's called through no longer matters for where the
+    // job ends up -- kept as its own variable for readability/symmetry
+    // with call_ctx, not because the two need to differ.
     Context* call_ctx = context_ ? context_ : exec_ctx;
     Context* queue_ctx = exec_ctx;
 
@@ -405,9 +408,10 @@ void Promise::execute_handlers() {
 
     PromiseState settled_state = state_;
     Value settled_value = value_;
-    // call_ctx (promise's creation context) invokes handlers so closures see live
-    // state; queue_ctx (always global -- the only queue drain_microtasks() drains)
-    // schedules the job, since queuing elsewhere silently drops it.
+    // call_ctx (promise's creation context) invokes handlers so closures see
+    // live state; queue_ctx schedules the job via queue_microtask(), which
+    // forwards to EventLoop::instance() (one queue shared by every realm on
+    // this thread) regardless of which Context it's called through.
     Context* call_ctx = context_;
     Context* queue_ctx = get_exec_ctx(engine_, context_);
     Promise* self = this;

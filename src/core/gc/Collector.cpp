@@ -987,6 +987,8 @@ void run_minor_collection() {
     String::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
     FunctionExecutable::gc_trace_roots(v);
+    // The shared job queue -- one instance for the whole thread, not per-engine.
+    EventLoop::instance().gc_trace(v);
     auto t2 = std::chrono::steady_clock::now();
 
     Collector::mark_step(std::chrono::microseconds(-1));
@@ -1123,6 +1125,8 @@ void scan_major_roots(MarkVisitor& v) {
     String::gc_trace_roots(v);
     trace_atomics_gc_roots(v);
     FunctionExecutable::gc_trace_roots(v);
+    // The shared job queue -- one instance for the whole thread, not per-engine.
+    EventLoop::instance().gc_trace(v);
 }
 
 thread_local std::chrono::steady_clock::time_point g_major_cycle_start;

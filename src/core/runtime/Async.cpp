@@ -1256,12 +1256,11 @@ bool is_thenable(const Value& value) {
 void call_thenable_job(Context* job_ctx, Function* then_fn, const Value& thenable,
                         const Value& resolve_arg, const Value& reject_arg, Promise* wrapper) {
     if (!job_ctx) return;
-    // Queue on the global context, not job_ctx, so this job's relative order against unrelated
-    // Promise chains (which always schedule on the global queue) matches real chronological
-    // enqueue order -- per-instance queues don't interleave across each other.
-    Context* queue_ctx = job_ctx->get_engine() && job_ctx->get_engine()->get_global_context()
-        ? job_ctx->get_engine()->get_global_context() : job_ctx;
-    queue_ctx->queue_microtask([job_ctx, then_fn, thenable, resolve_arg, reject_arg, wrapper]() {
+    // queue_microtask() forwards to EventLoop::instance() (one queue shared by
+    // every realm on this thread), so this job's relative order against
+    // unrelated Promise chains matches real chronological enqueue order
+    // regardless of which Context it's called through.
+    job_ctx->queue_microtask([job_ctx, then_fn, thenable, resolve_arg, reject_arg, wrapper]() {
         then_fn->call(*job_ctx, {resolve_arg, reject_arg}, thenable);
         if (job_ctx->has_exception()) {
             Value exc = job_ctx->get_exception();
@@ -1596,13 +1595,37 @@ bool EventLoop::run_pending_timers(Context& ctx) {
             }
         }
 
-        // Promise/queueMicrotask jobs queue onto the engine's global context (Promise.cpp's get_exec_ctx), not entry.call_ctx.
-        // Drain the global context here so jobs queued during this callback run before the next timer fires.
-        Engine* engine = entry.call_ctx->get_engine();
-        Context* drain_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : entry.call_ctx;
-        drain_ctx->drain_microtasks();
+        // Drain the shared job queue here so jobs queued during this callback run before the next timer fires.
+        drain_microtasks();
     }
     return true;
+}
+
+void EventLoop::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive) {
+    microtask_queue_.push_back({std::move(task), std::move(keep_alive)});
+}
+
+void EventLoop::drain_microtasks() {
+    // Loops until empty (a job can enqueue more). The 10s cap guards against a runaway microtask chain -- unrelated to setTimeout/setInterval, which run through this same EventLoop's timer heap instead.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!microtask_queue_.empty()) {
+        draining_queue_ = std::move(microtask_queue_);
+        microtask_queue_.clear();
+        for (auto& entry : draining_queue_) {
+            if (entry.task) entry.task();
+        }
+        draining_queue_.clear();
+        if (std::chrono::steady_clock::now() > deadline) break;
+    }
+}
+
+void EventLoop::gc_trace(Visitor& v) const {
+    for (const auto& entry : microtask_queue_) {
+        for (const auto& kept : entry.keep_alive) v.visit(kept);
+    }
+    for (const auto& entry : draining_queue_) {
+        for (const auto& kept : entry.keep_alive) v.visit(kept);
+    }
 }
 
 EventLoop& EventLoop::instance() {

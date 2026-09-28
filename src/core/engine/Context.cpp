@@ -51,7 +51,7 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Context) == 208);
+static_assert(sizeof(Context) == 160);
 static_assert(sizeof(Environment) == 216);
 #else
 static_assert(sizeof(Context) <= 896);
@@ -90,12 +90,6 @@ void Context::gc_trace(Visitor& v) const {
     v.visit(return_value_);
     v.visit(new_target_);
     v.visit(import_meta_);
-    for (const auto& entry : microtask_queue_) {
-        for (const auto& kept : entry.keep_alive) v.visit(kept);
-    }
-    for (const auto& entry : draining_queue_) {
-        for (const auto& kept : entry.keep_alive) v.visit(kept);
-    }
 }
 
 
@@ -706,21 +700,15 @@ Value Context::get_import_meta() {
 }
 
 void Context::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive) {
-    microtask_queue_.push_back({std::move(task), std::move(keep_alive)});
+    EventLoop::instance().queue_microtask(std::move(task), std::move(keep_alive));
 }
 
 void Context::drain_microtasks() {
-    // Loops until empty (a job can enqueue more). The 10s cap guards against a runaway microtask chain -- unrelated to setTimeout/setInterval, which run through EventLoop's timer heap instead.
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!microtask_queue_.empty()) {
-        draining_queue_ = std::move(microtask_queue_);
-        microtask_queue_.clear();
-        for (auto& entry : draining_queue_) {
-            if (entry.task) entry.task();
-        }
-        draining_queue_.clear();
-        if (std::chrono::steady_clock::now() > deadline) break;
-    }
+    EventLoop::instance().drain_microtasks();
+}
+
+bool Context::has_pending_microtasks() const {
+    return EventLoop::instance().has_pending_microtasks();
 }
 
 Object* Context::regexp_prototype() const {

@@ -161,15 +161,6 @@ private:
     // now a plain pointer copy.
     const std::string* current_filename_;
 
-    // Microtask queue for Promise/async (only used on global context).
-    // keep_alive lists every cell a task's lambda captures: closure storage
-    // is invisible to the collector, the queue entry is its GC anchor.
-    struct MicrotaskEntry {
-        std::function<void()> task;
-        std::vector<Value> keep_alive;
-    };
-    std::vector<MicrotaskEntry> microtask_queue_;
-    std::vector<MicrotaskEntry> draining_queue_;  // batch in flight (traced too)
     // Lazy: null unless a tree-walked (non-VM-compiled) function/generator/
     // async call with >=1 parameter actually sets a non-empty name set --
     // see set_eval_param_names()'s own empty-set guard below. VM-compiled
@@ -222,7 +213,7 @@ public:
     // any context that fails simply is not pooled.
     bool is_pristine() const {
         return !builtins_ && !loop_labels_ && !eval_param_names_ && !dispose_scope_stack_ &&
-               !owned_env_ && microtask_queue_.empty() && draining_queue_.empty();
+               !owned_env_;
     }
     // The fields a call can observe, back to what the constructor would have
     // produced. Mirrors Context(Engine*, Context*, Type::Function) exactly;
@@ -253,10 +244,17 @@ public:
 
     Engine* get_engine() const { return engine_; }
 
-    // Microtask queue (Promise async support)
+    // Microtask queue (Promise/async support): thin forwarders onto EventLoop::
+    // instance(), the single job queue shared by every realm on this thread
+    // (ECMA-262 HostEnqueuePromiseJob is per-agent, not per-realm) -- kept as
+    // Context methods so the existing ctx->queue_microtask(...)/drain_microtasks()
+    // call sites throughout Promise.cpp/Async.cpp/etc. don't all need to know
+    // about EventLoop directly. Declared here, defined in Context.cpp (which
+    // already includes Async.h); Context.h itself does not, to avoid a
+    // circular include.
     void queue_microtask(std::function<void()> task, std::vector<Value> keep_alive);
     void drain_microtasks();
-    bool has_pending_microtasks() const { return !microtask_queue_.empty(); }
+    bool has_pending_microtasks() const;
     bool is_in_param_eval() const { return in_param_eval_; }
     void set_in_param_eval(bool v) { in_param_eval_ = v; }
     bool is_direct_eval_call() const { return is_direct_eval_call_; }
