@@ -1127,7 +1127,17 @@ void register_global_builtins(Context& ctx) {
         using RealmFn = std::function<Value(Context&, std::span<const Value>, Value receiver)>;
         auto make_realm_fn = std::make_shared<RealmFn>();
         *make_realm_fn = [make_realm_fn](Context& caller_ctx, std::span<const Value>, Value receiver) -> Value {
-            Engine* new_engine = new Engine(); // intentionally leaked -- consistent with engine memory model
+            // Propagated so script running INSIDE the new realm (reached via
+            // its OWN native global eval -- new_global.eval, not the eval_fn
+            // wrapper below, which is a separate, simpler evaluate() path)
+            // sees its own native $262 too. Without this, expose_test262_
+            // globals defaulted to off for every sub-Engine, since nothing
+            // here turned it on specifically; confirmed via new_global.eval
+            // ("typeof $262"), which -- unlike the wrapper's own eval_fn
+            // below -- correctly reflects what actually got bound.
+            Engine::Config config;
+            config.expose_test262_globals = true;
+            Engine* new_engine = new Engine(config); // intentionally leaked -- consistent with engine memory model
             if (!new_engine) { caller_ctx.throw_type_error("createRealm: failed to create engine"); return Value(); }
             if (!new_engine->initialize()) { caller_ctx.throw_type_error("createRealm: failed to initialize engine"); return Value(); }
 
