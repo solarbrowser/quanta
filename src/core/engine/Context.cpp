@@ -32,7 +32,6 @@
 #include "quanta/core/engine/builtins/TypedArrayBuiltin.h"
 #include "quanta/core/engine/builtins/GlobalsBuiltin.h"
 #include "quanta/core/runtime/ProxyReflect.h"
-#include "quanta/core/runtime/Temporal.h"
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Generator.h"
@@ -897,8 +896,6 @@ void Context::initialize_built_ins() {
     
     Proxy::setup_proxy(*this);
     Reflect::setup_reflect(*this);
-
-    Temporal::setup(*this);
 
     Map::setup_map_prototype(*this);
     Set::setup_set_prototype(*this);
