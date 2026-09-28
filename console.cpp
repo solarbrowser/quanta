@@ -16,6 +16,7 @@
 #include <sstream>
 #include <fstream>
 #include <cstdio>
+#include <cstdlib>
 #include <chrono>
 #include <mimalloc.h>
 
@@ -358,7 +359,9 @@ static void configure_mimalloc_early() {
     mi_option_set(mi_option_arena_eager_commit, 0);
 }
 
-int main(int argc, char* argv[]) {
+// Real body of main(), renamed so main() itself can force a fast process
+// exit on the way out -- see main()'s own comment for why.
+static int run_console(int argc, char* argv[]) {
     try {
         bool execute_code = false;
         bool force_module = false;
@@ -471,4 +474,22 @@ int main(int argc, char* argv[]) {
         std::cerr << "Fatal error: " << e.what() << std::endl;
         return 1;
     }
+}
+
+int main(int argc, char* argv[]) {
+    int code = run_console(argc, argv);
+    // A normal `return` here runs global/static destructors and lets the
+    // C runtime's own exit() path unwind -- observed (and reproduced in a
+    // minimal repro with no Quanta code at all, just two detached threads
+    // blocked on a condition_variable, still true with libstdc++'s default
+    // thread/mutex implementation) to hang indefinitely once 2+ threads are
+    // still alive at that point, which any script using $262.agent.start()
+    // more than once now routinely leaves behind (agent threads are
+    // deliberately detached, not joined -- see register_agent_object's own
+    // doc comment: an agent may be blocked forever in receiveBroadcast()
+    // with nothing left to wake it, and that must not hang the process).
+    // std::_Exit skips all of that and matches how every other $262 host
+    // (d8, the SpiderMonkey shell, Node) actually exits.
+    std::cout.flush();
+    std::_Exit(code);
 }

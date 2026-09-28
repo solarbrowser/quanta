@@ -37,6 +37,11 @@
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/core/runtime/Async.h"
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <chrono>
 
 namespace Quanta {
 
@@ -224,6 +229,264 @@ static double digits_to_double(const std::vector<int>& digits, int radix) {
     return std::ldexp(static_cast<double>(hi), static_cast<int>(bits) - 64);
 }
 
+
+namespace {
+
+// $262.agent (test262's INTERPRETING.md): a real OS thread per agent, each
+// running its own fully independent Engine/realm. Safe because every other
+// piece of shared engine state this touches is already either thread_local
+// (GC, Symbol/String interning -- confirmed by inspection: every one of
+// their module-level statics already carries the thread_local qualifier) or
+// deliberately, already-correctly cross-thread shared: ArrayBuffer::
+// BackingStore (refcounted, byte_length atomic, own doc comment says as
+// much) and Atomics.wait/notify's own blocking_waiters()/blocking_waiter_
+// mutex() (already process-wide, already real __atomic_* element access).
+// What's genuinely new here is just the plumbing: spawning the threads and
+// the broadcast/report hand-off between them.
+struct AgentManager {
+    std::mutex mu;
+    // Every cross-thread wakeup this struct is responsible for (a new
+    // broadcast, an ack of one, an agent leaving) shares this one cv --
+    // each waiter loops on its own predicate (spurious/unrelated wakeups
+    // just re-check and go back to sleep), so one cv for all of them is
+    // simpler than several and no less correct.
+    std::condition_variable cv;
+    int active_agents = 0;
+
+    // The most recent broadcast(): store (not a Value -- Values are GC
+    // cells, agent-local; the backing store is the one thing already built
+    // to cross threads), an Int32-or-BigInt payload, and a generation
+    // counter so a late-scheduled receiveBroadcast() can tell "already
+    // happened" from "still to come" (see g_agent_broadcast_baseline).
+    uint64_t broadcast_generation = 0;
+    std::shared_ptr<ArrayBuffer::BackingStore> broadcast_store;
+    int64_t broadcast_value = 0;
+    bool broadcast_value_is_bigint = false;
+    // broadcast() blocks until every agent alive when it was called has
+    // observed this round; reset per call, so overlapping broadcast() calls
+    // from two threads would corrupt each other -- unsupported, and not
+    // something test262's own agent tests ever do (always one broadcast,
+    // via safeBroadcast, before any agent's own next one).
+    int broadcast_acked = 0;
+    int broadcast_expected = 0;
+
+    std::deque<std::string> reports;
+};
+
+AgentManager& agent_mgr() {
+    static AgentManager m;
+    return m;
+}
+
+// This agent's own view of "already happened" for receiveBroadcast, set
+// once when the agent thread starts (before its script runs), NOT read
+// fresh at the receiveBroadcast() call itself: an agent can be scheduled
+// arbitrarily late after start() considers it "running", and a broadcast()
+// that already completed by then must still be visible the moment this
+// agent finally asks -- capturing the baseline at call time instead would
+// make that a lost wakeup (receiveBroadcast waits for a NEXT broadcast that
+// never comes).
+thread_local uint64_t g_agent_broadcast_baseline = 0;
+// Idempotence for leaving(): explicit $262.agent.leaving() and the
+// automatic decrement once the agent's own script returns must not both
+// decrement active_agents.
+thread_local bool g_agent_has_left = false;
+
+// Registers $262.agent (both the main-thread and in-agent shape are
+// identical here -- real hosts do this too, and no test262 test this
+// engine runs depends on the subset INTERPRETING.md technically allows for
+// an agent's own view being narrower). Called once per Engine, from
+// wherever register_global_builtins sets up test262_host.
+void register_agent_object(Context& ctx, Object* test262_host) {
+    auto agent_obj = ObjectFactory::create_object();
+    Object* agent_ptr = agent_obj.get();
+
+    auto start_fn = ObjectFactory::create_native_function("start",
+        [](Context& ctx, std::span<const Value> args, Value) -> Value {
+            if (args.empty()) { ctx.throw_type_error("agent.start requires a source string"); return Value(); }
+            std::string source = args[0].to_string();
+
+            struct StartupGate { std::mutex mu; std::condition_variable cv; bool ready = false; };
+            auto gate = std::make_shared<StartupGate>();
+
+            {
+                std::lock_guard<std::mutex> lock(agent_mgr().mu);
+                agent_mgr().active_agents++;
+            }
+
+            std::thread t([source, gate]() {
+                g_agent_has_left = false;
+                Engine::Config config;
+                config.expose_test262_globals = true;
+                // Intentionally leaked, consistent with $262.createRealm's
+                // own Engine lifetime (see its doc comment) -- an agent's
+                // realm can be reached for as long as the process runs
+                // (SharedArrayBuffer views another agent still holds).
+                Engine* engine = new Engine(config);
+                bool ok = engine->initialize();
+                {
+                    std::lock_guard<std::mutex> lock(agent_mgr().mu);
+                    g_agent_broadcast_baseline = agent_mgr().broadcast_generation;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(gate->mu);
+                    gate->ready = true;
+                }
+                gate->cv.notify_all();
+                if (ok) engine->evaluate(source);
+                if (!g_agent_has_left) {
+                    g_agent_has_left = true;
+                    std::lock_guard<std::mutex> lock(agent_mgr().mu);
+                    if (agent_mgr().active_agents > 0) agent_mgr().active_agents--;
+                    agent_mgr().cv.notify_all();
+                }
+            });
+            // Detached, not joined at exit: "leaving() signals that the agent
+            // is done and MAY BE TERMINATED" (INTERPRETING.md) -- a test that
+            // errors before ever broadcasting (or one that simply never
+            // notifies an agent still blocked in Atomics.wait) leaves that
+            // agent blocked forever, and joining it at process exit would
+            // hang the whole run instead of just that one test. A normal
+            // process exit tears down every thread unconditionally, same as
+            // every other $262 host (d8, the SpiderMonkey shell).
+            t.detach();
+
+            // "Will block until that agent is running" (INTERPRETING.md).
+            std::unique_lock<std::mutex> lock(gate->mu);
+            gate->cv.wait(lock, [&] { return gate->ready; });
+            return Value();
+        }, 1);
+    agent_ptr->set_property("start", Value(start_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto broadcast_fn = ObjectFactory::create_native_function("broadcast",
+        [](Context& ctx, std::span<const Value> args, Value) -> Value {
+            Object* buf_obj = args.empty() ? nullptr : args[0].as_object_or_null();
+            if (!buf_obj || !buf_obj->is_array_buffer() || !buf_obj->is_shared_array_buffer()) {
+                ctx.throw_type_error("agent.broadcast requires a SharedArrayBuffer");
+                return Value();
+            }
+            ArrayBuffer* buf = static_cast<ArrayBuffer*>(buf_obj);
+
+            Value value = args.size() > 1 ? args[1] : Value();
+            int64_t value_bits = 0;
+            bool is_big = value.is_bigint();
+            if (is_big) {
+                value_bits = value.as_bigint()->to_int64();
+            } else if (!value.is_undefined()) {
+                value_bits = static_cast<int64_t>(static_cast<int32_t>(value.to_number()));
+                if (ctx.has_exception()) return Value();
+            }
+
+            std::unique_lock<std::mutex> lock(agent_mgr().mu);
+            agent_mgr().broadcast_store = buf->backing_store();
+            agent_mgr().broadcast_value = value_bits;
+            agent_mgr().broadcast_value_is_bigint = is_big;
+            agent_mgr().broadcast_generation++;
+            agent_mgr().broadcast_acked = 0;
+            agent_mgr().broadcast_expected = agent_mgr().active_agents;
+            agent_mgr().cv.notify_all();
+            // "Blocks until all agents have retrieved the message" (INTERPRETING.md).
+            agent_mgr().cv.wait(lock, [&] { return agent_mgr().broadcast_acked >= agent_mgr().broadcast_expected; });
+            return Value();
+        }, 2);
+    agent_ptr->set_property("broadcast", Value(broadcast_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto receive_broadcast_fn = ObjectFactory::create_native_function("receiveBroadcast",
+        [](Context& ctx, std::span<const Value> args, Value) -> Value {
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("agent.receiveBroadcast requires a callback");
+                return Value();
+            }
+            Function* callback = args[0].as_function();
+
+            std::shared_ptr<ArrayBuffer::BackingStore> store;
+            int64_t value_bits;
+            bool is_big;
+            {
+                std::unique_lock<std::mutex> lock(agent_mgr().mu);
+                agent_mgr().cv.wait(lock, [&] { return agent_mgr().broadcast_generation > g_agent_broadcast_baseline; });
+                g_agent_broadcast_baseline = agent_mgr().broadcast_generation;
+                store = agent_mgr().broadcast_store;
+                value_bits = agent_mgr().broadcast_value;
+                is_big = agent_mgr().broadcast_value_is_bigint;
+                agent_mgr().broadcast_acked++;
+            }
+            agent_mgr().cv.notify_all();
+
+            auto sab = std::make_unique<SharedArrayBuffer>(store);
+            Value sab_ctor = ctx.get_binding("SharedArrayBuffer");
+            if (sab_ctor.is_function()) {
+                Value proto = sab_ctor.as_function()->get_property("prototype");
+                if (proto.is_object()) sab->initialize_prototype(proto.as_object());
+            }
+            Value value = is_big ? Value(new BigInt(value_bits)) : Value(static_cast<double>(value_bits));
+            std::vector<Value> cb_args = {Value(sab.release()), value};
+            callback->call(ctx, cb_args, Value());
+            return Value();
+        }, 1);
+    agent_ptr->set_property("receiveBroadcast", Value(receive_broadcast_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto report_fn = ObjectFactory::create_native_function("report",
+        [](Context& ctx, std::span<const Value> args, Value) -> Value {
+            std::string msg = args.empty() ? std::string() : args[0].to_string();
+            if (ctx.has_exception()) return Value();
+            std::lock_guard<std::mutex> lock(agent_mgr().mu);
+            agent_mgr().reports.push_back(std::move(msg));
+            return Value();
+        }, 1);
+    agent_ptr->set_property("report", Value(report_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto get_report_fn = ObjectFactory::create_native_function("getReport",
+        [](Context&, std::span<const Value>, Value) -> Value {
+            std::lock_guard<std::mutex> lock(agent_mgr().mu);
+            if (agent_mgr().reports.empty()) return Value::null();
+            std::string front = std::move(agent_mgr().reports.front());
+            agent_mgr().reports.pop_front();
+            return Value(front);
+        }, 0);
+    agent_ptr->set_property("getReport", Value(get_report_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto sleep_fn = ObjectFactory::create_native_function("sleep",
+        [](Context& ctx, std::span<const Value> args, Value) -> Value {
+            double ms = args.empty() ? 0.0 : args[0].to_number();
+            if (ctx.has_exception()) return Value();
+            if (!(ms > 0.0)) return Value();
+            std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(ms));
+            return Value();
+        }, 1);
+    agent_ptr->set_property("sleep", Value(sleep_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto leaving_fn = ObjectFactory::create_native_function("leaving",
+        [](Context&, std::span<const Value>, Value) -> Value {
+            if (!g_agent_has_left) {
+                g_agent_has_left = true;
+                std::lock_guard<std::mutex> lock(agent_mgr().mu);
+                if (agent_mgr().active_agents > 0) agent_mgr().active_agents--;
+                agent_mgr().cv.notify_all();
+            }
+            return Value();
+        }, 0);
+    agent_ptr->set_property("leaving", Value(leaving_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto monotonic_now_fn = ObjectFactory::create_native_function("monotonicNow",
+        [](Context&, std::span<const Value>, Value) -> Value {
+            return Value(std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        }, 0);
+    agent_ptr->set_property("monotonicNow", Value(monotonic_now_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto timeouts = ObjectFactory::create_object();
+    timeouts->set_property("yield", Value(100.0));
+    timeouts->set_property("small", Value(200.0));
+    timeouts->set_property("long", Value(1000.0));
+    timeouts->set_property("huge", Value(10000.0));
+    agent_ptr->set_property("timeouts", Value(timeouts.release()));
+
+    test262_host->set_property("agent", Value(agent_ptr));
+    agent_obj.release();
+}
+
+} // namespace
 
 void register_global_builtins(Context& ctx) {
     if (!ctx.get_lexical_environment()) return;
@@ -930,6 +1193,8 @@ void register_global_builtins(Context& ctx) {
                 PropertyDescriptor(Value(ams_proto.release()), PropertyAttributes::None));
             test262_host->set_property("AbstractModuleSource", Value(ams_ctor.release()));
         }
+
+        register_agent_object(ctx, test262_host.get());
 
         ctx.get_lexical_environment()->create_binding("$262", Value(test262_host.release()), true);
     }

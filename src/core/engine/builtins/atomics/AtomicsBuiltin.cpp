@@ -12,6 +12,7 @@
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Promise.h"
+#include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
@@ -498,6 +499,28 @@ Value atomics_wait_async(Context& ctx, std::span<const Value> args, Value receiv
     pending_waiters().push_back({addr, promise});
     result->set_property("async", Value(true));
     result->set_property("value", Value(promise));
+
+    // A finite timeout needs its own real timer: nothing else ever resolves
+    // this promise except a same-agent notify() (pending_waiters() is
+    // thread_local -- see its own doc comment), so without this a waiter
+    // that's never notified sits pending forever instead of settling to
+    // "timed-out" once the deadline passes.
+    if (!std::isinf(timeout_ms)) {
+        auto timeout_fn = ObjectFactory::create_native_function("",
+            [promise](Context& ctx, std::span<const Value>, Value) -> Value {
+                auto& reg = pending_waiters();
+                for (auto it = reg.begin(); it != reg.end(); ++it) {
+                    if (it->promise == promise) {
+                        reg.erase(it);
+                        promise->fulfill(Value(std::string("timed-out")));
+                        break;
+                    }
+                }
+                (void)ctx;
+                return Value();
+            }, 0);
+        EventLoop::instance().schedule_timer(ctx, timeout_fn.release(), {}, timeout_ms, false);
+    }
     return Value(result.release());
 }
 
