@@ -25,11 +25,9 @@ See [building.md](https://github.com/solarbrowser/quanta/blob/main/docs/contribu
 
 ## Roadmap
 
-- Improve memory usage & speed
-- Prepare documents
 - Initial release (1.0.0)
-- icu4x integration for intl support (~1.1)
-- temporal api support (not sure 2.0 or 3.0)
+- icu4x integration for intl support 
+- temporal api support
 - wasm engine
 
 ## Contributing
