@@ -32,6 +32,14 @@ jobs:
           sudo apt-get install -y clang lld
 
       - name: Build
+        # A distributed binary must not be built with -march=native: that
+        # bakes in whatever instruction set THIS runner's own CPU happens to
+        # support, and running it on a machine without one of those
+        # extensions is an "illegal instruction" crash, not a graceful
+        # fallback. sse4.2/avx/avx2 matches the fixed baseline
+        # build-windows.bat already targets.
+        env:
+          QUANTA_ARCH_FLAGS: '-march=x86-64 -msse4.2 -mavx -mavx2 -mtune=haswell'
         run: |
           chmod +x build.sh
           ./build.sh

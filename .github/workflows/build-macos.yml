@@ -27,6 +27,13 @@ jobs:
           submodules: recursive
 
       - name: Build
+        # See build-linux.yml's identical note: -march=native would bake in
+        # this specific runner's own Apple Silicon generation, which is not
+        # guaranteed to match whoever downloads the artifact. apple-m1 is
+        # the oldest generation and Apple's own ISA additions since have
+        # stayed backward compatible with it.
+        env:
+          QUANTA_ARCH_FLAGS: '-mcpu=apple-m1'
         run: |
           chmod +x build.sh
           ./build.sh

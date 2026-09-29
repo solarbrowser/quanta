@@ -11,6 +11,21 @@ DIVIDER="───────────────────────�
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# -march=native/-mtune=native (the default) bakes in every instruction the
+# BUILDING machine's own CPU happens to support -- exactly right for a dev
+# building for themselves, but a binary built that way on one machine can
+# hit an unsupported opcode (SIGILL, "illegal instruction") on any other
+# machine with a different CPU. A distributed build (CI producing a
+# downloadable artifact) needs a fixed, portable target instead; set
+# QUANTA_ARCH_FLAGS to override (e.g. "-march=x86-64-v3 -mtune=x86-64-v3"
+# on Linux, "-mcpu=apple-m1" on Apple Silicon) without touching this
+# script itself.
+if [ -n "${QUANTA_ARCH_FLAGS:-}" ]; then
+    read -ra ARCH_FLAGS <<< "$QUANTA_ARCH_FLAGS"
+else
+    ARCH_FLAGS=(-march=native -mtune=native)
+fi
+
 BUILD_DIR="build"
 OBJ_DIR="$BUILD_DIR/obj"
 BIN_DIR="$BUILD_DIR/bin"
@@ -300,8 +315,7 @@ CXXFLAGS=(
     -std=c++20
     -Wall
     -O3
-    -march=native
-    -mtune=native
+    "${ARCH_FLAGS[@]}"
     -DQUANTA_VERSION=\"1.0.0\"
     -DPROMISE_STABILITY_FIXED
     -DNATIVE_BUILD
@@ -335,7 +349,7 @@ PCRE2FLAGS=(
     -DPCRE2_CODE_UNIT_WIDTH=16
     -DHAVE_CONFIG_H
     -Ithird_party/pcre2/src
-    -march=native
+    "${ARCH_FLAGS[@]}"
     -fomit-frame-pointer
 )
 
@@ -343,7 +357,7 @@ UTF8PROC_FLAGS=(
     -O3
     -DUTF8PROC_STATIC
     -Ithird_party/utf8proc
-    -march=native
+    "${ARCH_FLAGS[@]}"
     -fomit-frame-pointer
 )
 
