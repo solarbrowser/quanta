@@ -630,7 +630,33 @@ Engine::Result Engine::execute_internal(std::shared_ptr<const std::string> share
                     if (err_obj && !err_obj->get_stack_trace().empty()) {
                         error_str = err_obj->get_stack_trace();
                     } else {
-                        error_str = exception.to_string();
+                        // Value::to_string()'s object path is describe(), which
+                        // imitates a plausible answer instead of running the
+                        // object's own toString (see its own doc comment) --
+                        // for something like `Foo1Error.prototype = Error.
+                        // prototype; throw new Foo1Error(...)`, its Error-shaped
+                        // heuristic reads the NAME OFF THE CONSTRUCTOR
+                        // (obj.constructor, which resolves via the prototype
+                        // chain to the built-in Error here, since Foo1Error's
+                        // own prototype object was replaced wholesale rather
+                        // than given its own .constructor) instead of the
+                        // instance's own "name" property, printing "Error: ..."
+                        // for something a real toString() call would print as
+                        // "Foo1Error: ...". Call the real toString here instead,
+                        // same as evaluate()'s own exception path already does.
+                        Value toString_method = obj->get_property("toString");
+                        if (toString_method.is_function()) {
+                            Function* toString_fn = toString_method.as_function();
+                            Value toString_result = toString_fn->call(*global_context_, {}, exception);
+                            if (!global_context_->has_exception() && toString_result.is_string()) {
+                                error_str = toString_result.to_string();
+                            } else {
+                                global_context_->clear_exception();
+                                error_str = exception.to_string();
+                            }
+                        } else {
+                            error_str = exception.to_string();
+                        }
                     }
                 } else {
                     error_str = exception.to_string();
