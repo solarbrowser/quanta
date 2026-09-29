@@ -50,7 +50,7 @@
 namespace Quanta {
 
 #if defined(__GLIBCXX__)
-static_assert(sizeof(Context) == 160);
+static_assert(sizeof(Context) == 168);
 static_assert(sizeof(Environment) == 216);
 #else
 static_assert(sizeof(Context) <= 896);
@@ -78,6 +78,12 @@ void Environment::gc_trace(Visitor& v) const {
 void Context::gc_trace(Visitor& v) const {
     v.visit_environment(lexical_environment_);
     v.visit_environment(variable_environment_);
+    // Usually the same object as lexical_environment_ (this realm's global
+    // context sets both together -- see Program::hoist_lexical_declarations),
+    // but traced separately/unconditionally so it stays reachable even
+    // between top-level script runs, when nothing else necessarily points
+    // to it.
+    v.visit_environment(script_global_lexical_env_);
     v.visit(this_value_);
     v.visit_object(global_object_);
     if (builtins_) {

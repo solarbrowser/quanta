@@ -146,6 +146,15 @@ void Program::check_global_declaration_conflicts(Context& ctx) {
     Object* global_obj = var_env->get_binding_object();
     if (!global_obj) return;
 
+    // This realm's persistent GlobalEnvironmentRecord lexical part (see
+    // script_global_lexical_env_'s own doc comment), if an earlier
+    // top-level script already created it. A later script's own
+    // `function`/`var` declarations must not collide with a `let`/
+    // `const`/`class` an earlier script bound there -- test262:
+    // global-code/script-decl-var-collision.js and friends. Null on this
+    // realm's first top-level script (nothing to check against yet).
+    Environment* existing_lex = ctx.get_script_global_lexical_env();
+
     std::unordered_set<std::string> declared_function_names;
     for (auto it = statements_.rbegin(); it != statements_.rend(); ++it) {
         const ASTNode* nd = it->get();
@@ -160,6 +169,10 @@ void Program::check_global_declaration_conflicts(Context& ctx) {
         if (declared_function_names.count(fn)) continue;
         declared_function_names.insert(fn);
 
+        if (existing_lex && existing_lex->has_own_binding(fn)) {
+            ctx.throw_syntax_error("Identifier '" + fn + "' has already been declared");
+            return;
+        }
         if (global_obj->has_own_property(fn)) {
             PropertyDescriptor existing = global_obj->get_property_descriptor(fn);
             if (!existing.is_configurable() && (!existing.is_writable() || !existing.is_enumerable())) {
@@ -192,9 +205,65 @@ void Program::check_global_declaration_conflicts(Context& ctx) {
             for (const auto& name : names) {
                 if (name.empty() || declared_function_names.count(name) || checked_var_names.count(name)) continue;
                 checked_var_names.insert(name);
+                if (existing_lex && existing_lex->has_own_binding(name)) {
+                    ctx.throw_syntax_error("Identifier '" + name + "' has already been declared");
+                    return;
+                }
                 if (!global_obj->has_own_property(name) && !global_obj->is_extensible()) {
                     ctx.throw_type_error("Cannot declare global variable '" + name + "'");
                     return;
+                }
+            }
+        }
+    }
+
+    // A later top-level Script sharing this realm's persistent
+    // GlobalEnvironmentRecord must not redeclare a `let`/`const`/`class`
+    // an earlier script already bound there -- test262: global-code/
+    // script-decl-lex-lex.js and friends. Also (regardless of
+    // existing_lex): a `let`/`const`/`class` must not collide with a
+    // pre-existing non-configurable global property, even one never
+    // itself created via a declaration (e.g. Object.defineProperty on
+    // globalThis) -- test262: script-decl-lex-restricted-global.js.
+    {
+        std::unordered_set<std::string> checked_lex_names;
+        for (const auto& statement : statements_) {
+            const ASTNode* node = statement.get();
+            if (node->get_type() == ASTNode::Type::EXPORT_STATEMENT) {
+                const auto* ex = static_cast<const ExportStatement*>(node);
+                if (!ex->is_declaration_export()) continue;
+                node = ex->get_declaration();
+            }
+            if (!node) continue;
+            std::vector<std::string> names;
+            if (node->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                const auto* vd = static_cast<const VariableDeclaration*>(node);
+                if (vd->get_kind() == VariableDeclarator::Kind::LET ||
+                        vd->get_kind() == VariableDeclarator::Kind::CONST) {
+                    for (const auto& decl : vd->get_declarations()) {
+                        if (decl->get_id() && !decl->get_id()->get_name().empty()) {
+                            names.push_back(decl->get_id()->get_name());
+                        }
+                    }
+                }
+            } else if (node->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                const auto* cd = static_cast<const ClassDeclaration*>(node);
+                if (cd->get_id() && !cd->get_id()->get_name().empty()) {
+                    names.push_back(cd->get_id()->get_name());
+                }
+            }
+            for (const auto& name : names) {
+                if (!checked_lex_names.insert(name).second) continue;
+                if (existing_lex && existing_lex->has_own_binding(name)) {
+                    ctx.throw_syntax_error("Identifier '" + name + "' has already been declared");
+                    return;
+                }
+                if (global_obj->has_own_property(name)) {
+                    PropertyDescriptor existing = global_obj->get_property_descriptor(name);
+                    if (!existing.is_configurable()) {
+                        ctx.throw_syntax_error("Identifier '" + name + "' has already been declared");
+                        return;
+                    }
                 }
             }
         }
@@ -323,11 +392,32 @@ void Program::hoist_lexical_declarations(Context& ctx) {
     // ES6 spec: global let/const live in a separate declarative environment, not
     // on the global object. This allows TDZ to work for let/const declared later
     // in the script that are accessed before their declaration point.
-    Environment* old_lex = ctx.get_lexical_environment();
-    auto script_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lex);
-    Environment* script_env_ptr = script_env.release();
-    script_env_ptr->mark_closure_boundary();
-    ctx.set_lexical_environment(script_env_ptr);
+    //
+    // For Type::Global specifically, this is the realm's own persistent
+    // GlobalEnvironmentRecord (one per realm, reused across every top-level
+    // Script this realm ever runs -- see script_global_lexical_env_'s own
+    // doc comment), not a fresh, throwaway one per call: a real `<script>`
+    // (or $262.evalScript, or Engine::execute()) sees an EARLIER script's
+    // own `let`/`const`/`class`, and check_global_declaration_conflicts
+    // (already run by the time this is reached) already refused a
+    // colliding redeclaration -- test262's global-code/script-decl-lex-
+    // lex.js and friends test exactly this. Every other Context type
+    // (Function, Module) keeps the original always-fresh behavior;
+    // neither shares a realm-wide persistent lexical record.
+    Environment* script_env_ptr;
+    if (ctx.get_type() == Context::Type::Global && ctx.get_script_global_lexical_env()) {
+        script_env_ptr = ctx.get_script_global_lexical_env();
+        ctx.set_lexical_environment(script_env_ptr);
+    } else {
+        Environment* old_lex = ctx.get_lexical_environment();
+        auto script_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lex);
+        script_env_ptr = script_env.release();
+        script_env_ptr->mark_closure_boundary();
+        ctx.set_lexical_environment(script_env_ptr);
+        if (ctx.get_type() == Context::Type::Global) {
+            ctx.set_script_global_lexical_env(script_env_ptr);
+        }
+    }
 
     for (const auto& statement : statements_) {
         // `export let x`, `export const x`, `export class X {}` wrap the

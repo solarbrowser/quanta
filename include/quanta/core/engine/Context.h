@@ -150,6 +150,15 @@ private:
     Environment* owned_env_ = nullptr;  // see set_owned_env()
     Value new_target_;
 
+    // The realm's own persistent GlobalEnvironmentRecord declarative part
+    // (Type::Global only; null on every other Context type -- see
+    // Program::hoist_lexical_declarations's own doc comment for why a
+    // fresh Environment every call was wrong). Set once, by the first
+    // top-level Script this realm ever runs, and reused by every one
+    // after it, so a later `let x` can correctly collide with an earlier
+    // one (test262: global-code/script-decl-lex-lex.js and friends).
+    Environment* script_global_lexical_env_ = nullptr;
+
     Engine* engine_;
 
     // Invariant for a whole script/module's Context tree (only ever set on
@@ -322,6 +331,9 @@ public:
     Environment* get_variable_environment() const { return variable_environment_; }
     void set_lexical_environment(Environment* env) { lexical_environment_ = env; }
     void set_variable_environment(Environment* env) { variable_environment_ = env; }
+    // See script_global_lexical_env_'s own doc comment.
+    Environment* get_script_global_lexical_env() const { return script_global_lexical_env_; }
+    void set_script_global_lexical_env(Environment* env) { script_global_lexical_env_ = env; }
     
     void push_block_scope();
     void pop_block_scope();
