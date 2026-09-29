@@ -457,6 +457,22 @@ void Program::hoist_lexical_declarations(Context& ctx) {
     }
 }
 
+// `for (var [x] of ...)` reaches here as a bare DestructuringAssignment (no
+// VariableDeclaration wrapper); only left_decl_kind == 0 marks it as `var`.
+static void hoist_for_head_var_pattern(const ASTNode* left, int decl_kind, Context& ctx) {
+    if (!left || decl_kind != 0 || left->get_type() != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) return;
+    std::vector<std::string> bound;
+    static_cast<const DestructuringAssignment*>(left)->collect_bound_names(bound);
+    Environment* var_env = ctx.get_variable_environment();
+    for (const auto& bn : bound) {
+        if (bn.empty()) continue;
+        const bool have = ctx.get_type() == Context::Type::Eval && var_env
+                              ? var_env->has_own_binding(bn)
+                              : ctx.has_binding(bn);
+        if (!have) ctx.create_var_binding(bn, Value(), true);
+    }
+}
+
 void Program::scan_for_var_declarations(ASTNode* node, Context& ctx) {
     if (!node) return;
 
@@ -564,12 +580,18 @@ void Program::scan_for_var_declarations(ASTNode* node, Context& ctx) {
     }
     else if (node->get_type() == ASTNode::Type::FOR_IN_STATEMENT) {
         ForInStatement* forin = static_cast<ForInStatement*>(node);
-        if (forin->get_left()) scan_for_var_declarations(forin->get_left(), ctx);
+        if (forin->get_left()) {
+            hoist_for_head_var_pattern(forin->get_left(), forin->get_left_decl_kind(), ctx);
+            scan_for_var_declarations(forin->get_left(), ctx);
+        }
         scan_for_var_declarations(forin->get_body(), ctx);
     }
     else if (node->get_type() == ASTNode::Type::FOR_OF_STATEMENT) {
         ForOfStatement* forof = static_cast<ForOfStatement*>(node);
-        if (forof->get_left()) scan_for_var_declarations(forof->get_left(), ctx);
+        if (forof->get_left()) {
+            hoist_for_head_var_pattern(forof->get_left(), forof->get_left_decl_kind(), ctx);
+            scan_for_var_declarations(forof->get_left(), ctx);
+        }
         scan_for_var_declarations(forof->get_body(), ctx);
     }
     else if (node->get_type() == ASTNode::Type::CATCH_CLAUSE) {
