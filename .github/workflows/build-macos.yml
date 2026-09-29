@@ -35,3 +35,16 @@ jobs:
         run: |
           echo 'console.log(1 + 2)' > /tmp/smoke.js
           build/bin/quanta /tmp/smoke.js
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/bin/quanta dist/
+          cp LICENSE dist/
+          cd dist && zip -j ../quanta-macos-arm64.zip quanta LICENSE
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quanta-macos-arm64
+          path: quanta-macos-arm64.zip

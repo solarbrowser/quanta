@@ -38,3 +38,17 @@ jobs:
         run: |
           echo console.log(1 + 2) > smoke.js
           build\bin\quanta.exe smoke.js
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item build\bin\quanta.exe dist\
+          Copy-Item LICENSE dist\
+          Compress-Archive -Path dist\quanta.exe,dist\LICENSE -DestinationPath quanta-windows-x64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quanta-windows-x64
+          path: quanta-windows-x64.zip
