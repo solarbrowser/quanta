@@ -533,6 +533,20 @@ void scan_stacks(MarkVisitor& v) {
 #ifdef _WIN32
     CONTEXT spilled_registers;
     RtlCaptureContext(&spilled_registers);
+#elif defined(__APPLE__) && defined(__aarch64__)
+    // Not getcontext: on Apple silicon it left the caller's callee-saved
+    // registers zeroed after returning (a crash report showed x24/x25/x28 = 0
+    // and run_minor_collection's MarkVisitor& null right after this call).
+    // Storing the callee-saved set by hand touches nothing.
+    uint64_t spilled_registers[12];
+    __asm__ volatile(
+        "stp x19, x20, [%0, #0]\n"
+        "stp x21, x22, [%0, #16]\n"
+        "stp x23, x24, [%0, #32]\n"
+        "stp x25, x26, [%0, #48]\n"
+        "stp x27, x28, [%0, #64]\n"
+        "stp x29, x30, [%0, #80]\n"
+        : : "r"(spilled_registers) : "memory");
 #else
     ucontext_t spilled_registers;
     getcontext(&spilled_registers);

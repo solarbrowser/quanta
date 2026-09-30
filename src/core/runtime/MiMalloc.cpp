@@ -27,19 +27,7 @@
 // operator new is never undefined because libstdc++ already defines it. Left
 // to -lquanta it is dropped without a word and the program keeps the standard
 // allocator, which measures as no change at all.
-#include <mimalloc.h>
-
-// Not on Apple: libc++ lives in a dylib under two-level namespaces, so its own
-// non-inline code (extern-template std::string members, iostreams, ...) keeps
-// calling the system operator new while this executable's inline code frees
-// through the replacement. A system-allocator pointer handed to mi_free lands
-// in memory mimalloc does not own. Suspected cause of the macOS arm64 heap
-// corruption that crashed the Octane suite (EXC_BAD_ACCESS in the GC's hash
-// table and in the TLS lookup). ELF and Windows resolve operator new
-// program-wide, so they are unaffected.
-#ifndef __APPLE__
 #include <mimalloc-new-delete.h>
-#endif
 
 // Transparent huge pages off for the allocator's own memory. With them on, the
 // kernel backs mimalloc's arena with 2MB pages that stay fully resident however
