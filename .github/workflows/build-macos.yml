@@ -43,59 +43,6 @@ jobs:
           echo 'console.log(1 + 2)' > /tmp/smoke.js
           build/bin/quanta /tmp/smoke.js
 
-      - name: Strip diagnosis (stripped binary crashes, plain one does not)
-        run: |
-          echo 'console.log(1 + 2)' > /tmp/smoke.js
-          otool -l build/bin/quanta > /tmp/load-plain.txt
-          for mode in default -x -S; do
-            cp build/bin/quanta /tmp/q-$mode
-            if [ "$mode" = default ]; then strip /tmp/q-$mode; else strip $mode /tmp/q-$mode; fi
-            echo "=== strip $mode ==="
-            ls -l /tmp/q-$mode
-            /tmp/q-$mode /tmp/smoke.js && echo "smoke ok" || echo "smoke FAILED ($?)"
-            cat > /tmp/gc.js <<'JS'
-          var a = [];
-          for (var i = 0; i < 300000; i++) { a.push({x: i, s: "k" + i}); if (a.length > 1000) a = []; }
-          console.log("gc ok");
-          JS
-            /tmp/q-$mode /tmp/gc.js && true || echo "gc script FAILED ($?)"
-          done
-          otool -l /tmp/q-default > /tmp/load-stripped.txt
-          echo "=== load command diff (plain vs default-stripped) ==="
-          diff /tmp/load-plain.txt /tmp/load-stripped.txt | head -100 || true
-          echo "=== fixups ==="
-          dyld_info -fixups build/bin/quanta 2>&1 | head -5 || true
-          dyld_info -fixups /tmp/q-default 2>&1 | head -5 || true
-          codesign -dv build/bin/quanta 2>&1 | head -5 || true
-          codesign -dv /tmp/q-default 2>&1 | head -5 || true
-          exit 0
-
-      - name: Octane suite (crash repro with backtrace)
-        run: |
-          git clone --depth 1 https://github.com/ahaoboy/js-engine-benchmark /tmp/jsb
-          python3 -c "
-          import re
-          root = '/tmp/jsb/v8-v7/'
-          s = open(root + 'run.js').read()
-          out = re.sub(r\"load\\('([^']+)'\\);\", lambda m: open(root + m.group(1)).read(), s)
-          open('/tmp/run_all.js', 'w').write(out)
-          "
-          # The benchmark harness strips the binary and reads stdout through a
-          # pipe, so run both the plain and the stripped+piped variants.
-          cp build/bin/quanta /tmp/quanta-plain
-          cp build/bin/quanta /tmp/quanta-stripped
-          strip /tmp/quanta-stripped
-          status=0
-          for bin in /tmp/quanta-plain /tmp/quanta-stripped; do
-            echo "=== $bin (stdout piped) ==="
-            if ! (cd /tmp && "$bin" /tmp/run_all.js 2>&1 | cat; exit "${PIPESTATUS[0]}"); then
-              echo "$bin failed; backtrace follows"
-              lldb --batch -o run -k "bt 30" -k "register read" -- "$bin" /tmp/run_all.js || true
-              status=1
-            fi
-          done
-          exit $status
-
       - name: Package
         run: |
           mkdir -p dist
