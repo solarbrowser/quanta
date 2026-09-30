@@ -63,7 +63,7 @@ jobs:
             echo "=== $bin (stdout piped) ==="
             if ! (cd /tmp && "$bin" /tmp/run_all.js 2>&1 | cat; exit "${PIPESTATUS[0]}"); then
               echo "$bin failed; backtrace follows"
-              lldb --batch -o run -o "bt 30" -o "register read" -- "$bin" /tmp/run_all.js || true
+              lldb --batch -o run -k "bt 30" -k "register read" -- "$bin" /tmp/run_all.js || true
               status=1
             fi
           done
