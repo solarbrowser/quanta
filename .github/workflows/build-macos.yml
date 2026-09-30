@@ -53,11 +53,21 @@ jobs:
           out = re.sub(r\"load\\('([^']+)'\\);\", lambda m: open(root + m.group(1)).read(), s)
           open('/tmp/run_all.js', 'w').write(out)
           "
-          if ! build/bin/quanta /tmp/run_all.js; then
-            echo "quanta failed; backtrace follows"
-            lldb --batch -o run -o "bt 30" -o "register read" -- build/bin/quanta /tmp/run_all.js || true
-            exit 1
-          fi
+          # The benchmark harness strips the binary and reads stdout through a
+          # pipe, so run both the plain and the stripped+piped variants.
+          cp build/bin/quanta /tmp/quanta-plain
+          cp build/bin/quanta /tmp/quanta-stripped
+          strip /tmp/quanta-stripped
+          status=0
+          for bin in /tmp/quanta-plain /tmp/quanta-stripped; do
+            echo "=== $bin (stdout piped) ==="
+            if ! (cd /tmp && "$bin" /tmp/run_all.js 2>&1 | cat; exit "${PIPESTATUS[0]}"); then
+              echo "$bin failed; backtrace follows"
+              lldb --batch -o run -o "bt 30" -o "register read" -- "$bin" /tmp/run_all.js || true
+              status=1
+            fi
+          done
+          exit $status
 
       - name: Package
         run: |
