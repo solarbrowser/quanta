@@ -27,7 +27,18 @@
 // operator new is never undefined because libstdc++ already defines it. Left
 // to -lquanta it is dropped without a word and the program keeps the standard
 // allocator, which measures as no change at all.
+#include <mimalloc.h>
+
+// Not on Apple. dyld sends libc++.dylib's own operator new/delete calls to this
+// executable only because the executable exports weak definitions of them;
+// `strip` drops those exports (nextdefsym 3416 -> 173 in CI), after which the
+// dylib allocates with the system allocator while our inline code frees through
+// mimalloc, and mi_free crashes on the foreign pointer. strip -x / -S leave the
+// exports alone and were fine; a plain strip crashed the GC script on macOS
+// arm64. ELF and Windows resolve operator new program-wide.
+#ifndef __APPLE__
 #include <mimalloc-new-delete.h>
+#endif
 
 // Transparent huge pages off for the allocator's own memory. With them on, the
 // kernel backs mimalloc's arena with 2MB pages that stay fully resident however
