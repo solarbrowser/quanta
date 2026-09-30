@@ -30,6 +30,12 @@ See [building.md](https://github.com/solarbrowser/quanta/blob/main/docs/contribu
 - temporal api support
 - wasm engine
 
+## More about Quanta
+
+Benchmark: [daily v8-v7](https://ahaoboy.github.io/js-engine-benchmark/?selectEngines=quanta,ladybird,quickjs,lumen,hermes)
+
+Blog text: [1.0.0](https://quanta.js.org/texts/journey-of-quanta.html)
+
 ## Contributing
 
 We welcome contributions through pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for more details. For information about the governance of Quanta, see [GOVERNANCE.md](GOVERNANCE.md).
