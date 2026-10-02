@@ -31,7 +31,7 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 | `DefineGlobal(ctx, name, ctor)` | Binds the interface object as a global (writable, configurable, not enumerable). |
 | `PrototypeFromNewTarget(ctx, newTarget)` | `newTarget.prototype` if it is an object, else null. Use it so subclasses construct their own instances. |
 
-Symbol-keyed members are not part of the surface. For an iterable class, install `[Symbol.iterator]` from script after defining the method (see `tests/embed/embed_test.cpp` for the pattern).
+Defining symbol-keyed members is not part of the surface. For an iterable class, install `[Symbol.iterator]` from script after defining the method (see `tests/embed/embed_test.cpp` for the pattern). Reading one is: see `GetIteratorMethod`.
 
 ## Native objects
 
@@ -77,6 +77,7 @@ Strings are UTF-8 inside the engine; lone surrogates are stored as 3-byte sequen
 |---|---|
 | `GetIteratorPrototype(ctx)` | `%IteratorPrototype%`. Pass it as `parentProto` to `DefineClass` for an iterator class; it then gets `[Symbol.iterator]() { return this }`. |
 | `MakeIterResult(ctx, value, done)` | The `{value, done}` object `next()` returns. |
+| `GetIteratorMethod(ctx, object)` | `object[Symbol.iterator]`, or undefined when there is none (null and undefined values of the property count as none). A present but non-callable method, or a null/undefined `object`, is a TypeError. This is how a Web IDL union tells a sequence from a record: `new URLSearchParams([["a","b"]])` has the method, `new URLSearchParams({a: "b"})` does not. |
 
 ## Promises and memory
 

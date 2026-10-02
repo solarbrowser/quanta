@@ -313,6 +313,35 @@ Object* GetIteratorPrototype(Context& ctx) {
     return iterator->get_property("prototype").as_object_or_null();
 }
 
+Value GetIteratorMethod(Context& ctx, const Value& object) {
+    Object* target = object.as_object_or_null();
+    if (!target) {
+        if (object.is_nullish()) {
+            ctx.throw_type_error("Cannot read @@iterator of null or undefined");
+            return Value();
+        }
+        // A primitive is looked up on its realm's intrinsic prototype, which is
+        // where its wrapper would find it.
+        Context::PrimitiveKind kind = object.is_string()    ? Context::PrimitiveKind::String
+                                      : object.is_number()  ? Context::PrimitiveKind::Number
+                                      : object.is_boolean() ? Context::PrimitiveKind::Boolean
+                                      : object.is_bigint()  ? Context::PrimitiveKind::BigInt
+                                                            : Context::PrimitiveKind::Symbol;
+        target = Context::primitive_prototype(kind);
+        if (!target) return Value();
+    }
+    Symbol* iterator = Symbol::get_well_known(Symbol::ITERATOR);
+    if (!iterator) return Value();
+    Value method = target->get_property(iterator->to_property_key());
+    if (ctx.has_exception()) return Value();
+    if (method.is_nullish()) return Value();
+    if (!method.is_function()) {
+        ctx.throw_type_error("@@iterator is not a function");
+        return Value();
+    }
+    return method;
+}
+
 Value MakeIterResult(Context& ctx, const Value& value, bool done) {
     return Iterator::create_iterator_result(value, done, &ctx);
 }

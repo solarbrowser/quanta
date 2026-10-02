@@ -191,6 +191,14 @@ Value Call(Context& ctx, const Value& callable, const Value& thisValue, Args arg
 // which then gets [Symbol.iterator]() { return this } from it. The class defines
 // next() with DefineMethod and builds each result with MakeIterResult.
 Object* GetIteratorPrototype(Context& ctx);
+// GetMethod(object, @@iterator): the function, or undefined when the object has
+// none (null and undefined count as none). What tells a record from a sequence
+// in a Web IDL union: `new URLSearchParams({a: "b"})` has no iterator method,
+// `new URLSearchParams([["a", "b"]])` does. A property that is present but not
+// callable is a TypeError, as is a null or undefined `object`; a primitive is
+// looked up through its wrapper, so a string has one. An exception may be pending
+// on return.
+Value GetIteratorMethod(Context& ctx, const Value& object);
 Value MakeIterResult(Context& ctx, const Value& value, bool done);
 
 // ---- Promises -------------------------------------------------------------

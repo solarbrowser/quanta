@@ -267,6 +267,10 @@ static Value counter_get_prop(Context& ctx, Value, Args args, Value) {
     return Get(ctx, args[0], ToUsvUtf8(ctx, args[1]));
 }
 
+static Value counter_iterator_method(Context& ctx, Value, Args args, Value) {
+    return GetIteratorMethod(ctx, args.empty() ? Undefined() : args[0]);
+}
+
 static Value counter_pending(Context& ctx, Value, Args, Value) {
     PromiseCapability cap = NewPromiseCapability(ctx);
     if (HasException(ctx)) return Undefined();
@@ -310,6 +314,7 @@ static void define_counter(Runtime& rt) {
     DefineStaticMethod(counter.constructor, "keysOf", counter_keys_of, 1);
     DefineStaticMethod(counter.constructor, "getProp", counter_get_prop, 2);
     DefineStaticMethod(counter.constructor, "pending", counter_pending, 0);
+    DefineStaticMethod(counter.constructor, "iteratorMethod", counter_iterator_method, 1);
     // Defined through the same call as any method; its key is the well-known
     // symbol's property key.
     ClassRef iterator = DefineClass(ctx, "CounterIterator", counter_construct, 0, GetIteratorPrototype(ctx));
@@ -385,6 +390,23 @@ static void test_class_from_script(Runtime& rt) {
     EXPECT_JS("[...new Counter(3)].join()", "0,1,2");
     EXPECT_JS("(() => { let s = 0; for (const x of new Counter(4)) s += x; return s; })()", "6");
     EXPECT_JS("Object.getPrototypeOf(Object.getPrototypeOf(new Counter()[Symbol.iterator]())) === Iterator.prototype",
+              "true");
+
+    // Telling a sequence from a record: the iterator method, or nothing.
+    EXPECT_JS("typeof Counter.iteratorMethod([['a', 'b']])", "function");
+    EXPECT_JS("Counter.iteratorMethod([1]) === Array.prototype[Symbol.iterator]", "true");
+    EXPECT_JS("typeof Counter.iteratorMethod(new Map())", "function");
+    EXPECT_JS("typeof Counter.iteratorMethod('abc')", "function");
+    EXPECT_JS("typeof Counter.iteratorMethod(new Counter(1))", "function");
+    EXPECT_JS("typeof Counter.iteratorMethod({a: 'b'})", "undefined");
+    EXPECT_JS("typeof Counter.iteratorMethod({[Symbol.iterator]: undefined})", "undefined");
+    EXPECT_JS("typeof Counter.iteratorMethod({[Symbol.iterator]: null})", "undefined");
+    EXPECT_JS("typeof Counter.iteratorMethod(5)", "undefined");
+    EXPECT_JS("(() => { try { Counter.iteratorMethod({[Symbol.iterator]: 5}); } catch (e) { return e instanceof TypeError; } })()",
+              "true");
+    EXPECT_JS("(() => { try { Counter.iteratorMethod(null); } catch (e) { return e instanceof TypeError; } })()", "true");
+    EXPECT_JS("(() => { try { Counter.iteratorMethod({get [Symbol.iterator]() { throw new RangeError('x'); }}); }"
+              "catch (e) { return e instanceof RangeError; } })()",
               "true");
 
     // Arrays and property access from the native side.
