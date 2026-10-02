@@ -110,6 +110,8 @@ private:
         std::string parse_string_literal();
         std::string parse_escape_sequence();
         uint32_t parse_unicode_escape();
+        // Whether the next six bytes are a \uXXXX escape of a low surrogate (not consumed).
+        bool peek_low_surrogate_escape(uint32_t& low) const;
         
         double parse_number_literal();
         bool is_digit(char ch) const;

@@ -11,6 +11,7 @@
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/String.h"
 #include <sstream>
 #include <iomanip>
 #include <cmath>
@@ -537,7 +538,7 @@ std::string JSON::Parser::parse_string_literal() {
             }
             
             result += parse_escape_sequence();
-        } else if (ch < 0x20) {
+        } else if (static_cast<unsigned char>(ch) < 0x20) {
             throw_syntax_error("Unescaped control character in string");
         } else {
             result += ch;
@@ -567,12 +568,23 @@ std::string JSON::Parser::parse_escape_sequence() {
         case 'r':  return "\r";
         case 't':  return "\t";
         case 'u': {
-            uint32_t codepoint = parse_unicode_escape();
-            if (codepoint < 128) {
-                return std::string(1, static_cast<char>(codepoint));
-            } else {
-                return "?";
+            uint32_t unit = parse_unicode_escape();
+            uint32_t low = 0;
+            // A high surrogate escape followed directly by a low one is one
+            // code point, stored as one 4-byte sequence like every other string
+            // the engine makes (see String.fromCharCode); anything else is a
+            // single unit, which for a lone surrogate is its 3-byte form.
+            if (unit >= 0xD800 && unit <= 0xDBFF && peek_low_surrogate_escape(low)) {
+                for (int i = 0; i < 6; i++) advance();
+                uint32_t cp = 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00);
+                std::string out;
+                out += static_cast<char>(0xF0 | (cp >> 18));
+                out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                out += static_cast<char>(0x80 | (cp & 0x3F));
+                return out;
             }
+            return encode_utf16_unit(unit);
         }
         default:
             throw_syntax_error("Invalid escape sequence: \\" + std::string(1, ch));
@@ -734,6 +746,19 @@ void JSON::Parser::throw_syntax_error(const std::string& message) {
 
 bool JSON::Parser::is_digit(char ch) const {
     return ch >= '0' && ch <= '9';
+}
+
+bool JSON::Parser::peek_low_surrogate_escape(uint32_t& low) const {
+    if (position_ + 6 > json_.size() || json_[position_] != '\\' || json_[position_ + 1] != 'u') return false;
+    uint32_t value = 0;
+    for (size_t i = 2; i < 6; i++) {
+        char ch = json_[position_ + i];
+        if (!is_hex_digit(ch)) return false;
+        value = value * 16 + (ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10);
+    }
+    if (value < 0xDC00 || value > 0xDFFF) return false;
+    low = value;
+    return true;
 }
 
 bool JSON::Parser::is_hex_digit(char ch) const {
