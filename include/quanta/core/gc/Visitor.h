@@ -55,6 +55,13 @@ public:
         else if (v.is_symbol()) visit_symbol(v.as_symbol());
         else if (v.is_bigint()) visit_bigint(v.as_bigint());
     }
+
+    // The spelling an embedder's DOMObject::Visit reports its edges with.
+    void Mark(Object* o) { visit_object(o); }
+    void Mark(String* s) { visit_string(s); }
+    void Mark(Symbol* s) { visit_symbol(s); }
+    void Mark(BigInt* b) { visit_bigint(b); }
+    void Mark(const Value& v) { visit(v); }
 };
 
 }

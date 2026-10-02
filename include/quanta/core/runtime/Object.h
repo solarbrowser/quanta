@@ -1030,7 +1030,11 @@ public:
     enum class CustomKind : uint8_t {
         Generator, AsyncGenerator, AsyncIterator,
         ArrayIterator, StringIterator, MapIterator, SetIterator,
-        ModuleNamespace, DeferredNamespace, ImportBinding
+        ModuleNamespace, DeferredNamespace, ImportBinding,
+        // An embedder-defined native object (DOMObject): the concrete type is
+        // open-ended, so trace/destroy dispatch through a per-type table
+        // instead of one more case here per class.
+        Host
     };
 
 private:

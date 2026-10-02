@@ -20,6 +20,7 @@
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/FiberState.h"
 #include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/runtime/DOMObject.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/parser/FunctionExecutable.h"
@@ -874,6 +875,7 @@ size_t run_sweep(bool minor) {
                             case CK::SetIterator: static_cast<SetIterator*>(cob)->~SetIterator(); break;
                             case CK::ModuleNamespace: static_cast<ModuleNamespaceObject*>(cob)->~ModuleNamespaceObject(); break;
                             case CK::DeferredNamespace: static_cast<DeferredNamespaceObject*>(cob)->~DeferredNamespaceObject(); break;
+                            case CK::Host: static_cast<DOMObject*>(cob)->destroy(); break;
                         }
                         break;
                     }

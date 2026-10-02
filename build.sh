@@ -292,6 +292,14 @@ phase_link() {
     run_compile "console.cpp (link)" "$errfile" clang++ "${link_args[@]}"
 }
 
+# ./build.sh lib         -> libquanta.a (+ the opt-in allocator override object) in build/lib
+# ./build.sh embed-test  -> the same, then build and run tests/embed against it
+BUILD_MODE=exe
+case "${1:-}" in
+    lib) BUILD_MODE=lib ;;
+    embed-test) BUILD_MODE=embed-test ;;
+esac
+
 # ./build.sh heap-test -> build and run the GC heap unit tests, nothing else
 if [[ "${1:-}" == "heap-test" ]]; then
     errfile=$(mktemp)
@@ -455,7 +463,41 @@ LEXER_OBJECTS=()
 PARSER_OBJECTS=()
 AST_OBJECTS=()
 
+# The library is the engine without console.cpp. MiMalloc.o is kept out of the
+# archive on purpose: it replaces operator new for the whole process, which is a
+# decision for the program that links the engine and not for the engine to make
+# silently -- and an archive member that nothing references is dropped by the
+# linker anyway (see MiMalloc.cpp), so putting it in would only look like it
+# worked. It is shipped beside the archive as a plain object, which a link line
+# always includes.
+phase_archive() {
+    local lib_dir="$BUILD_DIR/lib" obj
+    local members=()
+    mkdir -p "$lib_dir"
+    rm -f "$lib_dir/libquanta.a" "$lib_dir/quanta_mimalloc_override.o"
+    for obj in "${CORE_ENGINE_OBJECTS[@]}" "${BUILTIN_OBJECTS[@]}" "${CORE_GC_OBJECTS[@]}" \
+               "${CORE_MODULE_OBJECTS[@]}" "${CORE_RUNTIME_OBJECTS[@]}" "${CORE_VM_OBJECTS[@]}" \
+               "${LEXER_OBJECTS[@]}" "${PARSER_OBJECTS[@]}" "${AST_OBJECTS[@]}" \
+               "${PCRE2_OBJECTS[@]}" "${UTF8PROC_OBJECTS[@]}" "${MIMALLOC_OBJECTS[@]}"; do
+        if [[ "$(basename "$obj")" == "MiMalloc.o" ]]; then
+            cp "$obj" "$lib_dir/quanta_mimalloc_override.o"
+        else
+            members+=("$obj")
+        fi
+    done
+    ar rcs "$lib_dir/libquanta.a" "${members[@]}" || fail "ar failed"
+}
+
+phase_embed_test() {
+    local errfile
+    errfile=$(mktemp)
+    run_compile "tests/embed/embed_test.cpp" "$errfile" clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" \
+        -o "$BIN_DIR/embed-test" tests/embed/embed_test.cpp "$BUILD_DIR/lib/libquanta.a" "${LIBS[@]}"
+    "$BIN_DIR/embed-test" || fail "embed-test reported failures"
+}
+
 TOTAL_PHASES=8
+[[ "$BUILD_MODE" == embed-test ]] && TOTAL_PHASES=9
 PHASE_NUM=0
 
 echo "$DIVIDER"
@@ -466,7 +508,17 @@ phase "Compile GC"          phase_gc
 phase "Compile runtime"     phase_runtime
 phase "Compile front-end"   phase_frontend
 phase "Compile VM"          phase_vm
-phase "Link executable"     phase_link
+if [[ "$BUILD_MODE" == exe ]]; then
+    phase "Link executable"     phase_link
+else
+    phase "Archive library"     phase_archive
+    if [[ "$BUILD_MODE" == embed-test ]]; then
+        phase "Embed tests"     phase_embed_test
+    fi
+    echo "$DIVIDER"
+    echo -e "${GREEN}✓ Library: $BUILD_DIR/lib/libquanta.a${NC}"
+    exit 0
+fi
 echo "$DIVIDER"
 
 BUILD_END=$(date +%s)

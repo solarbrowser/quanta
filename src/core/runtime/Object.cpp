@@ -26,6 +26,7 @@
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/runtime/DOMObject.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
@@ -3105,6 +3106,7 @@ void CustomObjectBase::trace(Visitor& v) {
         case CustomKind::ArrayIterator: static_cast<ArrayIterator*>(this)->trace(v); return;
         case CustomKind::MapIterator: static_cast<MapIterator*>(this)->trace(v); return;
         case CustomKind::SetIterator: static_cast<SetIterator*>(this)->trace(v); return;
+        case CustomKind::Host: static_cast<DOMObject*>(this)->trace(v); return;
         // AsyncIterator/StringIterator/ModuleNamespace/DeferredNamespace hold
         // no extra cell references and rely on the base body as-is.
         default: trace_default(v); return;

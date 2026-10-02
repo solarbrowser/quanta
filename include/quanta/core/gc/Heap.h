@@ -56,6 +56,17 @@ public:
     void* allocate(size_t size, CellKind kind,
                    HeapSegment segment = HeapSegment::Core);
 
+    // Constructs a T (a DOMObject subclass) in a cell of the active heap.
+    // Defined in DOMObject.h, which is what knows what a DOMObject is.
+    //
+    // A collection never runs inside this call: allocation only requests one,
+    // and the request is honoured at the interpreter's next safepoint. So T's
+    // constructor can allocate other cells without any of them being swept
+    // from under it, and the returned pointer is safe wherever it sits on the
+    // stack or in a register -- the conservative scan reads both.
+    template <class T, class... A>
+    static T* Allocate(A&&... args);
+
     struct ProbeResult {
         void* cell = nullptr;
         CellKind kind = CellKind::Object;
