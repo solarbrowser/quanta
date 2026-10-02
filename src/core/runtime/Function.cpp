@@ -10,6 +10,7 @@
 #include "quanta/core/gc/Collector.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/engine/Realm.h"
 #include "quanta/core/engine/CallStack.h"
 #include "quanta/core/vm/BytecodeCompiler.h"
 #include "quanta/core/vm/Interpreter.h"
@@ -57,15 +58,7 @@ static bool is_anon_func_def(const ASTNode* node) {
 
 namespace Quanta {
 
-constinit thread_local Object* Function::s_throw_type_error_ = nullptr;
-
 void Function::reset_realm_intrinsics() {
-    s_throw_type_error_ = nullptr;
-    ObjectFactory::set_object_prototype(nullptr);
-    ObjectFactory::set_array_prototype(nullptr);
-    ObjectFactory::set_function_prototype(nullptr);
-    ObjectFactory::set_pristine_function_call(nullptr);
-    ObjectFactory::set_pristine_function_apply(nullptr);
     Object::watch_regexp_prototype(nullptr);
     Object::watch_array_iterator_prototype(nullptr);
     Object::watch_promise_species(nullptr, nullptr);
@@ -455,35 +448,27 @@ std::unique_ptr<Object> Function::build_arguments_object(Context& fn_ctx, std::s
     // strict mode code, OR (regardless of strictness) a non-simple parameter
     // list, since CreateMappedArgumentsObject is spec'd to never run for one.
     if (fn_ctx.is_strict_mode() || has_non_simple_params) {
-        // %ThrowTypeError% is defined ONCE PER REALM (not a single shared
-        // intrinsic) -- fn_ctx's own realm has one bound at registration time
-        // (FunctionBuiltin.cpp), which is what 2+ realms must actually use;
-        // Function::s_throw_type_error_'s thread_local is only ever exactly
-        // right in the (overwhelmingly common) single/no-realm case.
-        Function* realm_thrower = nullptr;
-        if (Engine::all_engines().size() > 1 && fn_ctx.has_binding("@@ThrowTypeError")) {
-            Value v = fn_ctx.get_binding("@@ThrowTypeError");
-            if (v.is_function()) realm_thrower = v.as_function();
-        }
+        // %ThrowTypeError% is defined ONCE PER REALM: fn_ctx's own realm has one,
+        // bound at registration time (FunctionBuiltin.cpp).
+        Realm* realm = fn_ctx.realm();
+        Function* realm_thrower = realm ? static_cast<Function*>(realm->throw_type_error) : nullptr;
         if (!realm_thrower) {
-            if (!Function::s_throw_type_error_) {
-                auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                    [](Context& ctx, std::span<const Value> args, Value this_value) -> Value {
-                        (void)args;
-                        ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
-                        return Value();
-                    });
-                // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
-                PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
-                len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
-                thrower->set_property_descriptor("length", len_desc);
-                PropertyDescriptor name_desc(Value(std::string("")), PropertyAttributes::None);
-                name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
-                thrower->set_property_descriptor("name", name_desc);
-                thrower->prevent_extensions();
-                Function::s_throw_type_error_ = thrower.release();
-            }
-            realm_thrower = static_cast<Function*>(Function::s_throw_type_error_);
+            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+                [](Context& ctx, std::span<const Value> args, Value this_value) -> Value {
+                    (void)args;
+                    ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
+                    return Value();
+                });
+            // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
+            PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
+            len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
+            thrower->set_property_descriptor("length", len_desc);
+            PropertyDescriptor name_desc(Value(std::string("")), PropertyAttributes::None);
+            name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
+            thrower->set_property_descriptor("name", name_desc);
+            thrower->prevent_extensions();
+            realm_thrower = thrower.release();
+            if (realm) realm->throw_type_error = realm_thrower;
         }
 
         PropertyDescriptor callee_desc;
@@ -1988,6 +1973,12 @@ Value Function::construct(Context& ctx, std::span<const Value> args) {
             ? static_cast<Object*>(initial_proto.as_function())
             : initial_proto.as_object();
         pending_proto = proto_obj;
+    } else if (closure_context_) {
+        // No usable "prototype": the default is %Object.prototype% of the
+        // constructor's own realm (GetPrototypeFromConstructor), which is the
+        // running realm's only when the two coincide.
+        Realm* own = closure_context_->realm();
+        if (own && own != g_current_realm) pending_proto = own->object_proto;
     }
     
     // The hint is what the last object this constructor built ended up

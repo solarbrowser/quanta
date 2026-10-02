@@ -21,6 +21,7 @@
 namespace Quanta {
 
 class Engine;
+class Realm;
 class Function;
 class Visitor;
 class Environment;
@@ -118,6 +119,9 @@ private:
         // finding it costs a lookup of `Array` on the global object and two
         // more behind it, per arguments object created.
         Object* arguments_iterator = nullptr;
+        // The realm this global Context is the record of; null on a context
+        // that is not a realm's root.
+        Realm* realm = nullptr;
     };
     std::unique_ptr<BuiltinMaps> builtins_;
 
@@ -359,15 +363,14 @@ public:
     // binding cost a scope lookup plus a property read on every access.
     enum class PrimitiveKind : uint8_t { String, Number, Boolean, BigInt, Symbol, Count };
     static Object* primitive_prototype(PrimitiveKind kind);
+    // The realm this context belongs to: its root global Context's, or the thread's
+    // current realm for a context with none.
+    Realm* realm() const;
     // The realm's %Promise%, captured the same way and for the same reason:
     // Promise.resolve's fast path has to know it is dealing with the untouched
     // constructor before it may skip building a capability.
     static Function* intrinsic_promise();
     void capture_primitive_prototypes();
-    // Forgets the captured intrinsics (they belong to a realm that is going away,
-    // and capture keeps whatever is already there); see
-    // Engine::release_thread_realm_state.
-    static void reset_primitive_prototypes();
 
     Value get_binding(const std::string& name) const;
     bool set_binding(const std::string& name, const Value& value);

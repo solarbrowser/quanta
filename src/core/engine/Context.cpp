@@ -87,6 +87,7 @@ void Context::gc_trace(Visitor& v) const {
     v.visit(this_value_);
     v.visit_object(global_object_);
     if (builtins_) {
+        if (builtins_->realm) builtins_->realm->trace(v);
         for (const auto& e : builtins_->objects) v.visit_object(e.second);
         for (const auto& e : builtins_->functions) v.visit_object(e.second);
         v.visit_object(builtins_->arguments_iterator);
@@ -831,6 +832,8 @@ bool Context::check_execution_depth() const {
 }
 
 void Context::initialize_global_context() {
+    if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
+    builtins_->realm = engine_ ? engine_->realm() : nullptr;
     global_object_ = ObjectFactory::create_object().release();
     this_value_ = global_object_ ? Value(global_object_) : Value();
 
@@ -859,42 +862,37 @@ void Context::initialize_global_context() {
     Object::arm_has_instance_protector();
 }
 
-namespace {
-// One realm per thread for this purpose, matching Generator's own
-// s_generator_prototype_. Never cleared: these live as long as the builtins do.
-thread_local Object* g_primitive_protos[static_cast<size_t>(Context::PrimitiveKind::Count)] = {};
-constinit thread_local Function* g_intrinsic_promise = nullptr;
-}  // namespace
-
-Function* Context::intrinsic_promise() { return g_intrinsic_promise; }
-
-Object* Context::primitive_prototype(PrimitiveKind kind) {
-    return g_primitive_protos[static_cast<size_t>(kind)];
+Function* Context::intrinsic_promise() {
+    Realm* realm = g_current_realm;
+    return realm ? realm->intrinsic_promise : nullptr;
 }
 
-void Context::reset_primitive_prototypes() {
-    for (Object*& proto : g_primitive_protos) proto = nullptr;
-    g_intrinsic_promise = nullptr;
+Object* Context::primitive_prototype(PrimitiveKind kind) {
+    Realm* realm = g_current_realm;
+    return realm ? realm->primitive_protos[static_cast<size_t>(kind)] : nullptr;
+}
+
+Realm* Context::realm() const {
+    const Context* root = builtins_root_ ? builtins_root_ : this;
+    if (root->builtins_ && root->builtins_->realm) return root->builtins_->realm;
+    return g_current_realm;
 }
 
 void Context::capture_primitive_prototypes() {
-    // These are one set per thread, and a second realm standing up its own
-    // intrinsics must not take them over: doing so re-pointed the FIRST realm's
-    // primitive boxing at the new realm's prototypes, so `"".constructor
-    // === String` stopped holding in the realm that created the other one.
-    // Whichever realm gets here first keeps them.
+    // Read off the bindings while they are still pristine -- this runs at the end
+    // of initialize_built_ins, before any script. Each realm keeps its own, so
+    // `"".constructor === String` holds in a realm whatever other realms exist.
+    Realm* realm = this->realm();
+    if (!realm) return;
     static const char* names[] = {"String", "Number", "Boolean", "BigInt", "Symbol"};
     for (size_t i = 0; i < static_cast<size_t>(PrimitiveKind::Count); i++) {
-        if (g_primitive_protos[i]) continue;
         Value ctor = get_binding(names[i]);
         if (!ctor.is_function()) continue;
         Value proto = ctor.as_function()->get_property("prototype");
-        if (proto.is_object()) g_primitive_protos[i] = proto.as_object();
+        if (proto.is_object()) realm->primitive_protos[i] = proto.as_object();
     }
-    if (!g_intrinsic_promise) {
-        Value promise_ctor = get_binding("Promise");
-        if (promise_ctor.is_function()) g_intrinsic_promise = promise_ctor.as_function();
-    }
+    Value promise_ctor = get_binding("Promise");
+    if (promise_ctor.is_function()) realm->intrinsic_promise = promise_ctor.as_function();
 }
 
 void Context::initialize_built_ins() {

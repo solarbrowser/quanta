@@ -92,6 +92,7 @@ Engine::Engine() : initialized_(false), execution_count_(0),
 
     heap_ = new Heap();
     Heap::set_active(heap_);
+    realm_ = std::make_unique<Realm>(this);
     engine_registry().push_back(this);
 
     config_.strict_mode = false;
@@ -110,6 +111,7 @@ Engine::Engine(const Config& config)
 
     heap_ = new Heap();
     Heap::set_active(heap_);
+    realm_ = std::make_unique<Realm>(this);
     engine_registry().push_back(this);
 
     start_time_ = std::chrono::high_resolution_clock::now();
@@ -121,6 +123,11 @@ Engine::~Engine() {
         if (reg[i] == this) { reg[i] = reg.back(); reg.pop_back(); break; }
     }
     shutdown();
+    // The thread's current realm must never name one that is gone: hand it to a
+    // realm that is still alive, if any.
+    if (g_current_realm == realm_.get()) {
+        g_current_realm = reg.empty() ? nullptr : reg.front()->realm();
+    }
     if (reg.empty()) release_thread_realm_state();
     if (Heap::active_or_null() == heap_) {
         Heap::set_active(nullptr);
@@ -130,12 +137,11 @@ Engine::~Engine() {
 void Engine::release_thread_realm_state() {
     Object::current_context_ = nullptr;
     EventLoop::instance().clear();
-    Context::reset_primitive_prototypes();
-    Function::reset_realm_intrinsics();
     Iterator::reset_realm_prototypes();
     Generator::reset_realm_prototypes();
     AsyncGenerator::reset_realm_prototypes();
     reset_collection_prototypes();
+    Function::reset_realm_intrinsics();
 }
 
 bool Engine::initialize() {
@@ -143,6 +149,13 @@ bool Engine::initialize() {
         return true;
     }
     HeapScope heap_scope(heap_);
+    // The builtins register their intrinsics into the current realm, so it has to be
+    // this one for the duration. A thread's first realm stays current afterwards
+    // (a host calls into it directly); realms made later, from inside running
+    // script, hand the thread back to whoever was running.
+    const bool first_realm = g_current_realm == nullptr;
+    RealmScope realm_scope(realm_.get());
+    if (first_realm) realm_scope.commit();
 
     try {
         // Temporarily null out current_context_ so that non-configurable property
@@ -222,6 +235,7 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
     // Realm-safe: $262.createRealm engines share the thread; every entry
     // point re-installs its own heap for the duration of the call.
     HeapScope heap_scope(heap_);
+    RealmScope realm_scope(realm_.get());
 
     try {
         Lexer::LexerOptions lex_opts;
@@ -547,6 +561,7 @@ Engine::Result Engine::execute_internal(std::shared_ptr<const std::string> share
                                         const std::string& filename) {
     const std::string& source = *shared_source;
     HeapScope heap_scope(heap_);
+    RealmScope realm_scope(realm_.get());
     try {
         execution_count_++;
         

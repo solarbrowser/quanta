@@ -570,13 +570,9 @@ void register_function_builtins(Context& ctx) {
             thrower->set_property_descriptor("name", name_desc);
             thrower->prevent_extensions();
         }
-        Function::s_throw_type_error_ = thrower;
-        // %ThrowTypeError% is defined ONCE PER REALM (not a single shared
-        // intrinsic across every live realm) -- bind THIS realm's own instance
-        // by name so 2+-realm code (arguments.callee's poison pill, see
-        // Function::build_arguments_object) can find it instead of whichever
-        // thread_local Function::s_throw_type_error_ happens to hold.
-        ctx.create_binding("@@ThrowTypeError", Value(thrower));
+        // %ThrowTypeError% is defined ONCE PER REALM: this realm's own instance is
+        // what arguments.callee's poison pill (Function::build_arguments_object) uses.
+        if (Realm* realm = ctx.realm()) realm->throw_type_error = thrower;
 
         PropertyDescriptor caller_desc;
         caller_desc.set_getter(thrower);

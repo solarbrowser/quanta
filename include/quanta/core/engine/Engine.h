@@ -11,6 +11,7 @@
 #include <span>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Realm.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/parser/AST.h"
@@ -72,6 +73,8 @@ private:
     // metadata must stay valid until process exit. The collector's shutdown
     // protocol will make heaps destructible.
     Heap* heap_;
+    // This engine's intrinsics; see Realm.
+    std::unique_ptr<Realm> realm_;
     std::unique_ptr<Context> global_context_;
     std::unique_ptr<ModuleLoader> module_loader_;
 
@@ -267,6 +270,7 @@ public:
     size_t get_heap_size() const;
     void force_gc();
     Heap* get_heap() const { return heap_; }
+    Realm* realm() const { return realm_.get(); }
     
     void enable_profiler(bool enable);
     void enable_debugger(bool enable);

@@ -27,6 +27,7 @@
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/DOMObject.h"
+#include "quanta/core/engine/Realm.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
@@ -4141,53 +4142,51 @@ void return_to_pool(std::unique_ptr<Object> obj) {
     (void)obj;
 }
 
-// Thread-local: each agent builds and owns its own intrinsics.
-static thread_local Object* object_prototype_object = nullptr;
-static thread_local Object* array_prototype_object = nullptr;
-static thread_local Object* function_prototype_object = nullptr;
-
+// The running realm's own (see Realm): a realm made later on the same thread has
+// its own, and does not move these.
 void set_object_prototype(Object* prototype) {
-    object_prototype_object = prototype;
+    if (Realm* realm = g_current_realm) realm->object_proto = prototype;
 }
 
 Object* get_object_prototype() {
-    return object_prototype_object;
+    Realm* realm = g_current_realm;
+    return realm ? realm->object_proto : nullptr;
 }
 
 void set_array_prototype(Object* prototype) {
-    array_prototype_object = prototype;
+    if (Realm* realm = g_current_realm) realm->array_proto = prototype;
 }
 
 Object* get_array_prototype() {
-    return array_prototype_object;
+    Realm* realm = g_current_realm;
+    return realm ? realm->array_proto : nullptr;
 }
 
 void set_function_prototype(Object* prototype) {
-    function_prototype_object = prototype;
+    if (Realm* realm = g_current_realm) realm->function_proto = prototype;
 }
 
 Object* get_function_prototype() {
-    return function_prototype_object;
+    Realm* realm = g_current_realm;
+    return realm ? realm->function_proto : nullptr;
 }
 
-static thread_local Function* pristine_function_call_object = nullptr;
-
 void set_pristine_function_call(Function* fn) {
-    pristine_function_call_object = fn;
+    if (Realm* realm = g_current_realm) realm->pristine_call = fn;
 }
 
 Function* get_pristine_function_call() {
-    return pristine_function_call_object;
+    Realm* realm = g_current_realm;
+    return realm ? realm->pristine_call : nullptr;
 }
 
-static thread_local Function* pristine_function_apply_object = nullptr;
-
 void set_pristine_function_apply(Function* fn) {
-    pristine_function_apply_object = fn;
+    if (Realm* realm = g_current_realm) realm->pristine_apply = fn;
 }
 
 Function* get_pristine_function_apply() {
-    return pristine_function_apply_object;
+    Realm* realm = g_current_realm;
+    return realm ? realm->pristine_apply : nullptr;
 }
 
 Value box_primitive_this_sloppy(Context& ctx, const Value& this_value) {
@@ -4244,11 +4243,11 @@ std::unique_ptr<Object> create_array(uint32_t length) {
 
     array->set_length(length);
 
-    if (array_prototype_object) {
+    if (Object* array_proto = get_array_prototype()) {
         // The array is made here and returned; nothing has seen its chain, so
         // the prototype cache has nothing to retire. Every array literal took
         // this path.
-        array->initialize_prototype_of_new(array_prototype_object);
+        array->initialize_prototype_of_new(array_proto);
     }
 
     return array;
