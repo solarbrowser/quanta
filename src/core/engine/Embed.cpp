@@ -5,7 +5,9 @@
  */
 
 #include "quanta/Embed.h"
+#include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/runtime/Promise.h"
 #include "quanta/core/runtime/Symbol.h"
 
 #include <cmath>
@@ -122,7 +124,9 @@ std::unique_ptr<Function> make_native(const char* name, NativeFn fn, int length)
 
 std::unique_ptr<Runtime> Runtime::Create() {
     std::unique_ptr<Runtime> rt(new Runtime());
-    rt->engine_ = std::make_unique<Engine>(Engine::Config{});
+    Engine::Config config;
+    config.host_drives_event_loop = true;
+    rt->engine_ = std::make_unique<Engine>(config);
     if (!rt->engine_->initialize()) return nullptr;
     return rt;
 }
@@ -146,9 +150,27 @@ void Runtime::CollectGarbage() {
     engine_->force_gc();
 }
 
+void Runtime::PerformMicrotaskCheckpoint() {
+    HeapScope heap_scope(engine_->get_heap());
+    Context& ctx = GetContext();
+    ctx.drain_microtasks();
+    Promise::report_unhandled_rejections();
+}
+
+bool Runtime::RunDueTimers() {
+    HeapScope heap_scope(engine_->get_heap());
+    return EventLoop::instance().run_due_timers();
+}
+
+std::optional<int64_t> Runtime::NextTimerDelayMs() {
+    auto delay = EventLoop::instance().next_timer_delay();
+    if (!delay) return std::nullopt;
+    return delay->count();
+}
+
 // ---- Exposing a class to script -------------------------------------------
 
-ClassRef DefineClass(Context&, const char* name, NativeFn constructor, int length, Object* parentProto) {
+ClassRef DefineClass(Context& ctx, const char* name, NativeFn constructor, int length, Object* parentProto) {
     auto proto = ObjectFactory::create_object(parentProto);
     Object* proto_ptr = proto.get();
 
@@ -164,6 +186,12 @@ ClassRef DefineClass(Context&, const char* name, NativeFn constructor, int lengt
     DefineToStringTag(proto_ptr, name);
     ctor->set_property("prototype", Value(proto.release()), PropertyAttributes::None);
     ctor.release();
+    // The host keeps ClassRef's pointers in C++ variables the collector cannot
+    // see, and an interface script never names (an iterator class) would
+    // otherwise be swept. The prototype is kept by the constructor's own
+    // non-configurable "prototype" property.
+    ctx.root_built_in_object(std::string("@@embed:") + name + "@" +
+                             std::to_string(reinterpret_cast<uintptr_t>(ctor_ptr)), ctor_ptr);
     return {ctor_ptr, proto_ptr};
 }
 
@@ -287,6 +315,25 @@ Object* GetIteratorPrototype(Context& ctx) {
 
 Value MakeIterResult(Context& ctx, const Value& value, bool done) {
     return Iterator::create_iterator_result(value, done, &ctx);
+}
+
+// ---- Promises -------------------------------------------------------------
+
+PromiseCapability NewPromiseCapability(Context& ctx) {
+    Object* promise_ctor = ctx.get_built_in_object("Promise");
+    if (!promise_ctor) {
+        ctx.throw_type_error("Promise is not available");
+        return {};
+    }
+    Value pair = Promise::withResolvers(ctx, {}, Value(promise_ctor));
+    if (ctx.has_exception()) return {};
+    return {Get(ctx, pair, "promise"), Get(ctx, pair, "resolve"), Get(ctx, pair, "reject")};
+}
+
+// ---- Memory ---------------------------------------------------------------
+
+void ReportExternalAllocation(size_t bytes) {
+    Heap::note_offheap_bytes(bytes);
 }
 
 // ---- Errors ---------------------------------------------------------------

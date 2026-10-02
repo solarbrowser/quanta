@@ -12,6 +12,13 @@
 // (DOMObject), plus the small set of operations needed to expose a class built
 // on it to script.
 //
+// Building against it: `./build.sh lib` produces build/lib/libquanta.a, which
+// already contains PCRE2, utf8proc and mimalloc. A program needs only
+//     clang++ -std=c++20 -I<quanta>/include app.cpp libquanta.a -pthread
+// No -D flags: nothing in the headers depends on one. To also have the whole
+// process allocate through mimalloc, name build/lib/quanta_mimalloc_override.o on
+// the link line; leave it out and the host keeps its own allocator.
+//
 // Threading: a Runtime and everything allocated in it belong to the thread that
 // created it. Any number of Runtimes may live on one thread; none may move to
 // another.
@@ -32,6 +39,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -76,6 +84,23 @@ public:
     // interpreter's safepoints.
     void CollectGarbage();
 
+    // The event loop is the host's. Evaluate runs a script and drains the job
+    // queue (promise reactions) once, and never waits for a timer. Everything
+    // below is how the host takes its turns:
+    //
+    // Runs every queued promise job, including ones those jobs queue, then
+    // reports rejections nobody handled. Call it after calling into script from
+    // the host (Call, resolving a promise) -- not from inside a native function,
+    // where the script that called it is still on the stack.
+    void PerformMicrotaskCheckpoint();
+    // Fires the built-in setTimeout/setInterval timers that are due, without
+    // waiting for any that are not, and runs the job queue after each. A host
+    // that defines its own timers has no use for these two.
+    bool RunDueTimers();
+    // Milliseconds until the next built-in timer is due (0 if one already is);
+    // nothing when there are none.
+    std::optional<int64_t> NextTimerDelayMs();
+
 private:
     Runtime() = default;
     std::unique_ptr<Engine> engine_;
@@ -90,7 +115,9 @@ struct ClassRef {
 
 // Creates the interface object and its prototype, linked both ways. The
 // prototype inherits parentProto, or Object.prototype when null; it carries
-// @@toStringTag set to `name`. Not yet visible to script: see DefineGlobal.
+// @@toStringTag set to `name`. Both live as long as the realm, so the pointers
+// in ClassRef can be kept in ordinary C++ variables. Not yet visible to
+// script: see DefineGlobal.
 ClassRef DefineClass(Context& ctx, const char* name, NativeFn constructor, int length,
                      Object* parentProto = nullptr);
 
@@ -165,6 +192,30 @@ Value Call(Context& ctx, const Value& callable, const Value& thisValue, Args arg
 // next() with DefineMethod and builds each result with MakeIterResult.
 Object* GetIteratorPrototype(Context& ctx);
 Value MakeIterResult(Context& ctx, const Value& value, bool done);
+
+// ---- Promises -------------------------------------------------------------
+
+// A pending promise and the functions that settle it, as `new Promise` hands
+// them to its executor: resolve adopts a thenable's state, reject takes any
+// reason. Settle with Call(ctx, cap.resolve, Undefined(), Args(&value, 1)), then
+// run the host's PerformMicrotaskCheckpoint. The three values are cells like
+// any other: a host object that keeps them in C++ members must Mark them in
+// Visit.
+struct PromiseCapability {
+    Value promise;
+    Value resolve;
+    Value reject;
+};
+PromiseCapability NewPromiseCapability(Context& ctx);
+
+// ---- Memory ---------------------------------------------------------------
+
+// Tells the collector about memory a host object owns outside the cell heap (a
+// decoded image, a response body), so a program that makes many small cells
+// holding large buffers collects often enough. Call it once, with the size, when
+// the memory is acquired; there is no matching release, because the count is
+// reset by each major collection.
+void ReportExternalAllocation(size_t bytes);
 
 // ---- Errors ---------------------------------------------------------------
 

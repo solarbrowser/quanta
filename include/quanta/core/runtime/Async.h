@@ -18,6 +18,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <chrono>
+#include <optional>
 #include <cstdint>
 #include "quanta/core/runtime/FiberState.h"
 
@@ -385,6 +386,10 @@ private:
     // still in use even if nothing else reaches it.
     std::unordered_map<Context*, int> context_use_count_;
 
+    // One timer's callback and what follows it (re-arm or release, then the
+    // microtask drain); shared by the run-to-exhaustion and run-what-is-due loops.
+    void fire_timer(TimerEntry entry);
+
 public:
     EventLoop();
     ~EventLoop() = default;
@@ -403,6 +408,12 @@ public:
 
     // Drives timers to exhaustion in real time. Returns false if the safety cap (wall-clock or iteration count) tripped first.
     bool run_pending_timers(Context& ctx);
+    // For a host that owns the loop: fires the timers whose time has come and
+    // returns without waiting for any that have not. True if any fired.
+    bool run_due_timers();
+    // How long until the next timer is due (zero if it already is); nothing
+    // when there are none. What a host sleeps on between turns.
+    std::optional<std::chrono::milliseconds> next_timer_delay() const;
 
     // The single, shared job queue -- see microtask_queue_'s own doc comment.
     void queue_microtask(std::function<void()> task, std::vector<Value> keep_alive);

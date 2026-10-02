@@ -411,6 +411,10 @@ void Engine::run_event_loop_to_completion(Context& ctx) {
     if (ctx.has_pending_microtasks()) {
         ctx.drain_microtasks();
     }
+    if (config_.host_drives_event_loop) {
+        Promise::report_unhandled_rejections();
+        return;
+    }
 
     // Without this a long enough chain simply stopped partway, every timer still
     // queued was dropped, and the script exited reporting success.

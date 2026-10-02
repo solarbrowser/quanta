@@ -502,6 +502,11 @@ public:
     }
 
     void register_built_in_object(const std::string& name, Object* object);
+    // Roots `object` for the life of the realm without giving it a global name:
+    // what a host's interface object needs when script reaches it only through
+    // other objects (an iterator class nobody names), and so what would
+    // otherwise be swept while the host still holds a raw pointer to it.
+    void root_built_in_object(const std::string& key, Object* object);
     void register_built_in_function(const std::string& name, Function* function);
     Object* get_built_in_object(const std::string& name) const;
     Object* regexp_prototype() const;

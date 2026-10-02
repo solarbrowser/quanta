@@ -494,6 +494,13 @@ Value Promise::withResolvers(Context& ctx, std::span<const Value> args, Value re
             return Value();
         });
 
+    // Invisible-capture rule, as in the Promise constructor: the closures hold
+    // the promise only in lambda storage, which the collector cannot see, and a
+    // caller that keeps just resolve/reject (a host settling it later) would
+    // otherwise have them settle a swept promise.
+    resolve_fn->set_property("[[Promise]]", Value(promise));
+    reject_fn->set_property("[[Promise]]", Value(promise));
+
     result_obj->set_property("promise", Value(promise));
     result_obj->set_property("resolve", Value(resolve_fn.release()));
     result_obj->set_property("reject", Value(reject_fn.release()));

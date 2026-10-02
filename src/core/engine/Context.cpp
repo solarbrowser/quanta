@@ -752,9 +752,13 @@ void Context::set_arguments_iterator(Object* fn) {
     owner->builtins_->arguments_iterator = fn;
 }
 
-void Context::register_built_in_object(const std::string& name, Object* object) {
+void Context::root_built_in_object(const std::string& key, Object* object) {
     if (!builtins_) builtins_ = std::make_unique<BuiltinMaps>();
-    builtins_->objects[name] = object;
+    builtins_->objects[key] = object;
+}
+
+void Context::register_built_in_object(const std::string& name, Object* object) {
+    root_built_in_object(name, object);
 
     if (global_object_) {
         Value binding_value;

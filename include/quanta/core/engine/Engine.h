@@ -41,6 +41,12 @@ public:
         // GC to web content. Off by default; only a test262-running host
         // (console.cpp's --test262) turns it on.
         bool expose_test262_globals = false;
+        // The CLI runs a script and then keeps going until every timer has
+        // fired, sleeping as long as that takes. A host with an event loop of
+        // its own cannot be blocked like that: with this set, running a script
+        // drains the microtask queue and stops, and the host fires timers
+        // itself (EventLoop::run_due_timers) when its own loop says to.
+        bool host_drives_event_loop = false;
     };
 
     struct Result {

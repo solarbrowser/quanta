@@ -178,7 +178,7 @@ LIBQUANTA = $(BUILD_DIR)/libquanta.a
 CONSOLE_MAIN = console.cpp
 
 # Main targets
-.PHONY: all clean debug release asan setup-deps heap-test shape-test
+.PHONY: all clean debug release asan setup-deps heap-test shape-test lib embed-test
 
 # Bare `make` builds release directly (no separate opt-in step needed).
 .DEFAULT_GOAL := release
@@ -245,6 +245,37 @@ $(LIBQUANTA): $(ALL_OBJECTS)
 	@echo "[LIB] Creating static library" >> $(LOG_FILE)
 	@ar rcs $@ $^
 	@echo "[OK] Library created: $@"
+
+# Embedding: the engine without console.cpp, in $(BUILD_DIR)/lib. Unlike
+# $(LIBQUANTA) above (which only the console executable links, and which is why
+# MiMalloc.o can sit in it), this archive leaves the operator-new replacement out:
+# it changes allocation for the whole process, which is the embedding program's
+# decision, and an archive member nothing references is dropped by the linker
+# anyway. It is shipped beside the archive as a plain object, which a link line
+# always includes. Mirrors `./build.sh lib`.
+EMBED_LIB_DIR = $(BUILD_DIR)/lib
+EMBED_LIB = $(EMBED_LIB_DIR)/libquanta.a
+EMBED_OVERRIDE = $(EMBED_LIB_DIR)/quanta_mimalloc_override.o
+
+lib: setup-deps $(EMBED_LIB) $(EMBED_OVERRIDE)
+	@echo "[OK] Library: $(EMBED_LIB)"
+
+$(EMBED_LIB): $(filter-out $(MIMALLOC_OVERRIDE_OBJ),$(ALL_OBJECTS))
+	@$(MKDIR_P) $(EMBED_LIB_DIR)
+	@$(RM) $@
+	@ar rcs $@ $^
+
+$(EMBED_OVERRIDE): $(MIMALLOC_OVERRIDE_OBJ)
+	@$(MKDIR_P) $(EMBED_LIB_DIR)
+	@cp $< $@
+
+# Acceptance tests for the embedding surface, linked against the archive the
+# way an embedder would.
+embed-test: lib
+	@$(MKDIR_P) $(BIN_DIR)
+	@echo "[TEST] Building embed-test..."
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -o $(BIN_DIR)/embed-test tests/embed/embed_test.cpp $(EMBED_LIB) $(LIBS)
+	@$(BIN_DIR)/embed-test
 
 # Main console executable
 $(BIN_DIR)/quanta$(EXE_EXT): $(CONSOLE_MAIN) $(LIBQUANTA) $(MIMALLOC_OVERRIDE_OBJ)

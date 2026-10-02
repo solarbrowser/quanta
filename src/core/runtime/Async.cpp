@@ -1547,6 +1547,7 @@ void EventLoop::clear_timer(int64_t id) {
 }
 
 bool EventLoop::run_pending_timers(Context& ctx) {
+    (void)ctx;
     auto start = std::chrono::steady_clock::now();
     const auto wall_cap = std::chrono::seconds(8);
     const int64_t iteration_cap = 100000;
@@ -1570,35 +1571,67 @@ bool EventLoop::run_pending_timers(Context& ctx) {
             std::this_thread::sleep_until(entry.deadline);
         }
 
-        Value result = entry.callback->call(*entry.call_ctx, entry.bound_args);
-        (void)result;
-        if (entry.call_ctx->has_exception()) {
-            Value exc = entry.call_ctx->get_exception();
-            entry.call_ctx->clear_exception();
-            std::cerr << "Uncaught (in timer) " << exc.to_string() << std::endl;
-        }
-
-        bool still_active = entry.interval_ms >= 0 && !cancelled_ids_.count(entry.id);
-        Object* global = entry.call_ctx->get_global_object();
-        if (still_active) {
-            TimerEntry next = entry;
-            next.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(entry.interval_ms);
-            timers_.push(std::move(next));
-        } else {
-            cancelled_ids_.erase(entry.id);
-            release_context(entry.call_ctx);
-            if (global) {
-                global->delete_internal_slot("__timer_" + std::to_string(entry.id) + "_cb");
-                for (size_t i = 0; i < entry.bound_args.size(); i++) {
-                    global->delete_internal_slot("__timer_" + std::to_string(entry.id) + "_arg" + std::to_string(i));
-                }
-            }
-        }
-
-        // Drain the shared job queue here so jobs queued during this callback run before the next timer fires.
-        drain_microtasks();
+        fire_timer(std::move(entry));
     }
     return true;
+}
+
+bool EventLoop::run_due_timers() {
+    bool ran = false;
+    // A repeating timer re-arms for a time in the future, so each entry is
+    // visited at most once per call and a 0ms interval cannot hold the host here.
+    const auto now = std::chrono::steady_clock::now();
+    while (!timers_.empty() && timers_.top().deadline <= now) {
+        TimerEntry entry = timers_.top();
+        timers_.pop();
+
+        if (cancelled_ids_.count(entry.id)) {
+            cancelled_ids_.erase(entry.id);
+            release_context(entry.call_ctx);
+            continue;
+        }
+
+        fire_timer(std::move(entry));
+        ran = true;
+    }
+    return ran;
+}
+
+std::optional<std::chrono::milliseconds> EventLoop::next_timer_delay() const {
+    if (timers_.empty()) return std::nullopt;
+    auto left = timers_.top().deadline - std::chrono::steady_clock::now();
+    if (left < std::chrono::steady_clock::duration::zero()) left = std::chrono::steady_clock::duration::zero();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(left);
+}
+
+void EventLoop::fire_timer(TimerEntry entry) {
+    Value result = entry.callback->call(*entry.call_ctx, entry.bound_args);
+    (void)result;
+    if (entry.call_ctx->has_exception()) {
+        Value exc = entry.call_ctx->get_exception();
+        entry.call_ctx->clear_exception();
+        std::cerr << "Uncaught (in timer) " << exc.to_string() << std::endl;
+    }
+
+    bool still_active = entry.interval_ms >= 0 && !cancelled_ids_.count(entry.id);
+    Object* global = entry.call_ctx->get_global_object();
+    if (still_active) {
+        TimerEntry next = entry;
+        next.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(entry.interval_ms);
+        timers_.push(std::move(next));
+    } else {
+        cancelled_ids_.erase(entry.id);
+        release_context(entry.call_ctx);
+        if (global) {
+            global->delete_internal_slot("__timer_" + std::to_string(entry.id) + "_cb");
+            for (size_t i = 0; i < entry.bound_args.size(); i++) {
+                global->delete_internal_slot("__timer_" + std::to_string(entry.id) + "_arg" + std::to_string(i));
+            }
+        }
+    }
+
+    // Drain the shared job queue here so jobs queued during this callback run before the next timer fires.
+    drain_microtasks();
 }
 
 void EventLoop::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive) {

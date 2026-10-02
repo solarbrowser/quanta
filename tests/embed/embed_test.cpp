@@ -11,8 +11,10 @@
 #include "quanta/Embed.h"
 #include "quanta/core/gc/Collector.h"
 
+#include <chrono>
 #include <cstdio>
 #include <string>
+#include <thread>
 
 using namespace Quanta;
 using namespace Quanta::Embed;
@@ -265,6 +267,15 @@ static Value counter_get_prop(Context& ctx, Value, Args args, Value) {
     return Get(ctx, args[0], ToUsvUtf8(ctx, args[1]));
 }
 
+static Value counter_pending(Context& ctx, Value, Args, Value) {
+    PromiseCapability cap = NewPromiseCapability(ctx);
+    if (HasException(ctx)) return Undefined();
+    Value global(ctx.get_global_object());
+    Set(ctx, global, "__resolve", cap.resolve);
+    Set(ctx, global, "__reject", cap.reject);
+    return cap.promise;
+}
+
 static Value counter_iterator(Context& ctx, Value thisValue, Args, Value) {
     Counter* c = this_counter(ctx, thisValue);
     if (!c) return Undefined();
@@ -298,6 +309,7 @@ static void define_counter(Runtime& rt) {
     DefineStaticMethod(counter.constructor, "range", counter_range, 1);
     DefineStaticMethod(counter.constructor, "keysOf", counter_keys_of, 1);
     DefineStaticMethod(counter.constructor, "getProp", counter_get_prop, 2);
+    DefineStaticMethod(counter.constructor, "pending", counter_pending, 0);
     // Defined through the same call as any method; its key is the well-known
     // symbol's property key.
     ClassRef iterator = DefineClass(ctx, "CounterIterator", counter_construct, 0, GetIteratorPrototype(ctx));
@@ -419,6 +431,73 @@ static void test_script_driven_gc(Runtime& rt) {
     CHECK(g_counters_alive < 2100);
 }
 
+static void settle(Runtime& rt, const char* which, const Value& with) {
+    Context& ctx = rt.GetContext();
+    Value fn = Get(ctx, Value(ctx.get_global_object()), which);
+    Call(ctx, fn, Undefined(), Args(&with, 1));
+    CHECK(!HasException(ctx));
+}
+
+static void test_promises_and_microtasks(Runtime& rt) {
+    Context& ctx = rt.GetContext();
+
+    // A job queued by script runs inside Evaluate: the host did not have to ask.
+    EXPECT_JS("(() => { globalThis.queued = 0; Promise.resolve().then(() => { globalThis.queued = 1; });"
+              "return 'scheduled'; })()", "scheduled");
+    EXPECT_JS("globalThis.queued", "1");
+
+    // A promise the host settles from outside script: nothing runs until the
+    // host takes its microtask checkpoint.
+    CHECK(rt.Evaluate("globalThis.got = 'none'; Counter.pending().then(v => { globalThis.got = v; });").ok);
+    EXPECT_JS("globalThis.got", "none");
+    settle(rt, "__resolve", FromUint32(42));
+    EXPECT_JS("globalThis.got", "none");
+    rt.PerformMicrotaskCheckpoint();
+    EXPECT_JS("globalThis.got", "42");
+
+    // resolve adopts a thenable rather than wrapping it.
+    CHECK(rt.Evaluate("globalThis.adopted = 'none'; globalThis.thenable = { then(done) { done('via then'); } };"
+                      "Counter.pending().then(v => { globalThis.adopted = v; });").ok);
+    settle(rt, "__resolve", Get(ctx, Value(ctx.get_global_object()), "thenable"));
+    rt.PerformMicrotaskCheckpoint();
+    EXPECT_JS("globalThis.adopted", "via then");
+
+    CHECK(rt.Evaluate("globalThis.why = 'none'; Counter.pending().catch(e => { globalThis.why = e; });").ok);
+    settle(rt, "__reject", FromUtf8(ctx, "because"));
+    rt.PerformMicrotaskCheckpoint();
+    EXPECT_JS("globalThis.why", "because");
+}
+
+static void test_host_drives_timers(Runtime& rt) {
+    CHECK(!rt.NextTimerDelayMs().has_value());
+    CHECK(!rt.RunDueTimers());
+
+    // Evaluate returns without sleeping through or firing the timer.
+    CHECK(rt.Evaluate("globalThis.tick = 0; setTimeout(() => { globalThis.tick = 1; }, 0);").ok);
+    EXPECT_JS("globalThis.tick", "0");
+    CHECK(rt.NextTimerDelayMs().has_value());
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    CHECK(rt.RunDueTimers());
+    EXPECT_JS("globalThis.tick", "1");
+    CHECK(!rt.NextTimerDelayMs().has_value());
+
+    // A timer that is not due is left alone, and the host is told how long to wait.
+    CHECK(rt.Evaluate("setTimeout(() => { globalThis.tick = 2; }, 60000);").ok);
+    CHECK(!rt.RunDueTimers());
+    EXPECT_JS("globalThis.tick", "1");
+    std::optional<int64_t> wait = rt.NextTimerDelayMs();
+    CHECK(wait.has_value() && *wait > 50000 && *wait <= 60000);
+}
+
+static void test_external_allocation_requests_collection() {
+    Heap::clear_gc_request();
+    CHECK(!Heap::gc_requested());
+    ReportExternalAllocation(size_t(1) << 30);
+    CHECK(Heap::gc_requested());
+    Heap::clear_gc_request();
+}
+
 int main() {
     std::unique_ptr<Runtime> rt = Runtime::Create();
     if (!rt) {
@@ -433,6 +512,9 @@ int main() {
     test_to_uint32(*rt);
     test_class_from_script(*rt);
     test_script_driven_gc(*rt);
+    test_promises_and_microtasks(*rt);
+    test_host_drives_timers(*rt);
+    test_external_allocation_requests_collection();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would
