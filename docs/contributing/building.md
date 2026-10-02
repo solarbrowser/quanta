@@ -66,6 +66,37 @@ This build is intended for debugging crashes, not intended for normal use.
  make asan
 ```
 
+#### Library
+
+This build is intended for embedding Quanta in another program: the engine without the command-line front end, as a static library.
+
+```
+ ./build.sh lib
+ # or
+ make lib
+```
+
+It produces `build/lib/libquanta.a` (PCRE2, utf8proc and mimalloc included) and `build/lib/quanta_mimalloc_override.o`, the opt-in object that makes the whole process allocate through mimalloc; it is kept out of the archive on purpose. See [embedding](../embedding/README.md) for how to link it.
+
+To build the library and run the embedding tests against it:
+
+```
+ ./build.sh embed-test
+ # or
+ make embed-test
+```
+
+### Targeting a CPU
+
+By default `./build.sh` compiles for the machine it runs on (`-march=native -mtune=native`), which is right for building for yourself and wrong for a binary you hand to someone else: it can contain instructions their CPU does not have and die with "illegal instruction". Set `QUANTA_ARCH_FLAGS` to build for a fixed target instead:
+
+```
+ QUANTA_ARCH_FLAGS='-march=x86-64 -msse4.2 -mavx -mavx2 -mtune=haswell' ./build.sh   # Linux x86-64
+ QUANTA_ARCH_FLAGS='-mcpu=apple-m1' ./build.sh                                        # Apple Silicon
+```
+
+Those are the values the release builds in CI use. `make` does not read this variable.
+
 ## 4. Building
 
 If you have running computer, follow the steps under your operating system.
@@ -133,3 +164,5 @@ build-windows.bat # also you can use make cmake
 A successful build may produce:
 
 `build` folder in root of Quanta which contains `bin` and `obj` folders along build logs and static library, bin folder contains executable for Quanta
+
+`./build.sh lib` / `make lib` additionally produce `build/lib`, holding the embedding library (`libquanta.a`) and the optional allocator object (`quanta_mimalloc_override.o`).
