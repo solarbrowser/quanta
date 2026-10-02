@@ -76,6 +76,11 @@ public:
     // Value bits -> live cell base, or nullptr. Interior pointers resolve
     // for block cells; large cells match on their payload range.
     static ProbeResult probe_word(uint64_t word);
+    // While a heap is being retired (Collector::retire_heap) a stale word that
+    // resolves into it is not a root: its owner is gone, and tracing what it
+    // names would follow pointers into contexts that were freed with it. Only
+    // the precise roots still reach it.
+    static void set_retiring(Heap* heap) { retiring_ = heap; }
 
     static bool test_mark(const ProbeResult& p) {
         if (!p.cell) return true;  // non-cell: nothing to mark
@@ -235,6 +240,7 @@ private:
     static void free_large(void* p);
 
     static constinit thread_local Heap* active_;
+    static constinit thread_local Heap* retiring_;
     static constinit thread_local bool gc_requested_;
     static constinit thread_local size_t bytes_since_major_;
     static constinit thread_local size_t live_after_major_;

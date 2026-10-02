@@ -5,6 +5,7 @@
  */
 
 #include "quanta/Embed.h"
+#include "quanta/core/gc/Collector.h"
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Promise.h"
@@ -131,7 +132,19 @@ std::unique_ptr<Runtime> Runtime::Create() {
     return rt;
 }
 
-Runtime::~Runtime() = default;
+Runtime::~Runtime() {
+    if (!engine_) return;
+    Heap* heap = engine_->get_heap();
+    // A major cycle is incremental and can be open right now, with this engine's
+    // contexts and environments queued to be traced. Let it end while they are
+    // still there: tracing them after they are freed would corrupt the marks.
+    if (Collector::major_in_progress()) Collector::collect();
+    // Contexts next (they name cells), then the cells: nothing the runtime built
+    // is reachable once it is gone, and a collection that still traced one would
+    // follow its pointers into freed contexts.
+    engine_.reset();
+    Collector::retire_heap(heap);
+}
 
 Context& Runtime::GetContext() {
     return *engine_->get_global_context();

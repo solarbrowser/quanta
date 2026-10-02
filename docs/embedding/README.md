@@ -94,7 +94,7 @@ Prints `Hello, Ada!`. `class Admin extends Greeter {}` works too: `PrototypeFrom
 
 ## The model in four rules
 
-- **One thread per Runtime.** A `Runtime` and everything allocated in it belong to the thread that created it. Several Runtimes may live on one thread; none may move to another. A Runtime's heap is never released when it is destroyed (the engine's heap is immortal by design), so a host that cares about shutdown cost ends the process rather than tearing down.
+- **One thread per Runtime, one Runtime at a time.** A `Runtime` and everything allocated in it belong to the thread that created it, and none may move to another. The engine keeps a few per-realm intrinsics (the iterator, generator and collection prototypes, ...) in thread-wide state, so a second Runtime made while the first exists would take them over: destroy a Runtime before making the next. Any number may follow one another; destroying one runs a collection that frees everything it built, and nothing of it may be used afterwards.
 - **Errors are a flag, not a return value.** A native function reports failure by calling `ThrowTypeError(ctx, ...)` and returning (the returned value is ignored while an exception is pending). The same flag is how the engine reports failure back: after `Get`, `Set`, `Call`, `ToUsvUtf8`, `ToUint32` or anything else that can run script, check `HasException(ctx)` and return.
 - **The event loop is the host's.** `Evaluate` runs a script and drains the promise job queue once; it never sleeps waiting for a timer. See [event-loop.md](event-loop.md).
 - **C++ members do not keep cells alive.** Only a native object's `Visit()` does. See [native-objects.md](native-objects.md); it is the part to read before writing a class.

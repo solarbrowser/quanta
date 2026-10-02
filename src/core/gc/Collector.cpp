@@ -1398,6 +1398,12 @@ std::chrono::microseconds next_slice_budget() {
 
 }
 
+void Collector::retire_heap(Heap* heap) {
+    Heap::set_retiring(heap);
+    collect();
+    Heap::set_retiring(nullptr);
+}
+
 void Collector::collect() {
     run_major_slice(std::chrono::microseconds(-1));
 }

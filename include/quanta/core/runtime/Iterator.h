@@ -70,6 +70,8 @@ public:
     static constinit thread_local Object* s_string_iterator_prototype_;
     static constinit thread_local Object* s_map_iterator_prototype_;
     static constinit thread_local Object* s_set_iterator_prototype_;
+    // Forgets the above; see Engine::release_thread_realm_state.
+    static void reset_realm_prototypes();
 
 protected:
     IteratorResult next_default();

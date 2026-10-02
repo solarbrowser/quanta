@@ -872,6 +872,11 @@ Object* Context::primitive_prototype(PrimitiveKind kind) {
     return g_primitive_protos[static_cast<size_t>(kind)];
 }
 
+void Context::reset_primitive_prototypes() {
+    for (Object*& proto : g_primitive_protos) proto = nullptr;
+    g_intrinsic_promise = nullptr;
+}
+
 void Context::capture_primitive_prototypes() {
     // These are one set per thread, and a second realm standing up its own
     // intrinsics must not take them over: doing so re-pointed the FIRST realm's

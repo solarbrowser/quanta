@@ -211,6 +211,8 @@ public:
     static constinit thread_local Object* s_async_generator_prototype_;
     // %AsyncGeneratorFunction.prototype% -- [[Prototype]] of all async generator functions
     static constinit thread_local Object* s_async_generator_function_prototype_;
+    // Forgets the two above; see Engine::release_thread_realm_state.
+    static void reset_realm_prototypes();
 
     static AsyncGenerator* get_current() { return current_; }
     static void set_current(AsyncGenerator* g) { current_ = g; }
@@ -419,6 +421,9 @@ public:
     void queue_microtask(std::function<void()> task, std::vector<Value> keep_alive);
     void drain_microtasks();
     bool has_pending_microtasks() const { return !microtask_queue_.empty(); }
+    // Drops every timer and queued job. For when the last realm on the thread is
+    // gone: what is left names contexts and functions that no longer exist.
+    void clear();
     void gc_trace(class Visitor& v) const;
 
     static EventLoop& instance();

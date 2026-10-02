@@ -520,7 +520,68 @@ static void test_external_allocation_requests_collection() {
     Heap::clear_gc_request();
 }
 
+// A Runtime made after another was destroyed must start clean: nothing of the
+// first one's realm may be reachable from thread-wide state, and a collection
+// must never trace what the first one left behind. The script is shaped like a
+// conformance suite -- many closures made in nested loops, each compiled on
+// its first call, with enough allocation between them for collections to land
+// in the middle -- because a chunk compiled after the collector last looked at
+// its function once had its constants swept while the chunk lived on.
+static void test_sequential_runtimes() {
+    const char* script = R"JS(
+      // Collections that land after the whole script is parsed and before any of
+      // its closures has run: every function's executable is seen by the
+      // collector with no compiled body yet.
+      for (let k = 0; k < 3000; k++) { const warm = { a: k, b: 'p' + k }; }
+      const failures = [];
+      function eq(actual, expected, what) {
+        if (actual !== expected) failures.push(what + ': ' + actual + ' vs ' + expected);
+      }
+      for (const scheme of ['https', 'wpt++']) {
+        for (let i = 0; i < 6; i++) {
+          for (const [type, part] of [['leading', 'a'], ['middle', 'b'], ['trailing', 'c']]) {
+            const run = () => {
+              const expected = scheme + '/' + type + '/' + part;
+              eq([scheme, type, part].join('/'), expected, 'join ' + type);
+              eq(expected + ':8000', scheme + '/' + type + '/' + part + ':8000', 'port');
+              eq(String(i), '' + i, 'number');
+            };
+            run();
+            const junk = [];
+            for (let j = 0; j < 60; j++) junk.push({ k: 'x' + j, v: [j] });
+          }
+        }
+      }
+      globalThis.failureCount = failures.length;
+      globalThis.firstFailure = failures[0] || '';
+    )JS";
+
+    constexpr int kRuntimes = 12;
+    int failed_runtimes = 0;
+    std::string first;
+    for (int i = 0; i < kRuntimes; i++) {
+        std::unique_ptr<Runtime> rt = Runtime::Create();
+        if (!rt) { failed_runtimes++; continue; }
+        Runtime::Result r = rt->Evaluate(script);
+        Context& ctx = rt->GetContext();
+        Value count = Get(ctx, Value(ctx.get_global_object()), "failureCount");
+        if (!r.ok || !count.is_number() || count.as_number() != 0) {
+            failed_runtimes++;
+            if (first.empty()) first = "run " + std::to_string(i) + ": " + (r.ok ? Get(ctx, Value(ctx.get_global_object()), "firstFailure").to_string() : r.error);
+        }
+    }
+    g_checks++;
+    if (failed_runtimes != 0) {
+        g_failures++;
+        std::fprintf(stderr, "FAIL sequential runtimes: %d of %d went wrong, first: %s\n", failed_runtimes, kRuntimes, first.c_str());
+    }
+}
+
 int main() {
+    // Freed cells are filled with a pattern and never reused, so a pointer a
+    // test left behind into a dead runtime fails at its first use instead of
+    // reading whatever was allocated there next. Read once, at the first sweep.
+    setenv("QUANTA_GC_POISON", "1", 1);
     std::unique_ptr<Runtime> rt = Runtime::Create();
     if (!rt) {
         std::fprintf(stderr, "Runtime::Create failed\n");
@@ -537,6 +598,10 @@ int main() {
     test_promises_and_microtasks(*rt);
     test_host_drives_timers(*rt);
     test_external_allocation_requests_collection();
+
+    // Last: it destroys the runtime everything above used.
+    rt.reset();
+    test_sequential_runtimes();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would

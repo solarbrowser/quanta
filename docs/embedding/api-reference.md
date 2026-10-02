@@ -13,7 +13,7 @@ using NativeFn = Value (*)(Context& ctx, Value thisValue, Args args, Value newTa
 
 | | |
 |---|---|
-| `Runtime::Create()` | New runtime; its heap becomes the thread's active one. Null on failure. |
+| `Runtime::Create()` | New runtime; its heap becomes the thread's active one. Null on failure. Only one may be live per thread: destroy the previous one first. |
 | `Runtime::GetContext()` | The realm's global context -- what `DefineClass` and `DefineGlobal` take. |
 | `Runtime::Evaluate(source, filename)` | Runs a script and drains the job queue once. Returns `{ok, exception, error}`. There is no completion value: the engine does not produce one for scripts, so a script that wants to hand something back sets a global or calls a function the host defined. |
 | `Runtime::CollectGarbage()` | Full collection now. Ordinary ones happen on their own. |

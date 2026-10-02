@@ -2086,6 +2086,10 @@ public:
 
     // The %ThrowTypeError% intrinsic, shared by Function.prototype.caller/.arguments and arguments.callee.
     static constinit thread_local Object* s_throw_type_error_;
+    // Forgets this thread's per-realm intrinsic pointers (%ThrowTypeError%, and
+    // the ObjectFactory's Object/Array/Function prototypes and pristine
+    // call/apply); see Engine::release_thread_realm_state.
+    static void reset_realm_intrinsics();
 
     // A fresh unmapped arguments object for `args`: elements, length, callee,
     // @@iterator. Bound to nothing. For a function whose `arguments` reads were

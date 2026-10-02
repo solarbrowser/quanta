@@ -172,6 +172,14 @@ constinit thread_local Object* Iterator::s_string_iterator_prototype_ = nullptr;
 constinit thread_local Object* Iterator::s_map_iterator_prototype_ = nullptr;
 constinit thread_local Object* Iterator::s_set_iterator_prototype_ = nullptr;
 
+void Iterator::reset_realm_prototypes() {
+    s_iterator_prototype_ = nullptr;
+    s_array_iterator_prototype_ = nullptr;
+    s_string_iterator_prototype_ = nullptr;
+    s_map_iterator_prototype_ = nullptr;
+    s_set_iterator_prototype_ = nullptr;
+}
+
 void Iterator::setup_iterator_prototype(Context& ctx) {
     // %IteratorPrototype% - only has [Symbol.iterator] returning this
     auto iter_proto = ObjectFactory::create_object();

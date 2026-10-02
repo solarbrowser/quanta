@@ -59,6 +59,18 @@ namespace Quanta {
 
 constinit thread_local Object* Function::s_throw_type_error_ = nullptr;
 
+void Function::reset_realm_intrinsics() {
+    s_throw_type_error_ = nullptr;
+    ObjectFactory::set_object_prototype(nullptr);
+    ObjectFactory::set_array_prototype(nullptr);
+    ObjectFactory::set_function_prototype(nullptr);
+    ObjectFactory::set_pristine_function_call(nullptr);
+    ObjectFactory::set_pristine_function_apply(nullptr);
+    Object::watch_regexp_prototype(nullptr);
+    Object::watch_array_iterator_prototype(nullptr);
+    Object::watch_promise_species(nullptr, nullptr);
+}
+
 // closure_context_ is stored for the Function's whole life and read by the
 // tracer (Function::trace_default) and by every arrow's `this`/`super` lookup,
 // so the Context has to outlive the call that created the closure. Saying so
@@ -1448,6 +1460,13 @@ Value Function::call_native_rooted(Context& ctx, const std::vector<Value>& args_
                 // leaving the constants permanently unmarked -- a real
                 // dangling-pointer bug once sweep runs, not just a diagnostic.
                 Collector::write_barrier(this);
+                // Other closures of this executable, and the executable's own
+                // entry in the root list, are not covered by that barrier: the
+                // list skips an executable it already traced this major unless
+                // told something changed, and a chunk compiled after that trace
+                // is exactly that -- its constants would otherwise be swept while
+                // the chunk lives on.
+                executable_->mark_feedback_dirty();
                 // The tree it was read back for has become bytecode, and can
                 // go unless something still points into it: AST nodes the
                 // chunk kept for itself, or a function written inside it whose

@@ -138,6 +138,13 @@ public:
     // Every live engine on this thread, for GC root enumeration (a
     // collection only ever scans the calling thread's own engines/heaps).
     static const std::vector<Engine*>& all_engines();
+    // What the engine caches per thread about the realm it built (the iterator,
+    // generator, Map/Set and primitive prototypes, %ThrowTypeError%, the job
+    // queue, ...) is a pointer into that realm's cells. Run when the last engine
+    // on the thread is destroyed: a new engine must start from nothing, not from
+    // a dead realm's prototypes -- the capture-once ones keep whatever is
+    // already there, and the heap sweeps the old cells.
+    static void release_thread_realm_state();
     Context* get_current_context() const;
 
     // GetFunctionRealm(fn), spec 27.2.4 -- which realm `fn` belongs to, for

@@ -52,6 +52,12 @@ constinit thread_local Object* Generator::s_generator_prototype_ = nullptr;
 constinit thread_local Object* Generator::s_generator_function_prototype_ = nullptr;
 constinit thread_local Function* Generator::s_generator_next_fn_ = nullptr;
 
+void Generator::reset_realm_prototypes() {
+    s_generator_prototype_ = nullptr;
+    s_generator_function_prototype_ = nullptr;
+    s_generator_next_fn_ = nullptr;
+}
+
 void Generator::fiber_entry(mco_coro* co) {
     Generator* gen = static_cast<Generator*>(mco_get_user_data(co));
     gen->run_body();
@@ -911,6 +917,8 @@ const BytecodeChunk* GeneratorFunction::get_suspendable_chunk(Context& ctx, cons
     exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names(), outer_with, hazards);
     if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
+    // See Function::call_default_impl: the root list's skip has to be told a chunk appeared.
+    exe->mark_feedback_dirty();
     return exe->suspendable_chunk.get();
 }
 

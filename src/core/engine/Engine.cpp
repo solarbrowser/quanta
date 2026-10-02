@@ -121,9 +121,21 @@ Engine::~Engine() {
         if (reg[i] == this) { reg[i] = reg.back(); reg.pop_back(); break; }
     }
     shutdown();
+    if (reg.empty()) release_thread_realm_state();
     if (Heap::active_or_null() == heap_) {
         Heap::set_active(nullptr);
     }
+}
+
+void Engine::release_thread_realm_state() {
+    Object::current_context_ = nullptr;
+    EventLoop::instance().clear();
+    Context::reset_primitive_prototypes();
+    Function::reset_realm_intrinsics();
+    Iterator::reset_realm_prototypes();
+    Generator::reset_realm_prototypes();
+    AsyncGenerator::reset_realm_prototypes();
+    reset_collection_prototypes();
 }
 
 bool Engine::initialize() {

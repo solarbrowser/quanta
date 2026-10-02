@@ -20,6 +20,7 @@
 namespace Quanta {
 
 constinit thread_local Heap* Heap::active_ = nullptr;
+constinit thread_local Heap* Heap::retiring_ = nullptr;
 constinit thread_local bool Heap::gc_requested_ = false;
 constinit thread_local size_t Heap::bytes_since_major_ = 0;
 constinit thread_local size_t Heap::live_after_major_ = 0;
@@ -354,8 +355,15 @@ Heap::ProbeResult probe_pointer(void* p) {
 
 Heap::ProbeResult Heap::probe_word(uint64_t word) {
     ProbeResult r = probe_pointer(reinterpret_cast<void*>(word));
-    if (r.cell) return r;
-    if (void* boxed = Value::gc_payload_of_bits(word)) return probe_pointer(boxed);
+    if (!r.cell) {
+        if (void* boxed = Value::gc_payload_of_bits(word)) r = probe_pointer(boxed);
+    }
+    if (r.cell && retiring_) {
+        const Heap* owner = r.is_large
+            ? reinterpret_cast<const LargeCell*>(static_cast<const char*>(r.cell) - kLargeHeaderSize)->heap
+            : HeapBlock::from_cell(r.cell)->heap();
+        if (owner == retiring_) return ProbeResult{};
+    }
     return r;
 }
 

@@ -537,6 +537,8 @@ const BytecodeChunk* AsyncFunction::get_suspendable_chunk(Context& ctx, const En
     exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names(), outer_with, hazards);
     if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
+    // See Function::call_default_impl: the root list's skip has to be told a chunk appeared.
+    exe->mark_feedback_dirty();
     return exe->suspendable_chunk.get();
 }
 
@@ -549,6 +551,11 @@ void AsyncFunction::trace(Visitor& v) {
 
 constinit thread_local Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
 constinit thread_local Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
+
+void AsyncGenerator::reset_realm_prototypes() {
+    s_async_generator_prototype_ = nullptr;
+    s_async_generator_function_prototype_ = nullptr;
+}
 constinit thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 
 AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx,
@@ -1634,6 +1641,14 @@ void EventLoop::fire_timer(TimerEntry entry) {
     drain_microtasks();
 }
 
+void EventLoop::clear() {
+    timers_ = {};
+    cancelled_ids_.clear();
+    microtask_queue_.clear();
+    draining_queue_.clear();
+    context_use_count_.clear();
+}
+
 void EventLoop::queue_microtask(std::function<void()> task, std::vector<Value> keep_alive) {
     microtask_queue_.push_back({std::move(task), std::move(keep_alive)});
 }
@@ -1977,6 +1992,8 @@ const BytecodeChunk* AsyncGeneratorFunction::get_suspendable_chunk(Context& ctx,
     exe->suspendable_chunk = VM::compile_suspendable(ast_body(), parameter_bound_names(), outer_with, hazards);
     if (!exe->suspendable_chunk) { exe->suspendable_incompatible = true; return nullptr; }
     Collector::write_barrier(this);
+    // See Function::call_default_impl: the root list's skip has to be told a chunk appeared.
+    exe->mark_feedback_dirty();
     return exe->suspendable_chunk.get();
 }
 

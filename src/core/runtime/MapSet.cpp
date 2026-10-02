@@ -101,6 +101,15 @@ constinit thread_local Object* WeakSet::prototype_object = nullptr;
 constinit thread_local Object* WeakRef::prototype_object = nullptr;
 constinit thread_local Object* FinalizationRegistry::prototype_object = nullptr;
 
+void reset_collection_prototypes() {
+    Map::prototype_object = nullptr;
+    Set::prototype_object = nullptr;
+    WeakMap::prototype_object = nullptr;
+    WeakSet::prototype_object = nullptr;
+    WeakRef::prototype_object = nullptr;
+    FinalizationRegistry::prototype_object = nullptr;
+}
+
 
 
 // SameValueZero hashing for Map and Set keys. The equality below must agree

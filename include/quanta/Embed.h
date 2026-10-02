@@ -20,8 +20,11 @@
 // the link line; leave it out and the host keeps its own allocator.
 //
 // Threading: a Runtime and everything allocated in it belong to the thread that
-// created it. Any number of Runtimes may live on one thread; none may move to
-// another.
+// created it, and none may move to another. One Runtime is live on a thread at a
+// time: the engine keeps its per-realm intrinsics (iterator, generator and
+// collection prototypes, ...) in thread-wide state, so a second Runtime made while
+// the first exists would take them over. Destroy a Runtime before making the next;
+// any number may follow one another.
 //
 // Exceptions: a native function does not throw or return an error value. It
 // reports failure by calling one of the Throw* functions and returning (the

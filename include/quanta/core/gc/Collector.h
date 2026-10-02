@@ -66,6 +66,14 @@ public:
     // Unconditional full collection (gc() builtin, tests).
     static void collect();
 
+    // A heap whose engine is gone: one full collection that does not let a stale
+    // stack word keep the heap's cells alive. What is left in it afterwards is
+    // what thread-wide tables root on purpose (well-known symbols, interned
+    // strings); everything else is swept, so no later collection can trace a cell
+    // that points into the engine's freed contexts. Run after the engine is
+    // destroyed.
+    static void retire_heap(Heap* heap);
+
     // Sticky mark-bit minor collection: marks survive from previous cycles,
     // so only unmarked (young) cells are traced and swept; old cells mutated
     // since the last cycle re-enter the trace via the remembered sets.

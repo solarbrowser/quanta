@@ -364,6 +364,10 @@ public:
     // constructor before it may skip building a capability.
     static Function* intrinsic_promise();
     void capture_primitive_prototypes();
+    // Forgets the captured intrinsics (they belong to a realm that is going away,
+    // and capture keeps whatever is already there); see
+    // Engine::release_thread_realm_state.
+    static void reset_primitive_prototypes();
 
     Value get_binding(const std::string& name) const;
     bool set_binding(const std::string& name, const Value& value);

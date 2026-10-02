@@ -361,4 +361,9 @@ public:
     static constinit thread_local Object* prototype_object;
 };
 
+
+// Forgets Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry's prototype
+// pointers; see Engine::release_thread_realm_state.
+void reset_collection_prototypes();
+
 }

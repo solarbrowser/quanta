@@ -155,6 +155,8 @@ public:
     // exactly as sound as making the call -- a `next` reassigned mid-loop,
     // on the instance or the prototype, was never going to be seen by either.
     static constinit thread_local Function* s_generator_next_fn_;
+    // Forgets the three above; see Engine::release_thread_realm_state.
+    static void reset_realm_prototypes();
 
 private:
     void complete_generator(const Value& value);
