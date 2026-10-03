@@ -225,7 +225,8 @@ void register_shadow_realm_builtins(Context& ctx) {
                 ctx.throw_type_error("Constructor ShadowRealm requires 'new'");
                 return Value();
             }
-            Engine* realm = new Engine();
+            Engine* creator = ctx.get_engine();
+            Engine* realm = creator ? new Engine(*creator->isolate(), Engine::Config{}) : new Engine();
             if (!realm || !realm->initialize()) {
                 ctx.throw_type_error("ShadowRealm: failed to create a realm");
                 return Value();

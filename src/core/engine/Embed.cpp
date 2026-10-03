@@ -127,23 +127,22 @@ std::unique_ptr<Runtime> Runtime::Create() {
     std::unique_ptr<Runtime> rt(new Runtime());
     Engine::Config config;
     config.host_drives_event_loop = true;
-    rt->engine_ = std::make_unique<Engine>(config);
+    rt->isolate_ = std::make_unique<Isolate>();
+    rt->engine_ = std::make_unique<Engine>(*rt->isolate_, config);
     if (!rt->engine_->initialize()) return nullptr;
     return rt;
 }
 
 Runtime::~Runtime() {
     if (!engine_) return;
-    Heap* heap = engine_->get_heap();
     // A major cycle is incremental and can be open right now, with this engine's
     // contexts and environments queued to be traced. Let it end while they are
     // still there: tracing them after they are freed would corrupt the marks.
     if (Collector::major_in_progress()) Collector::collect();
-    // Contexts next (they name cells), then the cells: nothing the runtime built
-    // is reachable once it is gone, and a collection that still traced one would
-    // follow its pointers into freed contexts.
+    // The engine's contexts first (they name cells); then the Isolate, whose heap is
+    // retired by one collection that frees everything the runtime built.
     engine_.reset();
-    Collector::retire_heap(heap);
+    isolate_.reset();
 }
 
 Context& Runtime::GetContext() {

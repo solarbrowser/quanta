@@ -90,10 +90,11 @@ Object* Engine::realm_intrinsic_prototype_for(Object* new_target_like, const std
 Engine::Engine() : initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
 
-    heap_ = new Heap();
-    Heap::set_active(heap_);
+    isolate_ = new Isolate();
+    heap_ = isolate_->heap();
     realm_ = std::make_unique<Realm>(this);
     engine_registry().push_back(this);
+    isolate_->add_engine(this);
 
     config_.strict_mode = false;
     config_.enable_optimizations = true;
@@ -109,10 +110,24 @@ Engine::Engine(const Config& config)
     : config_(config), initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
 
-    heap_ = new Heap();
+    isolate_ = new Isolate();
+    heap_ = isolate_->heap();
+    realm_ = std::make_unique<Realm>(this);
+    engine_registry().push_back(this);
+    isolate_->add_engine(this);
+
+    start_time_ = std::chrono::high_resolution_clock::now();
+}
+
+Engine::Engine(Isolate& isolate, const Config& config)
+    : config_(config), isolate_(&isolate), heap_(isolate.heap()),
+      initialized_(false), execution_count_(0),
+      total_allocations_(0), total_gc_runs_(0) {
+
     Heap::set_active(heap_);
     realm_ = std::make_unique<Realm>(this);
     engine_registry().push_back(this);
+    isolate_->add_engine(this);
 
     start_time_ = std::chrono::high_resolution_clock::now();
 }
@@ -122,6 +137,7 @@ Engine::~Engine() {
     for (size_t i = 0; i < reg.size(); i++) {
         if (reg[i] == this) { reg[i] = reg.back(); reg.pop_back(); break; }
     }
+    if (isolate_) isolate_->remove_engine(this);
     shutdown();
     // The thread's current realm must never name one that is gone: hand it to a
     // realm that is still alive, if any.

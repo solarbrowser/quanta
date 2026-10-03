@@ -106,6 +106,8 @@ public:
 
 private:
     Runtime() = default;
+    // Declared before the engine: it is destroyed after it, and retires the heap.
+    std::unique_ptr<Isolate> isolate_;
     std::unique_ptr<Engine> engine_;
 };
 

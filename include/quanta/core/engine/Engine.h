@@ -12,6 +12,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Realm.h"
+#include "quanta/core/engine/Isolate.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/gc/Heap.h"
 #include "quanta/parser/AST.h"
@@ -72,6 +73,7 @@ private:
     // destructors delete cells after the engine dies, so the heap and its
     // metadata must stay valid until process exit. The collector's shutdown
     // protocol will make heaps destructible.
+    Isolate* isolate_;
     Heap* heap_;
     // This engine's intrinsics; see Realm.
     std::unique_ptr<Realm> realm_;
@@ -104,8 +106,12 @@ private:
     size_t total_gc_runs_;
 
 public:
+    // An Engine of its own: it makes an Isolate (and so a heap) that nothing else
+    // shares and that, like the engine, is never released.
     Engine();
     explicit Engine(const Config& config);
+    // A realm in an existing Isolate, sharing its heap with the others in it.
+    Engine(Isolate& isolate, const Config& config);
     ~Engine();
 
     bool initialize();
@@ -270,6 +276,7 @@ public:
     size_t get_heap_size() const;
     void force_gc();
     Heap* get_heap() const { return heap_; }
+    Isolate* isolate() const { return isolate_; }
     Realm* realm() const { return realm_.get(); }
     
     void enable_profiler(bool enable);

@@ -1137,7 +1137,10 @@ void register_global_builtins(Context& ctx) {
             // below -- correctly reflects what actually got bound.
             Engine::Config config;
             config.expose_test262_globals = true;
-            Engine* new_engine = new Engine(config); // intentionally leaked -- consistent with engine memory model
+            // Intentionally leaked -- consistent with the engine memory model; it lives in the
+            // creating realm's Isolate and so shares its heap.
+            Engine* creator = caller_ctx.get_engine();
+            Engine* new_engine = creator ? new Engine(*creator->isolate(), config) : new Engine(config);
             if (!new_engine) { caller_ctx.throw_type_error("createRealm: failed to create engine"); return Value(); }
             if (!new_engine->initialize()) { caller_ctx.throw_type_error("createRealm: failed to initialize engine"); return Value(); }
 
