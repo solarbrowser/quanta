@@ -713,6 +713,47 @@ static void test_realm_data() {
     CHECK(eval_in(*b, "AProbe.get()").as_number() == 1);
 }
 
+static Value ProbeMethod(Context& ctx, Value, Args, Value) {
+    return Value(static_cast<double>(reinterpret_cast<intptr_t>(GetRealmData(ctx, &g_realm_key))) + 100);
+}
+
+// What a destroyed realm defined lives as long as something of it is held: the class
+// (its prototype and constructor) and what its natives find per realm.
+static void test_destroyed_realm_class() {
+    std::unique_ptr<Embed::Isolate> isolate = Embed::Isolate::Create();
+    std::unique_ptr<Embed::Realm> a = isolate->CreateRealm();
+    std::unique_ptr<Embed::Realm> b = isolate->CreateRealm();
+
+    Context& cb = b->GetContext();
+    SetRealmData(cb, &g_realm_key, reinterpret_cast<void*>(7));
+    ClassRef klass = DefineClass(cb, "Kept", [](Context&, Value, Args, Value) { return Undefined(); }, 0);
+    DefineMethod(klass.prototype, "tag", ProbeMethod, 0);
+    DefineStaticMethod(klass.constructor, "make", [](Context&, Value, Args, Value) { return Value(1.0); }, 0);
+    DefineGlobal(cb, "Kept", klass.constructor);
+
+    // a holds one instance and nothing else of b's.
+    b->Evaluate("globalThis.inst = Object.create(Kept.prototype);");
+    set_global(*a, "inst", global_of(*b, "inst"));
+    b.reset();
+
+    for (int i = 0; i < 3; i++) {
+        isolate->CollectGarbage();
+        CHECK(eval_in(*a, "inst.tag()").as_number() == 107);
+        CHECK(eval_in(*a, "typeof inst.constructor.make").to_string() == "function");
+        CHECK(eval_in(*a, "inst.constructor.make()").as_number() == 1);
+        CHECK(eval_in(*a, "Object.getPrototypeOf(inst) === inst.constructor.prototype").as_boolean());
+        CHECK(eval_in(*a, "inst instanceof inst.constructor").as_boolean());
+        CHECK(eval_in(*a, "Object.prototype.toString.call(inst)").to_string() == "[object Kept]");
+        a->Evaluate("for (let i = 0; i < 2000; i++) { [i, i + 1].map(x => x * 2); }");
+    }
+
+    // Once the instance goes, so does the rest, and a is unaffected.
+    a->Evaluate("inst = undefined;");
+    isolate->CollectGarbage();
+    isolate->CollectGarbage();
+    CHECK(eval_in(*a, "[1, 2, 3].map(x => x * 2).length").as_number() == 3);
+}
+
 int main() {
     // Freed cells are filled with a pattern and never reused, so a pointer a
     // test left behind into a dead runtime fails at its first use instead of
@@ -740,6 +781,7 @@ int main() {
     test_sequential_runtimes();
     test_realms();
     test_realm_data();
+    test_destroyed_realm_class();
 
     std::printf("embed-test: %d checks, %d failed\n", g_checks, g_failures);
     // The heap is immortal by design; skip the static destructors that would
